@@ -66,7 +66,8 @@ export interface TeamProvisioningStopTeamPorts<TRun extends TeamProvisioningStop
   updateProgress(
     run: TRun,
     state: Exclude<TeamProvisioningProgress['state'], 'idle'>,
-    message: string
+    message: string,
+    extras?: Pick<TeamProvisioningProgress, 'disconnect'>
   ): TeamProvisioningProgress;
   cleanupRun(run: TRun): void;
   cleanupRunOwnedAnthropicApiKeyHelper?(run: TRun): Promise<void>;
@@ -179,7 +180,9 @@ async function stopTeamRuntimeFlow<TRun extends TeamProvisioningStopRun>(
   const stopCurrentTeamProcess = ports.killTeamProcessAndWait(run.child);
   const stopCurrentRuntimeLanes = stopRuntimeLanesForRun(run.runId);
   await awaitAllOwnedProcessStops([stopCurrentTeamProcess, stopCurrentRuntimeLanes]);
-  const progress = ports.updateProgress(run, 'disconnected', 'Team stopped by user');
+  const progress = ports.updateProgress(run, 'disconnected', 'Team stopped by user', {
+    disconnect: { kind: 'user_stop' },
+  });
   run.onProgress(progress);
   ports.logger.info(`[${teamName}] Process stopped (SIGKILL)`);
   await (ports.cleanupRunOwnedAnthropicApiKeyHelper?.(run) ??

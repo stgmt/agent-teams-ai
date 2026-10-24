@@ -52,11 +52,21 @@ export interface TeamProvisioningPersistedMessagePayload extends Record<string, 
   commandOutput: InboxMessage['commandOutput'];
 }
 
+/**
+ * An inbox row plus a delivery instruction for the inbox writer that is never stored on the row:
+ * `allowRepeatedDelivery` skips the repeated-message guard. Only the app sets it, for a command
+ * that repeats on purpose (the bootstrap check of a restarted teammate).
+ */
+export type TeamProvisioningInboxMessageInput = InboxMessage & {
+  allowRepeatedDelivery?: boolean;
+};
+
 export type TeamProvisioningPersistedInboxMessagePayload = Omit<
   TeamProvisioningPersistedMessagePayload,
   'to'
 > & {
   member: string;
+  allowRepeatedDelivery?: true;
 };
 
 function mapControllerMessagePayload(
@@ -102,7 +112,7 @@ function mapControllerMessagePayload(
 
 function mapControllerInboxMessagePayload(
   recipient: string,
-  message: InboxMessage
+  message: TeamProvisioningInboxMessageInput
 ): TeamProvisioningPersistedInboxMessagePayload {
   const payload = mapControllerMessagePayload(message);
   return {
@@ -131,6 +141,7 @@ function mapControllerInboxMessagePayload(
     workSyncReviewRequestEventIds: payload.workSyncReviewRequestEventIds,
     slashCommand: payload.slashCommand,
     commandOutput: payload.commandOutput,
+    ...(message.allowRepeatedDelivery === true ? { allowRepeatedDelivery: true as const } : {}),
   };
 }
 
@@ -161,7 +172,7 @@ export function persistTeamProvisioningSentMessage(
 export function persistTeamProvisioningInboxMessage(
   teamName: string,
   recipient: string,
-  message: InboxMessage,
+  message: TeamProvisioningInboxMessageInput,
   ports: TeamProvisioningInboxMessagePersistencePorts
 ): void {
   try {

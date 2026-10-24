@@ -438,31 +438,98 @@ describe('UpdateMemberSettingsUseCase', () => {
     ]);
   });
 
-  it('rethrows the lifecycle failure after complete rollback', async () => {
+  it('keeps the saved member settings and reports the real cause when the restart fails', async () => {
     const current = target();
     const test = harness(current);
     vi.mocked(test.lifecycle.applyEffect).mockRejectedValueOnce(new Error('restart failed'));
 
-    await expect(test.useCase.execute(request(current))).rejects.toThrow('restart failed');
-    expect(test.getStored()).toEqual(current);
-    expect(test.events).toContain('restore-target');
-    expect(test.events).toContain('restore-lifecycle');
+    const result = await test.useCase.execute(request(current));
+
+    expect(result).toMatchObject({
+      outcome: 'completed',
+      effect: 'member_restart_failed',
+      memberName: 'Worker',
+      previousFingerprint: createMemberSettingsFingerprint(current),
+      currentFingerprint: createMemberSettingsFingerprint(test.getStored()!),
+      failure: { cause: 'restart failed', memberProcess: 'unknown' },
+    });
+    expect(test.getStored()?.settings.role).toBe('Reviewer');
+    expect(test.events).not.toContain('restore-target');
+    expect(test.events).not.toContain('restore-lifecycle');
+    expect(test.repository.restoreTarget).not.toHaveBeenCalled();
+    expect(test.lifecycle.restore).not.toHaveBeenCalled();
+    expect(test.lifecycle.applyEffect).toHaveBeenCalledTimes(1);
   });
 
-  it('returns recovery_required when either rollback leg is incomplete', async () => {
-    const current = target();
-    const test = harness(current);
-    vi.mocked(test.lifecycle.applyEffect).mockRejectedValueOnce(new Error('partial restart'));
-    vi.mocked(test.lifecycle.restore).mockResolvedValueOnce(false);
+  it.each(['running', 'stopped'] as const)(
+    'reports that the teammate process is %s after a failed restart',
+    async (memberProcess) => {
+      const current = target();
+      const test = harness(current);
+      vi.mocked(test.lifecycle.applyEffect).mockRejectedValueOnce(
+        new MemberSettingsLifecycleFailedError('launch failed', false, undefined, memberProcess)
+      );
 
-    await expect(test.useCase.execute(request(current))).resolves.toMatchObject({
-      outcome: 'completed',
-      effect: 'recovery_required',
-      recovery: {
-        persistenceRestored: true,
-        lifecycleRestored: false,
-        cause: 'partial restart',
-      },
+      await expect(test.useCase.execute(request(current))).resolves.toMatchObject({
+        effect: 'member_restart_failed',
+        failure: { cause: 'launch failed', memberProcess },
+      });
+    }
+  );
+
+  describe('rollback of an OpenCode lane restart', () => {
+    const laneTarget = () =>
+      target({
+        runtimeLane: 'opencode_secondary',
+        settings: settings({ providerId: 'opencode' }),
+      });
+    const laneNext = () => settings({ role: 'Reviewer', providerId: 'opencode' });
+
+    it('rethrows the lifecycle failure after complete rollback', async () => {
+      const current = laneTarget();
+      const test = harness(current);
+      vi.mocked(test.lifecycle.applyEffect).mockRejectedValueOnce(new Error('restart failed'));
+
+      await expect(test.useCase.execute(request(current, laneNext()))).rejects.toThrow(
+        'restart failed'
+      );
+      expect(test.getStored()).toEqual(current);
+      expect(test.events).toContain('restore-target');
+      expect(test.events).toContain('restore-lifecycle');
+    });
+
+    it('returns recovery_required when either rollback leg is incomplete', async () => {
+      const current = laneTarget();
+      const test = harness(current);
+      vi.mocked(test.lifecycle.applyEffect).mockRejectedValueOnce(new Error('partial restart'));
+      vi.mocked(test.lifecycle.restore).mockResolvedValueOnce(false);
+
+      await expect(test.useCase.execute(request(current, laneNext()))).resolves.toMatchObject({
+        outcome: 'completed',
+        effect: 'recovery_required',
+        recovery: {
+          persistenceRestored: true,
+          lifecycleRestored: false,
+          cause: 'partial restart',
+        },
+      });
+    });
+
+    it('does not restore the old runtime when persistence rollback is unproven', async () => {
+      const current = laneTarget();
+      const test = harness(current);
+      vi.mocked(test.lifecycle.applyEffect).mockRejectedValueOnce(new Error('partial restart'));
+      vi.mocked(test.repository.restoreTarget).mockResolvedValueOnce(false);
+
+      await expect(test.useCase.execute(request(current, laneNext()))).resolves.toMatchObject({
+        outcome: 'completed',
+        effect: 'recovery_required',
+        recovery: {
+          persistenceRestored: false,
+          lifecycleRestored: false,
+        },
+      });
+      expect(test.lifecycle.restore).not.toHaveBeenCalled();
     });
   });
 
@@ -483,22 +550,5 @@ describe('UpdateMemberSettingsUseCase', () => {
       },
     });
     expect(test.lifecycle.applyEffect).not.toHaveBeenCalled();
-  });
-
-  it('does not restore the old runtime when persistence rollback is unproven', async () => {
-    const current = target();
-    const test = harness(current);
-    vi.mocked(test.lifecycle.applyEffect).mockRejectedValueOnce(new Error('partial restart'));
-    vi.mocked(test.repository.restoreTarget).mockResolvedValueOnce(false);
-
-    await expect(test.useCase.execute(request(current))).resolves.toMatchObject({
-      outcome: 'completed',
-      effect: 'recovery_required',
-      recovery: {
-        persistenceRestored: false,
-        lifecycleRestored: false,
-      },
-    });
-    expect(test.lifecycle.restore).not.toHaveBeenCalled();
   });
 });

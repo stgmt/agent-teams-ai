@@ -1,5 +1,6 @@
 import { validateMemberName, validateTeamName } from '@main/ipc/guards';
 import { isReservedLeadRole } from '@shared/utils/leadDetection';
+import { createLogger } from '@shared/utils/logger';
 
 import { TEAM_UPDATE_MEMBER_SETTINGS } from '../../../contracts';
 
@@ -12,6 +13,8 @@ import type {
 import type { TeamMemberSettingsFeatureApi } from '../../composition/createTeamMemberSettingsFeature';
 import type { IpcResult } from '@shared/types';
 import type { IpcMain, IpcMainInvokeEvent } from 'electron';
+
+const logger = createLogger('Feature:team-provisioning:memberSettingsIpc');
 
 const SETTINGS_KEYS = [
   'role',
@@ -223,6 +226,35 @@ export function parseUpdateMemberSettingsRequest(value: unknown): UpdateMemberSe
   return { ...base, targetKind, settings: parseSettings(value.settings) };
 }
 
+/** Join key for the log lines of one command; reads untrusted input without validating it. */
+function describeRequest(value: unknown): string {
+  const read = (key: string): string => {
+    const raw = isPlainObject(value) ? value[key] : undefined;
+    return typeof raw === 'string' && raw.trim() ? raw.trim().slice(0, MAX_NAME_LENGTH) : '?';
+  };
+  return `team=${read('teamName')} member=${read('memberName')} command=${read('commandId')} target=${read('targetKind')}`;
+}
+
+function logResult(context: string, result: UpdateMemberSettingsResult): void {
+  if (result.outcome !== 'completed') {
+    logger.diagnostic(`Member settings update finished: ${context} outcome=${result.outcome}`);
+    return;
+  }
+  const summary = `Member settings update finished: ${context} outcome=completed effect=${result.effect} replayed=${result.replayed === true}`;
+  if (result.effect === 'member_restart_failed') {
+    logger.warn(
+      `${summary} memberProcess=${result.failure.memberProcess} cause=${result.failure.cause}`
+    );
+  } else if (
+    result.effect === 'recovery_required' ||
+    result.effect === 'lead_restart_rolled_back'
+  ) {
+    logger.warn(`${summary} cause=${result.recovery?.cause ?? 'unknown'}`);
+  } else {
+    logger.diagnostic(summary);
+  }
+}
+
 export function registerTeamMemberSettingsIpc(
   ipcMain: IpcMain,
   feature: TeamMemberSettingsFeatureApi
@@ -233,11 +265,19 @@ export function registerTeamMemberSettingsIpc(
       _event: IpcMainInvokeEvent,
       value: unknown
     ): Promise<IpcResult<UpdateMemberSettingsResult>> => {
+      const context = describeRequest(value);
       try {
-        const data = await feature.updateMemberSettings(parseUpdateMemberSettingsRequest(value));
+        const request = parseUpdateMemberSettingsRequest(value);
+        logger.diagnostic(`Member settings update accepted: ${context}`);
+        const data = await feature.updateMemberSettings(request);
+        logResult(context, data);
         return { success: true, data };
       } catch (error) {
-        return { success: false, error: error instanceof Error ? error.message : String(error) };
+        const message = error instanceof Error ? error.message : String(error);
+        logger.error(
+          `Member settings update failed: ${context}: ${error instanceof Error ? (error.stack ?? message) : message}`
+        );
+        return { success: false, error: message };
       }
     }
   );

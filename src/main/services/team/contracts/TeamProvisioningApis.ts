@@ -51,6 +51,11 @@ export interface TeamProvisioningStartApi {
   ): Promise<TeamLaunchResponse>;
 }
 
+/** Where the progress of a run started over HTTP goes: the app window never sees it otherwise. */
+export interface TeamProvisioningProgressPublisher {
+  publishProvisioningProgress(progress: TeamProvisioningProgress): void;
+}
+
 export type TeamProvisioningStatusApi = FeatureTeamProvisioningStatusApi;
 
 export interface TeamProvisioningRunApi {
@@ -373,6 +378,23 @@ export function bindTeamProvisioningStartApi(
   };
 }
 
+/** Every progress event of a create or launch also reaches the publisher, besides its own handler. */
+function publishStartProgress(
+  api: TeamProvisioningStartApi,
+  publisher: TeamProvisioningProgressPublisher
+): TeamProvisioningStartApi {
+  const withPublishing =
+    (onProgress: (progress: TeamProvisioningProgress) => void) =>
+    (progress: TeamProvisioningProgress): void => {
+      onProgress(progress);
+      publisher.publishProvisioningProgress(progress);
+    };
+  return {
+    createTeam: (request, onProgress) => api.createTeam(request, withPublishing(onProgress)),
+    launchTeam: (request, onProgress) => api.launchTeam(request, withPublishing(onProgress)),
+  };
+}
+
 /**
  * The startup sweep only reaps `opencode serve` hosts, so a start that cannot
  * produce one has nothing to lose to it and must never pay the wait. A start
@@ -522,6 +544,7 @@ export function bindTeamHttpDataApi(source: TeamHttpDataApi): TeamHttpDataApi {
 
 export function bindTeamHttpHandlerApis(
   source: TeamProvisioningStartApi &
+    TeamProvisioningProgressPublisher &
     TeamProvisioningStatusApi &
     TeamTaskActivityRepairApi &
     TeamHttpRuntimeApi &
@@ -529,9 +552,10 @@ export function bindTeamHttpHandlerApis(
     TeamHttpMemberDiagnosticsApi
 ): TeamHttpHandlerApis {
   return {
-    provisioningStart: bindTeamProvisioningStartApi(source, {
-      beforeStart: bindOpenCodeStartPreparation(source),
-    }),
+    provisioningStart: publishStartProgress(
+      bindTeamProvisioningStartApi(source, { beforeStart: bindOpenCodeStartPreparation(source) }),
+      source
+    ),
     provisioningStatus: bindTeamProvisioningStatusApi(source),
     taskActivity: bindTeamTaskActivityRepairApi(source),
     runtime: bindTeamHttpRuntimeApi(source),

@@ -1,6 +1,9 @@
 const kanban = require('./kanban.js');
 const review = require('./review.js');
 const tasks = require('./tasks.js');
+const startupWork = require('./startupWork.js');
+const taskBriefingGate = require('./taskBriefingGate.js');
+const { buildDeferredTaskQueueText } = require('./deferredTaskQueue.js');
 
 // Application boundary for task-board lifecycle writes.
 // Keep this thin so existing task, review, and kanban behavior remains stable.
@@ -97,8 +100,23 @@ function unlinkTask(context, taskId, targetId, linkType) {
   return tasks.unlinkTask(context, taskId, targetId, linkType);
 }
 
-function memberBriefing(context, memberName, options) {
-  return tasks.memberBriefing(context, memberName, options);
+// The app's native bootstrap context sets deferTaskQueue: Actionable work in the startup
+// context would keep the member in its first turn and block the launch confirmation. The
+// work arrives as messages once the launch is confirmed (startupWork.js).
+function memberBriefing(context, memberName, options = {}) {
+  const taskQueue =
+    options.deferTaskQueue === true
+      ? deferredTaskBriefing(context, String(memberName).trim())
+      : undefined;
+  return tasks.memberBriefing(context, memberName, { ...options, taskQueue });
+}
+
+function deferredTaskBriefing(context, memberName) {
+  return buildDeferredTaskQueueText(String(memberName));
+}
+
+function deliverStartupWork(context, memberName, options) {
+  return startupWork.deliverStartupWork(context, memberName, options);
 }
 
 function leadBriefing(context) {
@@ -107,6 +125,12 @@ function leadBriefing(context) {
 
 function taskBriefing(context, memberName) {
   return tasks.taskBriefing(context, memberName);
+}
+
+// The briefing a member asks for with the task_briefing tool: held back until the app has
+// confirmed the member's launch (taskBriefingGate.js).
+function requestTaskBriefing(context, memberName) {
+  return taskBriefingGate.requestTaskBriefing(context, memberName);
 }
 
 function getKanbanState(context) {
@@ -172,12 +196,15 @@ module.exports = {
   listReviewers,
   listTaskInventory,
   listTasks,
+  deferredTaskBriefing,
+  deliverStartupWork,
   memberBriefing,
   removeReviewer,
   removeTaskAttachment,
   reconcileTaskCreation,
   requestChanges,
   requestReview,
+  requestTaskBriefing,
   resolveTaskId,
   restoreTask,
   setKanbanColumn,

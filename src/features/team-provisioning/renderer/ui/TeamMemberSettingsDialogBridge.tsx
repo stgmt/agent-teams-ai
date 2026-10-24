@@ -20,6 +20,7 @@ interface TeamMemberSettingsDialogBridgeProps {
     effort: EffortLevel | null;
   }) => Promise<void> | void;
   onRelaunchRequired: (draft: MemberSettingsRelaunchDraft) => void;
+  onRestartMember: (memberName: string) => Promise<void>;
 }
 
 export const TeamMemberSettingsDialogBridge = ({
@@ -32,6 +33,7 @@ export const TeamMemberSettingsDialogBridge = ({
   onClose,
   onRefresh,
   onRelaunchRequired,
+  onRestartMember,
 }: TeamMemberSettingsDialogBridgeProps): React.JSX.Element | null => {
   const currentMember = members.find((candidate) => candidate.name === memberName);
   const targetAvailable = Boolean(currentMember && !currentMember.removedAt);
@@ -71,6 +73,7 @@ export const TeamMemberSettingsDialogBridge = ({
       onClose={onClose}
       onRefresh={onRefresh}
       onRelaunchRequired={onRelaunchRequired}
+      onRestartMember={onRestartMember}
     />
   );
 };

@@ -46,6 +46,7 @@ function render(members: readonly ResolvedTeamMember[]): void {
       onClose={vi.fn()}
       onRefresh={vi.fn()}
       onRelaunchRequired={vi.fn()}
+      onRestartMember={vi.fn()}
     />
   );
 }
@@ -65,6 +66,26 @@ afterEach(() => {
 });
 
 describe('TeamMemberSettingsDialogBridge', () => {
+  it('hands the restart action to the dialog so a failed restart can be retried', () => {
+    const onRestartMember = vi.fn(async () => {});
+    act(() =>
+      root.render(
+        <TeamMemberSettingsDialogBridge
+          teamName="alpha"
+          memberName="alice"
+          members={[member]}
+          isTeamAlive
+          isTeamProvisioning={false}
+          onClose={vi.fn()}
+          onRefresh={vi.fn()}
+          onRelaunchRequired={vi.fn()}
+          onRestartMember={onRestartMember}
+        />
+      )
+    );
+    expect(dialogProps).toHaveBeenLastCalledWith(expect.objectContaining({ onRestartMember }));
+  });
+
   it('passes the lead fast-mode setting for inherited runtime comparison', () => {
     const lead: ResolvedTeamMember = {
       ...member,
@@ -121,6 +142,7 @@ describe('TeamMemberSettingsDialogBridge', () => {
           onClose={vi.fn()}
           onRefresh={vi.fn()}
           onRelaunchRequired={vi.fn()}
+          onRestartMember={vi.fn()}
         />
       )
     );
@@ -144,6 +166,7 @@ describe('TeamMemberSettingsDialogBridge', () => {
           onClose={vi.fn()}
           onRefresh={vi.fn()}
           onRelaunchRequired={vi.fn()}
+          onRestartMember={vi.fn()}
         />
       )
     );
@@ -162,6 +185,7 @@ describe('TeamMemberSettingsDialogBridge', () => {
           onClose={vi.fn()}
           onRefresh={vi.fn()}
           onRelaunchRequired={vi.fn()}
+          onRestartMember={vi.fn()}
         />
       )
     );

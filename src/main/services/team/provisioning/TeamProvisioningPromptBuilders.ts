@@ -22,6 +22,10 @@ import { normalizeLaunchFailureReasonText } from '../TeamLaunchStateEvaluator';
 import { getAgentLanguageInstruction } from './TeamProvisioningAgentLanguage';
 import { resolveCrossTeamLeadName } from './TeamProvisioningCrossTeamRelayHelpers';
 import {
+  LEAD_PARALLELIZATION_PROMPT_LINES,
+  LEAD_STATUS_QUESTION_PROMPT_LINES,
+} from './TeamProvisioningLeadBoardPrompt';
+import {
   buildCompactMembersRoster,
   buildLeadRosterIntegrityRules,
   buildMembersPrompt,
@@ -724,15 +728,10 @@ export function buildTeamCtlOpsInstructions(teamName: string, leadName: string):
       `- This applies even if a teammate seems slow or idle — a teammate's first turn can take minutes; wait for the owner instead of doing their task yourself.`,
       `- Exception: the user explicitly tells you to do that work yourself, or the team is in SOLO MODE.`,
       ``,
-      `Parallelization guideline (IMPORTANT):`,
-      `- If a task is genuinely parallelizable, split it into multiple smaller tasks owned by different members.`,
-      `  - Prefer splitting by independent deliverables (e.g. frontend/backend, API/UI, parsing/rendering, tests/docs) rather than arbitrary slices.`,
-      `  - Use blockedBy only when one piece truly cannot start without another; otherwise link with related.`,
-      `  - Do NOT split when work is inherently sequential, requires one person to keep consistent context, or the overhead would exceed the benefit.`,
-      `  - When splitting, make each task have a clear completion criterion and a single accountable owner.`,
-      ``,
+      ...LEAD_PARALLELIZATION_PROMPT_LINES,
       `IMPORTANT: The board MCP supports these domains: lead, task, kanban, review, message, process. There is NO "member" domain — team members are managed by spawning teammates via the Task tool, not via the board MCP.`,
       ``,
+      ...LEAD_STATUS_QUESTION_PROMPT_LINES,
       `Task board operations — use MCP tools directly:`,
       `- FIRST inspect the compact lead queue: lead_briefing { teamName: "${teamName}" }`,
       `  lead_briefing is the primary lead queue. Decisions about what to act on now come from lead_briefing, not from raw task_list rows.`,

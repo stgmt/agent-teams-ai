@@ -129,10 +129,11 @@ function buildPendingPickupEpochKey(args: {
 
 /**
  * "Pickup stall": a pending task has nothing left to wait for - every blocker is
- * resolved, or it never had one - its owner is not busy on another task, and its
- * OpenCode lane is not mid-turn. Needs no transcript evidence, which is what
+ * resolved, or it never had one - its owner is not busy on another task, and, for an
+ * OpenCode owner, its lane is not mid-turn. Needs no transcript evidence, which is what
  * makes it work on OpenCode/ACP-lead teams where the lead transcript carries no
- * per-member turn rows.
+ * per-member turn rows. It applies to every provider: a Claude owner that never starts
+ * an assigned task is reported to the lead like an OpenCode one.
  *
  * `lane_active` below means a *fresh* delivery-turn sample. TeamTaskStallSnapshotSource
  * demotes an 'active' sample older than getOpenCodeLaneTurnActivityMaxAgeMs (see
@@ -171,11 +172,6 @@ export function evaluatePendingPickupTask(args: {
   }
 
   const ownerKey = normalizeMemberKey(task.owner);
-  if (snapshot.providerByMemberName.get(ownerKey) !== 'opencode') {
-    // Native owners are covered by member-work-sync's stale-assigned-work
-    // activation, which already accepts owned pending tasks.
-    return skip(task.id, 'Task owner is not an OpenCode member', 'owner_not_opencode');
-  }
   if (ownerIsBusyOnAnotherTask(snapshot, ownerKey, task.id)) {
     return skip(task.id, 'Task owner is already working another task', 'owner_busy_on_other_task');
   }

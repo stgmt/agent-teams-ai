@@ -1,6 +1,9 @@
 import { type TeamRuntimeLanePlan } from '@features/team-runtime-lanes';
 import { type TeamRuntimeLaneCoordinator } from '@features/team-runtime-lanes/main';
 import { getTeamsBasePath } from '@main/utils/pathDecoder';
+import { safeSendToRenderer } from '@main/utils/safeWebContentsSend';
+// eslint-disable-next-line boundaries/element-types -- IPC channel constants shared between main and preload
+import { TEAM_PROVISIONING_PROGRESS } from '@preload/constants/ipcChannels';
 import { resolveLanguageName } from '@shared/utils/agentLanguage';
 import { createLogger } from '@shared/utils/logger';
 import * as path from 'path';
@@ -83,9 +86,11 @@ import type {
   TeamProvisioningModelCheckRequest,
   TeamProvisioningModelVerificationMode,
   TeamProvisioningPrepareResult,
+  TeamProvisioningProgress,
   ToolApprovalEvent,
   ToolApprovalSettings,
 } from '@shared/types';
+import type { BrowserWindow } from 'electron';
 
 const logger = createLogger('Service:TeamProvisioning');
 
@@ -180,6 +185,8 @@ export abstract class TeamProvisioningDiagnosticsPreflightCompatibilityFacade<
   protected get runtimeTurnSettledEnvironmentProvider(): RuntimeTurnSettledEnvironmentProvider | null {
     return this.appShellBoundary.getRuntimeTurnSettledEnvironmentProvider();
   }
+
+  private mainWindow: BrowserWindow | null = null;
 
   protected async buildTeamRuntimeLaunchArgsPlan(
     input: BuildTeamRuntimeLaunchArgsPlanInput
@@ -358,8 +365,14 @@ export abstract class TeamProvisioningDiagnosticsPreflightCompatibilityFacade<
     this.toolApprovalFacade.setToolApprovalEventEmitter(emitter);
   }
 
-  setMainWindow(win: import('electron').BrowserWindow | null): void {
+  setMainWindow(win: BrowserWindow | null): void {
+    this.mainWindow = win;
     this.toolApprovalFacade.setMainWindow(win);
+  }
+
+  /** Tells the app window about a run it did not start itself, as a launch from the app does. */
+  publishProvisioningProgress(progress: TeamProvisioningProgress): void {
+    safeSendToRenderer(this.mainWindow, TEAM_PROVISIONING_PROGRESS, progress);
   }
 
   updateToolApprovalSettings(teamName: string, settings: ToolApprovalSettings): void {

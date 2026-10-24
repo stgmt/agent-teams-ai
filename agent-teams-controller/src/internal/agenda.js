@@ -3,6 +3,7 @@ const taskStore = require('./taskStore.js');
 const runtimeHelpers = require('./runtimeHelpers.js');
 const reviewStateHelpers = require('./reviewState.js');
 const { withTeamBoardLock } = require('./boardLock.js');
+const { bucketLeadItems } = require('./leadQueueBuckets.js');
 
 const { buildTaskInventoryRow, INVENTORY_KANBAN_COLUMNS } = require('./taskInventoryRow.js');
 const MAX_MEMBER_ACTIONABLE_ITEMS = 50;
@@ -583,6 +584,17 @@ function buildAgendaSnapshot(paths, teamName, actor) {
   });
 }
 
+/**
+ * Every task of the board as an agenda item, built once for callers that group the items by
+ * member themselves (the lead briefing members section).
+ */
+function listAgendaItems(paths, teamName) {
+  return withTeamBoardLock(paths, () => {
+    const boardState = buildBoardState(paths, teamName);
+    return { items: boardState.tasks.map((task) => buildAgendaItem(task, boardState)) };
+  });
+}
+
 function matchesInventoryFilters(row, filters) {
   if (normalizeName(filters.owner) && normalizeKey(row.owner) !== normalizeKey(filters.owner)) {
     return false;
@@ -675,7 +687,7 @@ function formatActionOwner(actionOwner) {
   return 'none';
 }
 
-function formatAgendaLine(item) {
+function formatAgendaLine(item, extraMeta = []) {
   const reviewSuffix = item.reviewState !== 'none' ? `, review=${item.reviewState}` : '';
   const meta = [
     `next=${item.nextAction}`,
@@ -689,6 +701,7 @@ function formatAgendaLine(item) {
   if (item.needsClarification) {
     meta.push(`clarification=${item.needsClarification}`);
   }
+  meta.push(...extraMeta);
   return `- ${formatTaskLabel(item)} [status=${item.status}${reviewSuffix}] ${truncateText(item.subject, MAX_SUBJECT_CHARS)} (${meta.join(', ')})`;
 }
 
@@ -795,39 +808,7 @@ function formatTaskBriefing(paths, teamName, memberName) {
   return lines.join('\n');
 }
 
-function bucketLeadItems(items) {
-  const buckets = {
-    assign_owner: [],
-    assign_reviewer: [],
-    clarify_with_lead: [],
-    repair_dependencies: [],
-    lead_owned: [],
-  };
-
-  for (const item of items) {
-    if (item.nextAction === 'assign_owner') {
-      buckets.assign_owner.push(item);
-      continue;
-    }
-    if (item.nextAction === 'assign_reviewer') {
-      buckets.assign_reviewer.push(item);
-      continue;
-    }
-    if (item.nextAction === 'clarify_with_lead') {
-      buckets.clarify_with_lead.push(item);
-      continue;
-    }
-    if (item.nextAction === 'repair_dependencies') {
-      buckets.repair_dependencies.push(item);
-      continue;
-    }
-    buckets.lead_owned.push(item);
-  }
-
-  return buckets;
-}
-
-function formatLeadBriefing(paths, teamName) {
+function formatLeadBriefing(paths, teamName, options = {}) {
   const roster = buildQueueRoster(paths);
   const leadHeaderName = roster.leadHeaderName ? ` for ${roster.leadHeaderName}` : '';
   const snapshot = buildAgendaSnapshot(paths, teamName, { kind: 'lead' });
@@ -875,6 +856,10 @@ function formatLeadBriefing(paths, teamName) {
     lines.push('', 'No lead action items.');
   }
 
+  if (Array.isArray(options.membersLines) && options.membersLines.length > 0) {
+    lines.push('', ...options.membersLines);
+  }
+
   lines.push(
     '',
     `Counters: actionable=${snapshot.counters.actionable}, awareness=${snapshot.counters.awareness}, blocked=${snapshot.counters.blocked}, waitingOnUser=${snapshot.counters.waitingOnUser}, waitingOnLead=${snapshot.counters.waitingOnLead}, reviewNeeded=${snapshot.counters.reviewNeeded}, anomalies=${snapshot.counters.anomalies}`
@@ -885,7 +870,9 @@ function formatLeadBriefing(paths, teamName) {
 
 module.exports = {
   buildAgendaSnapshot,
+  formatAgendaLine,
   formatLeadBriefing,
+  listAgendaItems,
   formatTaskBriefing,
   listTaskInventory,
   resolveCurrentCycleReviewer,

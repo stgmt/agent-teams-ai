@@ -26,7 +26,6 @@ import {
 import {
   addRuntimeRootOwnersFromProcessRows,
   buildProcessUsageStatsFromRows,
-  buildRuntimeProcessLoadStats as buildRuntimeProcessLoadStatsDefault,
   type RuntimeProcessLoadStats,
   type RuntimeProcessUsageStats,
   type RuntimeTelemetryProcessTableRow,
@@ -37,6 +36,11 @@ import {
   isProcessBootstrapTransportDiagnostic,
   shouldClearRuntimeDiagnosticAfterBootstrapConfirmation,
 } from './TeamProvisioningBootstrapTranscript';
+import {
+  buildProcessExitedRuntimeMetadata,
+  buildProcessExitedStatusEntry,
+  findProvenExitedDirectProcessPid,
+} from './TeamProvisioningDirectProcessExit';
 import { mentionsProcessTableUnavailable } from './TeamProvisioningLaunchDiagnostics';
 import {
   deriveMemberLaunchState,
@@ -64,6 +68,7 @@ import {
   readTeamProvisioningBootstrapEvidence,
 } from './TeamProvisioningRuntimeEvidenceReader';
 import { resolveTeamProvisioningRuntimeLiveness } from './TeamProvisioningRuntimeLiveness';
+import { mergeRuntimeDiagnostics } from './TeamProvisioningRuntimeMetadata';
 import {
   type LiveTeamAgentRuntimeMetadata,
   shouldReadProcessTableForLiveRuntimeMetadata,
@@ -82,6 +87,7 @@ import {
 import { resolveTeamProvisioningRuntimeSnapshotLiveness } from './TeamProvisioningRuntimeSnapshotResolver';
 
 import type { TeamRuntimeMemberLaunchEvidence } from '../runtime';
+import type { buildRuntimeProcessLoadStats as buildRuntimeProcessLoadStatsDefault } from '../TeamRuntimeTelemetry';
 import type { TeamProvisioningRuntimeSnapshotResourceSamplingPorts } from './TeamProvisioningRuntimeResourceSampling';
 import type {
   TeamProvisioningLiveRuntimeMetadataCacheWritePort,
@@ -354,25 +360,6 @@ export function shouldReadWindowsHostRowsForMemberLane(params: {
   );
 }
 
-function normalizeRuntimeStringArray(value: unknown): string[] {
-  return Array.isArray(value)
-    ? value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
-    : [];
-}
-
-function mergeRuntimeDiagnostics(
-  previous: string[] | undefined,
-  incoming: unknown,
-  fallback?: string
-): string[] | undefined {
-  const merged = [
-    ...(previous ?? []),
-    ...normalizeRuntimeStringArray(incoming),
-    ...(fallback ? [fallback] : []),
-  ].filter((value) => value.trim().length > 0);
-  return merged.length > 0 ? [...new Set(merged)] : undefined;
-}
-
 function normalizeTeamAgentRuntimeBackendType(
   value: string | undefined,
   isLead: boolean
@@ -531,6 +518,10 @@ export function attachLiveRuntimeMetadataToStatuses(params: {
     const hasStrongEvidence = isStrongRuntimeEvidence(metadata);
     const hasConfirmedBootstrap =
       current.bootstrapConfirmed === true || current.launchState === 'confirmed_alive';
+    if (metadata.processExited === true && hasConfirmedBootstrap) {
+      nextStatuses[resolvedStatusKey] = buildProcessExitedStatusEntry(current, metadata, nowIso());
+      continue;
+    }
     const shouldSuppressWeakRuntimeMetadataForConfirmedBootstrap =
       hasConfirmedBootstrap && !hasStrongEvidence;
     const failureReason = current.hardFailureReason ?? current.error ?? current.runtimeDiagnostic;
@@ -1283,6 +1274,7 @@ export async function buildTeamAgentRuntimeSnapshot(
       spawnStatusBootstrapEvidence.bootstrapConfirmed &&
       spawnStatusMember?.hardFailure !== true &&
       spawnStatusMember?.launchState !== 'failed_to_start' &&
+      liveRuntimeMember?.processExited !== true &&
       !isStrongRuntimeEvidence(liveRuntimeMember);
     const confirmedSpawnRuntimeDiagnostic =
       spawnStatusMember?.runtimeDiagnostic ?? liveRuntimeMember?.runtimeDiagnostic;
@@ -1462,6 +1454,8 @@ export async function buildLiveTeamAgentRuntimeMetadata(
     readWindowsHostProcessRowsForLiveRuntimeMetadata(
       teamName: string
     ): Promise<{ rows: RuntimeTelemetryProcessTableRow[]; processTableAvailable: boolean }>;
+    /** OS probe of one recorded pid in the app's own pid namespace (`process.kill(pid, 0)`). */
+    isRuntimePidAlive(pid: number): boolean;
   } & RuntimeSnapshotStores &
     TeamProvisioningRuntimeSnapshotBuildCacheReadPort & {
       liveRuntimeMetadataCache: TeamProvisioningLiveRuntimeMetadataCacheWritePort<
@@ -1987,6 +1981,23 @@ export async function buildLiveTeamAgentRuntimeMetadata(
             ],
           }
         : resolvedBeforeHostProbe;
+    const exitedPid = findProvenExitedDirectProcessPid({
+      isOpenCodeLaneMember,
+      backendType: metadata.backendType,
+      tmuxPaneId: metadata.tmuxPaneId,
+      recordedPid: normalizeRuntimePositiveInteger(metadata.metricsPid ?? launchMember?.runtimePid),
+      hasConfirmedBootstrap:
+        status?.bootstrapConfirmed === true || status?.launchState === 'confirmed_alive',
+      verifiedProcessFound: resolved.livenessKind === 'runtime_process',
+      isRuntimePidAlive: params.isRuntimePidAlive,
+    });
+    if (exitedPid !== undefined) {
+      metadataByMember.set(
+        memberName,
+        buildProcessExitedRuntimeMetadata(metadata, exitedPid, resolved.diagnostics)
+      );
+      continue;
+    }
     const runtimeLastSeenAt =
       resolved.runtimeLastSeenAt ?? (isStrongRuntimeEvidence(resolved) ? resolvedAt : undefined);
     const bootstrapTransportDiagnostic =

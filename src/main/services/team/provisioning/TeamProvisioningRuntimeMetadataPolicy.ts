@@ -33,6 +33,18 @@ export interface LiveTeamAgentRuntimeMetadata {
   runtimeDiagnostic?: string;
   runtimeDiagnosticSeverity?: TeamAgentRuntimeDiagnosticSeverity;
   diagnostics?: string[];
+  /**
+   * The operating system confirmed that the recorded pid of a confirmed direct-process teammate no
+   * longer exists. Set only from the pid probe (`isRuntimePidAlive`), never from a process-table
+   * miss: on Windows the shared table is WSL's `ps`, a different pid namespace.
+   */
+  processExited?: true;
+}
+
+export const MEMBER_PROCESS_EXITED_REASON = 'process_exited';
+
+export function describeMemberProcessExited(pid: number): string {
+  return `${MEMBER_PROCESS_EXITED_REASON}: runtime process pid ${pid} is not running`;
 }
 
 export interface RuntimeProcessRowsCacheEntry {

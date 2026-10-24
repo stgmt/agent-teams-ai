@@ -233,16 +233,14 @@ function formatCompactField(label: string, value: string | undefined, maxChars: 
   return `${label}: ${boundText(redactNativeBootstrapContextText(trimmed), maxChars)}`;
 }
 
-async function readCompactTaskBriefing(params: {
+// The startup context carries no Actionable work: the runtime keeps a member with work
+// in its first turn, and the launch confirmation would miss its window. The work is handed
+// over as inbox messages after the launch is confirmed (TeamProvisioningStartupWorkDelivery).
+function readDeferredTaskBriefing(params: {
   controller: ReturnType<typeof createController>;
   memberName: string;
-}): Promise<string> {
-  try {
-    return String(await params.controller.taskBoard.taskBriefing(params.memberName));
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    return `Task briefing unavailable during startup context generation: ${message}`;
-  }
+}): string {
+  return params.controller.taskBoard.deferredTaskBriefing(params.memberName);
 }
 
 function buildCompactNativeMemberBriefing(params: {
@@ -324,7 +322,7 @@ export async function buildNativeAppManagedBootstrapSpecsWithDiagnostics(params:
         cwd: params.cwd,
         providerId,
         member,
-        taskBriefing: await readCompactTaskBriefing({ controller, memberName: member.name }),
+        taskBriefing: readDeferredTaskBriefing({ controller, memberName: member.name }),
         maxContextChars,
         rosterContext: controller.runtime.getMemberRosterContext(member.name, params.members),
       });
@@ -335,6 +333,7 @@ export async function buildNativeAppManagedBootstrapSpecsWithDiagnostics(params:
             runtimeProvider: resolveMemberBriefingRuntimeProvider(providerId),
             includeActiveProcesses: false,
             includeChatVisualizationProtocol: false,
+            deferTaskQueue: true,
           })
         );
       } catch (error) {

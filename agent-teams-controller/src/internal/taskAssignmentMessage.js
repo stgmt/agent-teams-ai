@@ -1,6 +1,21 @@
 const { wrapAgentBlock } = require('./agentBlocks.js');
 const { createMemberMessagingProtocol } = require('./memberMessagingProtocol.js');
 
+// Extra paragraph for a task the app hands over after a launch (startupWork.js).
+// It carries the launch id, which also keeps the text distinct from a previous
+// launch's hand-over: the message store drops an identical text sent to the same
+// recipient inside 30 minutes, and a quick restart must not lose the task.
+function buildStartupNotice(startup) {
+    const launch = `The app delivered this task after launch ${startup.launchId}.`;
+    if (startup.reasonCode === 'owner_executing') {
+        return `${launch} Current status: in_progress. You were already working on it before the restart: resume it now and do not call task_start again unless task_get shows a different status.`;
+    }
+    if (startup.reasonCode === 'needs_fix') {
+        return `${launch} Current status: pending, needs fixes after review. Read the review comments with task_get, then start the task and apply the fixes.`;
+    }
+    return `${launch} Current status: ${startup.status}.`;
+}
+
 function buildAssignmentMessage(context, task, options = {}) {
     const messagingProtocol = options.messagingProtocol || createMemberMessagingProtocol('native');
     const description =
@@ -17,6 +32,10 @@ function buildAssignmentMessage(context, task, options = {}) {
         ``,
         wrapAgentBlock(`If you are idle and this task is ready to start, start it now. If you are busy, blocked, or still need more context, immediately add a short task comment with the reason and your best ETA or what you are waiting on, and keep this task in TODO until you actually begin.`),
     ];
+
+    if (options.startup) {
+        lines.push(``, buildStartupNotice(options.startup));
+    }
 
     if (description) {
         lines.push(``, `Description:`, description);

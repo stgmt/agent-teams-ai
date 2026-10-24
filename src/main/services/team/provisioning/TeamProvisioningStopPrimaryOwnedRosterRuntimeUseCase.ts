@@ -5,13 +5,16 @@ import {
   listTmuxPaneRuntimeInfoForCurrentPlatform,
 } from '@features/tmux-installer/main';
 import { isProcessAlive } from '@main/utils/processHealth';
-import { killProcessByPid } from '@main/utils/processKill';
 import { createLogger } from '@shared/utils/logger';
 
 import { commandArgEquals } from '../TeamRuntimeLivenessResolver';
 
 import { matchesObservedMemberNameForExpected } from './TeamProvisioningMemberIdentity';
-import { readProcessCommandByPid } from './TeamProvisioningOpenCodeRuntimeLaneCleanup';
+import {
+  inspectMemberProcess,
+  type ProcessInspection,
+  terminateMemberProcess,
+} from './TeamProvisioningMemberProcessControl';
 
 const logger = createLogger('Service:TeamProvisioning');
 
@@ -49,7 +52,8 @@ export interface StopPrimaryOwnedRosterRuntimeInput {
 
 export interface StopPrimaryOwnedRosterRuntimeUseCasePorts {
   isProcessAlive(pid: number): boolean;
-  readProcessCommandByPid(pid: number): string | null;
+  /** Asynchronous lookup of a process command line; `unreadable` means the lookup failed. */
+  inspectProcess(pid: number): Promise<ProcessInspection>;
   listTmuxPaneRuntimeInfo(
     paneIds: readonly string[]
   ): Promise<ReadonlyMap<string, PrimaryOwnedRosterTmuxPaneRuntimeInfo>>;
@@ -57,16 +61,14 @@ export interface StopPrimaryOwnedRosterRuntimeUseCasePorts {
     bypassCache: boolean;
   }): Promise<readonly PrimaryOwnedRosterRuntimeProcessRow[] | null>;
   killTmuxPane(paneId: string): void;
-  killProcess(pid: number): void;
-  waitForPidsToExit(
-    pids: readonly number[],
-    options: { timeoutMs: number; pollMs: number }
-  ): Promise<number[]>;
+  /** Terminates the process tree and resolves only after the pid is gone; rejects otherwise. */
+  terminateProcess(pid: number): Promise<void>;
   waitForTmuxPanesToExit(
     paneIds: readonly string[],
     options: { timeoutMs: number; pollMs: number }
   ): Promise<string[]>;
   logDebug(message: string): void;
+  logDiagnostic(message: string): void;
   logWarning(message: string): void;
 }
 
@@ -77,14 +79,14 @@ export type StopPrimaryOwnedRosterRuntimeUseCase = (
 export function createNodeStopPrimaryOwnedRosterRuntimeUseCase(): StopPrimaryOwnedRosterRuntimeUseCase {
   return createStopPrimaryOwnedRosterRuntimeUseCase({
     isProcessAlive,
-    readProcessCommandByPid,
+    inspectProcess: inspectMemberProcess,
     listTmuxPaneRuntimeInfo: (paneIds) => listTmuxPaneRuntimeInfoForCurrentPlatform(paneIds),
     listRuntimeProcesses: (options) => listRuntimeProcessTableForCurrentPlatform(options),
     killTmuxPane: (paneId) => killTmuxPaneForCurrentPlatformSync(paneId),
-    killProcess: (pid) => killProcessByPid(pid),
-    waitForPidsToExit,
+    terminateProcess: terminateMemberProcess,
     waitForTmuxPanesToExit,
     logDebug: (message) => logger.debug(message),
+    logDiagnostic: (message) => logger.diagnostic(message),
     logWarning: (message) => logger.warn(message),
   });
 }
@@ -101,6 +103,7 @@ export function createStopPrimaryOwnedRosterRuntimeUseCase(
         .map((member) => (typeof member.tmuxPaneId === 'string' ? member.tmuxPaneId.trim() : ''))
         .filter(Boolean)
     );
+    const foreignPids = new Set<number>();
     let hasAliveRuntimeWithoutStopHandle = false;
 
     let persistedTmuxPaneInfo: ReadonlyMap<string, PrimaryOwnedRosterTmuxPaneRuntimeInfo> =
@@ -136,11 +139,20 @@ export function createStopPrimaryOwnedRosterRuntimeUseCase(
         runtimeMember.runtimePid > 0
       ) {
         const pid = runtimeMember.runtimePid;
-        const command = ports.readProcessCommandByPid(pid);
-        if (hasExactRuntimeIdentity(command)) {
+        const inspection = await ports.inspectProcess(pid);
+        ports.logDiagnostic(
+          `[${input.teamName}] ${input.actionLabel}: identity of pid=${pid} is ${inspection.status}`
+        );
+        if (inspection.status === 'unreadable') {
+          throw new Error(
+            `${input.actionLabel} cannot verify the persisted runtime identity of pid ${pid} (the process list could not be read): ${inspection.cause}`
+          );
+        }
+        if (inspection.status === 'found' && hasExactRuntimeIdentity(inspection.command)) {
           pidsToStop.add(pid);
         } else if (ports.isProcessAlive(pid)) {
           hasAliveRuntimeWithoutStopHandle = true;
+          foreignPids.add(pid);
           ports.logWarning(
             `[${input.teamName}] Refusing to stop persisted teammate pid=${pid} for ${input.memberName}: process identity does not match the exact team and member.`
           );
@@ -151,10 +163,11 @@ export function createStopPrimaryOwnedRosterRuntimeUseCase(
       if (backendType === 'tmux' && paneId) {
         const paneInfo = persistedTmuxPaneInfo.get(paneId);
         if (paneInfo) {
-          const paneCommand = ports.readProcessCommandByPid(paneInfo.panePid);
-          let verifiedRuntimePid = hasExactRuntimeIdentity(paneCommand)
-            ? paneInfo.panePid
-            : undefined;
+          const paneInspection = await ports.inspectProcess(paneInfo.panePid);
+          let verifiedRuntimePid =
+            paneInspection.status === 'found' && hasExactRuntimeIdentity(paneInspection.command)
+              ? paneInfo.panePid
+              : undefined;
           if (verifiedRuntimePid == null) {
             const processRows = await ports.listRuntimeProcesses({ bypassCache: true });
             if (processRows) {
@@ -238,6 +251,11 @@ export function createStopPrimaryOwnedRosterRuntimeUseCase(
     }
 
     if (hasAliveRuntimeWithoutStopHandle && pidsToStop.size === 0 && tmuxPaneIdsToStop.size === 0) {
+      if (foreignPids.size > 0) {
+        throw new Error(
+          `${input.actionLabel} refuses to stop pid ${[...foreignPids].join(', ')}: the process is not the runtime of this teammate (its command line does not name this team and member).`
+        );
+      }
       throw new Error(
         `${input.actionLabel} cannot stop the existing runtime because it does not expose a pid or tmux pane.`
       );
@@ -254,28 +272,27 @@ export function createStopPrimaryOwnedRosterRuntimeUseCase(
         );
       }
     }
-    for (const pid of pidsToStop) {
-      try {
-        ports.killProcess(pid);
-      } catch (error) {
-        ports.logDebug(
-          `[${input.teamName}] Failed to stop teammate process ${input.memberName} pid=${pid} for live roster lifecycle: ${
-            error instanceof Error ? error.message : String(error)
-          }`
-        );
-      }
-    }
-
     if (pidsToStop.size > 0) {
-      const lingeringPids = await ports.waitForPidsToExit([...pidsToStop], {
-        timeoutMs: 1_500,
-        pollMs: 100,
-      });
-      if (lingeringPids.length > 0) {
+      const pids = [...pidsToStop];
+      const startedAt = Date.now();
+      const outcomes = await Promise.allSettled(pids.map((pid) => ports.terminateProcess(pid)));
+      const failures = outcomes.flatMap((outcome, index) =>
+        outcome.status === 'rejected'
+          ? [
+              `pid ${pids[index]}: ${
+                outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason)
+              }`,
+            ]
+          : []
+      );
+      if (failures.length > 0) {
         throw new Error(
-          `${input.actionLabel} is still waiting for process exit (${lingeringPids.join(', ')}).`
+          `${input.actionLabel} could not stop the previous process: ${failures.join('; ')}`
         );
       }
+      ports.logDiagnostic(
+        `[${input.teamName}] ${input.actionLabel}: stopped pid=${pids.join(',')} in ${Date.now() - startedAt} ms`
+      );
     }
     if (tmuxPaneIdsToStop.size > 0) {
       const lingeringPaneIds = await ports.waitForTmuxPanesToExit([...tmuxPaneIdsToStop], {
@@ -289,25 +306,6 @@ export function createStopPrimaryOwnedRosterRuntimeUseCase(
       }
     }
   };
-}
-
-async function waitForPidsToExit(
-  pids: readonly number[],
-  options: { timeoutMs: number; pollMs: number }
-): Promise<number[]> {
-  const uniquePids = [...new Set(pids.filter((pid) => Number.isFinite(pid) && pid > 0))];
-  if (uniquePids.length === 0) {
-    return [];
-  }
-  const deadline = Date.now() + options.timeoutMs;
-  while (Date.now() < deadline) {
-    const alive = uniquePids.filter((pid) => isProcessAlive(pid));
-    if (alive.length === 0) {
-      return [];
-    }
-    await new Promise((resolve) => setTimeout(resolve, options.pollMs));
-  }
-  return uniquePids.filter((pid) => isProcessAlive(pid));
 }
 
 async function waitForTmuxPanesToExit(

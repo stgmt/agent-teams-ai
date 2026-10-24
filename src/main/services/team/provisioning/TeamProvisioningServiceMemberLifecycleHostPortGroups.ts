@@ -1,4 +1,5 @@
 import type { TeamProvisioningMemberLifecycleHostFactoryPortGroups } from './TeamProvisioningMemberLifecycleHostFactory';
+import type { TeamProvisioningInboxMessageInput } from './TeamProvisioningMessagePersistence';
 import type { ProvisioningRun } from './TeamProvisioningRunModel';
 import type { MixedSecondaryRuntimeLaneState } from './TeamProvisioningSecondaryRuntimeRuns';
 import type { InboxMessage } from '@shared/types';
@@ -74,7 +75,11 @@ export interface TeamProvisioningServiceMemberLifecycleHostPortGroupPorts {
   clearMemberSpawnToolTracking: TeamProvisioningServiceMemberLifecycleHostPortGroups['runState']['clearMemberSpawnToolTracking'];
   isCurrentTrackedRun: TeamProvisioningServiceMemberLifecycleHostPortGroups['runState']['isCurrentTrackedRun'];
   getLiveTeamAgentRuntimeMetadata: TeamProvisioningServiceMemberLifecycleHostPortGroups['runState']['getLiveTeamAgentRuntimeMetadata'];
-  persistInboxMessage(teamName: string, memberName: string, message: InboxMessage): void;
+  persistInboxMessage(
+    teamName: string,
+    memberName: string,
+    message: TeamProvisioningInboxMessageInput
+  ): void;
   persistSentMessage(teamName: string, message: InboxMessage): void;
   enqueueDirectRestartPrompt?: NonNullable<MessagingPorts['enqueueDirectRestartPrompt']>;
   getOpenCodeRuntimeAdapter: TeamProvisioningServiceMemberLifecycleHostPortGroups['openCodeRuntime']['getOpenCodeRuntimeAdapter'];
@@ -92,7 +97,11 @@ export function createTeamProvisioningServiceMemberLifecycleHostPortGroups(
 ): TeamProvisioningServiceMemberLifecycleHostPortGroups {
   const messaging: MessagingPorts = {
     persistInboxMessage: (teamName, memberName, message) =>
-      service.persistInboxMessage(teamName, memberName, message as unknown as InboxMessage),
+      service.persistInboxMessage(
+        teamName,
+        memberName,
+        message as unknown as TeamProvisioningInboxMessageInput
+      ),
     persistSentMessage: (teamName, message) =>
       service.persistSentMessage(teamName, message as unknown as InboxMessage),
   };

@@ -1447,6 +1447,8 @@ export interface TeamProvisioningProgress {
   teamName: string;
   state: Exclude<TeamProvisioningState, 'idle'>;
   message: string;
+  /** Set only on the `disconnected` update; a typed reason so the UI never parses `message`. */
+  disconnect?: { kind: 'user_stop' } | { kind: 'process_exit'; exitCode: number | null };
   /** Visual severity for the message subtitle: 'error' (red), 'warning' (amber), or default (muted). */
   messageSeverity?: 'error' | 'warning';
   startedAt: string;

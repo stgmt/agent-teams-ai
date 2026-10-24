@@ -1,7 +1,7 @@
 {
   "maxLines": 800,
   "legacy": {
-    "agent-teams-controller/src/internal/agenda.js": 914,
+    "agent-teams-controller/src/internal/agenda.js": 880,
     "agent-teams-controller/src/internal/tasks.js": 1149,
     "agent-teams-controller/src/internal/taskStore.js": 1302,
     "eslint.config.js": 1168,
@@ -59,13 +59,13 @@
     "src/main/services/team/opencode/store/RuntimeStoreManifest.ts": 1210,
     "src/main/services/team/provisioning/TeamProvisioningBootstrapTranscript.ts": 1661,
     "src/main/services/team/provisioning/TeamProvisioningInboxRelayPolicy.ts": 890,
-    "src/main/services/team/provisioning/TeamProvisioningMemberLifecycle.ts": 2678,
+    "src/main/services/team/provisioning/TeamProvisioningMemberLifecycle.ts": 2663,
     "src/main/services/team/provisioning/TeamProvisioningOpenCodeMemberInboxRelay.ts": 1155,
     "src/main/services/team/provisioning/TeamProvisioningOpenCodeRuntimeDelivery.ts": 1009,
     "src/main/services/team/provisioning/TeamProvisioningOpenCodeRuntimeEvidencePolicy.ts": 964,
     "src/main/services/team/provisioning/TeamProvisioningOpenCodeRuntimePermissions.ts": 967,
     "src/main/services/team/provisioning/TeamProvisioningPrepareCoordinator.ts": 946,
-    "src/main/services/team/provisioning/TeamProvisioningPromptBuilders.ts": 1123,
+    "src/main/services/team/provisioning/TeamProvisioningPromptBuilders.ts": 1122,
     "src/main/services/team/provisioning/TeamProvisioningProviderDiagnostics.ts": 1287,
     "src/main/services/team/provisioning/TeamProvisioningRuntimeLaunchSelection.ts": 945,
     "src/main/services/team/provisioning/TeamProvisioningRuntimeSnapshot.ts": 2062,
@@ -127,7 +127,7 @@
     "src/renderer/components/team/ProvisioningProgressBlock.tsx": 862,
     "src/renderer/components/team/review/ChangeReviewDialog.tsx": 5441,
     "src/renderer/components/team/review/CodeMirrorDiffView.tsx": 975,
-    "src/renderer/components/team/TeamDetailView.tsx": 3750,
+    "src/renderer/components/team/TeamDetailView.tsx": 3665,
     "src/renderer/components/team/TeamListView.tsx": 1568,
     "src/renderer/components/team/useTeamChangesSummaries.ts": 814,
     "src/renderer/components/ui/MentionableTextarea.tsx": 1431,
@@ -148,6 +148,6 @@
     "src/renderer/utils/teamModelCatalog.ts": 868,
     "src/renderer/utils/teamProvisioningPresentation.ts": 1414,
     "src/shared/types/api.ts": 1158,
-    "src/shared/types/team.ts": 1839
+    "src/shared/types/team.ts": 1838
   }
 }

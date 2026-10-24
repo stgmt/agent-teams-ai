@@ -1,6 +1,6 @@
 import { useCallback } from 'react';
 
-import { shouldClearPendingReplyForOpenCodeRuntimeDelivery } from '@renderer/utils/openCodeRuntimeDeliveryDiagnostics';
+import { sendOwnerMessage } from './sendOwnerMessage';
 
 import type { ActionMode } from './ActionModeSelector';
 import type {
@@ -61,36 +61,11 @@ export function useMessagesPanelSend({
       taskRefs?: TaskRef[],
       messageId?: string
     ): Promise<SendMessageResult> => {
-      const sentAtMs = Date.now();
-      onPendingReplyChange((previous) => ({ ...previous, [member]: sentAtMs }));
-      try {
-        const result = await sendTeamMessage(teamName, {
-          member,
-          text,
-          summary,
-          attachments,
-          actionMode,
-          taskRefs,
-          messageId,
-        });
-        if (shouldClearPendingReplyForOpenCodeRuntimeDelivery(result.runtimeDelivery)) {
-          onPendingReplyChange((previous) => {
-            if (previous[member] !== sentAtMs) return previous;
-            const next = { ...previous };
-            delete next[member];
-            return next;
-          });
-        }
-        return result;
-      } catch (error) {
-        onPendingReplyChange((previous) => {
-          if (previous[member] !== sentAtMs) return previous;
-          const next = { ...previous };
-          delete next[member];
-          return next;
-        });
-        throw error;
-      }
+      return sendOwnerMessage(
+        teamName,
+        { member, text, summary, attachments, actionMode, taskRefs, messageId },
+        { sendTeamMessage, onPendingReplyChange }
+      );
     },
     [onPendingReplyChange, sendTeamMessage, teamName]
   );

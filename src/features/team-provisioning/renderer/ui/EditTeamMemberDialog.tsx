@@ -27,6 +27,7 @@ import {
   hasEditableMemberSettingsValueChanges,
 } from '../utils/memberSettingsPresentation';
 
+import type { MemberRestartProcessState } from '../../contracts/memberSettings';
 import type { MemberSettingsRelaunchDraft } from '../utils/memberSettingsRelaunch';
 import type { MemberDraft } from '@renderer/components/team/members/MembersEditorSection';
 import type {
@@ -58,6 +59,12 @@ export interface EditTeamMemberDialogProps {
     effort: EffortLevel | null;
   }) => Promise<void> | void;
   onRelaunchRequired: (draft: MemberSettingsRelaunchDraft) => void;
+  /** Restarts the teammate with the settings already saved; rejects with the real cause. */
+  onRestartMember: (memberName: string) => Promise<void>;
+}
+
+function errorText(error: unknown): string {
+  return (error instanceof Error ? error.message : String(error)).trim();
 }
 
 function createDraft(member: ResolvedTeamMember, isLead: boolean): MemberDraft {
@@ -97,6 +104,7 @@ export const EditTeamMemberDialog = ({
   onClose,
   onRefresh,
   onRelaunchRequired,
+  onRestartMember,
 }: EditTeamMemberDialogProps): React.JSX.Element => {
   const { t } = useAppTranslation('team');
   const [baseline, setBaseline] = useState(member);
@@ -105,6 +113,9 @@ export const EditTeamMemberDialog = ({
   const [draft, setDraft] = useState(() => createDraft(member, isLead));
   const [error, setError] = useState<string | null>(null);
   const [acceptRefreshedTarget, setAcceptRefreshedTarget] = useState(false);
+  const [acceptSavedBaseline, setAcceptSavedBaseline] = useState(false);
+  const [restartPending, setRestartPending] = useState(false);
+  const [restarting, setRestarting] = useState(false);
   const { saving, save, resetIdentity } = useUpdateMemberSettings();
   const incomingFingerprint = useMemo(() => fingerprintResolvedMember(member), [member]);
   const fingerprint = useMemo(() => fingerprintResolvedMember(baseline), [baseline]);
@@ -152,6 +163,14 @@ export const EditTeamMemberDialog = ({
     : t('editTeam.memberRestartWarning');
 
   useEffect(() => {
+    // The save went through but the restart failed: adopt the stored settings as baseline, keep the typed draft.
+    if (acceptSavedBaseline && !saving && incomingFingerprint !== fingerprint) {
+      setBaseline(member);
+      setAcceptSavedBaseline(false);
+    }
+  }, [acceptSavedBaseline, fingerprint, incomingFingerprint, member, saving]);
+
+  useEffect(() => {
     if (acceptRefreshedTarget && !saving) {
       setBaseline(member);
       setDraft(createDraft(member, isLead));
@@ -159,8 +178,15 @@ export const EditTeamMemberDialog = ({
     }
   }, [acceptRefreshedTarget, incomingFingerprint, isLead, member, saving]);
 
+  const processStateLabel = (state: MemberRestartProcessState): string =>
+    state === 'running'
+      ? t('editTeam.errors.processRunning')
+      : state === 'stopped'
+        ? t('editTeam.errors.processStopped')
+        : t('editTeam.errors.processUnknown');
+
   const close = (): void => {
-    if (saving) return;
+    if (saving || restarting) return;
     resetIdentity();
     setError(null);
     onClose();
@@ -173,6 +199,7 @@ export const EditTeamMemberDialog = ({
       return;
     }
     setError(null);
+    setRestartPending(false);
     if (impact === 'relaunch') {
       if (!teamSettingsFingerprint) {
         setError(t('editTeam.errors.settingsChanged'));
@@ -199,13 +226,18 @@ export const EditTeamMemberDialog = ({
           ? { targetKind: 'lead', leadRuntime: { model: settings.model, effort: settings.effort } }
           : { targetKind: 'member', settings }),
       });
-    } catch {
+    } catch (saveError) {
       try {
         await onRefresh();
       } catch {
         // Preserve the mutation failure while still attempting current-truth refresh.
       }
-      setError(t('editTeam.errors.saveFailed'));
+      const cause = errorText(saveError);
+      setError(
+        cause
+          ? t('editTeam.errors.saveFailedWithCause', { cause })
+          : t('editTeam.errors.saveFailed')
+      );
       return;
     }
     const committedLeadRuntime =
@@ -222,6 +254,7 @@ export const EditTeamMemberDialog = ({
         result.outcome === 'completed' &&
         (result.effect === 'persisted_only' ||
           result.effect === 'member_restart_started' ||
+          result.effect === 'member_restart_failed' ||
           result.effect === 'lead_restart_started' ||
           result.effect === 'opencode_lane_restart_started');
       setError(
@@ -233,7 +266,7 @@ export const EditTeamMemberDialog = ({
     }
     if (result.outcome === 'busy') {
       resetIdentity();
-      setError(t('editTeam.errors.saveFailed'));
+      setError(t('editTeam.errors.restartBusy'));
       return;
     }
     if (result.outcome === 'target_conflict') {
@@ -258,17 +291,60 @@ export const EditTeamMemberDialog = ({
       });
       return;
     }
+    if (result.effect === 'member_restart_failed') {
+      // The settings are stored; the dialog stays open with the typed workflow so the restart can be retried.
+      resetIdentity();
+      setAcceptSavedBaseline(true);
+      setRestartPending(true);
+      setError(
+        t('editTeam.errors.restartFailedSaved', {
+          cause: result.failure.cause,
+          process: processStateLabel(result.failure.memberProcess),
+        })
+      );
+      return;
+    }
     if (result.effect === 'recovery_required') {
-      setError(t('editTeam.errors.saveFailed'));
+      const cause = result.recovery?.cause;
+      setError(
+        cause ? t('editTeam.errors.recoveryRequired', { cause }) : t('editTeam.errors.saveFailed')
+      );
       return;
     }
     if (result.effect === 'lead_restart_rolled_back') {
       resetIdentity();
-      setError(t('editTeam.errors.saveFailed'));
+      const cause = result.recovery?.cause;
+      setError(
+        cause
+          ? t('editTeam.errors.leadRestartRolledBack', { cause })
+          : t('editTeam.errors.saveFailed')
+      );
       return;
     }
     resetIdentity();
     close();
+  };
+
+  const handleRestart = async (): Promise<void> => {
+    if (!targetAvailable || restarting) return;
+    setError(null);
+    setRestarting(true);
+    try {
+      await onRestartMember(baseline.name);
+    } catch (restartError) {
+      const cause = errorText(restartError);
+      setError(
+        cause
+          ? t('editTeam.errors.restartFailedWithCause', { cause })
+          : t('editTeam.errors.saveFailed')
+      );
+      setRestarting(false);
+      return;
+    }
+    setRestarting(false);
+    setRestartPending(false);
+    resetIdentity();
+    onClose();
   };
 
   const restartLabel = `${t('editTeam.actions.save')} + ${t('members.detail.restart')}`;
@@ -286,8 +362,8 @@ export const EditTeamMemberDialog = ({
     <Dialog open={open} onOpenChange={(nextOpen) => !nextOpen && close()}>
       <DialogContent
         className="max-w-3xl"
-        onEscapeKeyDown={(event) => saving && event.preventDefault()}
-        onPointerDownOutside={(event) => saving && event.preventDefault()}
+        onEscapeKeyDown={(event) => (saving || restarting) && event.preventDefault()}
+        onPointerDownOutside={(event) => (saving || restarting) && event.preventDefault()}
       >
         <DialogHeader>
           <DialogTitle>{`${t('toolApproval.settings')}: ${baseline.name}`}</DialogTitle>
@@ -351,12 +427,22 @@ export const EditTeamMemberDialog = ({
           </p>
         ) : null}
         <DialogFooter>
-          <Button variant="outline" disabled={saving} onClick={close}>
+          <Button variant="outline" disabled={saving || restarting} onClick={close}>
             {t('editTeam.actions.cancel')}
           </Button>
+          {restartPending ? (
+            <Button
+              variant="outline"
+              disabled={saving || restarting || isTeamProvisioning || !targetAvailable}
+              onClick={() => void handleRestart()}
+            >
+              {t('members.detail.restart')}
+            </Button>
+          ) : null}
           <Button
             disabled={
               saving ||
+              restarting ||
               isTeamProvisioning ||
               !targetAvailable ||
               !hasChanges ||

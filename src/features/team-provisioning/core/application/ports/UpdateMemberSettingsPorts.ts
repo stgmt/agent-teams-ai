@@ -1,5 +1,6 @@
 import type {
   EditableMemberSettings,
+  MemberRestartProcessState,
   UpdateMemberSettingsEffect,
 } from '../../../contracts/memberSettings';
 import type {
@@ -29,7 +30,9 @@ export class MemberSettingsLifecycleFailedError extends Error {
   constructor(
     message: string,
     readonly lifecycleRestored: boolean,
-    readonly cause?: unknown
+    readonly cause?: unknown,
+    /** State of the teammate's process after a failed member restart; unset for other actions. */
+    readonly memberProcess?: MemberRestartProcessState
   ) {
     super(message);
     this.name = 'MemberSettingsLifecycleFailedError';
@@ -69,7 +72,7 @@ export interface MemberSettingsRepositoryPort {
 
 export type MemberSettingsLifecycleEffect = Exclude<
   UpdateMemberSettingsEffect,
-  'no_changes' | 'recovery_required'
+  'no_changes' | 'recovery_required' | 'member_restart_failed'
 >;
 
 export interface MemberSettingsLifecyclePort {

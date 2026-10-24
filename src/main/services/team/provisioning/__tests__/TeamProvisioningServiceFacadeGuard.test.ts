@@ -91,6 +91,7 @@ const DOCUMENTED_EFFECTIVE_PUBLIC_SERVICE_INSTANCE_MEMBERS = [
   'notifyLanguageChange',
   'prepareForProvisioning',
   'prepareLiveMemberMcpLaunchConfig',
+  'publishProvisioningProgress',
   'pushLiveLeadProcessMessage',
   'reattachOpenCodeOwnedMemberLane',
   'rebootstrapOpenCodeAggregatePrimaryLane',

@@ -162,6 +162,18 @@ describe('TeamProvisioningRunProgress', () => {
     expect(next.assistantOutput).toContain('Configuring team');
   });
 
+  it('NM-S06: carries the typed disconnect reason only on the update that sets it', () => {
+    const readyRun = run({ progress: progress({ state: 'ready' }) });
+    const plain = updateProgress(readyRun, 'ready', 'Still ready');
+    expect(plain.disconnect).toBeUndefined();
+
+    const disconnected = updateProgress(readyRun, 'disconnected', 'Team process exited', {
+      disconnect: { kind: 'process_exit', exitCode: 1 },
+    });
+    expect(disconnected.disconnect).toEqual({ kind: 'process_exit', exitCode: 1 });
+    expect(readyRun.progress.disconnect).toEqual({ kind: 'process_exit', exitCode: 1 });
+  });
+
   it('emits bounded log progress from retained line-buffer logs', () => {
     const onProgress = vi.fn();
     const targetRun = run({

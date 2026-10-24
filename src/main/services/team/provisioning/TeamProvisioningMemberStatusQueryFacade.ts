@@ -1,5 +1,7 @@
+import { getClaudeBasePath } from '@main/utils/pathDecoder';
 import { getErrorMessage } from '@shared/utils/errorHandling';
 import { createLogger } from '@shared/utils/logger';
+import * as agentTeamsControllerModule from 'agent-teams-controller';
 
 import { boundLaunchDiagnostics } from '../progressPayload';
 import { type TeamMembersMetaStore } from '../TeamMembersMetaStore';
@@ -41,6 +43,7 @@ import {
 } from './TeamProvisioningRuntimeRecipientResolution';
 import { type TeamProvisioningRuntimeSnapshotFacade } from './TeamProvisioningRuntimeSnapshotFacade';
 import { type TeamProvisioningRunTrackingDeliveryHelper } from './TeamProvisioningRunTrackingDelivery';
+import { deliverStartupWorkAfterConfirmation } from './TeamProvisioningStartupWorkDelivery';
 import { TeamProvisioningTaskActivityCompatibilityFacade } from './TeamProvisioningTaskActivityCompatibilityFacade';
 
 import type {
@@ -51,6 +54,7 @@ import type {
 } from '@shared/types';
 
 const logger = createLogger('Service:TeamProvisioning');
+const { createController } = agentTeamsControllerModule;
 
 export abstract class TeamProvisioningMemberStatusQueryFacade<
   TRun extends ProvisioningRun = ProvisioningRun,
@@ -208,6 +212,42 @@ export abstract class TeamProvisioningMemberStatusQueryFacade<
       previous,
       next,
       observedAt
+    );
+    this.handOverStartupWorkOnFirstConfirmation(run, memberName, previous, next);
+  }
+
+  /**
+   * Hands the member its Actionable work once its launch attempt is confirmed. The startup
+   * context carries no work, so this is the only way a native member learns its tasks.
+   * Every change of a member's launch status passes through
+   * syncMemberTaskActivityForRuntimeTransition (events, transcript proof, the overlay of the
+   * bootstrap state read by every status poll), so the first one that shows the member
+   * confirmed hands the work over, whichever path it came by.
+   */
+  private handOverStartupWorkOnFirstConfirmation(
+    run: TRun,
+    memberName: string,
+    previous: MemberSpawnStatusEntry,
+    next: MemberSpawnStatusEntry
+  ): void {
+    if (previous.bootstrapConfirmed || !next.bootstrapConfirmed) {
+      return;
+    }
+    if (!this.isCurrentTrackedRun(run)) {
+      return;
+    }
+    // A restart inside the same run starts a new attempt: its acceptance time differs.
+    deliverStartupWorkAfterConfirmation(
+      run,
+      memberName,
+      `${run.runId}@${next.firstSpawnAcceptedAt ?? next.updatedAt}`,
+      {
+        createController: (input) => createController(input),
+        getClaudeBasePath,
+        appendMemberBootstrapDiagnostic: (targetRun, targetMember, text) =>
+          this.appendMemberBootstrapDiagnostic(targetRun, targetMember, text),
+        logger,
+      }
     );
   }
 

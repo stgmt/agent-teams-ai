@@ -177,6 +177,40 @@ describe('agent-teams-mcp tools', () => {
     };
   }
 
+  // РИСК: сервер имитирует приложение. Он отвечает JSON такой же формы, как настоящий маршрут
+  // `/members/diagnostics`; настоящее подтверждение запуска он не покрывает (это уровень L3).
+  async function publishAppConfirming(
+    claudeDir: string,
+    teamName: string,
+    bootstrapConfirmedByMember: Record<string, boolean>
+  ) {
+    const server = await startControlServer(({ method, url }) => {
+      if (method === 'GET' && url === `/api/teams/${teamName}/members/diagnostics`) {
+        return {
+          body: {
+            teamName,
+            generatedAt: new Date().toISOString(),
+            runId: 'run-1',
+            members: Object.entries(bootstrapConfirmedByMember).map(
+              ([memberName, bootstrapConfirmed]) => ({
+                memberName,
+                isLead: false,
+                diagnostics: [],
+                bootstrapConfirmed,
+              })
+            ),
+          },
+        };
+      }
+      return { statusCode: 404, body: { error: `Unhandled ${method} ${url}` } };
+    });
+    fs.writeFileSync(
+      path.join(claudeDir, 'team-control-api.json'),
+      JSON.stringify({ baseUrl: server.baseUrl, updatedAt: new Date().toISOString() }, null, 2)
+    );
+    return server;
+  }
+
   it.each(['task_complete', 'task_set_status'])(
     'issue-618 resolves dependencies through %s with owner notices and deduplicated retries',
     async (completionTool) => {
@@ -1269,11 +1303,17 @@ describe('agent-teams-mcp tools', () => {
     );
     expect(kanbanState.tasks[createdTask.id].column).toBe('approved');
 
-    const briefing = await getTool('task_briefing').execute({
-      claudeDir,
-      teamName,
-      memberName: 'alice',
-    });
+    const app = await publishAppConfirming(claudeDir, teamName, { alice: true });
+    let briefing: unknown;
+    try {
+      briefing = await getTool('task_briefing').execute({
+        claudeDir,
+        teamName,
+        memberName: 'alice',
+      });
+    } finally {
+      await app.close();
+    }
     expect((briefing as { content: Array<{ text: string }> }).content[0]?.text).toContain(
       'Review MCP adapter'
     );
@@ -1439,11 +1479,17 @@ describe('agent-teams-mcp tools', () => {
     );
     expect(ownerInbox[3].text).toContain('task_add_comment');
 
-    const briefing = (await getTool('task_briefing').execute({
-      claudeDir,
-      teamName,
-      memberName: 'alice',
-    })) as { content: Array<{ text: string }> };
+    const app = await publishAppConfirming(claudeDir, teamName, { alice: true });
+    let briefing: { content: Array<{ text: string }> };
+    try {
+      briefing = (await getTool('task_briefing').execute({
+        claudeDir,
+        teamName,
+        memberName: 'alice',
+      })) as { content: Array<{ text: string }> };
+    } finally {
+      await app.close();
+    }
     const briefingText = briefing.content[0]?.text ?? '';
     expect(briefingText).toContain(
       'Primary queue for alice. Act only on Actionable items. Awareness items are watch-only context unless the lead reroutes the task or you become the actionOwner.'
@@ -1720,6 +1766,10 @@ describe('agent-teams-mcp tools', () => {
     expect(leadBriefingText).toContain(`#${unassignedTask.displayId}`);
     expect(leadBriefingText).toContain('Watching:');
     expect(leadBriefingText).toContain(`#${reviewTask.displayId}`);
+    // No app answers in this test, so the members section says so instead of guessing.
+    expect(leadBriefingText).toContain('Members (liveness from the app');
+    expect(leadBriefingText).toContain('App liveness: no data');
+    expect(leadBriefingText).toContain('- bob: running=no data');
 
     const reviewInventory = parseJsonToolResult(
       await getTool('task_list').execute({
@@ -3241,6 +3291,61 @@ describe('agent-teams-mcp tools', () => {
     ).rejects.toThrow(
       'Unknown team "team-lead". Board tools require an existing configured team with config.json.'
     );
+  });
+
+  it('S1.20: task_briefing of a member whose launch the app has not confirmed says the work arrives as messages', async () => {
+    const claudeDir = makeClaudeDir();
+    const teamName = 'delta';
+    writeTeamConfig(claudeDir, teamName, {
+      members: [
+        { name: 'lead', role: 'team-lead' },
+        { name: 'alice', role: 'developer' },
+      ],
+    });
+    await getTool('task_create').execute({
+      claudeDir,
+      teamName,
+      subject: 'Work that must not be pulled early',
+      owner: 'alice',
+    });
+    const askBriefing = async () =>
+      ((await getTool('task_briefing').execute({ claudeDir, teamName, memberName: 'alice' })) as {
+        content: Array<{ text: string }>;
+      }).content[0]?.text ?? '';
+
+    const unconfirmed = await publishAppConfirming(claudeDir, teamName, { alice: false });
+    let held: string;
+    try {
+      held = await askBriefing();
+    } finally {
+      await unconfirmed.close();
+    }
+    const confirmed = await publishAppConfirming(claudeDir, teamName, { alice: true });
+    let released: string;
+    try {
+      released = await askBriefing();
+    } finally {
+      await confirmed.close();
+    }
+
+    expect(held).toContain('No Actionable work is loaded');
+    expect(held).not.toContain('Work that must not be pulled early');
+    expect(released).toContain('Work that must not be pulled early');
+  });
+
+  it('S1.20: task_briefing says so when the app does not answer the launch check', async () => {
+    const claudeDir = makeClaudeDir();
+    const teamName = 'epsilon';
+    writeTeamConfig(claudeDir, teamName, {
+      members: [
+        { name: 'lead', role: 'team-lead' },
+        { name: 'alice', role: 'developer' },
+      ],
+    });
+
+    await expect(
+      getTool('task_briefing').execute({ claudeDir, teamName, memberName: 'alice' })
+    ).rejects.toThrow(/app did not answer the launch check for alice/);
   });
 
   it('fails closed for primary queue and inventory tools when team config does not exist', async () => {

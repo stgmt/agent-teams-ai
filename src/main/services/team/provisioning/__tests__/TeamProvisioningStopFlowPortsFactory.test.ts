@@ -324,6 +324,21 @@ describe('TeamProvisioningStopFlowPortsFactory', () => {
     ).toHaveBeenCalledWith(teamName);
   });
 
+  it('NM-S04: forwards the typed user_stop reason through the production ports', async () => {
+    const teamName = 'team-a';
+    const run = makeRun('run-1', teamName);
+    const deps = createDeps();
+    deps.mutableRuns.set(run.runId, run);
+    deps.provisioningRunByTeam.set(teamName, run.runId);
+    deps.aliveRunByTeam.set(teamName, run.runId);
+
+    await createTeamProvisioningStopFlowBoundary(deps).stopTeam(teamName);
+
+    expect(deps.updateProgress).toHaveBeenCalledWith(run, 'disconnected', 'Team stopped by user', {
+      disconnect: { kind: 'user_stop' },
+    });
+  });
+
   it('routes missing tracked OpenCode runtime runs to adapter stop ports', async () => {
     const teamName = 'team-a';
     const runId = 'runtime-run';

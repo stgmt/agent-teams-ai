@@ -47,6 +47,7 @@ export type UpdateMemberSettingsEffect =
   | 'no_changes'
   | 'persisted_only'
   | 'member_restart_started'
+  | 'member_restart_failed'
   | 'lead_restart_started'
   | 'lead_restart_rolled_back'
   | 'opencode_lane_restart_started'
@@ -70,20 +71,39 @@ export type UpdateMemberSettingsRequest = UpdateMemberSettingsRequestBase &
       }
   );
 
+/**
+ * What is left of the teammate's process after a failed restart:
+ * `running` (a process of the teammate is alive), `stopped` (none is alive), `unknown` (not determined).
+ */
+export type MemberRestartProcessState = 'running' | 'stopped' | 'unknown';
+
+/** The settings are saved, the restart failed: the real cause and the state of the process. */
+export interface MemberRestartFailure {
+  cause: string;
+  memberProcess: MemberRestartProcessState;
+}
+
+interface CompletedMemberSettingsResultBase {
+  outcome: 'completed';
+  memberName: string;
+  previousFingerprint: string;
+  currentFingerprint: string;
+  replayed: boolean;
+}
+
 export type UpdateMemberSettingsResult =
-  | {
-      outcome: 'completed';
-      effect: UpdateMemberSettingsEffect;
-      memberName: string;
-      previousFingerprint: string;
-      currentFingerprint: string;
-      replayed: boolean;
+  | (CompletedMemberSettingsResultBase & {
+      effect: Exclude<UpdateMemberSettingsEffect, 'member_restart_failed'>;
       recovery?: {
         persistenceRestored: boolean;
         lifecycleRestored: boolean;
         cause: string;
       };
-    }
+    })
+  | (CompletedMemberSettingsResultBase & {
+      effect: 'member_restart_failed';
+      failure: MemberRestartFailure;
+    })
   | {
       outcome: 'target_conflict';
       memberName: string;

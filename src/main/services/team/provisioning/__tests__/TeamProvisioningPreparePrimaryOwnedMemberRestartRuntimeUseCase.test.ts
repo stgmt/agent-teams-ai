@@ -5,12 +5,16 @@ import {
   type PreparePrimaryOwnedMemberRestartRuntimeUseCasePorts,
 } from '../TeamProvisioningPreparePrimaryOwnedMemberRestartRuntimeUseCase';
 
+import type { ProcessInspection } from '../TeamProvisioningMemberProcessControl';
+
 function createPorts(
   overrides: {
     paneRuntimeInfo?: Map<string, { panePid: number; currentCommand?: string }>;
     processCommandByPid?: (pid: number) => string | null;
     processRows?: readonly { pid: number; ppid: number; command: string }[] | null;
     lingeringPids?: number[];
+    alivePids?: readonly number[];
+    inspection?: (pid: number) => ProcessInspection;
     lingeringPaneIds?: string[];
     throwOnPane?: string;
     throwOnPid?: number;
@@ -21,9 +25,9 @@ function createPorts(
     listedPaneIds: [] as string[][],
     killedPanes: [] as string[],
     killedPids: [] as number[],
-    waitPidCalls: [] as Array<{ pids: readonly number[]; timeoutMs: number; pollMs: number }>,
     waitPaneCalls: [] as Array<{ paneIds: readonly string[]; timeoutMs: number; pollMs: number }>,
     info: [] as string[],
+    diagnostics: [] as string[],
     debug: [] as string[],
     warnings: [] as string[],
     processTableReads: [] as { bypassCache: boolean }[],
@@ -38,8 +42,15 @@ function createPorts(
       calls.processTableReads.push(options);
       return overrides.processRows ?? [];
     },
-    readProcessCommandByPid(pid) {
-      return overrides.processCommandByPid?.(pid) ?? null;
+    isProcessAlive(pid) {
+      return overrides.alivePids?.includes(pid) ?? false;
+    },
+    async inspectProcess(pid) {
+      if (overrides.inspection) {
+        return overrides.inspection(pid);
+      }
+      const command = overrides.processCommandByPid?.(pid) ?? null;
+      return command === null ? { status: 'not_found' } : { status: 'found', command };
     },
     killTmuxPane(paneId) {
       calls.killedPanes.push(paneId);
@@ -47,15 +58,14 @@ function createPorts(
         throw new Error(`pane failed ${paneId}`);
       }
     },
-    killProcess(pid) {
+    async terminateProcess(pid) {
       calls.killedPids.push(pid);
       if (pid === overrides.throwOnPid) {
         throw new Error(`pid failed ${pid}`);
       }
-    },
-    async waitForPidsToExit(pids, options) {
-      calls.waitPidCalls.push({ pids, ...options });
-      return overrides.lingeringPids ?? [];
+      if (overrides.lingeringPids?.includes(pid)) {
+        throw new Error(`Process ${pid} remained alive after cleanup`);
+      }
     },
     async waitForTmuxPanesToExit(paneIds, options) {
       calls.waitPaneCalls.push({ paneIds, ...options });
@@ -69,6 +79,9 @@ function createPorts(
     },
     logDebug(message) {
       calls.debug.push(message);
+    },
+    logDiagnostic(message) {
+      calls.diagnostics.push(message);
     },
     logWarning(message) {
       calls.warnings.push(message);
@@ -209,7 +222,6 @@ describe('TeamProvisioningPreparePrimaryOwnedMemberRestartRuntimeUseCase', () =>
       expect(calls.listedPaneIds).toEqual([['pane-a']]);
       expect(calls.killedPanes).toEqual([]);
       expect(calls.killedPids).toEqual([222]);
-      expect(calls.waitPidCalls).toEqual([{ pids: [222], timeoutMs: 1_500, pollMs: 100 }]);
       expect(calls.waitPaneCalls).toEqual([]);
     }
   );
@@ -497,7 +509,7 @@ describe('TeamProvisioningPreparePrimaryOwnedMemberRestartRuntimeUseCase', () =>
           new Map([['Worker', { alive: true, backendType: 'process', pid: 222 }]]),
       })
     ).rejects.toThrow(
-      'Restart for teammate "Worker" is still waiting for the previous process to exit (222).'
+      'Restart for teammate "Worker" could not stop the previous process: pid 222: Process 222 remained alive after cleanup'
     );
 
     const panePorts = createPorts({
@@ -526,6 +538,113 @@ describe('TeamProvisioningPreparePrimaryOwnedMemberRestartRuntimeUseCase', () =>
     ).rejects.toThrow(
       'Restart for teammate "Worker" is still waiting for the previous tmux pane to exit (pane-a).'
     );
+  });
+
+  it('stops a persisted process pid whose command names this team and member, even without live metadata', async () => {
+    const { calls, ports } = createPorts({
+      processCommandByPid: () =>
+        'claude-multimodel.exe --team-name team-a --agent-name Worker --agent-id Worker@team-a',
+    });
+    const prepare = createPreparePrimaryOwnedMemberRestartRuntimeUseCase(ports);
+
+    const result = await prepare({
+      teamName: 'team-a',
+      memberName: 'Worker',
+      persistedRuntimeMembers: [{ name: 'Worker', backendType: 'process', runtimePid: 611 }],
+      invalidateRuntimeSnapshotCaches: () => undefined,
+      loadLiveRuntimeByMember: async () => new Map(),
+    });
+
+    expect(calls.killedPids).toEqual([611]);
+    expect(result.shouldDirectProcessRestart).toBe(true);
+    expect(calls.diagnostics).toEqual([
+      '[team-a] Restart for teammate "Worker": identity of pid=611 is found',
+      expect.stringMatching(
+        /^\[team-a\] Restart for teammate "Worker": stopped pid=611 in \d+ ms$/
+      ),
+    ]);
+  });
+
+  it('does not stop a persisted process pid twice when live metadata already names it', async () => {
+    const { calls, ports } = createPorts({
+      processCommandByPid: () =>
+        'claude-multimodel.exe --team-name team-a --agent-name Worker --agent-id Worker@team-a',
+    });
+    const prepare = createPreparePrimaryOwnedMemberRestartRuntimeUseCase(ports);
+
+    await prepare({
+      teamName: 'team-a',
+      memberName: 'Worker',
+      persistedRuntimeMembers: [{ name: 'Worker', backendType: 'process', runtimePid: 611 }],
+      invalidateRuntimeSnapshotCaches: () => undefined,
+      loadLiveRuntimeByMember: async () =>
+        new Map([['Worker', { alive: true, backendType: 'process', pid: 611 }]]),
+    });
+
+    expect(calls.killedPids).toEqual([611]);
+  });
+
+  it('restarts a member whose persisted pid is already gone without stopping anything', async () => {
+    const { calls, ports } = createPorts({ inspection: () => ({ status: 'not_found' }) });
+    const prepare = createPreparePrimaryOwnedMemberRestartRuntimeUseCase(ports);
+
+    const result = await prepare({
+      teamName: 'team-a',
+      memberName: 'Worker',
+      persistedRuntimeMembers: [{ name: 'Worker', backendType: 'process', runtimePid: 612 }],
+      invalidateRuntimeSnapshotCaches: () => undefined,
+      loadLiveRuntimeByMember: async () => new Map(),
+    });
+
+    expect(calls.killedPids).toEqual([]);
+    expect(result.shouldDirectProcessRestart).toBe(true);
+  });
+
+  it('ignores a recycled persisted pid that belongs to another program and warns', async () => {
+    const { calls, ports } = createPorts({
+      alivePids: [613],
+      processCommandByPid: () => 'C:\\Windows\\notepad.exe',
+    });
+    const prepare = createPreparePrimaryOwnedMemberRestartRuntimeUseCase(ports);
+
+    await prepare({
+      teamName: 'team-a',
+      memberName: 'Worker',
+      persistedRuntimeMembers: [{ name: 'Worker', backendType: 'process', runtimePid: 613 }],
+      invalidateRuntimeSnapshotCaches: () => undefined,
+      loadLiveRuntimeByMember: async () => new Map(),
+    });
+
+    expect(calls.killedPids).toEqual([]);
+    expect(calls.warnings).toEqual([
+      expect.stringContaining('Ignoring persisted pid=613 for Worker'),
+    ]);
+  });
+
+  it('does not call an unreadable process list a foreign process on manual restart', async () => {
+    const { calls, ports } = createPorts({
+      alivePids: [614],
+      inspection: () => ({
+        status: 'unreadable',
+        cause: 'windows_process_inspection: killed=true',
+      }),
+    });
+    const prepare = createPreparePrimaryOwnedMemberRestartRuntimeUseCase(ports);
+
+    await expect(
+      prepare({
+        teamName: 'team-a',
+        memberName: 'Worker',
+        persistedRuntimeMembers: [{ name: 'Worker', backendType: 'process', runtimePid: 614 }],
+        invalidateRuntimeSnapshotCaches: () => undefined,
+        loadLiveRuntimeByMember: async () => new Map(),
+      })
+    ).rejects.toThrow(
+      'Restart for teammate "Worker" cannot verify the persisted runtime identity of pid 614 (the process list could not be read): windows_process_inspection: killed=true'
+    );
+
+    expect(calls.killedPids).toEqual([]);
+    expect(calls.warnings).toEqual([]);
   });
 
   it('rejects in-process and alive-without-pid runtimes before stop attempts', async () => {
@@ -594,7 +713,6 @@ describe('TeamProvisioningPreparePrimaryOwnedMemberRestartRuntimeUseCase', () =>
     expect(calls.listedPaneIds).toEqual([]);
     expect(calls.killedPanes).toEqual([]);
     expect(calls.killedPids).toEqual([]);
-    expect(calls.waitPidCalls).toEqual([]);
     expect(calls.waitPaneCalls).toEqual([]);
   });
 
@@ -626,7 +744,6 @@ describe('TeamProvisioningPreparePrimaryOwnedMemberRestartRuntimeUseCase', () =>
     expect(calls.listedPaneIds).toEqual([]);
     expect(calls.killedPanes).toEqual([]);
     expect(calls.killedPids).toEqual([]);
-    expect(calls.waitPidCalls).toEqual([]);
     expect(calls.waitPaneCalls).toEqual([]);
   });
 });

@@ -55,6 +55,7 @@ declare module 'agent-teams-controller' {
     ): Promise<string>;
     leadBriefing(): Promise<string>;
     taskBriefing(memberName: string): Promise<string>;
+    requestTaskBriefing(memberName: string): Promise<string>;
   }
 
   export interface ControllerTaskWriteApi {

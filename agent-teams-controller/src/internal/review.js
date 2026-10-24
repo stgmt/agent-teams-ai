@@ -4,7 +4,7 @@ const runtimeHelpers = require('./runtimeHelpers.js');
 const reviewStateHelpers = require('./reviewState.js');
 const tasks = require('./tasks.js');
 const { withTeamBoardLock } = require('./boardLock.js');
-const { wrapAgentBlock } = require('./agentBlocks.js');
+const { buildReviewRequestText } = require('./reviewRequestMessage.js');
 
 function warnNonCritical(message, error) {
   if (typeof console === 'undefined' || typeof console.warn !== 'function') {
@@ -440,18 +440,7 @@ function requestReview(context, taskId, flags = {}) {
     messages.sendMessage(context, {
       to: reviewer,
       from,
-      text:
-        `**Please review** task #${task.displayId || task.id}\n\n` +
-        wrapAgentBlock(
-          `This request is for the CURRENT review cycle. If you reviewed this task earlier, do not treat this message as a duplicate while the task is still in review; prior approvals become stale after later work.\n\n` +
-            `Before declaring it duplicate, call task_get and check the current reviewState/status. If it is still in review for you, continue with the review tools below.\n\n` +
-            `FIRST call review_start to signal you are beginning the review:\n` +
-            `{ teamName: "${context.teamName}", taskId: "${task.id}", from: "<your-name>" }\n\n` +
-            `When approved, use MCP tool review_approve:\n` +
-            `{ teamName: "${context.teamName}", taskId: "${task.id}", from: "<your-name>", note?: "<optional note>", notifyOwner: true }\n\n` +
-            `If changes are needed, use MCP tool review_request_changes:\n` +
-            `{ teamName: "${context.teamName}", taskId: "${task.id}", from: "<your-name>", comment: "..." }`
-        ),
+      text: buildReviewRequestText(context, task),
       summary: `Review request for #${task.displayId || task.id}`,
       source: 'system_notification',
       ...(leadSessionId ? { leadSessionId } : {}),

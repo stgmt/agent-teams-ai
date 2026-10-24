@@ -14,7 +14,7 @@ type ProgressState = TeamProvisioningProgress['state'];
 
 type ProgressExtras = Pick<
   TeamProvisioningProgress,
-  'error' | 'warnings' | 'cliLogsTail' | 'messageSeverity'
+  'error' | 'warnings' | 'cliLogsTail' | 'messageSeverity' | 'disconnect'
 >;
 
 export type ValidConfigProbeResultLike =
@@ -584,9 +584,16 @@ export async function handleProvisioningProcessExit<TRun extends TeamProvisionin
 
   if (run.provisioningComplete) {
     const message = buildCompletedProcessExitMessage(code);
-    ports.logger.info(`[${run.teamName}] ${message}`);
+    // Code 0 is a normal end; any other code (or none) is the unexpected exit the
+    // owner has to be able to find in app-errors.ndjson afterwards.
+    if (code === 0) {
+      ports.logger.info(`[${run.teamName}] ${message}`);
+    } else {
+      ports.logger.warn(`[${run.teamName}] ${message}`);
+    }
     const progress = ports.updateProgress(run, 'disconnected', message, {
       cliLogsTail: ports.extractCliLogsFromRun(run),
+      disconnect: { kind: 'process_exit', exitCode: code },
     });
     run.onProgress(progress);
     ports.cleanupRun(run);

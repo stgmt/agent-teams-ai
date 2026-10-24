@@ -212,6 +212,36 @@ describe('TeamProvisioningMessagePersistence', () => {
     }
   });
 
+  it('hands the repeated-delivery instruction of the app to the controller for inbox rows only', () => {
+    const inboxPorts = createPorts();
+    const sentPorts = createPorts();
+    const message = { ...createMessage(), allowRepeatedDelivery: true };
+
+    persistTeamProvisioningInboxMessage('alpha', 'worker', message, inboxPorts);
+    persistTeamProvisioningSentMessage('alpha', message, sentPorts);
+
+    expect(inboxPorts.sendMessage.mock.calls[0]?.[0]).toHaveProperty('allowRepeatedDelivery', true);
+    expect(sentPorts.appendSentMessage.mock.calls[0]?.[0]).not.toHaveProperty(
+      'allowRepeatedDelivery'
+    );
+  });
+
+  it.each([{ label: 'absent' }, { label: 'false', allowRepeatedDelivery: false }])(
+    'does not send the repeated-delivery instruction when it is $label',
+    (values) => {
+      const ports = createPorts();
+
+      persistTeamProvisioningInboxMessage(
+        'alpha',
+        'worker',
+        { ...createMessage(), ...values } as InboxMessage,
+        ports
+      );
+
+      expect(ports.sendMessage.mock.calls[0]?.[0]).not.toHaveProperty('allowRepeatedDelivery');
+    }
+  );
+
   it('preserves sent-message warning behavior when controller persistence fails', () => {
     const ports = createPorts({
       createController: vi.fn(() => {

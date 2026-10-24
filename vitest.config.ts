@@ -1,4 +1,4 @@
-import { defineConfig } from 'vitest/config';
+import { configDefaults, defineConfig } from 'vitest/config';
 import { resolve } from 'path';
 
 export default defineConfig({
@@ -8,6 +8,8 @@ export default defineConfig({
     testTimeout: 15000,
     setupFiles: ['./test/setup.ts'],
     include: ['test/**/*.test.ts', 'test/**/*.test.tsx', 'src/**/*.test.ts', 'src/**/*.test.tsx'],
+    // L3 runs the real app and billed models; it has its own config (vitest.live.config.ts).
+    exclude: [...configDefaults.exclude, 'test/live/**'],
     coverage: {
       provider: 'v8',
       reporter: ['text', 'json', 'html'],

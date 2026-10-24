@@ -1,3 +1,4 @@
+import { MemberSettingsLifecycleFailedError } from '@features/team-provisioning/core/application/ports/UpdateMemberSettingsPorts';
 import { createMemberSettingsFingerprint } from '@features/team-provisioning/core/domain/memberSettingsPolicy';
 import { LegacyMemberSettingsLifecycleAdapter } from '@features/team-provisioning/main/adapters/output/LegacyMemberSettingsLifecycleAdapter';
 import { LegacyMemberSettingsMutationGateAdapter } from '@features/team-provisioning/main/adapters/output/LegacyMemberSettingsMutationGateAdapter';
@@ -642,6 +643,79 @@ describe('LegacyMemberSettingsLifecycleAdapter', () => {
     expect(attachLiveRosterMember).toHaveBeenCalledWith('team-a', 'ALICE', {
       reason: 'member_updated',
     });
+  });
+});
+
+describe('LegacyMemberSettingsLifecycleAdapter member restart failure', () => {
+  async function applyFailingRestart(error: unknown) {
+    const attachLiveRosterMember = vi.fn(async () => {
+      throw error;
+    });
+    const adapter = new LegacyMemberSettingsLifecycleAdapter({
+      attachLiveRosterMember,
+      isTeamAlive: () => true,
+    });
+    const snapshot = (await fixture().adapter.findTarget('team-a', 'Alice'))!;
+    return adapter
+      .applyEffect({
+        teamName: 'team-a',
+        before: snapshot,
+        after: snapshot,
+        action: 'restart_member',
+        admission: { outcome: 'ready' },
+      })
+      .then(
+        () => null,
+        (caught: unknown) => caught
+      );
+  }
+
+  it.each(['running', 'stopped'] as const)(
+    'carries the %s process state of the failed member restart',
+    async (memberProcess) => {
+      const cause = Object.assign(new Error('could not stop'), { memberProcess });
+
+      const caught = await applyFailingRestart(cause);
+
+      expect(caught).toBeInstanceOf(MemberSettingsLifecycleFailedError);
+      expect(caught).toMatchObject({
+        message: 'could not stop',
+        lifecycleRestored: false,
+        memberProcess,
+        cause,
+      });
+    }
+  );
+
+  it('reports an unknown process state when the failure does not name one', async () => {
+    for (const failure of [new Error('plain failure'), 'text failure', null]) {
+      const caught = await applyFailingRestart(failure);
+
+      expect(caught).toBeInstanceOf(MemberSettingsLifecycleFailedError);
+      expect(caught).toMatchObject({ lifecycleRestored: false, memberProcess: 'unknown' });
+    }
+  });
+
+  it('leaves an OpenCode lane failure untouched', async () => {
+    const failure = new Error('lane failed');
+    const attachLiveRosterMember = vi.fn(async () => {
+      throw failure;
+    });
+    const adapter = new LegacyMemberSettingsLifecycleAdapter({
+      attachLiveRosterMember,
+      isTeamAlive: () => true,
+    });
+    const snapshot = (await fixture().adapter.findTarget('team-a', 'Alice'))!;
+
+    await expect(
+      adapter.applyEffect({
+        teamName: 'team-a',
+        before: snapshot,
+        after: snapshot,
+        action: 'restart_opencode_lane',
+        admission: { outcome: 'ready' },
+      })
+    ).rejects.toBe(failure);
   });
 });
 

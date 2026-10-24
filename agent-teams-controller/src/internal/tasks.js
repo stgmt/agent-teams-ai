@@ -5,6 +5,7 @@ const messageStore = require('./messageStore.js');
 const processStore = require('./processStore.js');
 const kanbanStore = require('./kanbanStore.js');
 const agenda = require('./agenda.js');
+const memberStatus = require('./memberStatus.js');
 const { withTeamBoardLock } = require('./boardLock.js');
 const { wrapAgentBlock } = require('./agentBlocks.js');
 const { buildCommentNotificationMessage } = require('./taskCommentNotification.js');
@@ -818,9 +819,8 @@ async function taskBriefing(context, memberName) {
 }
 
 async function leadBriefing(context) {
-    const briefing = agenda.formatLeadBriefing(context.paths, context.teamName);
     const catalog = await require('./groupChats.js').buildGroupChatBriefing(context, runtimeHelpers.inferLeadName(context.paths));
-    return appendChatVisualizationProtocol(`${briefing}\n\n${catalog}`);
+    return appendChatVisualizationProtocol(`${await memberStatus.formatLeadBriefingWithMembers(context)}\n\n${catalog}`);
 }
 
 function listTaskInventory(context, filters = {}) {
@@ -1031,7 +1031,7 @@ async function memberBriefing(context, memberName, options = {}) {
             ) :
         [];
 
-    const taskQueue = await taskBriefing(context, requestedMemberName);
+    const taskQueue = typeof options.taskQueue === 'string' ? options.taskQueue : await taskBriefing(context, requestedMemberName);
     const completionNotifyExample = messagingProtocol.buildLeadMessageExample({
         teamName: context.teamName,
         leadName,

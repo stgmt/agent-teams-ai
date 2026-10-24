@@ -1,3 +1,5 @@
+import { isProcessAlive } from '@main/utils/processHealth';
+
 import {
   createTeamProvisioningLiveRuntimeMetadataPorts,
   type TeamProvisioningLiveRuntimeMetadataPorts,
@@ -59,6 +61,7 @@ export interface TeamProvisioningRuntimeProjectionFactoryDeps<
   getLiveTeamAgentRuntimeMetadata?(
     teamName: string
   ): Promise<Map<string, LiveTeamAgentRuntimeMetadata>>;
+  isRuntimePidAlive(pid: number): boolean;
   runtimeSnapshotCache: TeamProvisioningAgentRuntimeSnapshotCachePort<TeamAgentRuntimeSnapshot>;
   liveRuntimeMetadataCache: TeamProvisioningLiveRuntimeMetadataCachePort<
     Map<string, LiveTeamAgentRuntimeMetadata>
@@ -143,6 +146,7 @@ export function createTeamProvisioningRuntimeProjection<
       deps.runtimeResourceSampling.readRuntimeProcessRowsForLiveRuntimeMetadata(input),
     readWindowsHostProcessRowsForLiveRuntimeMetadata: (teamName) =>
       deps.runtimeResourceSampling.readWindowsHostProcessRowsForLiveRuntimeMetadata(teamName),
+    isRuntimePidAlive: deps.isRuntimePidAlive,
     getRuntimeSnapshotCacheGeneration: (teamName) =>
       deps.runtimeSnapshotCache.getRuntimeSnapshotCacheGeneration(teamName),
     getTrackedRunId: (teamName) => deps.runTracking.getTrackedRunId(teamName),
@@ -228,6 +232,7 @@ export function createTeamProvisioningRuntimeProjectionDepsFromService<
     runtimeSnapshotCache: service.runtimeSnapshotCacheBoundary,
     liveRuntimeMetadataCache: service.runtimeSnapshotCacheBoundary,
     runtimeResourceSampling: service.runtimeResourceSampling,
+    isRuntimePidAlive: isProcessAlive,
     logDebug: options.logDebug,
   };
 }

@@ -52,10 +52,29 @@ declare module 'agent-teams-controller' {
         runtimeProvider?: 'native' | 'opencode' | 'codex';
         includeActiveProcesses?: boolean;
         includeChatVisualizationProtocol?: boolean;
+        /** Replace the task queue with the startup notice (no Actionable work in the startup context). */
+        deferTaskQueue?: boolean;
       }
     ): Promise<string>;
     leadBriefing(): Promise<string>;
     taskBriefing(memberName: string): Promise<string>;
+    requestTaskBriefing(memberName: string): Promise<string>;
+    /** Task queue section of a startup context: no Actionable work, tasks arrive as messages. */
+    deferredTaskBriefing(memberName: string): string;
+    /** Hand the member its Actionable work as inbox messages once its launch is confirmed. */
+    deliverStartupWork(
+      memberName: string,
+      options: { launchId: string }
+    ): {
+      memberName: string;
+      delivered: {
+        taskId: string;
+        displayId: string;
+        kind: 'assignment' | 'review';
+        messageId: string;
+      }[];
+      skipped: { taskId: string; kind: 'assignment' | 'review'; reason: string }[];
+    };
   }
 
   export interface ControllerTaskWriteApi {
@@ -206,6 +225,7 @@ declare module 'agent-teams-controller' {
     launchTeam(flags: Record<string, unknown>): Promise<unknown>;
     stopTeam(flags?: Record<string, unknown>): Promise<unknown>;
     getRuntimeState(flags?: Record<string, unknown>): Promise<unknown>;
+    getMemberDiagnostics(flags?: Record<string, unknown>): Promise<unknown>;
     runtimeBootstrapCheckin(flags: Record<string, unknown>): Promise<unknown>;
     runtimeDeliverMessage(flags: Record<string, unknown>): Promise<unknown>;
     runtimeTaskEvent(flags: Record<string, unknown>): Promise<unknown>;
