@@ -340,6 +340,7 @@ async function buildMixedRuntimeMetadata(
       rows: options.processRows ?? processRows(),
       processTableAvailable: options.processTableAvailable ?? true,
     })),
+    isRuntimePidAlive: () => true,
     readWindowsHostProcessRowsForLiveRuntimeMetadata: vi.fn(async () => ({
       rows: [],
       processTableAvailable: false,
@@ -394,6 +395,7 @@ async function buildPersistedLaneRuntimeMetadata(options: {
       rows: options.processRows,
       processTableAvailable: true,
     })),
+    isRuntimePidAlive: () => true,
     readWindowsHostProcessRowsForLiveRuntimeMetadata: options.readWindowsHostProcessRows,
     getRuntimeSnapshotCacheGeneration: vi.fn(() => 0),
     getTrackedRunId: vi.fn(() => RUN_ID),
@@ -973,6 +975,7 @@ describe('TeamProvisioningRuntimeSnapshot source precedence', () => {
           rows: processRows(),
           processTableAvailable: true,
         })),
+        isRuntimePidAlive: () => true,
         readWindowsHostProcessRowsForLiveRuntimeMetadata: vi.fn(async () => ({
           rows: [],
           processTableAvailable: false,
@@ -1397,6 +1400,7 @@ describe('TeamProvisioningRuntimeSnapshot source precedence', () => {
           rows: processRows(),
           processTableAvailable: true,
         })),
+        isRuntimePidAlive: () => true,
         readWindowsHostProcessRowsForLiveRuntimeMetadata: vi.fn(async () => ({
           rows: [],
           processTableAvailable: false,
@@ -1466,6 +1470,7 @@ describe('TeamProvisioningRuntimeSnapshot source precedence', () => {
           rows: processRows(),
           processTableAvailable: true,
         })),
+        isRuntimePidAlive: () => true,
         readWindowsHostProcessRowsForLiveRuntimeMetadata: vi.fn(async () => ({
           rows: [],
           processTableAvailable: false,

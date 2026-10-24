@@ -165,6 +165,14 @@ vi.mock('@main/utils/childProcess', () => ({
 
 vi.mock('@main/utils/processKill', () => ({
   killProcessByPid: vi.fn(),
+  killProcessByPidAndWait: vi.fn(async () => undefined),
+}));
+
+// РИСК: запрос к ОС подменён ответом «процесса нет»; настоящий запрос PowerShell/ps проверяют
+// processInspection.test.ts и L2 StopPrimaryOwnedRosterRuntime.windows.test.ts.
+vi.mock('@main/utils/processInspection', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@main/utils/processInspection')>()),
+  inspectProcessByPid: vi.fn(async () => ({ status: 'not_found' as const })),
 }));
 
 vi.mock('@main/utils/windowsProcessTable', () => ({
@@ -284,7 +292,7 @@ import {
 import { TeamTaskActivityIntervalService } from '@main/services/team/TeamTaskActivityIntervalService';
 import { spawnCli } from '@main/utils/childProcess';
 import { encodePath } from '@main/utils/pathDecoder';
-import { killProcessByPid } from '@main/utils/processKill';
+import { killProcessByPid, killProcessByPidAndWait } from '@main/utils/processKill';
 import {
   listWindowsProcessTable,
   listWindowsProcessTableSync,
@@ -2550,6 +2558,20 @@ describe('TeamProvisioningService', () => {
         expectedMembers: ['alice'],
       });
       run.isLaunch = true;
+      // A running team always has its config on disk; the startup work hand-over after the
+      // heartbeat confirmation reads it for real and finds no tasks to deliver.
+      run.allEffectiveMembers = [{ name: 'alice', role: 'developer' }];
+      fs.mkdirSync(path.join(tempTeamsBase, teamName), { recursive: true });
+      fs.writeFileSync(
+        path.join(tempTeamsBase, teamName, 'config.json'),
+        JSON.stringify({
+          name: teamName,
+          members: [
+            { name: 'team-lead', role: 'team-lead' },
+            { name: 'alice', role: 'developer' },
+          ],
+        })
+      );
       run.progress = {
         teamName,
         state: 'launching',
@@ -2808,6 +2830,20 @@ describe('TeamProvisioningService', () => {
         expectedMembers: ['alice'],
       });
       run.isLaunch = true;
+      // A running team always has its config on disk; the startup work hand-over after the
+      // heartbeat confirmation reads it for real and finds no tasks to deliver.
+      run.allEffectiveMembers = [{ name: 'alice', role: 'developer' }];
+      fs.mkdirSync(path.join(tempTeamsBase, teamName), { recursive: true });
+      fs.writeFileSync(
+        path.join(tempTeamsBase, teamName, 'config.json'),
+        JSON.stringify({
+          name: teamName,
+          members: [
+            { name: 'team-lead', role: 'team-lead' },
+            { name: 'alice', role: 'developer' },
+          ],
+        })
+      );
       run.progress = {
         teamName,
         state: 'launching',
@@ -17542,16 +17578,17 @@ describe('TeamProvisioningService', () => {
       (svc as any).aliveRunByTeam.set('process-team', run.runId);
       (svc as any).runs.set(run.runId, run);
 
-      const restartPromise = expect(svc.restartMember('process-team', 'forge')).rejects.toThrow(
-        `Restart for teammate "forge" is still waiting for the previous process to exit (${process.pid}).`
+      vi.mocked(killProcessByPidAndWait).mockRejectedValueOnce(
+        new Error(`Process ${process.pid} remained alive after cleanup`)
       );
-      await vi.waitFor(() => {
-        expect(vi.mocked(killProcessByPid)).toHaveBeenCalledWith(process.pid);
-      });
-      await vi.advanceTimersByTimeAsync(1_500);
-      await restartPromise;
 
-      expect(vi.mocked(killProcessByPid)).toHaveBeenCalledWith(process.pid);
+      await expect(svc.restartMember('process-team', 'forge')).rejects.toThrow(
+        `Restart for teammate "forge" could not stop the previous process: pid ${process.pid}: Process ${process.pid} remained alive after cleanup`
+      );
+
+      expect(vi.mocked(killProcessByPidAndWait)).toHaveBeenCalledWith(process.pid, {
+        timeoutMs: 20_000,
+      });
       expect(sendMessageToRun).not.toHaveBeenCalled();
     });
 
@@ -17625,16 +17662,17 @@ describe('TeamProvisioningService', () => {
       (svc as any).aliveRunByTeam.set('process-team', run.runId);
       (svc as any).runs.set(run.runId, run);
 
-      const restartPromise = expect(svc.restartMember('process-team', 'forge')).rejects.toThrow(
-        `Restart for teammate "forge" is still waiting for the previous process to exit (${process.pid}).`
+      vi.mocked(killProcessByPidAndWait).mockRejectedValueOnce(
+        new Error(`Process ${process.pid} remained alive after cleanup`)
       );
-      await vi.waitFor(() => {
-        expect(vi.mocked(killProcessByPid)).toHaveBeenCalledWith(process.pid);
-      });
-      await vi.advanceTimersByTimeAsync(1_500);
-      await restartPromise;
 
-      expect(vi.mocked(killProcessByPid)).toHaveBeenCalledWith(process.pid);
+      await expect(svc.restartMember('process-team', 'forge')).rejects.toThrow(
+        `Restart for teammate "forge" could not stop the previous process: pid ${process.pid}: Process ${process.pid} remained alive after cleanup`
+      );
+
+      expect(vi.mocked(killProcessByPidAndWait)).toHaveBeenCalledWith(process.pid, {
+        timeoutMs: 20_000,
+      });
       expect(sendMessageToRun).not.toHaveBeenCalled();
     });
 
@@ -17685,16 +17723,17 @@ describe('TeamProvisioningService', () => {
       (svc as any).aliveRunByTeam.set('process-team', run.runId);
       (svc as any).runs.set(run.runId, run);
 
-      const restartPromise = expect(svc.restartMember('process-team', 'forge')).rejects.toThrow(
-        `Restart for teammate "forge" is still waiting for the previous process to exit (${process.pid}).`
+      vi.mocked(killProcessByPidAndWait).mockRejectedValueOnce(
+        new Error(`Process ${process.pid} remained alive after cleanup`)
       );
-      await vi.waitFor(() => {
-        expect(vi.mocked(killProcessByPid)).toHaveBeenCalledWith(process.pid);
-      });
-      await vi.advanceTimersByTimeAsync(1_500);
-      await restartPromise;
 
-      expect(vi.mocked(killProcessByPid)).toHaveBeenCalledWith(process.pid);
+      await expect(svc.restartMember('process-team', 'forge')).rejects.toThrow(
+        `Restart for teammate "forge" could not stop the previous process: pid ${process.pid}: Process ${process.pid} remained alive after cleanup`
+      );
+
+      expect(vi.mocked(killProcessByPidAndWait)).toHaveBeenCalledWith(process.pid, {
+        timeoutMs: 20_000,
+      });
       expect(sendMessageToRun).not.toHaveBeenCalled();
     });
 

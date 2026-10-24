@@ -34,6 +34,7 @@ import { type TeamProvisioningMemberWorkSyncProofBoundary } from './TeamProvisio
 import {
   persistTeamProvisioningInboxMessage,
   persistTeamProvisioningSentMessage,
+  type TeamProvisioningInboxMessageInput,
 } from './TeamProvisioningMessagePersistence';
 import { type TeamProvisioningMixedSecondaryLaneWiring } from './TeamProvisioningMixedSecondaryLaneWiring';
 import {
@@ -276,7 +277,11 @@ export abstract class TeamProvisioningServiceFacadeDelegates extends TeamProvisi
     });
   }
 
-  protected persistInboxMessage(teamName: string, recipient: string, message: InboxMessage): void {
+  protected persistInboxMessage(
+    teamName: string,
+    recipient: string,
+    message: TeamProvisioningInboxMessageInput
+  ): void {
     persistTeamProvisioningInboxMessage(teamName, recipient, message, {
       createController: (input) => createController(input),
       getClaudeBasePath,

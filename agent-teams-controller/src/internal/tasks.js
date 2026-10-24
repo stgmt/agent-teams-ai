@@ -5,6 +5,7 @@ const messageStore = require('./messageStore.js');
 const processStore = require('./processStore.js');
 const kanbanStore = require('./kanbanStore.js');
 const agenda = require('./agenda.js');
+const memberStatus = require('./memberStatus.js');
 const { withTeamBoardLock } = require('./boardLock.js');
 const { wrapAgentBlock } = require('./agentBlocks.js');
 const { buildCommentNotificationMessage } = require('./taskCommentNotification.js');
@@ -27,6 +28,7 @@ const {
     readMutableTask,
 } = require('./taskOwnershipGuards.js');
 const { buildAssignmentMessage } = require('./taskAssignmentMessage.js');
+const { buildDeferredTaskQueueText } = require('./deferredTaskQueue.js');
 const { buildMemberLanguageInstruction } = require('./agentLanguage.js');
 const {
     MEMBER_DELEGATE_DESCRIPTION,
@@ -817,7 +819,8 @@ async function taskBriefing(context, memberName) {
 }
 
 async function leadBriefing(context) {
-    return agenda.formatLeadBriefing(context.paths, context.teamName);
+    const membersLines = await memberStatus.buildMembersSectionLines(context);
+    return agenda.formatLeadBriefing(context.paths, context.teamName, { membersLines });
 }
 
 function listTaskInventory(context, filters = {}) {
@@ -1028,7 +1031,12 @@ async function memberBriefing(context, memberName, options = {}) {
             ) :
         [];
 
-    const taskQueue = await taskBriefing(context, requestedMemberName);
+    // The app's native bootstrap context sets deferTaskQueue: Actionable work in the
+    // startup context would keep the member in its first turn and block the launch
+    // confirmation. The work arrives as messages once the launch is confirmed.
+    const taskQueue = options.deferTaskQueue === true ?
+        buildDeferredTaskQueueText(requestedMemberName) :
+        await taskBriefing(context, requestedMemberName);
     const completionNotifyExample = messagingProtocol.buildLeadMessageExample({
         teamName: context.teamName,
         leadName,

@@ -206,6 +206,25 @@ export class UpdateMemberSettingsUseCase {
             replayed: false,
           };
         } catch (error) {
+          if (action === 'restart_member') {
+            // The settings are what the owner asked to save: a failed restart does not discard them
+            // and does not trigger a second restart. The real cause and the process state are reported.
+            return {
+              outcome: 'completed',
+              effect: 'member_restart_failed',
+              memberName: after.name,
+              previousFingerprint: actualFingerprint,
+              currentFingerprint: afterFingerprint,
+              replayed: false,
+              failure: {
+                cause: errorMessage(error),
+                memberProcess:
+                  error instanceof MemberSettingsLifecycleFailedError
+                    ? (error.memberProcess ?? 'unknown')
+                    : 'unknown',
+              },
+            };
+          }
           let persistenceRestored = false;
           let lifecycleRestored =
             error instanceof MemberSettingsLifecycleFailedError && error.lifecycleRestored;

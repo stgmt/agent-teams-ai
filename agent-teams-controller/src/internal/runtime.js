@@ -616,6 +616,15 @@ async function getRuntimeState(context, flags = {}) {
   );
 }
 
+async function getMemberDiagnostics(context, flags = {}) {
+  const baseUrls = resolveControlBaseUrls(context, flags);
+  return requestJsonWithFallback(
+    baseUrls,
+    `/api/teams/${encodeURIComponent(context.teamName)}/members/diagnostics`,
+    { timeoutMs: normalizeTimeoutMs(flags.waitTimeoutMs || flags['wait-timeout-ms'] || 10000) }
+  );
+}
+
 async function runtimeBootstrapCheckin(context, flags = {}) {
   const baseUrls = resolveControlBaseUrls(context, flags);
   const explicitTimeoutMs = flags.waitTimeoutMs || flags['wait-timeout-ms'];
@@ -710,6 +719,7 @@ module.exports = {
   launchTeam,
   stopTeam,
   getRuntimeState,
+  getMemberDiagnostics,
   runtimeBootstrapCheckin,
   runtimeDeliverMessage,
   runtimeTaskEvent,

@@ -1,4 +1,8 @@
-import { describe, expect, it, vi } from 'vitest';
+import * as agentTeamsControllerModule from 'agent-teams-controller';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { TeamProvisioningMemberStatusQueryFacade } from '../TeamProvisioningMemberStatusQueryFacade';
 
@@ -13,6 +17,15 @@ import type {
   TeamConfig,
   TeamProvisioningProgress,
 } from '@shared/types';
+
+const { createController } = agentTeamsControllerModule;
+
+// The folder the startup work hand-over reads and writes: a real Claude root in a temp dir.
+const claudeRoot = vi.hoisted(() => ({ dir: '' }));
+vi.mock('@main/utils/pathDecoder', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@main/utils/pathDecoder')>()),
+  getClaudeBasePath: () => claudeRoot.dir,
+}));
 
 class TestMemberStatusQueryFacade extends TeamProvisioningMemberStatusQueryFacade<ProvisioningRun> {
   readonly readConfigSnapshotMock = vi.fn(async () => {
@@ -98,6 +111,21 @@ class TestMemberStatusQueryFacade extends TeamProvisioningMemberStatusQueryFacad
 
   pendingTimeoutCount(): number {
     return this.pendingTimeouts.size;
+  }
+
+  transition(
+    run: ProvisioningRun,
+    memberName: string,
+    previous: MemberSpawnStatusEntry,
+    next: MemberSpawnStatusEntry
+  ): void {
+    this.syncMemberTaskActivityForRuntimeTransition(
+      run,
+      memberName,
+      previous,
+      next,
+      '2026-07-08T00:01:00.000Z'
+    );
   }
 
   setSpawn(run: ProvisioningRun, memberName: string, status: MemberSpawnStatus): void {
@@ -258,5 +286,146 @@ describe('TeamProvisioningMemberStatusQueryFacade', () => {
       lastHeartbeatAt: '2026-07-08T00:00:05.000Z',
     });
     expect(facade.mutationPorts.emitMemberSpawnChange).toHaveBeenCalledWith(run, 'Worker');
+  });
+
+  describe('startup work hand-over on the first confirmation of a launch attempt', () => {
+    // Every change of a member launch status passes through
+    // syncMemberTaskActivityForRuntimeTransition, so the hand-over lives there and is checked
+    // there against a real controller, board and inbox files. Which paths lead into it
+    // (events, transcript proof, the overlay of the bootstrap state read by every status
+    // poll) is checked in the live runs, S1.1 and S1.4.
+    const attempt = '2026-07-08T00:00:03.000Z';
+    const waiting = {
+      status: 'waiting',
+      launchState: 'runtime_pending_bootstrap',
+      bootstrapConfirmed: false,
+      firstSpawnAcceptedAt: attempt,
+      updatedAt: '2026-07-08T00:00:04.000Z',
+    } as MemberSpawnStatusEntry;
+    const confirmed = {
+      ...waiting,
+      status: 'online',
+      launchState: 'confirmed_alive',
+      bootstrapConfirmed: true,
+    } as MemberSpawnStatusEntry;
+
+    const teamDir = () => join(claudeRoot.dir, 'teams', 'alpha');
+    const inboxFile = () => join(teamDir(), 'inboxes', 'Worker.json');
+    const startupRows = (): { messageId: string; read: boolean }[] =>
+      existsSync(inboxFile())
+        ? (
+            JSON.parse(readFileSync(inboxFile(), 'utf8')) as { messageId: string; read: boolean }[]
+          ).filter((row) => String(row.messageId).startsWith('startup-work:'))
+        : [];
+    const markInboxRead = () =>
+      writeFileSync(
+        inboxFile(),
+        JSON.stringify(
+          (JSON.parse(readFileSync(inboxFile(), 'utf8')) as object[]).map((row) => ({
+            ...row,
+            read: true,
+          }))
+        )
+      );
+    const runWithMember = (): ProvisioningRun =>
+      ({
+        ...createRun(),
+        allEffectiveMembers: [{ name: 'Worker', role: 'developer' }],
+      }) as unknown as ProvisioningRun;
+
+    beforeEach(() => {
+      claudeRoot.dir = mkdtempSync(join(tmpdir(), 'status-facade-funnel-'));
+      mkdirSync(teamDir(), { recursive: true });
+      writeFileSync(
+        join(teamDir(), 'config.json'),
+        JSON.stringify({
+          name: 'alpha',
+          leadSessionId: 'lead-session-1',
+          members: [
+            { name: 'Lead', role: 'team-lead' },
+            { name: 'Worker', role: 'developer' },
+          ],
+        })
+      );
+      createController({ teamName: 'alpha', claudeDir: claudeRoot.dir }).taskBoard.createTask({
+        subject: 'Job for the worker',
+        owner: 'Worker',
+      });
+      // Creating the task already told the member; the hand-over skips a task whose notice is
+      // still unread, so the notice is read, as it is for a member that has since been started.
+      markInboxRead();
+    });
+
+    afterEach(() => rmSync(claudeRoot.dir, { recursive: true, force: true }));
+
+    it('S1.3: the first confirmation puts the work in the inbox, keyed by the launch attempt', () => {
+      const facade = new TestMemberStatusQueryFacade();
+
+      facade.transition(runWithMember(), 'Worker', waiting, confirmed);
+
+      expect(startupRows()).toHaveLength(1);
+      expect(startupRows()[0]?.messageId).toMatch(
+        new RegExp(`^startup-work:run-1@${attempt}:worker:`)
+      );
+    });
+
+    it('S1.12: a status that stays confirmed hands nothing over again', () => {
+      const facade = new TestMemberStatusQueryFacade();
+      const run = runWithMember();
+
+      facade.transition(run, 'Worker', waiting, confirmed);
+      markInboxRead();
+      facade.transition(run, 'Worker', confirmed, {
+        ...confirmed,
+        updatedAt: '2026-07-08T00:02:00.000Z',
+      });
+
+      expect(startupRows()).toHaveLength(1);
+    });
+
+    it('S1.13: a live process alone is not a confirmation, so no work is handed over', () => {
+      const facade = new TestMemberStatusQueryFacade();
+
+      facade.transition(runWithMember(), 'Worker', waiting, {
+        ...waiting,
+        status: 'online',
+        livenessSource: 'process',
+      } as MemberSpawnStatusEntry);
+
+      expect(startupRows()).toEqual([]);
+    });
+
+    it('S1.18: a restart inside the run is a new launch attempt and hands the work over again', () => {
+      const facade = new TestMemberStatusQueryFacade();
+      const run = runWithMember();
+
+      facade.transition(run, 'Worker', waiting, confirmed);
+      markInboxRead();
+      const restartedAt = '2026-07-08T00:20:00.000Z';
+      facade.transition(
+        run,
+        'Worker',
+        { ...waiting, firstSpawnAcceptedAt: restartedAt },
+        { ...confirmed, firstSpawnAcceptedAt: restartedAt }
+      );
+
+      expect(startupRows().map((row) => row.messageId.split(':worker:')[0])).toEqual([
+        `startup-work:run-1@${attempt}`,
+        `startup-work:run-1@${restartedAt}`,
+      ]);
+    });
+
+    it('a run that is no longer the tracked one hands nothing over', () => {
+      const facade = new TestMemberStatusQueryFacade();
+
+      facade.transition(
+        { ...runWithMember(), runId: 'run-0' } as ProvisioningRun,
+        'Worker',
+        waiting,
+        confirmed
+      );
+
+      expect(startupRows()).toEqual([]);
+    });
   });
 });

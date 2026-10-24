@@ -138,6 +138,7 @@ export function updateProgress(
     | 'configReady'
     | 'messageSeverity'
     | 'launchDiagnostics'
+    | 'disconnect'
   >
 ): TeamProvisioningProgress {
   if (shouldIgnoreProvisioningProgressRegression(run.progress.state, state)) {
@@ -162,6 +163,7 @@ export function updateProgress(
     assistantOutput,
     configReady: extras?.configReady ?? run.progress.configReady,
     messageSeverity: extras?.messageSeverity,
+    disconnect: extras?.disconnect,
     launchDiagnostics: boundLaunchDiagnostics(
       extras?.launchDiagnostics ??
         buildLaunchDiagnosticsFromRun(run) ??

@@ -5,14 +5,17 @@ import {
   listTmuxPaneRuntimeInfoForCurrentPlatform,
 } from '@features/tmux-installer/main';
 import { isProcessAlive } from '@main/utils/processHealth';
-import { killProcessByPid } from '@main/utils/processKill';
 import { createLogger } from '@shared/utils/logger';
 
 import { commandArgEquals } from '../TeamRuntimeLivenessResolver';
 
 import { isInteractiveShellCommand } from './TeamProvisioningDirectRestart';
 import { matchesMemberNameOrBase } from './TeamProvisioningMemberIdentity';
-import { readProcessCommandByPid } from './TeamProvisioningOpenCodeRuntimeLaneCleanup';
+import {
+  inspectMemberProcess,
+  type ProcessInspection,
+  terminateMemberProcess,
+} from './TeamProvisioningMemberProcessControl';
 
 const logger = createLogger('Service:TeamProvisioning');
 
@@ -63,19 +66,19 @@ export interface PreparePrimaryOwnedMemberRestartRuntimeUseCasePorts {
   listRuntimeProcesses(options: {
     bypassCache: boolean;
   }): Promise<readonly PrimaryOwnedMemberRestartRuntimeProcessRow[] | null>;
-  readProcessCommandByPid(pid: number): string | null;
+  isProcessAlive(pid: number): boolean;
+  /** Asynchronous lookup of a process command line; `unreadable` means the lookup failed. */
+  inspectProcess(pid: number): Promise<ProcessInspection>;
   killTmuxPane(paneId: string): void;
-  killProcess(pid: number): void;
-  waitForPidsToExit(
-    pids: readonly number[],
-    options: { timeoutMs: number; pollMs: number }
-  ): Promise<number[]>;
+  /** Terminates the process tree and resolves only after the pid is gone; rejects otherwise. */
+  terminateProcess(pid: number): Promise<void>;
   waitForTmuxPanesToExit(
     paneIds: readonly string[],
     options: { timeoutMs: number; pollMs: number }
   ): Promise<string[]>;
   logInfo(message: string): void;
   logDebug(message: string): void;
+  logDiagnostic(message: string): void;
   logWarning(message: string): void;
 }
 
@@ -87,13 +90,14 @@ export function createNodePreparePrimaryOwnedMemberRestartRuntimeUseCase(): Prep
   return createPreparePrimaryOwnedMemberRestartRuntimeUseCase({
     listTmuxPaneRuntimeInfo: (paneIds) => listTmuxPaneRuntimeInfoForCurrentPlatform(paneIds),
     listRuntimeProcesses: (options) => listRuntimeProcessTableForCurrentPlatform(options),
-    readProcessCommandByPid,
+    isProcessAlive,
+    inspectProcess: inspectMemberProcess,
     killTmuxPane: (paneId) => killTmuxPaneForCurrentPlatformSync(paneId),
-    killProcess: (pid) => killProcessByPid(pid),
-    waitForPidsToExit,
+    terminateProcess: terminateMemberProcess,
     waitForTmuxPanesToExit,
     logInfo: (message) => logger.info(message),
     logDebug: (message) => logger.debug(message),
+    logDiagnostic: (message) => logger.diagnostic(message),
     logWarning: (message) => logger.warn(message),
   });
 }
@@ -211,11 +215,10 @@ export function createPreparePrimaryOwnedMemberRestartRuntimeUseCase(
           continue;
         }
         const persistedRuntimePid = persistedRuntimeMember.runtimePid;
+        const paneInspection = await ports.inspectProcess(paneInfo.panePid);
         let verifiedRuntimePid =
-          hasExactRuntimeIdentity(
-            ports.readProcessCommandByPid(paneInfo.panePid),
-            concreteMemberName
-          ) &&
+          paneInspection.status === 'found' &&
+          hasExactRuntimeIdentity(paneInspection.command, concreteMemberName) &&
           (typeof persistedRuntimePid !== 'number' || persistedRuntimePid === paneInfo.panePid)
             ? paneInfo.panePid
             : undefined;
@@ -258,28 +261,63 @@ export function createPreparePrimaryOwnedMemberRestartRuntimeUseCase(
       }
     }
 
-    for (const pid of livePids) {
-      try {
-        ports.killProcess(pid);
-      } catch (error) {
-        ports.logDebug(
-          `[${input.teamName}] Failed to kill teammate process ${input.memberName} pid=${pid} for manual restart: ${
-            error instanceof Error ? error.message : String(error)
-          }`
+    // A persisted process pid is a stop handle even when the live runtime table was unavailable;
+    // without it the old process would survive next to the new one.
+    for (const persisted of targetPersistedRuntimeMembers) {
+      const pid = persisted.runtimePid;
+      const concreteMemberName = typeof persisted.name === 'string' ? persisted.name.trim() : '';
+      if (
+        persisted.backendType?.trim().toLowerCase() !== 'process' ||
+        typeof pid !== 'number' ||
+        !Number.isFinite(pid) ||
+        pid <= 0 ||
+        livePids.has(pid)
+      ) {
+        continue;
+      }
+      const inspection = await ports.inspectProcess(pid);
+      ports.logDiagnostic(
+        `[${input.teamName}] Restart for teammate "${input.memberName}": identity of pid=${pid} is ${inspection.status}`
+      );
+      if (inspection.status === 'unreadable') {
+        throw new Error(
+          `Restart for teammate "${input.memberName}" cannot verify the persisted runtime identity of pid ${pid} (the process list could not be read): ${inspection.cause}`
+        );
+      }
+      if (
+        inspection.status === 'found' &&
+        hasExactRuntimeIdentity(inspection.command, concreteMemberName)
+      ) {
+        livePids.add(pid);
+      } else if (ports.isProcessAlive(pid)) {
+        ports.logWarning(
+          `[${input.teamName}] Ignoring persisted pid=${pid} for ${input.memberName} on manual restart: process identity does not match the exact team and member.`
         );
       }
     }
+    input.assertStillCurrent?.();
 
     if (livePids.size > 0) {
-      const lingeringPids = await ports.waitForPidsToExit([...livePids], {
-        timeoutMs: 1_500,
-        pollMs: 100,
-      });
-      if (lingeringPids.length > 0) {
+      const pids = [...livePids];
+      const startedAt = Date.now();
+      const outcomes = await Promise.allSettled(pids.map((pid) => ports.terminateProcess(pid)));
+      const failures = outcomes.flatMap((outcome, index) =>
+        outcome.status === 'rejected'
+          ? [
+              `pid ${pids[index]}: ${
+                outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason)
+              }`,
+            ]
+          : []
+      );
+      if (failures.length > 0) {
         throw new Error(
-          `Restart for teammate "${input.memberName}" is still waiting for the previous process to exit (${lingeringPids.join(', ')}).`
+          `Restart for teammate "${input.memberName}" could not stop the previous process: ${failures.join('; ')}`
         );
       }
+      ports.logDiagnostic(
+        `[${input.teamName}] Restart for teammate "${input.memberName}": stopped pid=${pids.join(',')} in ${Date.now() - startedAt} ms`
+      );
     }
 
     if (tmuxPaneIdsToVerify.length > 0) {
@@ -308,25 +346,6 @@ export function createPreparePrimaryOwnedMemberRestartRuntimeUseCase(
       shouldDirectProcessRestart: backendTypes.has('process') || livePids.size > 0,
     };
   };
-}
-
-async function waitForPidsToExit(
-  pids: readonly number[],
-  options: { timeoutMs: number; pollMs: number }
-): Promise<number[]> {
-  const uniquePids = [...new Set(pids.filter((pid) => Number.isFinite(pid) && pid > 0))];
-  if (uniquePids.length === 0) {
-    return [];
-  }
-  const deadline = Date.now() + options.timeoutMs;
-  while (Date.now() < deadline) {
-    const alive = uniquePids.filter((pid) => isProcessAlive(pid));
-    if (alive.length === 0) {
-      return [];
-    }
-    await new Promise((resolve) => setTimeout(resolve, options.pollMs));
-  }
-  return uniquePids.filter((pid) => isProcessAlive(pid));
 }
 
 async function waitForTmuxPanesToExit(

@@ -3,10 +3,36 @@ import {
   registerTeamMemberSettingsIpc,
   removeTeamMemberSettingsIpc,
 } from '@features/team-provisioning/main/adapters/input/registerTeamMemberSettingsIpc';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { TeamMemberSettingsFeatureApi } from '@features/team-provisioning/main/composition/createTeamMemberSettingsFeature';
 import type { IpcMain } from 'electron';
+
+const logLines = vi.hoisted(() => ({
+  diagnostics: [] as string[],
+  warnings: [] as string[],
+  errors: [] as string[],
+}));
+
+vi.mock('@shared/utils/logger', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@shared/utils/logger')>();
+  return {
+    ...actual,
+    createLogger: () => ({
+      debug: () => undefined,
+      info: () => undefined,
+      diagnostic: (message: string) => logLines.diagnostics.push(message),
+      warn: (message: string) => logLines.warnings.push(message),
+      error: (message: string) => logLines.errors.push(message),
+    }),
+  };
+});
+
+beforeEach(() => {
+  logLines.diagnostics.length = 0;
+  logLines.warnings.length = 0;
+  logLines.errors.length = 0;
+});
 
 function request() {
   return {
@@ -32,6 +58,18 @@ function request() {
       },
     },
   };
+}
+
+function registerHandler(feature: TeamMemberSettingsFeatureApi) {
+  let handler: ((event: unknown, value: unknown) => Promise<unknown>) | undefined;
+  const ipcMain = {
+    handle: vi.fn((_channel, next) => {
+      handler = next;
+    }),
+    removeHandler: vi.fn(),
+  } as unknown as IpcMain;
+  registerTeamMemberSettingsIpc(ipcMain, feature);
+  return (value: unknown) => handler!({}, value);
 }
 
 describe('registerTeamMemberSettingsIpc', () => {
@@ -189,5 +227,133 @@ describe('registerTeamMemberSettingsIpc', () => {
 
     removeTeamMemberSettingsIpc(ipcMain);
     expect(ipcMain.removeHandler).toHaveBeenCalledWith(TEAM_UPDATE_MEMBER_SETTINGS);
+  });
+
+  describe('journal of the command (SR-16)', () => {
+    it('writes the full text of a feature failure before returning the standard error', async () => {
+      const failure = new Error('Process 62728 remained alive after cleanup');
+      const call = registerHandler({ updateMemberSettings: vi.fn().mockRejectedValue(failure) });
+
+      const result = await call(request());
+
+      expect(result).toEqual({
+        success: false,
+        error: 'Process 62728 remained alive after cleanup',
+      });
+      expect(logLines.errors).toHaveLength(1);
+      expect(logLines.errors[0]).toContain(
+        'Member settings update failed: team=team-a member=Alice command=command-1 target=member'
+      );
+      expect(logLines.errors[0]).toContain('Process 62728 remained alive after cleanup');
+      expect(logLines.errors[0]).toContain(failure.stack?.split('\n')[1]?.trim());
+    });
+
+    it('writes a rejected request with the readable join key', async () => {
+      const call = registerHandler({ updateMemberSettings: vi.fn() });
+      const invalid = request();
+      invalid.settings.role = ' LEAD ';
+
+      await call(invalid);
+
+      expect(logLines.errors).toHaveLength(1);
+      expect(logLines.errors[0]).toContain('team=team-a member=Alice command=command-1');
+      expect(logLines.errors[0]).toContain('settings.role is reserved for the team lead');
+      expect(logLines.diagnostics).toEqual([]);
+    });
+
+    it('does not break on input that is not an object', async () => {
+      const call = registerHandler({ updateMemberSettings: vi.fn() });
+
+      await expect(call(null)).resolves.toMatchObject({ success: false });
+
+      expect(logLines.errors[0]).toContain('team=? member=? command=? target=?');
+    });
+
+    it('writes the accepted command and the finished outcome', async () => {
+      const call = registerHandler({
+        updateMemberSettings: vi.fn(async () => ({
+          outcome: 'completed' as const,
+          effect: 'member_restart_started' as const,
+          memberName: 'Alice',
+          previousFingerprint: 'a',
+          currentFingerprint: 'b',
+          replayed: true,
+        })),
+      });
+
+      await call(request());
+
+      expect(logLines.diagnostics).toEqual([
+        'Member settings update accepted: team=team-a member=Alice command=command-1 target=member',
+        'Member settings update finished: team=team-a member=Alice command=command-1 target=member outcome=completed effect=member_restart_started replayed=true',
+      ]);
+      expect(logLines.warnings).toEqual([]);
+      expect(logLines.errors).toEqual([]);
+    });
+
+    it('warns with the cause and the process state when the restart failed after saving', async () => {
+      const call = registerHandler({
+        updateMemberSettings: vi.fn(async () => ({
+          outcome: 'completed' as const,
+          effect: 'member_restart_failed' as const,
+          memberName: 'Alice',
+          previousFingerprint: 'a',
+          currentFingerprint: 'b',
+          replayed: false,
+          failure: { cause: 'spawn failed: ENOENT', memberProcess: 'stopped' as const },
+        })),
+      });
+
+      await call(request());
+
+      expect(logLines.warnings).toEqual([
+        'Member settings update finished: team=team-a member=Alice command=command-1 target=member outcome=completed effect=member_restart_failed replayed=false memberProcess=stopped cause=spawn failed: ENOENT',
+      ]);
+    });
+
+    it('warns with the recovery cause for recovery_required and a rolled-back lead restart', async () => {
+      for (const effect of ['recovery_required', 'lead_restart_rolled_back'] as const) {
+        logLines.warnings.length = 0;
+        const call = registerHandler({
+          updateMemberSettings: vi.fn(async () => ({
+            outcome: 'completed' as const,
+            effect,
+            memberName: 'Alice',
+            previousFingerprint: 'a',
+            currentFingerprint: 'a',
+            replayed: false,
+            recovery: {
+              persistenceRestored: true,
+              lifecycleRestored: false,
+              cause: 'disk is read-only',
+            },
+          })),
+        });
+
+        await call(request());
+
+        expect(logLines.warnings).toEqual([
+          `Member settings update finished: team=team-a member=Alice command=command-1 target=member outcome=completed effect=${effect} replayed=false cause=disk is read-only`,
+        ]);
+      }
+    });
+
+    it('writes busy and conflict outcomes as diagnostics, not as warnings', async () => {
+      const call = registerHandler({
+        updateMemberSettings: vi.fn(async () => ({
+          outcome: 'busy' as const,
+          teamName: 'team-a',
+          memberName: 'Alice',
+          replayed: false,
+        })),
+      });
+
+      await call(request());
+
+      expect(logLines.diagnostics).toContain(
+        'Member settings update finished: team=team-a member=Alice command=command-1 target=member outcome=busy'
+      );
+      expect(logLines.warnings).toEqual([]);
+    });
   });
 });

@@ -420,7 +420,11 @@ function appendInboxRow(filePath, row, options = {}) {
     if (postCompletion) {
       return { row: postCompletion, deduplicated: true, postCompletion: true };
     }
-    const repeated = getRepeatedMessageDuplicate(list, row, options);
+    // An app command to a new launch attempt repeats its text on purpose (the bootstrap check of
+    // a restarted teammate); the sender opts out of the repeated-message guard for that row only.
+    const repeated = options.allowRepeatedDelivery
+      ? null
+      : getRepeatedMessageDuplicate(list, row, options);
     if (repeated) {
       return { row: repeated, deduplicated: true, repeated: true };
     }
@@ -448,6 +452,7 @@ function sendInboxMessage(paths, flags) {
     read: false,
   });
   const appended = appendInboxRow(getInboxPath(paths, memberName), payload, {
+    allowRepeatedDelivery: flags.allowRepeatedDelivery === true,
     resolveBoardCompletion: () => {
       const epoch = readBoardCompletionEpoch(paths);
       return epoch
@@ -533,6 +538,16 @@ function retractUnreadTaskNotifications(paths, flags = {}) {
   return retractedCount;
 }
 
+/**
+ * Unread system notifications in a member's inbox. The startup hand-over uses it
+ * to avoid a second announcement of a task the member has not read yet.
+ */
+function listUnreadSystemNotifications(paths, memberName) {
+  const current = readJson(getInboxPath(paths, memberName), []);
+  const list = Array.isArray(current) ? current : [];
+  return list.filter((row) => row && row.source === 'system_notification' && row.read === false);
+}
+
 function appendSentMessage(paths, flags) {
   const payload = buildMessage(flags, {
     from: 'team-lead',
@@ -613,6 +628,7 @@ function lookupMessage(paths, messageId) {
 module.exports = {
   appendSentMessage,
   readBoardCompletionEpoch,
+  listUnreadSystemNotifications,
   looksLikeIdleAckOnlyText,
   lookupMessage,
   retractUnreadTaskNotifications,

@@ -764,7 +764,8 @@ export function registerTaskTools(server: Pick<FastMCP, 'addTool'>) {
 
   server.addTool({
     name: 'task_briefing',
-    description: 'Get formatted task briefing for a member',
+    description:
+      'Get formatted task briefing for a member. Until the app confirms the member launch, the answer says the work arrives as messages.',
     parameters: z.object({
       ...toolContextSchema,
       memberName: z.string().min(1),
@@ -775,7 +776,7 @@ export function registerTaskTools(server: Pick<FastMCP, 'addTool'>) {
         content: [
           {
             type: 'text' as const,
-            text: await getController(teamName, claudeDir).taskBoard.taskBriefing(memberName),
+            text: await getController(teamName, claudeDir).taskBoard.requestTaskBriefing(memberName),
           },
         ],
       };

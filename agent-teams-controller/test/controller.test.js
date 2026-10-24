@@ -2926,12 +2926,13 @@ controller.messages.sendMessage({
     const controller = createController({ teamName: 'my-team', claudeDir });
     const task = controller.tasks.createTask({ subject: 'Alice owns this', owner: 'alice' });
     const aliceBriefing = await controller.tasks.taskBriefing('alice');
-    const leadBriefing = await controller.tasks.leadBriefing();
+    // The Members section lists every member's tasks; the lead queue above it must not.
+    const leadQueue = (await controller.tasks.leadBriefing()).split('\nMembers (')[0];
 
     expect(aliceBriefing).toContain('Actionable:');
     expect(aliceBriefing).toContain(`#${task.displayId}`);
     expect(aliceBriefing).toContain('actionOwner=@alice');
-    expect(leadBriefing).not.toContain(`#${task.displayId}`);
+    expect(leadQueue).not.toContain(`#${task.displayId}`);
   });
 
   it('recognizes lead and orchestrator agent types as canonical team leads', async () => {
@@ -2958,13 +2959,14 @@ controller.messages.sendMessage({
     const aliceTask = controller.tasks.createTask({ subject: 'Alice owns this', owner: 'alice' });
     const leadTask = controller.tasks.createTask({ subject: 'Lead owns this', owner: 'leadbot' });
     const aliceBriefing = await controller.tasks.taskBriefing('alice');
-    const leadBriefing = await controller.tasks.leadBriefing();
+    // The Members section lists every member's tasks; the lead queue above it must not.
+    const leadQueue = (await controller.tasks.leadBriefing()).split('\nMembers (')[0];
 
     expect(aliceBriefing).toContain(`#${aliceTask.displayId}`);
     expect(aliceBriefing).toContain('actionOwner=@alice');
     expect(aliceBriefing).not.toContain(`#${leadTask.displayId}`);
-    expect(leadBriefing).toContain(`#${leadTask.displayId}`);
-    expect(leadBriefing).not.toContain(`#${aliceTask.displayId}`);
+    expect(leadQueue).toContain(`#${leadTask.displayId}`);
+    expect(leadQueue).not.toContain(`#${aliceTask.displayId}`);
   });
 
   it('stores canonical member names for lead aliases in owners, reviewers, and reviewer config', () => {

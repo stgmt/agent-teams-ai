@@ -459,6 +459,23 @@ describe('team provisioning stop flow', () => {
     expect(ports.deleteAliveRunId).not.toHaveBeenCalledWith(teamName);
   });
 
+  it('NM-S04: reports a stop by the user as a typed user_stop disconnect', async () => {
+    const teamName = 'team-a';
+    const currentRun = makeRun('current-run', teamName);
+    const runs = new Map([[currentRun.runId, currentRun]]);
+    const aliveRunByTeam = new Map([[teamName, currentRun.runId]]);
+    const ports = makePorts(teamName, runs, new Map(), aliveRunByTeam);
+
+    await stopTeamFlow(teamName, ports);
+
+    expect(ports.updateProgress).toHaveBeenCalledWith(
+      currentRun,
+      'disconnected',
+      'Team stopped by user',
+      { disconnect: { kind: 'user_stop' } }
+    );
+  });
+
   it('stops primary and secondary OpenCode lanes owned by an aggregate run', async () => {
     const teamName = 'opencode-team';
     const currentRun = makeRun('aggregate-run', teamName);

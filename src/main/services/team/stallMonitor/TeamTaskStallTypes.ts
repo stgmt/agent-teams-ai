@@ -41,7 +41,6 @@ export type TaskStallSkipReason =
   | 'lane_active'
   | 'pickup_remediation_disabled'
   | 'task_not_pending'
-  | 'owner_not_opencode'
   | 'owner_busy_on_other_task'
   | 'no_unblock_evidence'
   | 'pickup_escalation_exhausted';

@@ -139,12 +139,29 @@ export class LegacyMemberSettingsLifecycleAdapter implements MemberSettingsLifec
       return 'persisted_only';
     }
 
-    await this.source.attachLiveRosterMember(input.teamName, input.after.name, {
-      reason: 'member_updated',
-    });
-    return input.action === 'restart_opencode_lane'
-      ? 'opencode_lane_restart_started'
-      : 'member_restart_started';
+    if (input.action === 'restart_opencode_lane') {
+      await this.source.attachLiveRosterMember(input.teamName, input.after.name, {
+        reason: 'member_updated',
+      });
+      return 'opencode_lane_restart_started';
+    }
+    try {
+      await this.source.attachLiveRosterMember(input.teamName, input.after.name, {
+        reason: 'member_updated',
+      });
+    } catch (error) {
+      const memberProcess =
+        typeof error === 'object' && error !== null
+          ? (error as { memberProcess?: unknown }).memberProcess
+          : undefined;
+      throw new MemberSettingsLifecycleFailedError(
+        error instanceof Error ? error.message : String(error),
+        false,
+        error,
+        memberProcess === 'running' || memberProcess === 'stopped' ? memberProcess : 'unknown'
+      );
+    }
+    return 'member_restart_started';
   }
 
   async restore(input: Parameters<MemberSettingsLifecyclePort['restore']>[0]): Promise<boolean> {

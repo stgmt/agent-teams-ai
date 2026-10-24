@@ -1235,6 +1235,17 @@ describe('TeamProvisioningService prompt content (solo mode discipline)', () => 
     expect(prompt).toContain(
       'lead_briefing is the primary lead queue. Decisions about what to act on now come from lead_briefing, not from raw task_list rows.'
     );
+    // S5.2: the status rule is part of the lead instruction.
+    expect(prompt).toContain(
+      'When asked about the status of a teammate or of the team, call lead_briefing FIRST and answer from its "Members" section.'
+    );
+    expect(prompt).toContain(
+      'Do NOT answer a status question from memory and do NOT ask the teammate for a status report'
+    );
+    expect(prompt).toContain('STATUS QUESTIONS (mandatory, comes before every tool below):');
+    expect(prompt).toContain(
+      'your FIRST tool call is lead_briefing. Call it before task_get, task_list, message_send or any other tool, even when the question names a task id or a member.'
+    );
     expect(prompt).toContain('Browse/search compact inventory rows only: task_list');
     expect(prompt).toContain(
       `Browse/search compact inventory rows only: task_list { teamName: "${teamName}", owner?: "<member>", status?: "pending|in_progress|completed"`

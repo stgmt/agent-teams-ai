@@ -7,6 +7,7 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 
 import { initializeAppCloseCoordination } from '@features/app-close-coordination/renderer';
+import { startTeamDowntimeWatch } from '@features/team-downtime-notice/renderer';
 
 import { registerDynamicImportRecovery } from './utils/dynamicImportRecovery';
 import { App } from './App';
@@ -204,9 +205,11 @@ function mountApp(): void {
     const cleanupAppCloseCoordination = initializeAppCloseCoordination(
       window.electronAPI?.appCloseCoordination
     );
+    const cleanupTeamDowntimeWatch = startTeamDowntimeWatch();
     window.__claudeTeamsUiCleanup = (): void => {
       cleanupAppCloseCoordination();
       cleanupNotifications();
+      cleanupTeamDowntimeWatch();
     };
   }
 

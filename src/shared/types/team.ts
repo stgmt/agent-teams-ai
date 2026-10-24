@@ -1433,11 +1433,18 @@ export interface TeamProvisioningPrepareResult {
   supportDiagnostics?: TeamProvisioningSupportDiagnostic[];
 }
 
+/** Why a run reached `disconnected`; a typed reason so the UI never parses `message`. */
+export type TeamProvisioningDisconnect =
+  | { kind: 'user_stop' }
+  | { kind: 'process_exit'; exitCode: number | null };
+
 export interface TeamProvisioningProgress {
   runId: string;
   teamName: string;
   state: Exclude<TeamProvisioningState, 'idle'>;
   message: string;
+  /** Set only on the `disconnected` update that reports the reason. */
+  disconnect?: TeamProvisioningDisconnect;
   /** Visual severity for the message subtitle: 'error' (red), 'warning' (amber), or default (muted). */
   messageSeverity?: 'error' | 'warning';
   startedAt: string;

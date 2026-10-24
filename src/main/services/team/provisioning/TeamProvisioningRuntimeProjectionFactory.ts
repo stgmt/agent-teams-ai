@@ -59,6 +59,7 @@ export interface TeamProvisioningRuntimeProjectionFactoryDeps<
   getLiveTeamAgentRuntimeMetadata?(
     teamName: string
   ): Promise<Map<string, LiveTeamAgentRuntimeMetadata>>;
+  isRuntimePidAlive(pid: number): boolean;
   runtimeSnapshotCache: TeamProvisioningAgentRuntimeSnapshotCachePort<TeamAgentRuntimeSnapshot>;
   liveRuntimeMetadataCache: TeamProvisioningLiveRuntimeMetadataCachePort<
     Map<string, LiveTeamAgentRuntimeMetadata>
@@ -116,6 +117,10 @@ export interface TeamProvisioningRuntimeProjectionServiceHostOptions {
     never
   >['readBootstrapRuntimeState'];
   logDebug: TeamProvisioningRuntimeProjectionFactoryDeps<never, never>['logDebug'];
+  isRuntimePidAlive: TeamProvisioningRuntimeProjectionFactoryDeps<
+    never,
+    never
+  >['isRuntimePidAlive'];
 }
 
 export interface TeamProvisioningRuntimeProjection {
@@ -143,6 +148,7 @@ export function createTeamProvisioningRuntimeProjection<
       deps.runtimeResourceSampling.readRuntimeProcessRowsForLiveRuntimeMetadata(input),
     readWindowsHostProcessRowsForLiveRuntimeMetadata: (teamName) =>
       deps.runtimeResourceSampling.readWindowsHostProcessRowsForLiveRuntimeMetadata(teamName),
+    isRuntimePidAlive: deps.isRuntimePidAlive,
     getRuntimeSnapshotCacheGeneration: (teamName) =>
       deps.runtimeSnapshotCache.getRuntimeSnapshotCacheGeneration(teamName),
     getTrackedRunId: (teamName) => deps.runTracking.getTrackedRunId(teamName),
@@ -228,6 +234,7 @@ export function createTeamProvisioningRuntimeProjectionDepsFromService<
     runtimeSnapshotCache: service.runtimeSnapshotCacheBoundary,
     liveRuntimeMetadataCache: service.runtimeSnapshotCacheBoundary,
     runtimeResourceSampling: service.runtimeResourceSampling,
+    isRuntimePidAlive: options.isRuntimePidAlive,
     logDebug: options.logDebug,
   };
 }

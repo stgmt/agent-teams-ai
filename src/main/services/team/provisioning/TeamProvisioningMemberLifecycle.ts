@@ -3,7 +3,6 @@ import {
   sendKeysToTmuxPaneForCurrentPlatform,
 } from '@features/tmux-installer/main';
 import { spawnCli } from '@main/utils/childProcess';
-import { getTeamsBasePath } from '@main/utils/pathDecoder';
 import { killProcessByPid } from '@main/utils/processKill';
 import { getMemberColorByName } from '@shared/constants/memberColors';
 import { isTeamEffortLevel } from '@shared/utils/effortLevels';
@@ -21,16 +20,19 @@ import { randomUUID } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { cleanupAnthropicTeamApiKeyHelperMaterial } from '../../runtime/anthropicTeamApiKeyHelper';
 import { mergeJsonSettingsArgs } from '../../runtime/cliSettingsArgs';
 import { resolveTeamProviderId } from '../../runtime/providerRuntimeEnv';
 import { atomicWriteAsync } from '../atomicWrite';
 import { buildNativeAppManagedBootstrapSpecs } from '../bootstrap/NativeAppManagedBootstrapContextBuilder';
 import { ClaudeBinaryResolver } from '../ClaudeBinaryResolver';
-import { getConfiguredCliFlavor } from '../cliFlavor';
 import { sanitizeProcessRuntimeEventFilePrefix } from '../ProcessBootstrapTransportEvidence';
 import { createPersistedLaunchSnapshot } from '../TeamLaunchStateEvaluator';
 
+import {
+  type RestartOrAttachDirectProcessMemberInput,
+  toMemberRestartError,
+  traceMemberLaunch,
+} from './MemberRuntimeRestartReport';
 import { assertSecondaryRetryOwned } from './OpenCodeAggregatePrimaryRestartPolicy';
 import {
   createAppendDirectProcessRuntimeEventUseCase,
@@ -56,6 +58,16 @@ import {
 } from './TeamProvisioningMemberIdentity';
 import { isMemberLifecycleOperationInProgressError } from './TeamProvisioningMemberLifecycleKeys';
 import { type MemberLifecycleOperationKind } from './TeamProvisioningMemberLifecycleOperationRunner';
+import {
+  applyAppManagedRuntimeSettingsPathEnv,
+  buildMissingCliError,
+  cleanupPendingAnthropicApiKeyHelper,
+  ensureCwdExists,
+  getTeamRuntimeEventsDir,
+  type MemberLifecycleOpenCodeRuntimeAdapter,
+  nowIso,
+  type RuntimeAdapterRunEntry,
+} from './TeamProvisioningMemberLifecycleSupport';
 import { parseOptionalIsoMs } from './TeamProvisioningMemberSpawnStatusPolicy';
 import {
   createPersistOpenCodeMemberRestartSystemMessageUseCase,
@@ -86,7 +98,6 @@ import {
 } from './TeamProvisioningUpdateDirectTmuxRestartMemberConfigUseCase';
 
 import type { NativeAppManagedBootstrapSpec } from '../bootstrap/NativeAppManagedBootstrapContextBuilder';
-import type { TeamLaunchRuntimeAdapter } from '../runtime';
 import type { TeamMembersMetaStore } from '../TeamMembersMetaStore';
 import type { RuntimeBootstrapMemberMcpLaunchConfig } from './TeamProvisioningBootstrapSpec';
 import type {
@@ -125,7 +136,6 @@ import type {
 } from '@shared/types';
 
 const logger = createLogger('Service:TeamProvisioning');
-const CLAUDE_TEAM_RUNTIME_SETTINGS_PATH_ENV = 'CLAUDE_TEAM_RUNTIME_SETTINGS_PATH';
 const TEAMMATE_RUNTIME_ENV = 'CLAUDE_CODE_TEAMMATE_RUNTIME';
 const TEAMMATE_RUNTIME_EVENTS_ENV = 'CLAUDE_CODE_TEAMMATE_RUNTIME_EVENTS_PATH';
 const TEAMMATE_BOOTSTRAP_PROOF_TOKEN_ENV = 'CLAUDE_CODE_BOOTSTRAP_PROOF_TOKEN';
@@ -133,76 +143,6 @@ const NATIVE_APP_MANAGED_BOOTSTRAP_CONTEXT_ENV =
   'CLAUDE_CODE_NATIVE_APP_MANAGED_BOOTSTRAP_CONTEXT_PATH';
 const APP_TEAM_RUNTIME_DISALLOWED_TOOLS =
   'TeamDelete,TodoWrite,TaskCreate,TaskUpdate,mcp__agent-teams__team_launch,mcp__agent-teams__team_stop';
-
-type RuntimeAdapterRunEntry = NonNullable<
-  ReturnType<TeamProvisioningMemberLifecycleHost['runtimeAdapterRunByTeam']['get']>
->;
-
-type MemberLifecycleOpenCodeRuntimeAdapter = Exclude<
-  ReturnType<TeamProvisioningMemberLifecycleHost['getOpenCodeRuntimeAdapter']>,
-  null
-> &
-  Pick<TeamLaunchRuntimeAdapter, 'preflightLocalModels'>;
-
-function nowIso(): string {
-  return new Date().toISOString();
-}
-
-function getTeamRuntimeEventsDir(teamName: string): string {
-  return path.join(getTeamsBasePath(), teamName, 'runtime');
-}
-
-function buildMissingCliError(): Error {
-  if (getConfiguredCliFlavor() === 'agent_teams_orchestrator') {
-    return new Error(
-      'Multimodel runtime not found. The packaged app must include resources/runtime/claude-multimodel, or development must provide CLAUDE_AGENT_TEAMS_ORCHESTRATOR_CLI_PATH.'
-    );
-  }
-  return new Error('Claude CLI not found; install it or provide a valid path');
-}
-
-function applyAppManagedRuntimeSettingsPathEnv(
-  env: NodeJS.ProcessEnv,
-  settingsPath: string | null
-): void {
-  if (settingsPath) {
-    env[CLAUDE_TEAM_RUNTIME_SETTINGS_PATH_ENV] = settingsPath;
-  } else {
-    delete env[CLAUDE_TEAM_RUNTIME_SETTINGS_PATH_ENV];
-  }
-}
-
-async function ensureCwdExists(cwd: string): Promise<void> {
-  const stat = await fs.promises.stat(cwd).catch(() => null);
-  if (!stat?.isDirectory()) {
-    throw new Error(`Project path is not available for teammate restart: ${cwd}`);
-  }
-}
-
-async function cleanupPendingAnthropicApiKeyHelper(
-  envResolution: ProvisioningEnvResolution,
-  contextLabel: string
-): Promise<void> {
-  const helper = (
-    envResolution as ProvisioningEnvResolution & {
-      anthropicApiKeyHelper?: { directory: string } | null;
-    }
-  ).anthropicApiKeyHelper;
-  if (!helper) {
-    return;
-  }
-  // Cleanup stays best-effort so the original provisioning failure remains authoritative.
-  await cleanupAnthropicTeamApiKeyHelperMaterial({
-    directory: helper.directory,
-    skipIfLiveProcessReferences: true,
-  }).catch((cleanupError: unknown) => {
-    logger.warn(
-      `[${contextLabel}] Failed to clean pending Anthropic API-key helper: ${
-        cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
-      }`
-    );
-  });
-}
 
 export type { OpenCodeSecondaryRetryCandidate } from './TeamProvisioningCollectFailedOpenCodeSecondaryRetryCandidatesUseCase';
 export type {
@@ -558,6 +498,9 @@ export class TeamProvisioningMemberLifecycleController {
       read: false,
       source: 'system_notification',
       leadSessionId: input.leadSessionId ?? undefined,
+      // Every launch attempt gets its own copy of the same check; the controller must not take
+      // the second one for a repeated message.
+      allowRepeatedDelivery: true,
       messageId: `direct-${operation}-${input.memberName}-${randomUUID()}`,
       summary: isRestart
         ? `Restart bootstrap instructions for ${input.memberName}`
@@ -1428,6 +1371,44 @@ export class TeamProvisioningMemberLifecycleController {
       );
     }
 
+    await this.restartOrAttachDirectProcessMemberUnlocked({
+      run,
+      teamName,
+      memberName,
+      config,
+      metaMembers,
+      configuredMember,
+      options,
+    });
+  }
+
+  /**
+   * Stops the previous process of a teammate (when `member_updated`) and launches the new one.
+   * Any failure on a `member_updated` restart reports what is left of the teammate's process.
+   */
+  private async restartOrAttachDirectProcessMemberUnlocked(
+    input: RestartOrAttachDirectProcessMemberInput
+  ): Promise<void> {
+    const knownRuntimePids = new Set<number>();
+    try {
+      await this.restartOrAttachDirectProcessMemberCoreUnlocked(input, knownRuntimePids);
+    } catch (error) {
+      throw toMemberRestartError(error, {
+        teamName: input.teamName,
+        memberName: input.memberName,
+        reason: input.options?.reason,
+        knownRuntimePids,
+        readPersistedMembers: () => this.readPersistedRuntimeMembers(input.teamName),
+        diagnostic: (message) => logger.diagnostic(message),
+      });
+    }
+  }
+
+  private async restartOrAttachDirectProcessMemberCoreUnlocked(
+    input: RestartOrAttachDirectProcessMemberInput,
+    knownRuntimePids: Set<number>
+  ): Promise<void> {
+    const { run, teamName, memberName, config, metaMembers, configuredMember, options } = input;
     const currentStatus = run.memberSpawnStatuses.get(memberName);
     const currentUpdatedAtMs = parseOptionalIsoMs(currentStatus?.updatedAt);
     const currentStatusAgeMs =
@@ -1447,6 +1428,11 @@ export class TeamProvisioningMemberLifecycleController {
       [...liveRuntimeByMember.entries()].find(([candidateName]) =>
         matchesObservedMemberNameForExpected(candidateName, memberName)
       )?.[1];
+    for (const pid of [liveRuntimeMember?.pid, liveRuntimeMember?.metricsPid]) {
+      if (typeof pid === 'number') {
+        knownRuntimePids.add(pid);
+      }
+    }
     this.assertRunStillCurrentAndAlive(run, teamName);
     if (
       !replaceExistingRuntime &&
@@ -1519,17 +1505,26 @@ export class TeamProvisioningMemberLifecycleController {
     );
 
     try {
-      await this.launchDirectProcessMemberRestart({
-        run,
-        teamName,
-        displayName: config.name?.trim() || teamName,
-        leadName: this.resolveLeadMemberName(config.members ?? [], metaMembers),
-        memberName,
-        config,
-        configuredMember,
-        persistedRuntimeMembers,
-        operation: options?.reason ?? 'member_added',
-      });
+      await traceMemberLaunch(
+        {
+          teamName,
+          memberName,
+          operation: options?.reason ?? 'member_added',
+          diagnostic: (message) => logger.diagnostic(message),
+        },
+        (operation) =>
+          this.launchDirectProcessMemberRestart({
+            run,
+            teamName,
+            displayName: config.name?.trim() || teamName,
+            leadName: this.resolveLeadMemberName(config.members ?? [], metaMembers),
+            memberName,
+            config,
+            configuredMember,
+            persistedRuntimeMembers,
+            operation,
+          })
+      );
     } catch (error) {
       if (!this.isRunStillCurrentAndAlive(run, teamName)) {
         throw error;

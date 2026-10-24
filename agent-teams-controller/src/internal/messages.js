@@ -84,9 +84,22 @@ function normalizeMessageSendFlags(context, flags) {
   }
 
   const fromRequiredForAgentTool = context.allowUserMessageSender === false;
+  if (fromRequiredForAgentTool) {
+    // Skipping the repeated-message guard is reserved for the app, like the sender "system".
+    delete next.allowRepeatedDelivery;
+  }
   if (typeof next.from === 'string' && next.from.trim()) {
     const rawFrom = next.from.trim();
-    if (rawFrom.toLowerCase() !== 'user') {
+    if (rawFrom.toLowerCase() === 'system') {
+      // The app's own notices (stall monitor). Reserved like "user": an agent tool context
+      // must name a configured teammate.
+      if (fromRequiredForAgentTool) {
+        throw new Error(
+          'message_send from system is reserved for the app. Set from to your configured teammate name.'
+        );
+      }
+      next.from = 'system';
+    } else if (rawFrom.toLowerCase() !== 'user') {
       next.from = runtimeHelpers.assertExplicitTeamMemberName(context.paths, rawFrom, 'from', {
         allowLeadAliases: true,
       });

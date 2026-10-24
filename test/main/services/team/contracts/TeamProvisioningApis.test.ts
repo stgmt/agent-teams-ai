@@ -139,6 +139,7 @@ function createSource() {
     clearPendingCrossTeamReplyExpectation: vi.fn(),
     respondToToolApproval: vi.fn(() => Promise.resolve()),
     updateToolApprovalSettings: vi.fn(),
+    publishProvisioningProgress: vi.fn(),
   } satisfies Parameters<typeof bindTeamIpcHandlerApis>[0] &
     Parameters<typeof bindTeamHttpHandlerApis>[0] &
     TeamCrossTeamMessagingApi &

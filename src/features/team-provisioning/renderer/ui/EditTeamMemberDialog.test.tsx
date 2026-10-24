@@ -9,8 +9,12 @@ const getSavedRequest = vi.hoisted(() => vi.fn());
 vi.mock('@renderer/api', () => ({ api: { teams: { updateMemberSettings, getSavedRequest } } }));
 vi.mock('@features/localization/renderer', () => ({
   useAppTranslation: () => ({
-    t: (key: string, values?: { runtime?: string }) =>
-      key === 'editTeam.displayedRuntimeHint' ? `${key}: ${values?.runtime}` : key,
+    t: (key: string, values?: Record<string, string>) =>
+      key === 'editTeam.displayedRuntimeHint'
+        ? `${key}: ${values?.runtime}`
+        : values
+          ? `${key} ${JSON.stringify(values)}`
+          : key,
   }),
 }));
 vi.mock('@renderer/components/ui/button', () => ({
@@ -160,6 +164,7 @@ let root: ReturnType<typeof createRoot>;
 let onClose: ReturnType<typeof vi.fn>;
 let onRefresh: ReturnType<typeof vi.fn>;
 let onRelaunchRequired: ReturnType<typeof vi.fn>;
+let onRestartMember: ReturnType<typeof vi.fn>;
 
 function render(overrides: Partial<React.ComponentProps<typeof EditTeamMemberDialog>> = {}): void {
   root.render(
@@ -173,6 +178,7 @@ function render(overrides: Partial<React.ComponentProps<typeof EditTeamMemberDia
       onClose={onClose}
       onRefresh={onRefresh}
       onRelaunchRequired={onRelaunchRequired}
+      onRestartMember={onRestartMember}
       {...overrides}
     />
   );
@@ -194,6 +200,7 @@ beforeEach(() => {
   onClose = vi.fn();
   onRefresh = vi.fn(async () => {});
   onRelaunchRequired = vi.fn();
+  onRestartMember = vi.fn(async () => {});
   host = document.createElement('div');
   document.body.appendChild(host);
   root = createRoot(host);
@@ -334,7 +341,29 @@ describe('EditTeamMemberDialog', () => {
     act(() => host.querySelector<HTMLButtonElement>('[data-testid="editor"]')?.click());
     await act(async () => saveButton().click());
     expect(onClose).not.toHaveBeenCalled();
-    expect(host.textContent).toContain('editTeam.errors.saveFailed');
+    expect(host.textContent).toContain('editTeam.errors.restartBusy');
+    expect(host.textContent).not.toContain('editTeam.errors.saveFailed');
+  });
+
+  it('shows the recovery cause when recovery is required', async () => {
+    updateMemberSettings.mockResolvedValue({
+      outcome: 'completed',
+      effect: 'recovery_required',
+      memberName: 'alice',
+      previousFingerprint: 'old',
+      currentFingerprint: 'old',
+      recovery: {
+        persistenceRestored: false,
+        lifecycleRestored: false,
+        cause: 'disk is read-only',
+      },
+    });
+    act(() => render());
+    act(() => host.querySelector<HTMLButtonElement>('[data-testid="editor"]')?.click());
+    await act(async () => saveButton().click());
+    expect(onClose).not.toHaveBeenCalled();
+    expect(host.textContent).toContain('editTeam.errors.recoveryRequired');
+    expect(host.textContent).toContain('disk is read-only');
   });
 
   it('refreshes and stays open when recovery is required', async () => {
@@ -385,13 +414,154 @@ describe('EditTeamMemberDialog', () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
-  it('refreshes current truth after a failed mutation', async () => {
-    updateMemberSettings.mockRejectedValue(new Error('failed'));
+  it('refreshes current truth after a failed mutation and shows the real error text', async () => {
+    updateMemberSettings.mockRejectedValue(new Error('process 4242 did not exit within 20000 ms'));
     act(() => render());
     act(() => host.querySelector<HTMLButtonElement>('[data-testid="editor"]')?.click());
     await act(async () => saveButton().click());
     expect(onRefresh).toHaveBeenCalledOnce();
     expect(onClose).not.toHaveBeenCalled();
+    expect(host.textContent).toContain('editTeam.errors.saveFailedWithCause');
+    expect(host.textContent).toContain('process 4242 did not exit within 20000 ms');
+  });
+
+  it('falls back to the generic text only when the failed mutation carries no text', async () => {
+    updateMemberSettings.mockRejectedValue(new Error('  '));
+    act(() => render());
+    act(() => host.querySelector<HTMLButtonElement>('[data-testid="editor"]')?.click());
+    await act(async () => saveButton().click());
+    expect(host.textContent).toContain('editTeam.errors.saveFailed');
+    expect(host.textContent).not.toContain('editTeam.errors.saveFailedWithCause');
+  });
+
+  describe('when the settings are saved but the restart failed', () => {
+    const restartFailed = {
+      outcome: 'completed',
+      effect: 'member_restart_failed',
+      memberName: 'alice',
+      previousFingerprint: 'old',
+      currentFingerprint: 'new',
+      replayed: false,
+      failure: { cause: 'spawn failed: ENOENT', memberProcess: 'stopped' },
+    };
+
+    function restartButton(): HTMLButtonElement | undefined {
+      return Array.from(host.querySelectorAll('button')).find(
+        (button) => button.textContent === 'members.detail.restart'
+      );
+    }
+
+    async function saveWithFailedRestart(): Promise<void> {
+      updateMemberSettings.mockResolvedValue(restartFailed);
+      act(() => render());
+      act(() => host.querySelector<HTMLButtonElement>('[data-testid="editor"]')?.click());
+      await act(async () => saveButton().click());
+    }
+
+    it('says the settings are saved, why the restart failed and what is left of the process', async () => {
+      await saveWithFailedRestart();
+
+      expect(onRefresh).toHaveBeenCalledOnce();
+      expect(onClose).not.toHaveBeenCalled();
+      expect(host.textContent).toContain('editTeam.errors.restartFailedSaved');
+      expect(host.textContent).toContain('spawn failed: ENOENT');
+      expect(host.textContent).toContain('editTeam.errors.processStopped');
+      expect(restartButton()).toBeDefined();
+    });
+
+    it.each([
+      ['running', 'editTeam.errors.processRunning'],
+      ['unknown', 'editTeam.errors.processUnknown'],
+    ])('names the %s process state', async (memberProcess, key) => {
+      updateMemberSettings.mockResolvedValue({
+        ...restartFailed,
+        failure: { cause: 'x', memberProcess },
+      });
+      act(() => render());
+      act(() => host.querySelector<HTMLButtonElement>('[data-testid="editor"]')?.click());
+      await act(async () => saveButton().click());
+      expect(host.textContent).toContain(key);
+    });
+
+    it('keeps the editor with the typed settings open and saves only once', async () => {
+      await saveWithFailedRestart();
+      expect(host.querySelector('[data-testid="editor"]')).not.toBeNull();
+      expect(updateMemberSettings).toHaveBeenCalledOnce();
+    });
+
+    it('restarts with the stored settings and closes after the button succeeds', async () => {
+      await saveWithFailedRestart();
+      await act(async () => restartButton()!.click());
+
+      expect(onRestartMember).toHaveBeenCalledExactlyOnceWith('alice');
+      expect(updateMemberSettings).toHaveBeenCalledOnce();
+      expect(onClose).toHaveBeenCalledOnce();
+    });
+
+    it('shows the real cause and keeps the button when the restart fails again', async () => {
+      onRestartMember.mockRejectedValue(new Error('process still alive: pid 4242'));
+      await saveWithFailedRestart();
+      await act(async () => restartButton()!.click());
+
+      expect(onClose).not.toHaveBeenCalled();
+      expect(host.textContent).toContain('editTeam.errors.restartFailedWithCause');
+      expect(host.textContent).toContain('process still alive: pid 4242');
+      expect(restartButton()).toBeDefined();
+      expect(restartButton()!.disabled).toBe(false);
+    });
+
+    it('blocks close and a second click while the restart runs', async () => {
+      let finish: () => void = () => {};
+      onRestartMember.mockReturnValue(new Promise<void>((done) => (finish = done)));
+      await saveWithFailedRestart();
+      act(() => restartButton()!.click());
+
+      expect(restartButton()!.disabled).toBe(true);
+      act(() => host.querySelector<HTMLButtonElement>('[data-testid="dismiss"]')?.click());
+      expect(onClose).not.toHaveBeenCalled();
+
+      await act(async () => finish());
+      expect(onRestartMember).toHaveBeenCalledOnce();
+      expect(onClose).toHaveBeenCalledOnce();
+    });
+
+    it('does not show the restart button after an ordinary successful save', async () => {
+      updateMemberSettings.mockResolvedValue({
+        outcome: 'completed',
+        effect: 'member_restart_started',
+        memberName: 'alice',
+        previousFingerprint: 'old',
+        currentFingerprint: 'new',
+      });
+      act(() => render());
+      act(() => host.querySelector<HTMLButtonElement>('[data-testid="editor"]')?.click());
+      await act(async () => saveButton().click());
+      expect(restartButton()).toBeUndefined();
+      expect(onClose).toHaveBeenCalledOnce();
+    });
+  });
+
+  it('shows the lead rollback cause instead of the generic text', async () => {
+    updateMemberSettings.mockResolvedValue({
+      outcome: 'completed',
+      effect: 'lead_restart_rolled_back',
+      memberName: 'team-lead',
+      previousFingerprint: 'old',
+      currentFingerprint: 'old',
+      recovery: { persistenceRestored: true, lifecycleRestored: true, cause: 'lead did not start' },
+    });
+    act(() =>
+      render({
+        isLead: true,
+        isTeamAlive: true,
+        leadProviderId: 'anthropic',
+        member: { ...member, name: 'team-lead', agentType: 'team-lead' },
+      })
+    );
+    act(() => host.querySelector<HTMLButtonElement>('[data-testid="model-editor"]')?.click());
+    await act(async () => saveButton().click());
+    expect(host.textContent).toContain('editTeam.errors.leadRestartRolledBack');
+    expect(host.textContent).toContain('lead did not start');
   });
 
   it('stays open and does not repeat refresh when refresh fails after a successful save', async () => {

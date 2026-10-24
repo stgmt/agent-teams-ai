@@ -108,6 +108,25 @@ describe('TeamTaskStallPolicy.evaluatePendingPickup', () => {
     expect(evaluation.reason).toContain(`all blockers resolved at ${UNBLOCKED_AT}`);
   });
 
+  it('alerts for a Claude owner the same way (the pickup check is not OpenCode-only)', () => {
+    const task = createPendingTask({ owner: 'Worker' });
+
+    const evaluation = policy.evaluatePendingPickup({
+      now: new Date(PAST_THRESHOLD_AT),
+      task,
+      snapshot: snapshotFor(task, {
+        providerByMemberName: new Map([['worker', 'anthropic' as const]]),
+      }),
+    });
+
+    expect(evaluation).toMatchObject({
+      status: 'alert',
+      memberName: 'Worker',
+      signal: 'pending_pickup_after_unblock',
+      remediationKind: 'pending_pickup',
+    });
+  });
+
   it('holds the alert until the threshold elapses, to the millisecond', () => {
     const task = createPendingTask();
     const snapshot = snapshotFor(task);
@@ -375,11 +394,6 @@ describe('TeamTaskStallPolicy.evaluatePendingPickup', () => {
   });
 
   it.each([
-    [
-      'owner_not_opencode',
-      { owner: 'Worker' },
-      { providerByMemberName: new Map([['worker', 'anthropic' as const]]) },
-    ],
     ['owner_is_lead', { owner: 'team-lead' }, {}],
     // The lead is still the lead when an agent capitalised the owner field.
     ['owner_is_lead', { owner: 'Team-Lead ' }, {}],

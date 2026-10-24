@@ -13,6 +13,7 @@ import {
 } from 'react';
 
 import { useAppTranslation } from '@features/localization/renderer';
+import { TeamNotRunningNotice } from '@features/team-downtime-notice/renderer';
 import {
   assertMemberSettingsRelaunchRoster,
   type MemberSettingsRelaunchDraft,
@@ -66,7 +67,6 @@ import {
   hasUnresolvedMemberSpawnStatus,
   MEMBER_SPAWN_STATUS_REFRESH_MS,
 } from '@renderer/utils/memberSpawnStatusPolling';
-import { shouldClearPendingReplyForOpenCodeRuntimeDelivery } from '@renderer/utils/openCodeRuntimeDeliveryDiagnostics';
 import { formatProjectPath } from '@renderer/utils/pathDisplay';
 import { buildTaskCountsByOwner, normalizePath } from '@renderer/utils/pathNormalize';
 import { nameColorSet } from '@renderer/utils/projectColor';
@@ -76,7 +76,6 @@ import {
   buildTaskChangeRequestOptions,
   type TaskChangeRequestOptions,
 } from '@renderer/utils/taskChangeRequest';
-import { buildPendingRuntimeSummaryCopy } from '@renderer/utils/teamLaunchSummaryCopy';
 import { stripAgentBlocks } from '@shared/constants/agentBlocks';
 import { isLeadMember } from '@shared/utils/leadDetection';
 import { deriveTaskDisplayId, formatTaskDisplayLabel } from '@shared/utils/taskIdentity';
@@ -90,9 +89,7 @@ import {
   History,
   Network,
   Pencil,
-  Play,
   Plus,
-  Power,
   Square,
   Terminal,
   Trash2,
@@ -171,6 +168,7 @@ const ChangeReviewDialog = lazy(() =>
 import { MemberList } from './members/MemberList';
 import { MessagesPanel } from './messages/MessagesPanel';
 import { type ExpandedChatHost } from './messages/MessagesThreadPlacement';
+import { sendOwnerMessage } from './messages/sendOwnerMessage';
 import { useExpandedTeamChat } from './messages/useExpandedTeamChat';
 import { ScheduleSection } from './schedule/ScheduleSection';
 import { TeamSidebarHost } from './sidebar/TeamSidebarHost';
@@ -185,6 +183,7 @@ import { ProcessesSection } from './ProcessesSection';
 import { getLaunchJoinMilestonesFromMembers, getLaunchJoinState } from './provisioningSteps';
 import { TeamChangesSection } from './TeamChangesSection';
 import { TeamLoadingSkeleton } from './TeamLoadingSkeleton';
+import { TeamOfflineStatusBanner } from './TeamOfflineStatusBanner';
 import { setPendingRepliesForTeam, useTeamPendingReplies } from './teamPendingRepliesStore';
 import { TeamProvisioningBanner } from './TeamProvisioningBanner';
 import { loadTeamSessionMetadata } from './teamSessionFetchGuards';
@@ -450,76 +449,6 @@ function filterKanbanTasks(tasks: TeamTaskWithKanban[], query: string): TeamTask
       (t.owner?.toLowerCase().includes(lower) ?? false)
   );
 }
-
-const TeamOfflineStatusBanner = memo(function TeamOfflineStatusBanner({
-  teamName,
-  onLaunch,
-}: {
-  teamName: string;
-  onLaunch: () => void;
-}): React.JSX.Element {
-  const { t } = useAppTranslation('team');
-  const summary = useStore(
-    useShallow((s) => {
-      const team = s.teamByName[teamName];
-      if (!team) {
-        return null;
-      }
-
-      return {
-        memberCount: team.memberCount,
-        expectedMemberCount: team.expectedMemberCount,
-        confirmedCount: team.confirmedCount,
-        runtimeProcessPendingCount: team.runtimeProcessPendingCount,
-        teamLaunchState: team.teamLaunchState,
-        partialLaunchFailure: team.partialLaunchFailure,
-        missingMemberCount: team.missingMembers?.length ?? 0,
-      };
-    })
-  );
-
-  const message =
-    summary?.teamLaunchState === 'partial_pending'
-      ? summary.runtimeProcessPendingCount != null && summary.runtimeProcessPendingCount > 0
-        ? buildPendingRuntimeSummaryCopy({
-            confirmedCount: summary.confirmedCount,
-            expectedMemberCount: summary.expectedMemberCount,
-            memberCount: summary.memberCount,
-            runtimeProcessPendingCount: summary.runtimeProcessPendingCount,
-          })
-        : t('detail.offline.reconciling')
-      : summary?.partialLaunchFailure
-        ? summary.missingMemberCount > 0
-          ? t('detail.offline.partialMissing', {
-              missing: summary.missingMemberCount,
-              expected: summary.expectedMemberCount ?? summary.missingMemberCount,
-            })
-          : t('detail.offline.partialFailed')
-        : t('detail.offline.offline');
-
-  return (
-    <div
-      role="status"
-      className="relative mb-2.5 flex min-h-11 items-center gap-2.5 overflow-hidden rounded-md border border-amber-500/20 bg-amber-500/[0.055] py-2 pl-3 pr-2.5"
-    >
-      <span className="flex size-7 shrink-0 items-center justify-center rounded-md border border-amber-500/20 bg-amber-500/10 text-amber-600 dark:text-amber-300">
-        <Power size={14} />
-      </span>
-      <span className="min-w-0 flex-1 text-xs font-medium text-[var(--color-text-secondary)]">
-        {message}
-      </span>
-      <Button
-        variant="ghost"
-        size="sm"
-        className="h-7 shrink-0 gap-1.5 rounded-md border border-emerald-500/25 bg-emerald-500/10 px-2.5 text-xs font-medium text-emerald-700 hover:border-emerald-500/40 hover:bg-emerald-500/15 hover:text-emerald-700 dark:text-emerald-300 dark:hover:text-emerald-200"
-        onClick={onLaunch}
-      >
-        <Play size={12} />
-        {t('detail.actions.launch')}
-      </Button>
-    </div>
-  );
-});
 
 type LeadUpdatedKey = `lead${'Con'}${'text'}UpdatedAt`;
 type TeamMessagesPanelBridgeProps = Omit<
@@ -1172,37 +1101,15 @@ const SendMessageDialogBridge = memo(function SendMessageDialogBridge({
   );
 
   const handleSend = useCallback<SendMessageDialogOnSend>(
-    async (member, text, summary, attachments, actionMode, taskRefs) => {
-      const sentAtMs = Date.now();
-      setPendingRepliesForTeam(teamName, (prev) => ({ ...prev, [member]: sentAtMs }));
-      try {
-        const result = await sendTeamMessage(teamName, {
-          member,
-          text,
-          summary,
-          attachments,
-          actionMode,
-          taskRefs,
-        });
-        if (shouldClearPendingReplyForOpenCodeRuntimeDelivery(result?.runtimeDelivery)) {
-          setPendingRepliesForTeam(teamName, (prev) => {
-            if (prev[member] !== sentAtMs) return prev;
-            const next = { ...prev };
-            delete next[member];
-            return next;
-          });
+    (member, text, summary, attachments, actionMode, taskRefs) =>
+      sendOwnerMessage(
+        teamName,
+        { member, text, summary, attachments, actionMode, taskRefs },
+        {
+          sendTeamMessage,
+          onPendingReplyChange: (updater) => setPendingRepliesForTeam(teamName, updater),
         }
-        return result;
-      } catch (error) {
-        setPendingRepliesForTeam(teamName, (prev) => {
-          if (prev[member] !== sentAtMs) return prev;
-          const next = { ...prev };
-          delete next[member];
-          return next;
-        });
-        throw error;
-      }
-    },
+      ),
     [sendTeamMessage, teamName]
   );
 
@@ -2155,13 +2062,16 @@ export const TeamDetailView = memo(function TeamDetailView({
     [openCreateTaskDialog]
   );
 
-  const handleReplyToMessage = useCallback((message: { from: string; text: string }, recipientHint?: string) => {
-    setSendDialogRecipient(recipientHint ?? message.from);
-    setSendDialogDefaultText(undefined);
-    setSendDialogDefaultChip(undefined);
-    setReplyQuote({ from: message.from, text: stripAgentBlocks(message.text) });
-    setSendDialogOpen(true);
-  }, []);
+  const handleReplyToMessage = useCallback(
+    (message: { from: string; text: string }, recipientHint?: string) => {
+      setSendDialogRecipient(recipientHint ?? message.from);
+      setSendDialogDefaultText(undefined);
+      setSendDialogDefaultChip(undefined);
+      setReplyQuote({ from: message.from, text: stripAgentBlocks(message.text) });
+      setSendDialogOpen(true);
+    },
+    []
+  );
 
   const openLaunchDialog = useCallback((mode: TeamLaunchDialogMode) => {
     setLaunchDialogState({ open: true, mode });
@@ -3543,6 +3453,7 @@ export const TeamDetailView = memo(function TeamDetailView({
                   onClose={() => setEditTarget(null)}
                   onRefresh={(settings) => refreshTeamMemberSettings(teamName, settings)}
                   onRelaunchRequired={handleChangeLeadRuntime}
+                  onRestartMember={(memberName) => handleRestartMember(memberName)}
                 />
               ) : null}
 
@@ -3807,6 +3718,14 @@ export const TeamDetailView = memo(function TeamDetailView({
       {spawnStatusWatcher}
       {teamAgentRuntimeWatcher}
       {renderBody()}
+      <TeamNotRunningNotice
+        teamName={teamName}
+        isAlive={data?.isAlive ?? true}
+        isProvisioning={isTeamProvisioning}
+        isLaunchDialogOpen={launchDialogOpen}
+        isTabActive={isThisTabActive}
+        onLaunch={() => openLaunchDialog('launch')}
+      />
       {launchDialogOpen && (
         <Suspense
           fallback={

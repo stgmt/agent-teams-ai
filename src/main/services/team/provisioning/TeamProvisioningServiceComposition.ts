@@ -3,6 +3,7 @@ import { createTeamProvisioningStatusFeature } from '@features/team-provisioning
 import { readOpenCodeCurrentRuntimeStatus } from '@main/services/runtime/openCodeEffectiveRuntimeVersion';
 import { execCli, spawnCli } from '@main/utils/childProcess';
 import { getAutoDetectedClaudeBasePath, getTeamsBasePath } from '@main/utils/pathDecoder';
+import { isProcessAlive } from '@main/utils/processHealth';
 import { getErrorMessage } from '@shared/utils/errorHandling';
 import { createLogger } from '@shared/utils/logger';
 import * as agentTeamsControllerModule from 'agent-teams-controller';
@@ -437,6 +438,7 @@ export function createTeamProvisioningServiceComposition(
     RuntimeAdapterRunByTeamEntry
   >(host.runtimeProjection, {
     readBootstrapRuntimeState,
+    isRuntimePidAlive: isProcessAlive,
     logDebug: (message) => logger.debug(message),
   });
   assignCompositionPart(

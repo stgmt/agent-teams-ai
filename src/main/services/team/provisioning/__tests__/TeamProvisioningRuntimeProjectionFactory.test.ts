@@ -50,8 +50,10 @@ describe('TeamProvisioningRuntimeProjectionFactory', () => {
       runtimeResourceSampling,
     } as unknown as TeamProvisioningRuntimeProjectionServiceHost<never, never>;
 
+    const isRuntimePidAlive = vi.fn(() => false);
     const deps = createTeamProvisioningRuntimeProjectionDepsFromService(service, {
       readBootstrapRuntimeState,
+      isRuntimePidAlive,
       logDebug,
     });
 
@@ -64,6 +66,7 @@ describe('TeamProvisioningRuntimeProjectionFactory', () => {
     expect(deps.liveRuntimeMetadataCache).toBe(runtimeSnapshotCacheBoundary);
     expect(deps.runtimeResourceSampling).toBe(runtimeResourceSampling);
     expect(deps.logDebug).toBe(logDebug);
+    expect(deps.isRuntimePidAlive).toBe(isRuntimePidAlive);
     await expect(deps.readBootstrapRuntimeState('alpha')).resolves.toBeNull();
     await expect(deps.teamMetaStore.getMeta('alpha')).resolves.toBeNull();
     await expect(deps.membersMetaStore.getMembers('alpha')).resolves.toEqual([]);

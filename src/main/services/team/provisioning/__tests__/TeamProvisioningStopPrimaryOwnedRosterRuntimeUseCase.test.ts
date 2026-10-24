@@ -2,11 +2,14 @@ import { describe, expect, it } from 'vitest';
 
 import { createStopPrimaryOwnedRosterRuntimeUseCase } from '../TeamProvisioningStopPrimaryOwnedRosterRuntimeUseCase';
 
+import type { ProcessInspection } from '../TeamProvisioningMemberProcessControl';
+
 function createPorts(
   overrides: {
     alivePids?: readonly number[];
     lingeringPids?: number[];
     lingeringPaneIds?: string[];
+    inspection?: (pid: number) => ProcessInspection;
     paneInfo?: ReadonlyMap<string, { panePid: number }>;
     processCommandByPid?: (pid: number) => string | null;
     processRows?: readonly { pid: number; ppid: number; command: string }[] | null;
@@ -17,9 +20,9 @@ function createPorts(
   const calls = {
     killedPanes: [] as string[],
     killedPids: [] as number[],
-    waitPidCalls: [] as Array<{ pids: readonly number[]; timeoutMs: number; pollMs: number }>,
     waitPaneCalls: [] as Array<{ paneIds: readonly string[]; timeoutMs: number; pollMs: number }>,
     debug: [] as string[],
+    diagnostics: [] as string[],
     warnings: [] as string[],
     paneInfoReads: [] as string[][],
     processTableReads: [] as { bypassCache: boolean }[],
@@ -33,11 +36,14 @@ function createPorts(
       isProcessAlive(pid: number) {
         return alivePids.has(pid);
       },
-      readProcessCommandByPid(pid: number) {
-        return (
+      async inspectProcess(pid: number): Promise<ProcessInspection> {
+        if (overrides.inspection) {
+          return overrides.inspection(pid);
+        }
+        const command =
           overrides.processCommandByPid?.(pid) ??
-          'bun cli.js --team-name team-a --agent-name Worker --agent-id Worker@team-a'
-        );
+          'bun cli.js --team-name team-a --agent-name Worker --agent-id Worker@team-a';
+        return command === null ? { status: 'not_found' } : { status: 'found', command };
       },
       async listTmuxPaneRuntimeInfo(paneIds: readonly string[]) {
         calls.paneInfoReads.push([...paneIds]);
@@ -56,18 +62,14 @@ function createPorts(
           throw new Error(`pane failed ${paneId}`);
         }
       },
-      killProcess(pid: number) {
+      async terminateProcess(pid: number) {
         calls.killedPids.push(pid);
         if (pid === overrides.throwOnPid) {
           throw new Error(`pid failed ${pid}`);
         }
-      },
-      async waitForPidsToExit(
-        pids: readonly number[],
-        options: { timeoutMs: number; pollMs: number }
-      ) {
-        calls.waitPidCalls.push({ pids, ...options });
-        return overrides.lingeringPids ?? [];
+        if (overrides.lingeringPids?.includes(pid)) {
+          throw new Error(`Process ${pid} remained alive after cleanup`);
+        }
       },
       async waitForTmuxPanesToExit(
         paneIds: readonly string[],
@@ -78,6 +80,9 @@ function createPorts(
       },
       logDebug(message: string) {
         calls.debug.push(message);
+      },
+      logDiagnostic(message: string) {
+        calls.diagnostics.push(message);
       },
       logWarning(message: string) {
         calls.warnings.push(message);
@@ -116,7 +121,6 @@ describe('TeamProvisioningStopPrimaryOwnedRosterRuntimeUseCase', () => {
 
     expect(calls.killedPanes).toEqual(['pane-a', 'pane-b']);
     expect(calls.killedPids).toEqual([111, 222, 333]);
-    expect(calls.waitPidCalls).toEqual([{ pids: [111, 222, 333], timeoutMs: 1_500, pollMs: 100 }]);
     expect(calls.waitPaneCalls).toEqual([
       { paneIds: ['pane-a', 'pane-b'], timeoutMs: 1_500, pollMs: 100 },
     ]);
@@ -139,29 +143,121 @@ describe('TeamProvisioningStopPrimaryOwnedRosterRuntimeUseCase', () => {
     ).resolves.toBeUndefined();
 
     expect(calls.killedPids).toEqual([]);
-    expect(calls.waitPidCalls).toEqual([]);
   });
 
-  it('logs stop-handle kill failures and still waits for collected handles', async () => {
-    const { calls, ports } = createPorts({ throwOnPane: 'pane-a', throwOnPid: 111 });
+  it('logs a pane kill failure and still waits for the pane', async () => {
+    const { calls, ports } = createPorts({ throwOnPane: 'pane-a' });
     const stopPrimaryOwnedRosterRuntime = createStopPrimaryOwnedRosterRuntimeUseCase(ports);
 
     await stopPrimaryOwnedRosterRuntime({
       teamName: 'team-a',
       memberName: 'Worker',
       actionLabel: 'Update for teammate "Worker"',
-      persistedRuntimeMembers: [
-        { backendType: 'process', runtimePid: 111 },
-        { backendType: 'tmux', tmuxPaneId: 'pane-a' },
-      ],
+      persistedRuntimeMembers: [{ backendType: 'tmux', tmuxPaneId: 'pane-a' }],
       liveRuntimeByMember: new Map(),
     });
 
-    expect(calls.waitPidCalls).toEqual([{ pids: [111], timeoutMs: 1_500, pollMs: 100 }]);
     expect(calls.waitPaneCalls).toEqual([{ paneIds: ['pane-a'], timeoutMs: 1_500, pollMs: 100 }]);
     expect(calls.debug).toEqual([
       expect.stringContaining('Failed to stop teammate pane Worker pane-a'),
-      expect.stringContaining('Failed to stop teammate process Worker pid=111'),
+    ]);
+  });
+
+  it('reports the real cause when a process cannot be stopped, never swallows it', async () => {
+    const { ports } = createPorts({ throwOnPid: 111 });
+    const stopPrimaryOwnedRosterRuntime = createStopPrimaryOwnedRosterRuntimeUseCase(ports);
+
+    await expect(
+      stopPrimaryOwnedRosterRuntime({
+        teamName: 'team-a',
+        memberName: 'Worker',
+        actionLabel: 'Update for teammate "Worker"',
+        persistedRuntimeMembers: [{ backendType: 'process', runtimePid: 111 }],
+        liveRuntimeByMember: new Map(),
+      })
+    ).rejects.toThrow(
+      'Update for teammate "Worker" could not stop the previous process: pid 111: pid failed 111'
+    );
+  });
+
+  it('stops every collected process and reports each failure', async () => {
+    const { calls, ports } = createPorts({ throwOnPid: 222 });
+    const stopPrimaryOwnedRosterRuntime = createStopPrimaryOwnedRosterRuntimeUseCase(ports);
+
+    await expect(
+      stopPrimaryOwnedRosterRuntime({
+        teamName: 'team-a',
+        memberName: 'Worker',
+        actionLabel: 'Update for teammate "Worker"',
+        persistedRuntimeMembers: [{ backendType: 'process', runtimePid: 111 }],
+        liveRuntimeByMember: new Map([
+          ['Worker', { alive: true, backendType: 'process', pid: 222, metricsPid: 333 }],
+        ]),
+      })
+    ).rejects.toThrow('pid 222: pid failed 222');
+
+    expect(calls.killedPids).toEqual([111, 222, 333]);
+  });
+
+  it('treats a persisted pid that no longer exists as already stopped', async () => {
+    const { calls, ports } = createPorts({ inspection: () => ({ status: 'not_found' }) });
+    const stopPrimaryOwnedRosterRuntime = createStopPrimaryOwnedRosterRuntimeUseCase(ports);
+
+    await expect(
+      stopPrimaryOwnedRosterRuntime({
+        teamName: 'team-a',
+        memberName: 'Worker',
+        actionLabel: 'Update for teammate "Worker"',
+        persistedRuntimeMembers: [{ backendType: 'process', runtimePid: 111 }],
+        liveRuntimeByMember: new Map(),
+      })
+    ).resolves.toBeUndefined();
+
+    expect(calls.killedPids).toEqual([]);
+    expect(calls.warnings).toEqual([]);
+  });
+
+  it('does not call an unreadable process list a foreign process', async () => {
+    const { calls, ports } = createPorts({
+      alivePids: [111],
+      inspection: () => ({
+        status: 'unreadable',
+        cause: 'windows_process_inspection: timedOut=true',
+      }),
+    });
+    const stopPrimaryOwnedRosterRuntime = createStopPrimaryOwnedRosterRuntimeUseCase(ports);
+
+    await expect(
+      stopPrimaryOwnedRosterRuntime({
+        teamName: 'team-a',
+        memberName: 'Worker',
+        actionLabel: 'Update for teammate "Worker"',
+        persistedRuntimeMembers: [{ backendType: 'process', runtimePid: 111 }],
+        liveRuntimeByMember: new Map(),
+      })
+    ).rejects.toThrow(
+      'Update for teammate "Worker" cannot verify the persisted runtime identity of pid 111 (the process list could not be read): windows_process_inspection: timedOut=true'
+    );
+
+    expect(calls.killedPids).toEqual([]);
+    expect(calls.warnings).toEqual([]);
+  });
+
+  it('records the identity result and the stop duration in the durable log', async () => {
+    const { calls, ports } = createPorts();
+    const stopPrimaryOwnedRosterRuntime = createStopPrimaryOwnedRosterRuntimeUseCase(ports);
+
+    await stopPrimaryOwnedRosterRuntime({
+      teamName: 'team-a',
+      memberName: 'Worker',
+      actionLabel: 'Update for teammate "Worker"',
+      persistedRuntimeMembers: [{ backendType: 'process', runtimePid: 111 }],
+      liveRuntimeByMember: new Map(),
+    });
+
+    expect(calls.diagnostics).toEqual([
+      '[team-a] Update for teammate "Worker": identity of pid=111 is found',
+      expect.stringMatching(/^\[team-a\] Update for teammate "Worker": stopped pid=111 in \d+ ms$/),
     ]);
   });
 
@@ -199,10 +295,11 @@ describe('TeamProvisioningStopPrimaryOwnedRosterRuntimeUseCase', () => {
         persistedRuntimeMembers: [{ backendType: 'process', runtimePid: 111 }],
         liveRuntimeByMember: new Map(),
       })
-    ).rejects.toThrow('does not expose a pid or tmux pane');
+    ).rejects.toThrow(
+      'Detach for teammate "Worker" refuses to stop pid 111: the process is not the runtime of this teammate'
+    );
 
     expect(calls.killedPids).toEqual([]);
-    expect(calls.waitPidCalls).toEqual([]);
     expect(calls.warnings).toEqual([
       expect.stringContaining('process identity does not match the exact team and member'),
     ]);
@@ -292,7 +389,6 @@ describe('TeamProvisioningStopPrimaryOwnedRosterRuntimeUseCase', () => {
     ).resolves.toBeUndefined();
 
     expect(calls.killedPids).toEqual([222]);
-    expect(calls.waitPidCalls).toEqual([{ pids: [222], timeoutMs: 1_500, pollMs: 100 }]);
   });
 
   it('surfaces lingering process and pane evidence after stop attempts', async () => {
@@ -307,7 +403,9 @@ describe('TeamProvisioningStopPrimaryOwnedRosterRuntimeUseCase', () => {
         persistedRuntimeMembers: [{ backendType: 'process', runtimePid: 111 }],
         liveRuntimeByMember: new Map(),
       })
-    ).rejects.toThrow('Detach for teammate "Worker" is still waiting for process exit (111).');
+    ).rejects.toThrow(
+      'Detach for teammate "Worker" could not stop the previous process: pid 111: Process 111 remained alive after cleanup'
+    );
 
     const panePorts = createPorts({ lingeringPaneIds: ['pane-a'] });
     const stopPaneRuntime = createStopPrimaryOwnedRosterRuntimeUseCase(panePorts.ports);

@@ -73,6 +73,7 @@ function makeDeps(
       rows: [],
       processTableAvailable: true,
     })),
+    isRuntimePidAlive: () => true,
     getRuntimeSnapshotCacheGeneration: vi.fn(() => 0),
     getTrackedRunId: vi.fn(() => 'run-1'),
     getAgentRuntimeSnapshotCacheTtlMs: vi.fn(() => 1_000),

@@ -469,6 +469,7 @@ describe('TeamProvisioning API binders', () => {
         });
       },
       stopTeam: () => Promise.resolve(),
+      publishProvisioningProgress: () => undefined,
       getAliveTeams: () => ['team-http'],
       isTeamAlive: () => true,
       getCurrentRunId: () => 'run-http',

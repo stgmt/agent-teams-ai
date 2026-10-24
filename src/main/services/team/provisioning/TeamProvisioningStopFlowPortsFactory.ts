@@ -167,7 +167,8 @@ export function createTeamProvisioningStopFlowDepsFromService<TRun extends TeamP
     killTeamProcessAndWait:
       options.killTeamProcessAndWait ??
       (killTeamProcessAndWaitDefault as TeamProvisioningStopFlowFactoryDeps<TRun>['killTeamProcessAndWait']),
-    updateProgress: (run, state, message) => options.updateProgress(run, state, message),
+    updateProgress: (run, state, message, extras) =>
+      options.updateProgress(run, state, message, extras),
     cleanupRun: (run) => service.cleanupRun(run),
     emitTeamChange: (event) => service.teamChangeEmitter?.(event),
     logger: options.logger,
@@ -261,7 +262,8 @@ export function createTeamProvisioningStopTeamPortsFromDeps<TRun extends TeamPro
     deleteAliveRunId: (teamName) => deps.deleteAliveRunId(teamName),
     killTeamProcess: (child) => deps.killTeamProcess(child),
     killTeamProcessAndWait: (child) => deps.killTeamProcessAndWait(child),
-    updateProgress: (run, state, message) => deps.updateProgress(run, state, message),
+    updateProgress: (run, state, message, extras) =>
+      deps.updateProgress(run, state, message, extras),
     cleanupRun: (run) => deps.cleanupRun(run),
     logger: deps.logger,
   };
