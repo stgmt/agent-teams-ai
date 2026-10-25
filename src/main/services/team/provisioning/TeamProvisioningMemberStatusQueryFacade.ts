@@ -43,8 +43,8 @@ import {
 } from './TeamProvisioningRuntimeRecipientResolution';
 import { type TeamProvisioningRuntimeSnapshotFacade } from './TeamProvisioningRuntimeSnapshotFacade';
 import { type TeamProvisioningRunTrackingDeliveryHelper } from './TeamProvisioningRunTrackingDelivery';
-import { deliverStartupWorkAfterConfirmation } from './TeamProvisioningStartupWorkDelivery';
 import { updateProvisioningProgressMetadata } from './TeamProvisioningSecondaryStopProgress';
+import { deliverStartupWorkAfterConfirmation } from './TeamProvisioningStartupWorkDelivery';
 import { TeamProvisioningTaskActivityCompatibilityFacade } from './TeamProvisioningTaskActivityCompatibilityFacade';
 
 import type {
