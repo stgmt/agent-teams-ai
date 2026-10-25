@@ -127,6 +127,10 @@ describe('Electron TEST delivery status privacy boundary', () => {
       expect(result.taskStatus).toBe('in_progress');
       expect(result.advisory).toEqual({ kind: 'api_error', reasonCode: 'quota_exhausted' });
       expect(result.matchedMessages).toBe(4);
+      expect(result.commentObservation).toEqual({
+        count: 1, ownerAuthored: false, exactMatch: false,
+        trimmedExactMatch: false, containsToken: false,
+      });
       expect(result.messageSearchExhaustive).toBe(false);
       expect(readStatus.mock.calls).toEqual(Array.from({ length: 4 }, (_, n) => [team, `owned-${n}`]));
       expect(result.deliveries.every((row) => row?.ledgerStatus === null &&
@@ -188,7 +192,8 @@ it('projects bounded exact shell matcher facts before CDP without commands or re
   const exact = execution(`node "${program}" ${secret}`);
   const calls = [execution(`node other.cjs ${secret}`), execution(`other "${program}"`),
     execution(`node "${program}"`, false), execution(`node "${program}"`, true, secret), exact];
-  const task = { id: 'owned', owner: 'bob', status: 'completed' };
+  const task = { id: 'owned', owner: 'bob', status: 'completed',
+    comments: [{ author: 'bob', text: 'TASK_COMMENT:TEST-comment-nonce' }] };
   const chunk = { chunkType: 'ai', responses: [{ type: 'assistant', model: 'test/model' }],
     toolExecutions: calls, rawMessages: [] };
   // Execute the actual serialized renderer closure, including its injected matcher.
@@ -207,6 +212,11 @@ it('projects bounded exact shell matcher facts before CDP without commands or re
     await port.getData();
     const result = await port.getSafeTaskFailureSnapshot('owned', 'bob', {
       session: 'original', program, marker, model: 'test/model',
+      comment: 'TASK_COMMENT:TEST-comment-nonce',
+    });
+    expect(result.commentObservation).toEqual({
+      count: 1, ownerAuthored: true, exactMatch: true,
+      trimmedExactMatch: true, containsToken: true,
     });
     const observed = result.commandObservation!;
     expect(observed.shellCount).toBe(15);
@@ -272,4 +282,24 @@ it('diagnoses Windows command spelling without accepting equivalent or unbound c
     expect(JSON.stringify(result)).not.toMatch(/TEST-project|bob-verify|TEST-private-nonce/i);
   }
   expect(observe(`node "${program}"`).nativeMatches).toBe(true);
+});
+
+it('accepts the exact marker line in projected text-block tool results', () => {
+  const program = 'C:\\TEST-project\\bob-verify.cjs';
+  const marker = 'COMMAND_EXEC:TEST-block-nonce';
+  const match = new Function(`return ${serializedFunction(nativeCommandMatch)};`)() as typeof nativeCommandMatch;
+  const observe = (content: unknown) => match({
+    startTime: new Date(0),
+    toolCall: { id: 'owned', name: 'bash', input: { command: `node "${program}"` }, isTask: false },
+    result: { toolUseId: 'owned', isError: false, content: content as string },
+  }, program, marker);
+  const blocks = (text: string) => [{ type: 'text', text }];
+  expect(observe(blocks(`${marker}\n`)).markerMatches).toBe(true);
+  expect(observe(blocks(`noise\n${marker}\nmore`)).markerMatches).toBe(true);
+  expect(observe([{ type: 'text', text: 'noise' }, { type: 'text', text: `${marker}\r\n` }]).markerMatches).toBe(true);
+  expect(observe(JSON.stringify(blocks(marker))).markerMatches).toBe(true);
+  expect(observe(blocks(`${marker}\n`)).succeeded).toBe(true);
+  for (const content of [blocks(`prefix ${marker}`), blocks(`${marker} suffix`),
+    [{ type: 'thinking', thinking: marker }], [], [marker]])
+    expect(observe(content).markerMatches).toBe(false);
 });

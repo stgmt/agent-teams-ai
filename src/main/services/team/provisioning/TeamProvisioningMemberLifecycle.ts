@@ -74,6 +74,7 @@ import {
   type RuntimeAdapterRunEntry,
 } from './TeamProvisioningMemberLifecycleSupport';
 import { parseOptionalIsoMs } from './TeamProvisioningMemberSpawnStatusPolicy';
+import { buildDirectRestartPromptMessage } from './TeamProvisioningMessagePersistence';
 import {
   createPersistOpenCodeMemberRestartSystemMessageUseCase,
   type OpenCodeMemberRestartSystemMessageInput,
@@ -491,24 +492,11 @@ export class TeamProvisioningMemberLifecycleController {
   }
 
   private enqueueDirectRestartPromptInternal(input: DirectRestartPromptInput): void {
-    const timestamp = nowIso();
-    const operation = input.operation ?? 'manual_restart';
-    const isRestart = operation === 'manual_restart';
     this.persistInboxMessage(input.teamName, input.memberName, {
-      from: input.leadName,
-      to: input.memberName,
-      text: input.prompt,
-      timestamp,
-      read: false,
-      source: 'system_notification',
-      leadSessionId: input.leadSessionId ?? undefined,
+      ...buildDirectRestartPromptMessage(input),
       // Every launch attempt gets its own copy of the same check; the controller must not take
       // the second one for a repeated message.
       allowRepeatedDelivery: true,
-      messageId: `direct-${operation}-${input.memberName}-${randomUUID()}`,
-      summary: isRestart
-        ? `Restart bootstrap instructions for ${input.memberName}`
-        : `Bootstrap instructions for ${input.memberName}`,
     });
   }
 

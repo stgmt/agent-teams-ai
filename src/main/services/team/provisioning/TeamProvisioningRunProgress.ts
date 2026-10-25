@@ -12,6 +12,7 @@ import {
   buildProvisioningLiveOutput,
 } from './TeamProvisioningProgressBuffers';
 import { shouldIgnoreProvisioningProgressRegression } from './TeamProvisioningProgressState';
+import { updateProvisioningProgressMetadata } from './TeamProvisioningSecondaryStopProgress';
 
 import type { ProvisioningRun } from './TeamProvisioningRunModel';
 import type { TeamProvisioningProgress, TeamProvisioningState } from '@shared/types';
@@ -194,12 +195,11 @@ export function emitLogsProgress(run: ProvisioningRun): void {
   if (!logsTail && !assistantOutputChanged) {
     return;
   }
-  run.progress = {
-    ...run.progress,
+  updateProvisioningProgressMetadata(run, {
     updatedAt: nowIso(),
     ...(logsTail !== undefined && { cliLogsTail: logsTail }),
     ...(assistantOutputChanged && { assistantOutput }),
-  };
+  });
   run.onProgress(run.progress);
 }
 

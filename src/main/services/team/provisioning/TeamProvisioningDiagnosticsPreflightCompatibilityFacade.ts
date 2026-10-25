@@ -529,6 +529,7 @@ export abstract class TeamProvisioningDiagnosticsPreflightCompatibilityFacade<
     memberName: string;
     messageId: string;
     delayMs?: number;
+    isCurrent?: () => boolean;
   }): void {
     this.scheduleOpenCodeMemberInboxDeliveryWakeInternal(input);
   }
@@ -538,6 +539,7 @@ export abstract class TeamProvisioningDiagnosticsPreflightCompatibilityFacade<
     memberName: string;
     messageId: string;
     delayMs?: number;
+    isCurrent?: () => boolean;
   }): void {
     scheduleOpenCodeMemberInboxDeliveryWakeWithPorts(input, {
       watchdogScheduler: this.openCodePromptDeliveryWatchdogScheduler,

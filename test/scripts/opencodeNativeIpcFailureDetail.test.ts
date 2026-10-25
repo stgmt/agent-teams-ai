@@ -13,8 +13,8 @@ import { projectIpcCausalFailure, safeIpcFailureDetail } from '../../scripts/e2e
 import { electronTeamPort, nativeCommandMatch } from '../../scripts/e2e/opencode-native-team-port';
 import { serializedFunction } from '../../scripts/e2e/release-updater/serialized-function.mts';
 import { parseSingleBridgeJsonResult, validateBridgeResultEnvelope } from '../../src/main/services/team/opencode/bridge/OpenCodeBridgeCommandContract';
-import { createOpenCodeBridgeClientIdentity, createOpenCodeBridgeHandshakeFailure } from '../../src/main/services/team/opencode/bridge/OpenCodeBridgeHandshakeClient';
-import { formatOpenCodeStopCausalSuffix, projectOpenCodeStateChangingFailure } from '../../src/main/services/team/opencode/bridge/OpenCodeStateChangingBridgeCommandService';
+import { createOpenCodeBridgeClientIdentity, createOpenCodeBridgeHandshakeFailure, OPEN_CODE_HANDSHAKE_MESSAGE_FAMILIES } from '../../src/main/services/team/opencode/bridge/OpenCodeBridgeHandshakeClient';
+import { formatOpenCodeStopCausalSuffix, projectOpenCodeStateChangingFailure, rememberOpenCodeHandshakeFailure } from '../../src/main/services/team/opencode/bridge/OpenCodeStateChangingCausalFailure';
 import { redactLaunchFailureArtifactText } from '../../src/main/services/team/TeamLaunchFailureArtifactPack';
 
 const project = (value: string): string =>
@@ -262,7 +262,7 @@ describe('serialized native IPC failure details', () => {
       await mkdir(stdioRoot, { recursive: true });
       await writeFile(path.join(stdioRoot, 'main.stderr'), [
         'error: Cannot read file "C:\\TEST-sdk\\": EPERM',
-        'error: Cannot find module "@opencode/client-v2-floor" from "C:\\TEST-private\\entry.ts"',
+        'error: Cannot find module "@opencode/client-v2.0.0" from "C:\\TEST-private\\entry.ts"',
         JSON.stringify({ event: 'opencode-v2-startup', stage: 'runtime-import',
           cause: 'execution_graph_dependency_missing', reason: 'failed', errno: 'ENOENT',
           operation: 'open', errorName: 'Error', elapsedMs: 123 }),
@@ -274,7 +274,7 @@ describe('serialized native IPC failure details', () => {
         readTargetKind?: string; childStartup: { stage: string; cause: string };
       } };
       expect(stdioPacket.stdio).toMatchObject({ kind: 'module_resolution',
-        errorKinds: ['access_denied', 'module_resolution'], moduleTargetRole: '@opencode/client-v2-floor',
+        errorKinds: ['access_denied', 'module_resolution'], moduleTargetRole: '@opencode/client-v2.0.0',
         childStartup: { stage: 'runtime-import', cause: 'execution_graph_dependency_missing' } });
       expect(stdioPacket.stdio.readTargetKind).toBeUndefined();
       expect(stdioPacket.stdio.errorLine).toContain('Cannot find module');
@@ -1122,6 +1122,122 @@ it('retains only closed handshake facts through the owned suffix and serialized 
     .toEqual({ kind: 'runtime_not_ready' });
 });
 
+it('carries closed lock facts of a held handshake lock into the serialized cause', () => {
+  const error = createOpenCodeBridgeHandshakeFailure({ kind: 'provider_error', retryable: true,
+    message: 'OpenCode lock operation failed [code=ELOCKED, lock=host-registry.json.lock]',
+    details: { lockCode: 'ELOCKED', lockCategory: 'registry' } });
+  const packet = projectOpenCodeStateChangingFailure(error);
+  expect(packet.handshakeFailure).toMatchObject({ kind: 'provider_error',
+    lockCode: 'ELOCKED', lockCategory: 'registry', messageShape: 'lock_operation' });
+  const message = 'team_stop_unconfirmed:stop_failed' + formatOpenCodeStopCausalSuffix(packet);
+  const safeProject = runInNewContext(`(${serializedFunction(projectIpcCausalFailure)})`) as typeof projectIpcCausalFailure;
+  expect(safeProject(message)?.handshakeFailure).toMatchObject({ kind: 'provider_error',
+    lockCode: 'ELOCKED', lockCategory: 'registry', messageShape: 'lock_operation' });
+  expect(JSON.stringify(safeProject(message))).not.toContain('host-registry');
+});
+
+it('classifies deterministic handshake rejections into closed message families and digests', () => {
+  const family = (text: string, details?: Record<string, unknown>) =>
+    projectOpenCodeStateChangingFailure(
+      createOpenCodeBridgeHandshakeFailure({
+        kind: 'provider_error',
+        retryable: true,
+        message: text,
+        ...(details ? { details } : {}),
+      })
+    ).handshakeFailure;
+  expect(family('OpenCode confirmed stop authority mismatch')).toMatchObject({
+    kind: 'provider_error',
+    messageShape: 'unclassified',
+    messageFamily: 'stop_authority_mismatch',
+    messageDigest: /^[a-f0-9]{12}$/,
+  });
+  expect(family('OpenCode lifecycle selected lane authority is unavailable')?.messageFamily).toBe(
+    'lane_authority_unavailable'
+  );
+  expect(
+    family('OpenCode lifecycle stored run authority mismatch; another run is active')?.messageFamily
+  ).toBe('run_authority_conflict');
+  expect(
+    family('OpenCode selected session runtime process changed (expected pid=1, actual pid=2)')
+      ?.messageFamily
+  ).toBe('runtime_process_changed');
+  expect(
+    family('OpenCode lock operation failed [code=ELOCKED, lock=host-registry.json.lock]', {
+      lockCode: 'ELOCKED',
+      lockCategory: 'registry',
+    })?.messageFamily
+  ).toBe('lock_operation');
+  expect(family('fetch failed at TLS handshake')?.messageFamily).toBe('unclassified');
+  const first = family('OpenCode lifecycle selected lane authority is unavailable');
+  expect(family('OpenCode lifecycle selected lane authority is unavailable')?.messageDigest).toBe(
+    first?.messageDigest
+  );
+  expect(
+    family('OpenCode lifecycle selected run authority is unavailable')?.messageDigest
+  ).not.toBe(first?.messageDigest);
+  const packet = family('C:/private/token body=secret-value');
+  expect(JSON.stringify(packet)).not.toMatch(/private|secret/);
+  expect(packet).toMatchObject({ messageDigest: /^[a-f0-9]{12}$/ });
+  const owned = projectOpenCodeStateChangingFailure(
+    createOpenCodeBridgeHandshakeFailure({
+      kind: 'provider_error',
+      retryable: true,
+      message: 'OpenCode confirmed stop authority mismatch',
+    })
+  );
+  const message = 'team_stop_unconfirmed:stop_failed' + formatOpenCodeStopCausalSuffix(owned);
+  const safeProject = runInNewContext(
+    `(${serializedFunction(projectIpcCausalFailure)})`
+  ) as typeof projectIpcCausalFailure;
+  expect(safeProject(message)?.handshakeFailure).toMatchObject({
+    kind: 'provider_error',
+    messageFamily: 'stop_authority_mismatch',
+    messageDigest: /^[a-f0-9]{12}$/,
+  });
+});
+
+it('keeps every classified handshake family distinct and through the serialized e2e projection', () => {
+  const safeProject = runInNewContext(
+    `(${serializedFunction(projectIpcCausalFailure)})`
+  ) as typeof projectIpcCausalFailure;
+  const roundTrip = (text: string) =>
+    safeProject(
+      'team_stop_unconfirmed:stop_failed' +
+        formatOpenCodeStopCausalSuffix(
+          projectOpenCodeStateChangingFailure(
+            createOpenCodeBridgeHandshakeFailure({
+              kind: 'provider_error',
+              retryable: true,
+              message: text,
+            })
+          )
+        )
+    )?.handshakeFailure?.messageFamily;
+  // An earlier catch-all prefix would shadow a later family; a family missing
+  // from the e2e allowlist would silently vanish from the proof artifact.
+  for (const [family, prefix] of OPEN_CODE_HANDSHAKE_MESSAGE_FAMILIES)
+    expect([prefix, roundTrip(`${prefix} TEST-suffix`)]).toEqual([prefix, family]);
+  expect(roundTrip('fetch failed at TLS handshake')).toBe('unclassified');
+  expect(roundTrip('OpenCode lifecycle authority requires teamId and laneId')).toBe(
+    'lifecycle_identifiers_required'
+  );
+  expect(roundTrip('OpenCode lifecycle authority requires runId')).toBe('run_identity_required');
+});
+
+it('drops a message family that is not a closed token even behind a widening cast', () => {
+  const error = new Error('TEST handshake failure');
+  rememberOpenCodeHandshakeFailure(error, {
+    kind: 'provider_error',
+    messageFamily: 'C:/private/token body=secret-value' as never,
+  });
+  const facts = projectOpenCodeStateChangingFailure(error).handshakeFailure;
+  expect(facts).toEqual({ kind: 'provider_error' });
+  expect(formatOpenCodeStopCausalSuffix(projectOpenCodeStateChangingFailure(error))).not.toMatch(
+    /private|secret/
+  );
+});
+
 it.each(['current-pass', 'current-fail', 'floor'] as const)(
   '%s preserves original Stop after readiness and the one fresh-owner observation', async (scenario) => {
     const source = await readFile('scripts/e2e/opencode-native-windows-preflight.ts', 'utf8');
@@ -1223,6 +1339,45 @@ it('retains returned send failures as dispatch facts through serialized task and
   ]) expect(project(value)).toBeNull();
 });
 
+it('keeps only the closed native stage token on returned dispatch failures', async () => {
+  const project = runInNewContext(`(${serializedFunction(projectIpcCausalFailure)})`) as typeof projectIpcCausalFailure;
+  const returned = project('error:runtime_not_ready: OpenCode message bridge failed: run_control_process_identity:process_image_open:0 @native:runStateSelect');
+  expect(returned).toMatchObject({ phase: 'dispatch', bridgeFailure: {
+    kind: 'runtime_not_ready', sdkCode: 'run_control_process_identity', nativeOperation: 'runStateSelect',
+    nativeErrno: 0, nativeStage: 'process_image_open' } });
+  // The stage is a closed token only; an open shape never survives projection.
+  expect(project('error:runtime_not_ready: OpenCode message bridge failed: run_control_process_identity:PROCESS_IMAGE_OPEN:0 @native:runStateSelect')).toBeNull();
+  const carried = project({ phase: 'dispatch', bridgeFailure: { kind: 'runtime_not_ready',
+    sdkCode: 'run_control_process_identity', nativeOperation: 'runStateSelect',
+    nativeStage: 'process_alive', nativeErrno: 0 } } as never);
+  expect(carried).toMatchObject({ bridgeFailure: { nativeStage: 'process_alive', nativeErrno: 0 } });
+  const dropped = project({ phase: 'dispatch', bridgeFailure: { kind: 'runtime_not_ready',
+    sdkCode: 'run_control_process_identity', nativeStage: 'PRIVATE TOKEN' } } as never);
+  expect(dropped?.bridgeFailure).not.toHaveProperty('nativeStage');
+  expect(dropped?.bridgeFailure).toMatchObject({ sdkCode: 'run_control_process_identity' });
+  for (const nativeStage of ['a', 'x'.repeat(91)])
+    expect(project({ phase: 'dispatch', bridgeFailure: { kind: 'runtime_not_ready',
+      sdkCode: 'run_control_process_identity', nativeStage } } as never)?.bridgeFailure).not.toHaveProperty('nativeStage');
+});
+
+it('pins the exact durable comment expectation and its closed mismatch classification', async () => {
+  const full = await readFile('scripts/e2e/opencode-native-windows-full.ts', 'utf8');
+  const prompts = await readFile('scripts/e2e/opencode-native-real-task-prompts.ts', 'utf8');
+  // The nonce comment is an exact-text durable receipt; the shared prompt
+  // contract demands those characters alone so a paraphrase can never satisfy
+  // the assertion, and every task passes its nonce as the comment token.
+  expect(full).toContain('commentToken: `TASK_COMMENT:${nonce.alice}`');
+  expect(full).toContain('commentToken: `TASK_COMMENT:${nonce.bob}`');
+  expect(full).toContain('commentToken: `TASK_COMMENT:${nonce.new}`');
+  expect(prompts).toContain('The text value must be exactly ${commentToken}, copied byte-for-byte');
+  expect(prompts).toContain('A comment with any other text fails the task.');
+  for (const field of ['exactComment:', 'exactTextAnyAuthor:', 'commentTextIncludesExpected:',
+    'commentTextStartsWithExpected:', 'firstCommentLength:', 'commentBeforeTerminal:'])
+    expect(full).toContain(field);
+  // A failed durable receipt is classified without carrying any comment text.
+  expect(full).not.toContain('row.text,');
+});
+
 it.each(['valid', 'foreign-run', 'foreign-team', 'wrong-state', 'wrong-message', 'getter', 'rejected', 'event'] as const)(
   'observes retained Stop %s once without issuing actions or accepting another run', async (scenario) => {
     const teamName = 'test-opencode-retained', runId = 'TEST-original-run';
@@ -1271,6 +1426,23 @@ it('projects the exact additional source-owned send guards including case-sensit
   }
   expect(project('error:runtime_not_ready: OpenCode message bridge failed: missing_deliveryattemptid')).toBeNull();
   expect(project('error:internal_error: OpenCode message bridge failed: delivery_lock_foreign')).toBeNull();
+});
+
+it('projects the precise run-control deadline codes instead of one ambiguous token', () => {
+  const project = runInNewContext(`(${serializedFunction(projectIpcCausalFailure)})`) as typeof projectIpcCausalFailure;
+  const codes = ['run_state_wall_deadline_expired', 'run_control_client_budget_exhausted',
+    'run_control_connect_no_listener_expired', 'run_control_connect_busy_timeout_expired',
+    'run_control_connect_idle_expired'];
+  for (const sdkCode of codes) {
+    expect(project('error:runtime_not_ready: OpenCode message bridge failed: ' + sdkCode))
+      .toMatchObject({ phase: 'dispatch', bridgeFailure: { kind: 'runtime_not_ready', sdkCode } });
+    expect(project('error:runtime_not_ready: OpenCode message bridge failed: ' + sdkCode + ' @native:runStateRequest'))
+      .toMatchObject({ phase: 'dispatch', bridgeFailure: { kind: 'runtime_not_ready', sdkCode, nativeOperation: 'runStateRequest' } });
+  }
+  // The ambiguous predecessor token stays recognized, but the precise tokens
+  // must never be folded back into it or dropped as unknown.
+  expect(project('error:runtime_not_ready: OpenCode message bridge failed: run_deadline_expired'))
+    .toMatchObject({ phase: 'dispatch', bridgeFailure: { kind: 'runtime_not_ready', sdkCode: 'run_deadline_expired' } });
 });
 
 it('retains only exact existing V2 cleanup and member Stop codes from the same-run failure', async () => {

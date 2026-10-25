@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { types } from 'node:util';
 
 import {
@@ -7,7 +8,7 @@ import {
   OPEN_CODE_FILE_PARTS_CONTRACT_VERSION,
   OPEN_CODE_TASK_LEDGER_EVIDENCE_CONTRACT_VERSION,
 } from './OpenCodeBridgeCommandContract';
-import { rememberOpenCodeHandshakeFailure } from './OpenCodeStateChangingBridgeCommandService';
+import { rememberOpenCodeHandshakeFailure } from './OpenCodeStateChangingCausalFailure';
 
 import type {
   OpenCodeBridgeCommandName,
@@ -20,6 +21,40 @@ import type {
   OpenCodeBridgeHandshakePort,
 } from './OpenCodeStateChangingBridgeCommandService';
 
+/** Ordered prefixes: specific rejections before their catch-all family. */
+export const OPEN_CODE_HANDSHAKE_MESSAGE_FAMILIES = [
+  ['stop_authority_mismatch', 'OpenCode confirmed stop authority mismatch'],
+  ['empty_lane_mismatch', 'OpenCode empty-lane stop authority mismatch'],
+  ['lane_authority_unavailable', 'OpenCode lifecycle selected lane authority is unavailable'],
+  [
+    'capability_snapshot_required',
+    'OpenCode lifecycle existing lane requires a capability snapshot',
+  ],
+  ['run_authority_conflict', 'OpenCode lifecycle stored run authority mismatch'],
+  ['run_authority_unavailable', 'OpenCode lifecycle selected run authority is unavailable'],
+  ['lifecycle_identifiers_required', 'OpenCode lifecycle authority requires teamId and laneId'],
+  ['run_identity_required', 'OpenCode lifecycle authority requires runId'],
+  ['lane_scope_unavailable', 'OpenCode lifecycle selected lane scope is unavailable'],
+  ['lane_scope_ambiguous', 'OpenCode lifecycle lane scope is ambiguous'],
+  ['lane_project_mismatch', 'OpenCode lifecycle lane project authority mismatch'],
+  ['host_authority_ambiguous', 'OpenCode lifecycle lane host authority is ambiguous'],
+  ['process_authority_ambiguous', 'OpenCode lifecycle lane process authority is ambiguous'],
+  ['delivery_lane_stopped', 'OpenCode delivery lane is stopped'],
+  [
+    'delivery_authority_required',
+    'OpenCode selected delivery requires persisted lane capability authority',
+  ],
+  ['delivery_session_changed', 'OpenCode selected delivery session authority changed'],
+  ['observation_launch_unavailable', 'OpenCode observation launch authority is unavailable'],
+  ['precondition_mismatch', 'OpenCode bridge expected laneId precondition'],
+  ['precondition_mismatch', 'OpenCode bridge expectedRunId precondition'],
+  ['strict_launch_evidence', 'OpenCode strict launch profile scope evidence is invalid'],
+  ['strict_launch_model', 'OpenCode strict launch requires a provider-qualified selected model'],
+  ['runtime_process_changed', 'OpenCode selected session runtime process changed'],
+  ['lock_operation', 'OpenCode lock operation failed ['],
+  ['lifecycle_rejection', 'OpenCode lifecycle '],
+] as const;
+
 /** Preserve only closed facts from a validated failure envelope on the same thrown Error. */
 export function createOpenCodeBridgeHandshakeFailure(
   failure: OpenCodeBridgeFailure['error']
@@ -30,10 +65,13 @@ export function createOpenCodeBridgeHandshakeFailure(
     const descriptor = Object.getOwnPropertyDescriptor(value, key);
     return descriptor && Object.hasOwn(descriptor, 'value') ? descriptor.value : undefined;
   };
-  let kindValue: unknown, messageValue: unknown;
+  let kindValue: unknown, messageValue: unknown, lockCodeValue: unknown, lockCategoryValue: unknown;
   try {
     kindValue = field(failure, 'kind');
     messageValue = field(failure, 'message');
+    const details = field(failure, 'details');
+    lockCodeValue = field(details, 'lockCode');
+    lockCategoryValue = field(details, 'lockCategory');
   } catch {
     /* No foreign getters. */
   }
@@ -232,11 +270,37 @@ export function createOpenCodeBridgeHandshakeFailure(
   const nativeOperation =
     sdkCode && match ? nativeOperations.find((value) => value === match[4]) : undefined;
   const nativeErrno = sdkCode && match && match[3] !== undefined ? Number(match[3]) : undefined;
+  const lockCode = (['ELOCKED', 'ECOMPROMISED'] as const).find((value) => value === lockCodeValue);
+  const lockCategory = (['registry', 'profile', 'startup', 'unknown'] as const).find(
+    (value) => value === lockCategoryValue
+  );
+  const messageShape = match
+    ? 'code'
+    : typeof messageValue === 'string' &&
+        messageValue.startsWith('OpenCode lock operation failed [')
+      ? 'lock_operation'
+      : 'unclassified';
+  // Closed identity of an unclassifiable message: a family label plus a digest
+  // that can be matched offline against candidate fixed strings.
+  const messageText = typeof messageValue === 'string' ? messageValue.trim() : '';
+  const messageFamily = messageText
+    ? (OPEN_CODE_HANDSHAKE_MESSAGE_FAMILIES.find(([, prefix]) =>
+        messageText.startsWith(prefix)
+      )?.[0] ?? 'unclassified')
+    : undefined;
+  const messageDigest = messageText
+    ? createHash('sha256').update(messageText).digest('hex').slice(0, 12)
+    : undefined;
   rememberOpenCodeHandshakeFailure(error, {
     kind,
     ...(sdkCode ? { sdkCode } : {}),
     ...(nativeOperation ? { nativeOperation } : {}),
     ...(nativeErrno !== undefined ? { nativeErrno } : {}),
+    ...(lockCode ? { lockCode } : {}),
+    ...(lockCategory ? { lockCategory } : {}),
+    ...(messageFamily ? { messageFamily } : {}),
+    ...(messageDigest ? { messageDigest } : {}),
+    messageShape,
   });
   return error;
 }
@@ -248,6 +312,29 @@ export interface OpenCodeBridgeCommandHandshakePortOptions {
 }
 
 const DEFAULT_HANDSHAKE_TIMEOUT_MS = 120_000;
+
+/** Escalating contention backoff; the handshake deadline stays the only bound. */
+const OPEN_CODE_HANDSHAKE_RETRY_BACKOFF_MS = [250, 500, 1000, 2000, 4000] as const;
+// A retry is only useful when the next attempt itself keeps real budget instead
+// of collapsing into a nominal 1 ms dispatch; bounded-retry counts stay intact.
+const MIN_HANDSHAKE_ATTEMPT_BUDGET_MS = 100;
+
+/** One-line deterministic lane/authority rejections from the SDK probe path:
+ *  retrying them cannot recover, so they propagate immediately. */
+const OPEN_CODE_AUTHORITY_REJECTION_PREFIXES = [
+  'OpenCode lifecycle ',
+  'OpenCode confirmed stop authority mismatch',
+  'OpenCode empty-lane stop authority mismatch',
+  'OpenCode delivery lane is stopped',
+  'OpenCode observation launch authority',
+  'OpenCode selected delivery ',
+  'OpenCode bridge expected laneId precondition',
+  'OpenCode bridge expectedRunId precondition',
+] as const;
+
+function isDeterministicOpenCodeAuthorityRejection(message: string): boolean {
+  return OPEN_CODE_AUTHORITY_REJECTION_PREFIXES.some((prefix) => message.startsWith(prefix));
+}
 
 export class OpenCodeBridgeCommandHandshakePort implements OpenCodeBridgeHandshakePort {
   private readonly bridge: OpenCodeBridgeCommandExecutor;
@@ -265,6 +352,7 @@ export class OpenCodeBridgeCommandHandshakePort implements OpenCodeBridgeHandsha
     expectedRunId: string | null;
     expectedCapabilitySnapshotId: string | null;
     expectedManifestHighWatermark: number | null;
+    timeoutMs?: number;
     cwd?: string;
     allowEmptyLaneStop?: boolean;
     selectedModel?: string | null;
@@ -274,7 +362,11 @@ export class OpenCodeBridgeCommandHandshakePort implements OpenCodeBridgeHandsha
     memberName?: string;
     laneId?: string | null;
   }): Promise<OpenCodeBridgeHandshake> {
-    const deadline = Date.now() + this.timeoutMs;
+    // A per-call command budget only tightens the port ceiling: a stop attempt
+    // must settle inside its caller's escalation race.
+    const timeoutMs =
+      input.timeoutMs === undefined ? this.timeoutMs : Math.min(this.timeoutMs, input.timeoutMs);
+    const deadline = Date.now() + timeoutMs;
     for (let attempt = 0; ; attempt++) {
       const result = await this.bridge.execute<
         {
@@ -316,19 +408,25 @@ export class OpenCodeBridgeCommandHandshakePort implements OpenCodeBridgeHandsha
         }
       );
 
-      // Handshake precedes command dispatch. Retry only a structured, retryable
-      // registry contention result; ownership loss and all other failures propagate.
+      // Handshake precedes command dispatch. Retry retryable contention (a held
+      // lock of any category, or a transient with no lock facts) with escalating
+      // backoff bounded by the original deadline; deterministic lane authority
+      // rejections, corrupted locks, and non-retryable failures propagate.
       if (
         !result.ok &&
         result.error.retryable &&
         result.error.kind === 'provider_error' &&
-        result.error.details?.lockCode === 'ELOCKED' &&
-        result.error.details?.lockCategory === 'registry' &&
-        attempt < 3 &&
-        Date.now() + 250 < deadline
+        result.error.details?.lockCode !== 'ECOMPROMISED' &&
+        !isDeterministicOpenCodeAuthorityRejection(result.error.message)
       ) {
-        await new Promise<void>((resolve) => setTimeout(resolve, 250));
-        continue;
+        const delay =
+          OPEN_CODE_HANDSHAKE_RETRY_BACKOFF_MS[
+            Math.min(attempt, OPEN_CODE_HANDSHAKE_RETRY_BACKOFF_MS.length - 1)
+          ];
+        if (Date.now() + delay + MIN_HANDSHAKE_ATTEMPT_BUDGET_MS < deadline) {
+          await new Promise<void>((resolve) => setTimeout(resolve, delay));
+          continue;
+        }
       }
       if (!result.ok) {
         throw createOpenCodeBridgeHandshakeFailure(result.error);

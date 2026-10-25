@@ -90,7 +90,10 @@ function safeSourceGateFailure(error: unknown, nativeFailures?: WeakMap<object, 
   'provider_rollback_publication_changed', 'provider_rollback_unknown', 'provider_rollback_publication_unknown',
   'run_control_timeout', 'run_control_disconnected', 'run_control_changed', 'run_control_foreign', 'run_control_invalid',
   'run_control_frame_too_large', 'run_owner_stale', 'run_process_unknown', 'run_process_changed',
-  'run_deadline_expired', 'run_readiness_changed', 'run_readiness_unknown', 'run_operation_unknown',
+  'run_deadline_expired', 'run_control_client_budget_exhausted',
+  'run_control_connect_busy_timeout_expired', 'run_control_connect_idle_expired',
+  'run_control_connect_no_listener_expired', 'run_state_wall_deadline_expired',
+  'run_readiness_changed', 'run_readiness_unknown', 'run_operation_unknown',
   'run_controller_mcp_unknown', 'execution_http_transport_unknown',
   'execution_selected_auth_required', 'execution_selected_auth_unbound', 'execution_selected_auth_changed',
   'execution_selected_auth_missing', 'execution_selected_auth_unsupported', 'execution_selected_auth_location_changed',
@@ -122,6 +125,7 @@ function safeSourceGateFailure(error: unknown, nativeFailures?: WeakMap<object, 
     'alias_predicate', 'assert_mapping', 'assert_stopped', 'assert_broker', 'retire_broker_state', 'retire_broker_write', 'retire_job', 'retire_wait', 'retire_io_join',
   'retire_main_exit', 'retire_owned_pair', 'retire_commands', 'retire_receipt', 'retire_grants',
   'retire_grants_dll', 'retire_grants_roots', 'retire_grants_metadata', 'process_birth', 'process_image_path', 'process_image_open', 'process_birth_changed',
+  'process_alive', 'process_alive_wait', 'process_alive_held_bun', 'process_alive_package_peer', 'process_alive_peer', 'process_alive_peer_parent',
   'shared_acl_mutex_descriptor', 'shared_acl_mutex_create', 'shared_acl_mutex_security',
   'shared_acl_mutex_encoding', 'shared_acl_mutex_authority', 'shared_acl_mutex_wait', 'shared_acl_mutex',
   'owner_archive_nt_rename', 'owner_canonical_open', 'owner_directory_create',
@@ -222,7 +226,10 @@ function observeNativeBrokerFailures(
     'runStateProcessIdentity', 'runStateRequest', 'runStateReadStop', 'runStateOwnerRetired']);
   const traceCodes = new Set(['execution_native_timeout', 'execution_native_unknown', 'execution_cancelled',
     'execution_containment_helper_closed', 'execution_containment_helper_failed', 'execution_invalid_response',
-    'run_deadline_expired', 'run_control_timeout', 'run_control_disconnected', 'run_control_connect_unknown',
+    'run_deadline_expired', 'run_control_client_budget_exhausted',
+    'run_control_connect_busy_timeout_expired', 'run_control_connect_idle_expired',
+    'run_control_connect_no_listener_expired', 'run_state_wall_deadline_expired',
+    'run_control_timeout', 'run_control_disconnected', 'run_control_connect_unknown',
     'run_control_foreign', 'run_control_endpoint_changed', 'run_state_unknown', 'run_state_missing', 'cleanup_unknown']);
   const traceElapsed = () => Math.max(0, Math.min(86400000, Date.now() - observedAt));
   const retainTrace = (event: Record<string, unknown>) => {
@@ -804,7 +811,10 @@ async function snapshotStartupFailure(value: unknown, session: string, plan: unk
   'provider_rollback_publication_changed', 'provider_rollback_unknown', 'provider_rollback_publication_unknown',
   'run_control_timeout', 'run_control_disconnected', 'run_control_changed', 'run_control_foreign', 'run_control_invalid',
   'run_control_frame_too_large', 'run_owner_stale', 'run_process_unknown', 'run_process_changed',
-  'run_deadline_expired', 'run_readiness_changed', 'run_readiness_unknown', 'run_operation_unknown',
+  'run_deadline_expired', 'run_control_client_budget_exhausted',
+  'run_control_connect_busy_timeout_expired', 'run_control_connect_idle_expired',
+  'run_control_connect_no_listener_expired', 'run_state_wall_deadline_expired',
+  'run_readiness_changed', 'run_readiness_unknown', 'run_operation_unknown',
   'run_controller_mcp_unknown', 'execution_http_transport_unknown',
   'execution_selected_auth_required', 'execution_selected_auth_unbound', 'execution_selected_auth_changed',
   'execution_selected_auth_missing', 'execution_selected_auth_unsupported', 'execution_selected_auth_location_changed',
@@ -832,6 +842,7 @@ async function snapshotStartupFailure(value: unknown, session: string, plan: unk
     const nativeStages = ['alias_predicate', 'assert_mapping', 'assert_stopped', 'assert_broker', 'retire_broker_state', 'retire_broker_write', 'retire_job', 'retire_wait', 'retire_io_join',
   'retire_main_exit', 'retire_owned_pair', 'retire_commands', 'retire_receipt', 'retire_grants',
   'retire_grants_dll', 'retire_grants_roots', 'retire_grants_metadata', 'process_birth', 'process_image_path', 'process_image_open', 'process_birth_changed',
+  'process_alive', 'process_alive_wait', 'process_alive_held_bun', 'process_alive_package_peer', 'process_alive_peer', 'process_alive_peer_parent',
   'shared_acl_mutex_descriptor', 'shared_acl_mutex_create', 'shared_acl_mutex_security',
   'shared_acl_mutex_encoding', 'shared_acl_mutex_authority', 'shared_acl_mutex_wait', 'shared_acl_mutex',
   'owner_archive_nt_rename', 'owner_canonical_open', 'owner_directory_create',
@@ -928,6 +939,8 @@ async function snapshotStartupFailure(value: unknown, session: string, plan: unk
           cleanupNativePhase: ['kernel-retirement', 'force-kill'].some(phase => phase === row(data.cleanup).phase)
             ? one(row(data.cleanup).nativePhase, ['retire_job', 'retire_wait', 'retire_io_join', 'retire_main_exit', 'retire_owned_pair', 'retire_commands', 'retire_receipt', 'retire_grants', 'retire_grants_dll', 'retire_grants_roots', 'retire_grants_metadata']) : 'unclassified',
           cleanupElapsedMs: Number.isSafeInteger(row(data.cleanup).elapsedMs) && Number(row(data.cleanup).elapsedMs) >= 0 && Number(row(data.cleanup).elapsedMs) <= 86400000 ? Number(row(data.cleanup).elapsedMs) : null,
+          cleanupExit: one(row(data.cleanup).exit, ['exit_zero', 'exit_one', 'job_terminated']),
+          cleanupClosedFrame: one(row(data.cleanup).closedFrame, ['accepted', 'rejected', 'absent']),
           startupStderrKind: one(startup.nativeStderrKind, ['empty', 'entry_resolution', 'module_resolution', 'child_identity', 'child_pipe', 'access_denied', 'pipe_refused', 'pipe_missing', 'bun_error', 'unclassified', 'unavailable']),
           startupExitCode: Number.isSafeInteger(startup.nativeExitCode) && Number(startup.nativeExitCode) >= 0 && Number(startup.nativeExitCode) <= 0xffffffff ? startup.nativeExitCode : null,
           initializationPhase: initialization?.phase ?? null, initializationElapsedMs: initialization?.elapsedMs ?? null,
@@ -1047,8 +1060,8 @@ async function snapshotStartupFailure(value: unknown, session: string, plan: unk
             if (!errorKinds.includes(kind) && errorKinds.length < 9) errorKinds.push(kind);
             if (kind === 'module_resolution') {
               const target = /Cannot find module ["'`]([^"'`]+)["'`]/.exec(message)?.[1];
-              moduleTargetRole = target === '@opencode/client' ? '@opencode/client' :
-                target === '@opencode/client-v2-floor' ? '@opencode/client-v2-floor' :
+              // Official clients are root or version-derived graph aliases (@opencode/client-v<version>).
+              moduleTargetRole = target && /^@opencode\/client(?:-v\d+\.\d+\.\d+)?$/.test(target) ? target :
                 target === '@modelcontextprotocol/sdk' || target?.startsWith('@modelcontextprotocol/sdk/') ? 'mcp_sdk' :
                 target === 'effect' || target?.startsWith('effect/') ? 'effect' : 'other';
               if (target && paths.win32.isAbsolute(target)) {
@@ -1529,7 +1542,7 @@ try {
  const control = await import(${JSON.stringify(moduleUrl)});
  const freshProtocol = await import(${JSON.stringify(pathToFileURL(path.resolve('src/main/services/team/opencode/bridge/OpenCodeBridgeCommandContract.ts')).href)});
  const freshClient = await import(${JSON.stringify(pathToFileURL(path.resolve('src/main/services/team/opencode/bridge/OpenCodeBridgeHandshakeClient.ts')).href)});
- const freshCausal = await import(${JSON.stringify(pathToFileURL(path.resolve('src/main/services/team/opencode/bridge/OpenCodeStateChangingBridgeCommandService.ts')).href)});
+ const freshCausal = await import(${JSON.stringify(pathToFileURL(path.resolve('src/main/services/team/opencode/bridge/OpenCodeStateChangingCausalFailure.ts')).href)});
  preparation = await (${verifyProbePreparation.toString()})(inspectOpenCodeV2SourceAvailability,
    resolveOpenCodeV2ExecutionProbe, buildOpenCodeV2InternalRunPlan, runOwner, control, spyOn, ${JSON.stringify(desktop.projectPath)},
    ${JSON.stringify(selectedModel)}, ${JSON.stringify(expectedVersion)},

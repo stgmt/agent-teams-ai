@@ -151,6 +151,7 @@ import {
   setTeamWatchScopeChangeListener,
 } from '@main/services/infrastructure/teamWatchScope';
 import { FileWatcherStartupCoordinator } from '@main/services/infrastructure/FileWatcherStartupCoordinator';
+import { getOpenCodeRuntimeResolverCacheGeneration } from '@main/services/infrastructure/openCodeRuntimeResolverCache';
 import { JsonScheduleRepository } from '@main/services/schedule/JsonScheduleRepository';
 import { ScheduledTaskExecutor } from '@main/services/schedule/ScheduledTaskExecutor';
 import { SchedulerService } from '@main/services/schedule/SchedulerService';
@@ -270,7 +271,7 @@ import { startPeriodicOpenCodeHostStartupLockPurge } from './services/team/openc
 import {
   buildOpenCodeProcessOwnershipMarkers,
   cleanupOpenCodeHostProcessFallback,
-  runOpenCodeLifecycleCleanupTail,
+  runOpenCodeLifecycleHostCleanup,
   runOpenCodeStartupCleanupMaintenance,
   type OpenCodeLifecycleCleanupTailPorts,
 } from './services/team/opencode/bridge/OpenCodeLifecycleCleanupTail';
@@ -281,6 +282,8 @@ import {
   stopAdmittingOpenCodeStartupCleanup,
 } from './services/team/opencode/bridge/OpenCodeWindowsStartupCleanup';
 import { beginOpenCodeStartupRuntimeSweep } from './services/team/opencode/bridge/OpenCodeStartupSweepGate';
+import { OpenCodePromptDeliveryContinuityScan } from './services/team/opencode/delivery/OpenCodePromptDeliveryContinuityScan';
+import { isOpenCodePromptDeliveryWatchdogEnabled } from './services/team/opencode/delivery/OpenCodePromptDeliveryWatchdogScheduler';
 import {
   buildTeamControlApiBaseUrl,
   clearTeamControlApiState,
@@ -692,54 +695,17 @@ const openCodeLifecycleCleanupTailPorts: OpenCodeLifecycleCleanupTailPorts = {
 };
 
 async function cleanupOpenCodeHostsForLifecycle(reason: 'startup' | 'shutdown'): Promise<void> {
-  let registryHostPids = new Set<number>();
-  let registryCleanupAvailable = false;
-  try {
-    if (openCodeLifecycleBridge) {
-      const result = await openCodeLifecycleBridge.cleanupOpenCodeHosts({
-        reason,
-        mode: reason === 'shutdown' ? 'force' : 'stale',
-        staleAgeMs: reason === 'startup' ? 5 * 60_000 : null,
-        leaseStaleAgeMs: reason === 'startup' ? 24 * 60 * 60_000 : null,
-        preflightLeaseStaleAgeMs: reason === 'startup' ? 6 * 60_000 : null,
-      });
-      registryHostPids = new Set(
-        result.hosts
-          .filter((host) => host.action.startsWith('kept_'))
-          .map((host) => host.pid)
-          .filter((pid) => Number.isFinite(pid) && pid > 0)
-      );
-      if (result.cleaned > 0) {
-        logger.info(
-          `[OpenCode] ${reason} host cleanup removed ${result.cleaned} registry host(s), ${result.remaining} remaining`
-        );
-      }
-      for (const diagnostic of result.diagnostics) {
-        logger.warn(`[OpenCode] ${reason} host cleanup: ${diagnostic}`);
-      }
-      registryCleanupAvailable = !result.diagnostics.some((diagnostic) =>
-        diagnostic.startsWith('OpenCode host cleanup bridge failed:')
-      );
-    }
-  } finally {
-    // After the command, not before it: the managed host the registry sweep
-    // boots in this process directory is younger than the moment the command was
-    // issued, so an issue-time fence keeps the one host the tail below exists to
-    // reap.
-    const sweepCommandSettledAtMs = Date.now();
-
-    await runOpenCodeLifecycleCleanupTail({
-      reason,
-      registryHostPids,
-      registryCleanupAvailable,
-      appStartedAtMs,
-      sweepCommandSettledAtMs,
-      managedHostInstanceId: openCodeManagedHostInstanceId,
-      profileScope: buildOpenCodeAppProfileScope(app.getPath('userData'), getClaudeBasePath()),
-      releaseSharedRuntime: releaseLoopbackRuntimesOnAppShutdown,
-      ports: openCodeLifecycleCleanupTailPorts,
-    });
-  }
+  const bridge = openCodeLifecycleBridge;
+  await runOpenCodeLifecycleHostCleanup({
+    reason,
+    cleanupRegistry: bridge ? (body) => bridge.cleanupOpenCodeHosts(body) : undefined,
+    logRegistryResult: (message) => logger.info(message),
+    appStartedAtMs,
+    managedHostInstanceId: openCodeManagedHostInstanceId,
+    profileScope: buildOpenCodeAppProfileScope(app.getPath('userData'), getClaudeBasePath()),
+    releaseSharedRuntime: releaseLoopbackRuntimesOnAppShutdown,
+    ports: openCodeLifecycleCleanupTailPorts,
+  });
 }
 
 // --- Team display name cache (avoid listTeams() on every notification) ---
@@ -1006,6 +972,7 @@ let ptyTerminalService: PtyTerminalService;
 let httpServer: HttpServer;
 let schedulerService: SchedulerService;
 let teamTaskStallMonitor: TeamTaskStallMonitor | null = null;
+let openCodePromptDeliveryContinuityScan: OpenCodePromptDeliveryContinuityScan | null = null;
 let internalStorageFeature: InternalStorageFeature | null = null;
 let skillsWatcherService: SkillsWatcherService | null = null;
 let teamBackupService: TeamBackupService | null = null;
@@ -1993,6 +1960,7 @@ async function initializeServices(): Promise<void> {
     });
   runtimeProviderManagementFeature = createRuntimeProviderManagementFeature({
     localProviderConnector: gatewayProviderConnector,
+    getOpenCodeRuntimeGeneration: getOpenCodeRuntimeResolverCacheGeneration,
     openExternal: async (url) => {
       await shell.openExternal(url);
     },
@@ -2191,6 +2159,20 @@ async function initializeServices(): Promise<void> {
       memberWorkSyncStallObservation
     )
   );
+  openCodePromptDeliveryContinuityScan = new OpenCodePromptDeliveryContinuityScan({
+    isEnabled: () => isOpenCodePromptDeliveryWatchdogEnabled(),
+    listLiveTeamNames: async () => {
+      const scope = computeTeamWatchScope();
+      if (scope) {
+        return [...scope];
+      }
+      const teams = await teamDataService.listTeams();
+      return teams.filter((team) => !team.deletedAt).map((team) => team.teamName);
+    },
+    scanTeam: (teamName) =>
+      teamProvisioningService.scanOpenCodePromptDeliveryWatchdog(teamName, 'continuity'),
+    warn: (message) => logger.warn(message),
+  });
   let teammateToolTracker: TeammateToolTracker | null = null;
   branchStatusService = new BranchStatusService((event) => {
     safeSendToRenderer(mainWindow, TEAM_PROJECT_BRANCH_CHANGE, event);
@@ -3056,6 +3038,8 @@ async function shutdownServices(): Promise<void> {
 
   tokenUsageFeature?.dispose();
   rendererRecoveryController?.dispose();
+  openCodePromptDeliveryContinuityScan?.stop();
+  openCodePromptDeliveryContinuityScan = null;
   shutdownPromise = (async () => {
     logger.info('Shutting down services...');
     removeExternalAgentConnectionIpc(ipcMain);
@@ -3282,6 +3266,7 @@ function runPostRendererStartupTasks(): void {
       logger.warn(`[Init] task comment notification init failed: ${String(error)}`)
     );
   teamTaskStallMonitor?.start();
+  openCodePromptDeliveryContinuityScan?.start();
   scheduleStartupTask(() => {
     void teamDataService
       .listTeams()

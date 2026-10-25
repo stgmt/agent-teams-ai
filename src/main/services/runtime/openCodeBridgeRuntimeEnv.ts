@@ -39,6 +39,10 @@ function getOpenCodeRuntimeBinaryEnvValues(env: NodeJS.ProcessEnv): string[] {
   ].filter((value): value is string => Boolean(value));
 }
 
+/**
+ * The override the bridge launches: the first override variable that names an existing
+ * file. Runtime status reports the same selection.
+ */
 export function resolveExistingOpenCodeRuntimeBinaryEnvPath(
   env: NodeJS.ProcessEnv
 ): { binaryPath: string; envName: string } | null {
@@ -106,9 +110,12 @@ export async function ensureOpenCodeBridgeRuntimeBinaryEnv({
         clearOpenCodeRuntimeBinaryEnvValues(bridgeEnv, invalidValues);
       }
       onOverrideRejected?.();
+      onWarning?.(
+        `[OpenCode] Ignoring runtime binary override that does not name an existing file: ${[...invalidValues].join(', ')}`
+      );
     } else if (
       !isSupportedOpenCodeRuntimeBinaryPath ||
-      (await isSupportedOpenCodeRuntimeBinaryPath(existingBinary.binaryPath).catch(() => false))
+      (await isSupportedOpenCodeRuntimeBinaryPath(existingBinary.binaryPath))
     ) {
       targetEnv[OPENCODE_RUNTIME_BINARY_PATH_ENV] = existingBinary.binaryPath;
       targetEnv[OPENCODE_LEGACY_BINARY_PATH_ENV] = existingBinary.binaryPath;

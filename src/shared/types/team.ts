@@ -1,4 +1,5 @@
 import type { NotificationTarget, TeamEventType } from './notifications';
+import type { OpenCodeStopHandshakeFailureFacts } from './openCodeStopHandshakeFailure';
 import type { TaskRef } from './teamBoardTask';
 import type * as TeamProvisioningTypes from './teamProvisioning';
 import type {
@@ -616,12 +617,7 @@ export type OpenCodeRuntimeDeliveryStatus = NonNullable<SendMessageResult['runti
 
 /** Finite observation of a failed OpenCode bridge operation; never stop authority. */
 export interface OpenCodeStopCausalFailure {
-  handshakeFailure?: {
-    kind: string;
-    sdkCode?: string;
-    nativeOperation?: string;
-    nativeErrno?: number;
-  };
+  handshakeFailure?: OpenCodeStopHandshakeFailureFacts;
   phase: string;
   reason: string | null;
   errno: string | null;
@@ -1462,6 +1458,8 @@ export interface TeamProvisioningProgress {
   assistantOutput?: string;
   /** True once provisioning has written a readable config.json for this team. */
   configReady?: boolean;
+  /** Main confirmed owned secondary lanes survive this failed run under its current Stop generation. */
+  retainedSecondaryRuntime?: true;
   /** Bounded structured launch diagnostics for the progress UI. */
   launchDiagnostics?: TeamLaunchDiagnosticItem[];
 }

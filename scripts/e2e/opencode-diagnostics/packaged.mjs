@@ -6,6 +6,131 @@ import { lstat, mkdir, readFile, readdir, realpath, stat, writeFile } from 'node
 import path from 'node:path';
 import { verifyCandidatePayload } from './stage-candidate.mjs';
 import { isolatedEnvironment, processes, ownedTree, sameIdentity } from './platform.mjs';
+import { WINDOWS_NATIVE_TEST_PIN } from './native-test-pin.mts';
+
+export function packagedRefreshControlState(control) {
+  if (!control)
+    return { present: false, connected: false, rendered: false, disabled: null, title: null };
+  const style = control.ownerDocument.defaultView.getComputedStyle(control);
+  const rect = control.getBoundingClientRect();
+  return {
+    present: true,
+    connected: control.isConnected === true,
+    rendered:
+      control.getClientRects().length > 0 &&
+      rect.width > 0 &&
+      rect.height > 0 &&
+      style.display !== 'none' &&
+      !['hidden', 'collapse'].includes(style.visibility) &&
+      style.opacity !== '0',
+    disabled: control.disabled === true,
+    title: String(control.getAttribute('title') || '').slice(0, 256),
+  };
+}
+
+export function packagedSettingsPreparationState(document, readControl) {
+  const list = document.querySelector(
+    '[role="dialog"] [data-testid="runtime-provider-catalog-list"]'
+  );
+  const skeleton = document.querySelector(
+    '[role="dialog"] [data-testid="runtime-provider-loading-skeleton"]'
+  );
+  return {
+    catalog: {
+      state: list && !skeleton ? 'ready' : 'loading',
+      listPresent: Boolean(list),
+      skeletonPresent: Boolean(skeleton),
+    },
+    control: readControl(
+      document.querySelector('[role="dialog"] [data-testid="runtime-provider-refresh-catalog"]')
+    ),
+  };
+}
+
+export function packagedSettingsRequestsSettled(requests) {
+  return Boolean(
+    requests?.overflow === false &&
+    Array.isArray(requests.records) &&
+    requests.records.length > 0 &&
+    requests.records.every(
+      (record) => record?.completedAt && record.response && !record.error && !record.response.error
+    )
+  );
+}
+
+export function packagedSettingsRequestObservation(requests) {
+  const records = Array.isArray(requests?.records) ? requests.records : null;
+  return {
+    overflow: typeof requests?.overflow === 'boolean' ? requests.overflow : null,
+    count: records?.length ?? null,
+    completed: records?.filter((record) => record?.completedAt && record.response).length ?? null,
+    errors: records?.filter((record) => record?.error || record?.response?.error).length ?? null,
+    settled: packagedSettingsRequestsSettled(requests),
+  };
+}
+
+function packagedPreparationReason(sample, phase) {
+  if (typeof sample?.catalog?.state !== 'string' || !sample.catalog.state.trim())
+    return 'catalog-unavailable';
+  if (sample.catalog.state === 'loading') return 'catalog-loading';
+  if (!sample.control?.present) return 'control-missing';
+  if (!sample.control.connected) return 'control-disconnected';
+  if (!sample.control.rendered) return 'control-hidden';
+  if (sample.control.disabled !== false) return 'control-disabled';
+  if (phase === 'settings' ? sample.requestsSettled !== true : sample.requestsSettled === false)
+    return 'requests-unsettled';
+  return 'ready';
+}
+
+export async function waitForPackagedRefreshPreparation(
+  read,
+  {
+    phase = 'dashboard',
+    now = () => performance.now(),
+    pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  } = {}
+) {
+  assert(['dashboard', 'settings'].includes(phase));
+  const [budgetMs, maxSamples, intervalMs] =
+    phase === 'settings' ? [90000, 360, 250] : [120000, 240, 500];
+  const startedAt = now();
+  let sample;
+  let samples = 0;
+  let lastReason = 'catalog-unavailable';
+  const expired = Symbol('preparation deadline');
+  const result = (ready, readTimedOut = false) => ({
+    ...sample,
+    ready,
+    phase,
+    budgetMs,
+    maxSamples,
+    samples,
+    elapsedMs: now() - startedAt,
+    lastReason,
+    timedOut: !ready,
+    readTimedOut,
+  });
+  for (; samples < maxSamples; ) {
+    const remaining = budgetMs - (now() - startedAt);
+    if (remaining <= 0) break;
+    let timer;
+    const next = await Promise.race([
+      Promise.resolve().then(read),
+      new Promise((resolve) => {
+        timer = setTimeout(() => resolve(expired), remaining);
+      }),
+    ]).finally(() => clearTimeout(timer));
+    if (next === expired) return result(false, true);
+    sample = next;
+    samples++;
+    lastReason = packagedPreparationReason(sample, phase);
+    const afterRead = budgetMs - (now() - startedAt);
+    if (afterRead >= 0 && lastReason === 'ready') return result(true);
+    if (afterRead <= 0) break;
+    await pause(Math.min(intervalMs, afterRead));
+  }
+  return result(false);
+}
 
 export function packagedArguments(args, platform = process.platform) {
   assert.equal(platform, 'win32', 'Packaged harness requires Windows');
@@ -339,6 +464,73 @@ export function packagedStopOrder(owned, executable) {
   return [...main, ...owned.filter((entry) => entry !== main[0]).reverse()];
 }
 
+// Diagnostic history only. Never pass this set to cleanup or ownership checks.
+export function retainPackagedLineage(previous = [], proven = [], at = Date.now()) {
+  const records = previous.slice(0, 500).map((entry) => ({ ...entry }));
+  let truncated = previous.length > 500;
+  for (const entry of proven) {
+    const prior = records.find((p) => p.pid === entry.pid && p.birth === entry.birth);
+    if (prior) {
+      prior.lastSeen = at;
+      continue;
+    }
+    if (records.length === 500) {
+      truncated = true;
+      continue;
+    }
+    const parent = proven.find((p) => p.pid === entry.parent);
+    records.push({
+      pid: entry.pid,
+      parent: entry.parent,
+      birth: entry.birth,
+      executable: entry.executable ?? null,
+      firstSeen: at,
+      lastSeen: at,
+      parentBirth: parent?.birth ?? null,
+    });
+  }
+  return { records, truncated };
+}
+
+export function packagedOrphanObservation(history, snapshot) {
+  const census = snapshot.slice(0, 10000).map((p) => ({
+    pid: p.pid,
+    parent: p.parent,
+    birth: p.birth,
+    executable: p.executable ?? null,
+  }));
+  const candidates = census.flatMap((child) => {
+    if (history.some((p) => p.pid === child.pid && p.birth === child.birth)) return [];
+    const parents = history.filter(
+      (p) => p.pid === child.parent && Date.parse(p.birth) <= Date.parse(child.birth)
+    );
+    if (!parents.length) return [];
+    const currentParent = census.find((p) => p.pid === child.parent);
+    return [
+      {
+        ...child,
+        observationOnly: true,
+        signalAuthorized: false,
+        historicalParents: parents.map((p) => ({ pid: p.pid, birth: p.birth })),
+        relation:
+          parents.length !== 1 || (currentParent && currentParent.birth !== parents[0].birth)
+            ? 'ambiguous-parent-identity'
+            : currentParent
+              ? 'historical-parent-present'
+              : 'historical-parent-absent',
+      },
+    ];
+  });
+  return {
+    observationOnly: true,
+    signalAuthorized: false,
+    census,
+    censusTruncated: snapshot.length > 10000,
+    candidates: candidates.slice(0, 500),
+    candidatesTruncated: candidates.length > 500,
+  };
+}
+
 export function packagedDrainSnapshot(identities, snapshot, listenerPids) {
   const ownedRemaining = identities.filter((entry) =>
     snapshot.some((current) => current.pid === entry.pid && current.birth === entry.birth)
@@ -497,7 +689,7 @@ export async function installerPublicationSnapshot(data) {
     staging.push({ name, directory, executable });
     exactExecutables.add(path.join(runtime, name, 'opencode.exe').toLowerCase());
   }
-  const target = 'versions/1.19.3/opencode-windows-x64';
+  const target = `versions/${WINDOWS_NATIVE_TEST_PIN.version}/opencode-windows-x64`;
   const targetDirectory = await metadata(target);
   const targetExecutable = await metadata(`${target}/opencode.exe`);
   assert(targetDirectory.state === 'missing' || targetDirectory.kind === 'directory');
