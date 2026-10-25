@@ -73,7 +73,7 @@ export const UpdateDialog = (): React.JSX.Element | null => {
       : t('updateDialog.updateAvailable');
   const filteredNotes = releaseNotes ? stripDownloadsSection(releaseNotes) : releaseNotes;
   const releaseUrl = availableVersion
-    ? `https://github.com/777genius/agent-teams-ai/releases/tag/v${availableVersion}`
+    ? `https://github.com/stgmt/agent-teams-ai/releases/tag/v${availableVersion}`
     : null;
 
   const openLink = async (url: string): Promise<void> => {

@@ -23,30 +23,30 @@ const version = '2.17.10';
 describe('updaterReleaseMetadata', () => {
   it('builds platform-specific asset URLs', () => {
     expect(getExpectedReleaseAssetUrl('1.2.3', 'darwin', 'arm64')).toBe(
-      'https://github.com/777genius/agent-teams-ai/releases/download/v1.2.3/Agent.Teams.AI-1.2.3-arm64.dmg'
+      'https://github.com/stgmt/agent-teams-ai/releases/download/v1.2.3/Agent.Teams.AI-1.2.3-arm64.dmg'
     );
     expect(getExpectedReleaseAssetUrl('1.2.3', 'darwin', 'x64')).toBe(
-      'https://github.com/777genius/agent-teams-ai/releases/download/v1.2.3/Agent.Teams.AI-1.2.3-x64.dmg'
+      'https://github.com/stgmt/agent-teams-ai/releases/download/v1.2.3/Agent.Teams.AI-1.2.3-x64.dmg'
     );
     expect(getExpectedReleaseAssetUrl('1.2.3', 'win32', 'x64')).toBe(
-      'https://github.com/777genius/agent-teams-ai/releases/download/v1.2.3/Agent.Teams.AI.Setup.1.2.3.exe'
+      'https://github.com/stgmt/agent-teams-ai/releases/download/v1.2.3/Agent.Teams.AI.Setup.1.2.3.exe'
     );
     expect(getExpectedReleaseAssetUrl('1.2.3', 'win32', 'arm64')).toBe(
-      'https://github.com/777genius/agent-teams-ai/releases/download/v1.2.3/Agent.Teams.AI.Setup.1.2.3-arm64.exe'
+      'https://github.com/stgmt/agent-teams-ai/releases/download/v1.2.3/Agent.Teams.AI.Setup.1.2.3-arm64.exe'
     );
     expect(getExpectedReleaseAssetUrl('1.2.3', 'linux', 'x64')).toBe(
-      'https://github.com/777genius/agent-teams-ai/releases/download/v1.2.3/Agent.Teams.AI-1.2.3.AppImage'
+      'https://github.com/stgmt/agent-teams-ai/releases/download/v1.2.3/Agent.Teams.AI-1.2.3.AppImage'
     );
   });
 
   it('builds primary and legacy repo asset URLs after the GitHub repo rename', () => {
     expect(getExpectedReleaseAssetUrls('1.2.3', 'darwin', 'arm64')).toEqual([
-      'https://github.com/777genius/agent-teams-ai/releases/download/v1.2.3/Agent.Teams.AI-1.2.3-arm64.dmg',
-      'https://github.com/777genius/claude_agent_teams_ui/releases/download/v1.2.3/Agent.Teams.AI-1.2.3-arm64.dmg',
+      'https://github.com/stgmt/agent-teams-ai/releases/download/v1.2.3/Agent.Teams.AI-1.2.3-arm64.dmg',
+      'https://github.com/stgmt/claude_agent_teams_ui/releases/download/v1.2.3/Agent.Teams.AI-1.2.3-arm64.dmg',
     ]);
     expect(getReleaseApiUrls('1.2.3')).toEqual([
-      'https://api.github.com/repos/777genius/agent-teams-ai/releases/tags/v1.2.3',
-      'https://api.github.com/repos/777genius/claude_agent_teams_ui/releases/tags/v1.2.3',
+      'https://api.github.com/repos/stgmt/agent-teams-ai/releases/tags/v1.2.3',
+      'https://api.github.com/repos/stgmt/claude_agent_teams_ui/releases/tags/v1.2.3',
     ]);
   });
 
@@ -99,7 +99,7 @@ describe('updaterReleaseMetadata', () => {
 
   it('parses bounded Atom entries with the official XML parser and applies repository/version/marker filters', () => {
     const url = getReleaseAtomUrls()[0];
-    const link = 'https://github.com/777genius/agent-teams-ai/releases/tag/';
+    const link = 'https://github.com/stgmt/agent-teams-ai/releases/tag/';
     const atom = `<feed>
       <entry><title>Stable &amp; reviewed</title><link href="${link}v2.17.6"/><content>&lt;p&gt;Older &amp; useful changes.&lt;/p&gt;</content></entry>
       <entry><link href="${link}v2.17.2"/><content><![CDATA[Earlier changes.]]></content></entry>
@@ -125,13 +125,13 @@ describe('updaterReleaseMetadata', () => {
       )
     ).toBeNull();
     expect(getReleaseAtomUrls(getReleaseApiUrls(version)[1])).toEqual([
-      'https://github.com/777genius/claude_agent_teams_ui/releases.atom',
+      'https://github.com/stgmt/claude_agent_teams_ui/releases.atom',
     ]);
   });
 
   it('accepts canonical entry links when the verified legacy Atom URL redirects after the repository rename', () => {
     const legacyUrl = getReleaseAtomUrls(getReleaseApiUrls(version)[1])[0];
-    const atom = `<feed><entry><link href="https://github.com/777genius/agent-teams-ai/releases/tag/v2.17.6"/><content>Older canonical changes.</content></entry><entry><link href="https://github.com/other/repository/releases/tag/v2.17.8"/><content>Unrelated changes.</content></entry></feed>`;
+    const atom = `<feed><entry><link href="https://github.com/stgmt/agent-teams-ai/releases/tag/v2.17.6"/><content>Older canonical changes.</content></entry><entry><link href="https://github.com/other/repository/releases/tag/v2.17.8"/><content>Unrelated changes.</content></entry></feed>`;
     expect(getUpdaterAtomHistory(atom, legacyUrl, '2.17.1', version)).toEqual([
       { version: '2.17.6', note: 'Older canonical changes.' },
     ]);
@@ -147,7 +147,7 @@ describe('updaterReleaseMetadata', () => {
         version
       )
     ).toBeNull();
-    const atom = `<feed>${Array.from({ length: 100 }, () => '<entry><title>Tool release.</title></entry>').join('')}<entry><link href="https://github.com/777genius/agent-teams-ai/releases/tag/v2.17.6"/><content>Beyond bound.</content></entry></feed>`;
+    const atom = `<feed>${Array.from({ length: 100 }, () => '<entry><title>Tool release.</title></entry>').join('')}<entry><link href="https://github.com/stgmt/agent-teams-ai/releases/tag/v2.17.6"/><content>Beyond bound.</content></entry></feed>`;
     expect(getUpdaterAtomHistory(atom, url, '2.17.1', version)).toEqual([]);
   });
 
@@ -179,7 +179,7 @@ describe('updaterReleaseMetadata', () => {
 
   it('derives history pages from the exact-tag repository URL', () => {
     expect(getReleaseHistoryApiUrl(getReleaseApiUrls('2.17.10')[0]!, 2)).toBe(
-      'https://api.github.com/repos/777genius/agent-teams-ai/releases?per_page=100&page=2'
+      'https://api.github.com/repos/stgmt/agent-teams-ai/releases?per_page=100&page=2'
     );
   });
 
@@ -224,11 +224,11 @@ path: Agent.Teams.AI-${version}-arm64-mac.zip
       `Agent.Teams.AI-${version}-x64.dmg`,
     ]);
     expect(getLatestMacMetadataUrl(version)).toBe(
-      `https://github.com/777genius/agent-teams-ai/releases/download/v${version}/latest-mac.yml`
+      `https://github.com/stgmt/agent-teams-ai/releases/download/v${version}/latest-mac.yml`
     );
     expect(getLatestMacMetadataUrls(version)).toEqual([
-      `https://github.com/777genius/agent-teams-ai/releases/download/v${version}/latest-mac.yml`,
-      `https://github.com/777genius/claude_agent_teams_ui/releases/download/v${version}/latest-mac.yml`,
+      `https://github.com/stgmt/agent-teams-ai/releases/download/v${version}/latest-mac.yml`,
+      `https://github.com/stgmt/claude_agent_teams_ui/releases/download/v${version}/latest-mac.yml`,
     ]);
     expect(isLatestMacMetadataCompatible(arm64Metadata, version, 'arm64')).toBe(true);
     expect(isLatestMacMetadataCompatible(arm64Metadata, version, 'x64')).toBe(false);

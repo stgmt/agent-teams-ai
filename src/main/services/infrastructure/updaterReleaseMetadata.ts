@@ -5,7 +5,7 @@ import {
 import { compareVersions } from '@shared/utils/version';
 import { parseXml } from 'builder-util-runtime';
 
-const REPO_OWNER = '777genius';
+const REPO_OWNER = 'stgmt';
 const REPO_NAME = 'agent-teams-ai';
 const LEGACY_REPO_NAME = 'claude_agent_teams_ui';
 

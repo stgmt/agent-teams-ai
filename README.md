@@ -1,3 +1,26 @@
+> [!IMPORTANT]
+> **This is a fork.** Unofficial fork of [777genius/agent-teams-ai](https://github.com/777genius/agent-teams-ai) (Agent Teams AI), maintained by [@stgmt](https://github.com/stgmt). It is not affiliated with or endorsed by the upstream author. The app, its name and its design belong to upstream; the license (AGPL-3.0) is unchanged.
+>
+> **По-русски:** неофициальный форк Agent Teams AI. Чиним то, что мешает работать, и регулярно подтягиваем изменения автора (`upstream/main`): в форке есть и его новые функции, и наши исправления. Подробности — в [FORK.md](FORK.md).
+
+## What this fork adds
+
+Based on upstream `v2.18.0` (merged up to upstream commit `eb67de958`, 2026-10-25). As far as we could verify on that date, upstream `main` does not contain these fixes:
+
+- **Member Save + Restart works.** Saving a teammate's settings with a restart no longer ends with "Failed to save". The restart waits for the real process exit, a failed restart no longer rolls the roster back, a dead process is no longer reported as online, and a restarted member gets its startup work once.
+- **"Team is not running" notice.** When you write to a Lead whose team is stopped (or whose process just exited), a dialog says so and offers **Launch**, which opens the normal launch dialog. It appears on every message you send to a stopped team, including teams launched over the HTTP API.
+- **Startup work does not block launch confirmation.** A native teammate no longer gets its task queue inside the startup context; the work arrives as messages after the launch is confirmed, so a long first turn cannot hold the confirmation back.
+
+## How the fork is maintained
+
+- Upstream `main` is merged into this fork regularly (`git merge upstream/main`). Fork-only changes are kept small and listed in [FORK.md](FORK.md), so each merge stays cheap.
+- Version = upstream base version + `-tokenplan.N`, for example `2.18.0-tokenplan.1`.
+- Releases: Windows x64 installer only, built by the maintainer. The installer is not code-signed. The in-app updater checks this fork's [Releases](https://github.com/stgmt/agent-teams-ai/releases).
+- Bugs in the areas above belong here; everything else belongs to [upstream](https://github.com/777genius/agent-teams-ai/issues). Fixes may be offered to upstream as pull requests.
+- Contributions to this fork are accepted under AGPL-3.0; the upstream Contributor License Agreement does not apply here.
+
+---
+
 ### [Boss, watch the video](https://agentteams.live/)
 
 <p align="center">
@@ -7,11 +30,8 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/777genius/agent-teams-ai/releases/latest"><img src="https://img.shields.io/github/v/release/777genius/agent-teams-ai?style=flat-square&label=version&color=007ec6" alt="Latest Release" /></a>&nbsp;
-  <a href="https://discord.gg/qtqSZSyuEc"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fdiscord.com%2Fapi%2Fv10%2Finvites%2FqtqSZSyuEc%3Fwith_counts%3Dtrue&query=%24.approximate_member_count&label=Discord&logo=discord&logoColor=white&color=5865F2&style=flat-square&suffix=%20members" alt="Discord" /></a>&nbsp;
-  <a href="https://trendshift.io/repositories/24276?utm_source=repository-badge&amp;utm_medium=badge&amp;utm_campaign=badge-repository-24276" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/repositories/24276" alt="777genius%2Fagent-teams-ai | Trendshift" width="125" height="26"/></a>
+  <a href="https://github.com/stgmt/agent-teams-ai/releases/latest"><img src="https://img.shields.io/github/v/release/stgmt/agent-teams-ai?style=flat-square&label=version&color=007ec6" alt="Latest Release" /></a>&nbsp;
   <a href="https://agentteams.live/"><img src="https://img.shields.io/badge/site-agentteams.live-8B5CF6?style=flat-square&logo=googlechrome&logoColor=white" alt="AgentTeams" /></a>&nbsp;
-  <a href="https://github.com/777genius/agent-teams-ai/actions/workflows/ci.yml"><img src="https://github.com/777genius/agent-teams-ai/actions/workflows/ci.yml/badge.svg" alt="CI Status" /></a>&nbsp;
 </p>
 
 <p align="center">
@@ -147,40 +167,20 @@ No prerequisites - the app can detect installed Claude Code, Codex, and OpenCode
 <table align="center">
 <tr>
 <td align="center">
-  <a href="https://github.com/777genius/agent-teams-ai/releases/latest/download/Agent.Teams.AI-arm64.dmg">
-    <img src="https://img.shields.io/badge/macOS_Apple_Silicon-.dmg-000000?style=for-the-badge&logo=apple&logoColor=white" alt="macOS Apple Silicon" />
+  <a href="https://github.com/stgmt/agent-teams-ai/releases/latest">
+    <img src="https://img.shields.io/badge/Windows_x64-Download_.exe-0078D4?style=for-the-badge&logo=windows&logoColor=white" alt="Windows x64 (fork build)" />
   </a>
   <br />
-  <a href="https://github.com/777genius/agent-teams-ai/releases/latest/download/Agent.Teams.AI-x64.dmg">
-    <img src="https://img.shields.io/badge/macOS_Intel-.dmg-434343?style=for-the-badge&logo=apple&logoColor=white" alt="macOS Intel" />
-  </a>
-</td>
-<td align="center">
-  <a href="https://github.com/777genius/agent-teams-ai/releases/latest/download/Agent.Teams.AI.Setup.exe">
-    <img src="https://img.shields.io/badge/Windows-Download_.exe-0078D4?style=for-the-badge&logo=windows&logoColor=white" alt="Windows" />
-  </a>
+  <sub>Take <code>Agent.Teams.AI.Setup.&lt;version&gt;.exe</code> from the latest release.</sub>
   <br />
-  <sub>May trigger SmartScreen - click "More info" -> "Run anyway"</sub>
+  <sub>Not code-signed: SmartScreen may warn - click "More info" -> "Run anyway".</sub>
   <br />
-  <sub>Run normally. Administrator mode may be needed only if the app reports a specific OpenCode symlink or permission error.</sub>
-</td>
-<td align="center">
-  <a href="https://github.com/777genius/agent-teams-ai/releases/latest/download/Agent.Teams.AI.AppImage">
-    <img src="https://img.shields.io/badge/Linux-Download_.AppImage-FCC624?style=for-the-badge&logo=linux&logoColor=black" alt="Linux AppImage" />
-  </a>
-  <br />
-  <a href="https://github.com/777genius/agent-teams-ai/releases/latest/download/agent-teams-ai-amd64.deb">
-    <img src="https://img.shields.io/badge/.deb-E95420?style=flat-square&logo=ubuntu&logoColor=white" alt=".deb" />
-  </a>&nbsp;
-  <a href="https://github.com/777genius/agent-teams-ai/releases/latest/download/agent-teams-ai-x86_64.rpm">
-    <img src="https://img.shields.io/badge/.rpm-294172?style=flat-square&logo=redhat&logoColor=white" alt=".rpm" />
-  </a>&nbsp;
-  <a href="https://github.com/777genius/agent-teams-ai/releases/latest/download/agent-teams-ai.pacman">
-    <img src="https://img.shields.io/badge/.pacman-1793D1?style=flat-square&logo=archlinux&logoColor=white" alt=".pacman" />
-  </a>
+  <sub>Installs over an upstream installation (same app id, same user data). To go back, run upstream's installer.</sub>
 </td>
 </tr>
 </table>
+
+macOS and Linux: this fork publishes no builds. Build from source (see [Development](#development)) or use [upstream's installers](https://github.com/777genius/agent-teams-ai/releases/latest), which do not include the fork's fixes.
 
 ## Table of contents
 
@@ -199,18 +199,8 @@ No prerequisites - the app can detect installed Claude Code, Codex, and OpenCode
   - [Build for distribution](#build-for-distribution)
   - [Scripts](#scripts)
 - [Contributing](#contributing)
-- [Partnerships](#partnerships)
 - [Security](#security)
 - [License](#license)
-
-## ❤️ Sponsors
-
-<p>
-  <a href="https://fluxionai.world/register?source=github&campaign=github-agent-teams&promo=AGENTTEAMS"><img src="docs/assets/sponsor-fluxion.png" alt="Sponsor: Fluxion AI - one gateway to the world's leading AI models. $3 signup credit" /></a>
-
-  
-  <a href="#partnerships"><img src="docs/assets/sponsor-become.png" alt="Become a sponsor - partner with or sponsor Agent Teams" width="26%" /></a>
-</p>
 
 ## What is this
 
@@ -417,7 +407,7 @@ On macOS, official Node.js 24 prebuilt binaries require macOS 13.5+.
 Node.js 26 does not bundle Corepack; install the pinned pnpm version separately if `pnpm` is unavailable.
 
 ```bash
-git clone https://github.com/777genius/agent-teams-ai.git
+git clone https://github.com/stgmt/agent-teams-ai.git
 cd agent-teams-ai
 pnpm install
 pnpm dev
@@ -544,13 +534,7 @@ local packaging.
 
 See [CONTRIBUTING.md](.github/CONTRIBUTING.md) for development guidelines. Please read our [Code of Conduct](.github/CODE_OF_CONDUCT.md).
 
-By opening a pull request you agree to the [Contributor License Agreement](.github/CLA.md) v2. You keep copyright.
-
-## Partnerships
-
-We are open to partnerships and collaboration opportunities. If you see a way to create value together, we are ready to discuss mutually beneficial terms.
-
-Contact: [quantjumppro@gmail.com](mailto:quantjumppro@gmail.com)
+You keep copyright in what you write. Pull requests to this fork are accepted under AGPL-3.0; the upstream Contributor License Agreement does not apply here. See [FORK.md](FORK.md).
 
 ## Security
 
@@ -564,4 +548,4 @@ GitHub Dependabot helps surface dependencies with known vulnerabilities and avai
 
 [AGPL-3.0](LICENSE)
 
-Opening a pull request agrees to [CLA v2](.github/CLA.md). That does not replace AGPL-3.0 on the public repository. It lets the project owner sublicense that work under additional terms (for example a commercial license) while keeping the AGPL-3.0 grant from the submission date.
+This fork is a derivative of the upstream project by 777genius and keeps its license. Contributions to the fork are licensed under AGPL-3.0.

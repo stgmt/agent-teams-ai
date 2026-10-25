@@ -3239,7 +3239,7 @@ function runPostRendererStartupTasks(): void {
 
   if (!isShutdownStarted()) {
     scheduleStartupTask(() => void updaterService.checkForUpdates(), 3000);
-    // Fork build: no hourly re-check, so an upstream release is not offered again and again.
+    updaterService.startPeriodicCheck(60 * 60 * 1000);
   }
 
   void getTeamFsWorkerClient()

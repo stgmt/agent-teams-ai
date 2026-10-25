@@ -4,19 +4,11 @@ Thanks for contributing to Agent Teams!
 
 ## Before You Start
 
-For big features and major changes, please discuss them in our [Discord](https://discord.gg/qtqSZSyuEc) first: https://discord.gg/qtqSZSyuEc so we can figure out the best approach together and avoid conflicts.
+This is a fork of [777genius/agent-teams-ai](https://github.com/777genius/agent-teams-ai). Changes outside the areas listed in [FORK.md](../FORK.md) are best sent to upstream first; the fork merges upstream regularly. For big changes, open an issue here before you start.
 
-Small fixes, bug reports, and minor improvements are always welcome - just open a PR.
+## License of contributions
 
-## Contributor License Agreement
-
-You keep copyright in what you write.
-
-By opening a pull request (or pushing commits to one) you agree to [CLA.md](CLA.md) v2. Do not open a PR if you do not agree.
-
-GitHub's Terms of Service already license that PR under AGPL-3.0. CLA v2 is the extra grant so the project owner can also sublicense your work (for example commercially or under Apache-2.0) while keeping the AGPL-3.0 grant from the submission date.
-
-If the work belongs to your employer, say so in the PR. Do not include someone else's commits unless they agree to the CLA. Bots such as Dependabot do not need to agree.
+You keep copyright in what you write. Pull requests to this fork are accepted under AGPL-3.0, the license of the repository. The upstream Contributor License Agreement ([CLA.md](CLA.md)) belongs to the upstream project and does not apply to this fork.
 
 ## Prerequisites
 - Node.js 26.11.1 Current (recommended for source builds) or Node.js 24.16.0 LTS

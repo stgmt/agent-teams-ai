@@ -326,7 +326,7 @@ describe('UpdaterService release notes', () => {
         .filter(([url]) => String(url).includes('?per_page='))
         .map(([url]) => url)
     ).toEqual([
-      'https://api.github.com/repos/777genius/claude_agent_teams_ui/releases?per_page=100&page=1',
+      'https://api.github.com/repos/stgmt/claude_agent_teams_ui/releases?per_page=100&page=1',
     ]);
   });
 
@@ -348,7 +348,7 @@ describe('UpdaterService release notes', () => {
   it.each(['history', 'metadata'] as const)(
     'recovers Atom history when REST $failure is rate limited',
     async (failure) => {
-      const atomUrl = 'https://github.com/777genius/agent-teams-ai/releases.atom';
+      const atomUrl = 'https://github.com/stgmt/agent-teams-ai/releases.atom';
       fixture.fetch.mockImplementation((url: string) =>
         Promise.resolve({
           ok:
@@ -358,7 +358,7 @@ describe('UpdaterService release notes', () => {
           text: () =>
             Promise.resolve(
               url === atomUrl
-                ? `<feed><entry><title>Candidate</title><link href="https://github.com/777genius/agent-teams-ai/releases/tag/v${version}"/><content>Stale Atom candidate must not replace the warning.</content></entry><entry><title>Stable</title><link href="https://github.com/777genius/agent-teams-ai/releases/tag/v2.17.6"/><content><![CDATA[Older Atom changes.]]></content></entry></feed>`
+                ? `<feed><entry><title>Candidate</title><link href="https://github.com/stgmt/agent-teams-ai/releases/tag/v${version}"/><content>Stale Atom candidate must not replace the warning.</content></entry><entry><title>Stable</title><link href="https://github.com/stgmt/agent-teams-ai/releases/tag/v2.17.6"/><content><![CDATA[Older Atom changes.]]></content></entry></feed>`
                 : macFeed
             ),
         })
