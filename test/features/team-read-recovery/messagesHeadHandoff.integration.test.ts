@@ -107,9 +107,10 @@ describe('actual store older/head handoff with synthetic transport', () => {
     expect(store.getState().teamMessagesByName['TEST-sentry-head-handoff'].loadingOlder).toBe(
       false
     );
+    // The older page still joins the loaded history, so it is kept; only the head refreshes.
     expect(store.getState().teamMessagesByName[team]).toMatchObject({
-      historyReloadRequired: true,
-      messagesError: 'Message history changed. Load older messages again to refresh it.',
+      historyReloadRequired: false,
+      messagesError: null,
     });
     expect(store.getState().teamMessagesByName['TEST-sentry-head-handoff'].loadingHead).toBe(true);
     head.resolve(page('feed-head-result'));
@@ -146,7 +147,7 @@ describe('actual store older/head handoff with synthetic transport', () => {
     vi.mocked(console.error).mockClear();
     expect(store.getState().teamMessagesByName[team]).toMatchObject({
       messagesError: 'TEST-head-failure',
-      historyReloadRequired: true,
+      historyReloadRequired: false,
     });
     expect(store.getState().teamMessagesByName['TEST-sentry-head-handoff'].loadingHead).toBe(false);
     expect(store.getState().teamMessagesByName['TEST-sentry-head-handoff'].loadingOlder).toBe(
