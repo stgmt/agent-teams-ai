@@ -219,6 +219,9 @@ export function areInboxMessageArraysEquivalent(
       leftItem.actionMode !== rightItem.actionMode ||
       leftItem.commentId !== rightItem.commentId ||
       leftItem.relayOfMessageId !== rightItem.relayOfMessageId ||
+      leftItem.replyChannel !== rightItem.replyChannel ||
+      leftItem.focusOnly !== rightItem.focusOnly ||
+      leftItem.replyToMessageIds?.join(',') !== rightItem.replyToMessageIds?.join(',') ||
       leftItem.source !== rightItem.source ||
       leftItem.leadSessionId !== rightItem.leadSessionId ||
       leftItem.messageKind !== rightItem.messageKind ||

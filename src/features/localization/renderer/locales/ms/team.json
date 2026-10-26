@@ -911,6 +911,17 @@
     },
     "search": {
       "placeholder": "Cari..."
+    },
+    "focus": {
+      "toggle": "Mod fokus",
+      "toggleHint": "Fokus: hanya permintaan anda dan balasannya (Alt+F)",
+      "pending": "Belum dibalas: {{count}}",
+      "waiting": "Menunggu balasan",
+      "fallbackTag": "Balasan daripada log kerja",
+      "serviceEvents": "Peristiwa perkhidmatan: {{count}}",
+      "hideServiceEvents": "Sembunyikan peristiwa perkhidmatan",
+      "empty": "Belum ada permintaan dalam sembang ini",
+      "searching": "Mencari permintaan anda dalam sejarah lama…"
     }
   },
   "modelSelector": {

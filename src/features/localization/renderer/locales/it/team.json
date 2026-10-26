@@ -911,6 +911,17 @@
     },
     "search": {
       "placeholder": "Cerca..."
+    },
+    "focus": {
+      "toggle": "Modalità focus",
+      "toggleHint": "Focus: solo le tue richieste e le relative risposte (Alt+F)",
+      "pending": "Senza risposta: {{count}}",
+      "waiting": "In attesa di risposta",
+      "fallbackTag": "Risposta dal registro di lavoro",
+      "serviceEvents": "Eventi di servizio: {{count}}",
+      "hideServiceEvents": "Nascondi eventi di servizio",
+      "empty": "Nessuna richiesta in questa chat",
+      "searching": "Cerco le tue richieste nella cronologia precedente…"
     }
   },
   "modelSelector": {

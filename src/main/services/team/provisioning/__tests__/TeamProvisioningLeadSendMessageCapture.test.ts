@@ -5,6 +5,7 @@ import {
   type TeamProvisioningLeadSendMessageCapturePorts,
   type TeamProvisioningLeadSendMessageRun,
 } from '../TeamProvisioningLeadSendMessageCapture';
+import { registerDirectUserRequest } from '../TeamProvisioningLeadUserReplyTracker';
 
 import type { InboxMessage } from '@shared/types';
 
@@ -93,6 +94,33 @@ describe('lead SendMessage capture helpers', () => {
     ]);
     expect(ports.sent).toHaveLength(1);
     expect(ports.inboxChanges).toEqual(['sentMessages.json']);
+  });
+
+  it('links a SendMessage to the user with the open user requests', () => {
+    const run = createRun();
+    const ports = createPorts();
+    registerDirectUserRequest(run, 'req-1');
+
+    captureLeadSendMessages(
+      run,
+      [
+        {
+          type: 'tool_use',
+          name: 'SendMessage',
+          input: { recipient: 'user', content: 'Transcript is attached' },
+        },
+        {
+          type: 'tool_use',
+          name: 'SendMessage',
+          input: { recipient: 'user', content: 'One more note' },
+        },
+      ],
+      ports
+    );
+
+    expect(ports.sent[0]).toMatchObject({ replyChannel: 'explicit', replyToMessageIds: ['req-1'] });
+    // A follow-up with no new request stays linked to the request it continues.
+    expect(ports.sent[1]).toMatchObject({ replyChannel: 'explicit', replyToMessageIds: ['req-1'] });
   });
 
   it('suppresses user SendMessage while relaying a member inbox', () => {

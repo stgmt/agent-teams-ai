@@ -911,6 +911,17 @@
     },
     "search": {
       "placeholder": "ابحث..."
+    },
+    "focus": {
+      "toggle": "وضع التركيز",
+      "toggleHint": "التركيز: طلباتك والردود عليها فقط (Alt+F)",
+      "pending": "بدون رد: {{count}}",
+      "waiting": "بانتظار الرد",
+      "fallbackTag": "رد من سجل العمل",
+      "serviceEvents": "أحداث الخدمة: {{count}}",
+      "hideServiceEvents": "إخفاء أحداث الخدمة",
+      "empty": "لا توجد طلبات في هذه المحادثة بعد",
+      "searching": "جارٍ البحث عن طلباتك في السجل الأقدم…"
     }
   },
   "modelSelector": {

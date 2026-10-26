@@ -256,11 +256,17 @@ export interface TeamOpenCodeMemberInboxRelayResult {
   diagnostics?: string[];
 }
 
+export interface TeamMessageSendOptions {
+  /** Id of the user message this stdin write delivers; the lead's reply is linked to it. */
+  userRequestMessageId?: string;
+}
+
 export interface TeamMessagingApi {
   sendMessageToTeam(
     teamName: string,
     message: string,
-    attachments?: TeamMessageAttachmentPayload[]
+    attachments?: TeamMessageAttachmentPayload[],
+    options?: TeamMessageSendOptions
   ): Promise<void>;
   relayOpenCodeMemberInboxMessages(
     teamName: string,

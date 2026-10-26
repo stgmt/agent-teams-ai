@@ -4,6 +4,8 @@ import {
   stripExactInternalControlEchoPrefix,
 } from '@shared/utils/teamInternalControlMessages';
 
+import { getLeadUserReplyChannelMode } from '../leadUserReplyChannel';
+
 import { shouldSuppressUnverifiedLeadRelayStateLine } from './TeamProvisioningInboxRelayPolicy';
 
 import type { InboxMessage } from '@shared/types/team';
@@ -34,6 +36,8 @@ export function projectLeadRelayReply(input: {
   runId: string;
   nowIso: string;
   nowMs: number;
+  /** User requests in the relayed batch; a plain-text reply is their fallback answer. */
+  userRequestIds?: readonly string[];
 }): LeadRelayReplyProjection {
   const cleanReply = input.replyText
     ? stripExactInternalControlEchoPrefix(
@@ -79,6 +83,8 @@ export function projectLeadRelayReply(input: {
       summary: cleanReply.length > 60 ? `${cleanReply.slice(0, 57)}...` : cleanReply,
       messageId: `lead-process-${input.runId}-${input.nowMs}`,
       source: 'lead_process',
+      replyChannel: getLeadUserReplyChannelMode() === 'plain_text' ? 'explicit' : 'fallback',
+      ...(input.userRequestIds?.length ? { replyToMessageIds: [...input.userRequestIds] } : {}),
     },
   };
 }

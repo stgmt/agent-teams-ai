@@ -59,6 +59,9 @@ export interface TeamProvisioningPersistedMessagePayload extends Record<string, 
   summary: InboxMessage['summary'];
   messageId: InboxMessage['messageId'];
   relayOfMessageId: InboxMessage['relayOfMessageId'];
+  replyToMessageIds: InboxMessage['replyToMessageIds'];
+  replyChannel: InboxMessage['replyChannel'];
+  focusOnly: InboxMessage['focusOnly'];
   source: InboxMessage['source'];
   leadSessionId: InboxMessage['leadSessionId'];
   conversationId: InboxMessage['conversationId'];
@@ -116,6 +119,9 @@ function mapControllerMessagePayload(
     summary: message.summary,
     messageId: message.messageId,
     relayOfMessageId: message.relayOfMessageId,
+    replyToMessageIds: message.replyToMessageIds,
+    replyChannel: message.replyChannel,
+    focusOnly: message.focusOnly,
     source: message.source,
     leadSessionId: message.leadSessionId,
     conversationId: message.conversationId,
@@ -150,6 +156,9 @@ function mapControllerInboxMessagePayload(
     summary: payload.summary,
     messageId: payload.messageId,
     relayOfMessageId: payload.relayOfMessageId,
+    replyToMessageIds: payload.replyToMessageIds,
+    replyChannel: payload.replyChannel,
+    focusOnly: payload.focusOnly,
     source: payload.source,
     leadSessionId: payload.leadSessionId,
     conversationId: payload.conversationId,

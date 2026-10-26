@@ -174,6 +174,7 @@ function buildMessage(flags, defaults) {
   const workSyncReviewRequestEventIds = normalizeStringList(flags.workSyncReviewRequestEventIds);
   const slashCommand = normalizeSlashCommand(flags.slashCommand);
   const commandOutput = normalizeCommandOutput(flags.commandOutput);
+  const replyToMessageIds = normalizeStringList(flags.replyToMessageIds);
 
   return {
     from:
@@ -212,6 +213,11 @@ function buildMessage(flags, defaults) {
     ...(typeof flags.relayOfMessageId === 'string' && flags.relayOfMessageId.trim()
       ? { relayOfMessageId: flags.relayOfMessageId.trim() }
       : {}),
+    ...(replyToMessageIds ? { replyToMessageIds } : {}),
+    ...(flags.replyChannel === 'explicit' || flags.replyChannel === 'fallback'
+      ? { replyChannel: flags.replyChannel }
+      : {}),
+    ...(flags.focusOnly === true ? { focusOnly: true } : {}),
     ...(typeof flags.source === 'string' && flags.source.trim()
       ? { source: flags.source.trim() }
       : {}),

@@ -2421,14 +2421,16 @@ describe('ipc teams handlers', () => {
     expect(teamHandlerMocks.sendMessageToTeam).toHaveBeenCalledWith(
       'my-team',
       expect.stringContaining('TURN ACTION MODE: ASK'),
-      undefined
+      undefined,
+      expect.objectContaining({ userRequestMessageId: expect.any(String) })
     );
     expect(teamHandlerMocks.sendMessageToTeam).toHaveBeenCalledWith(
       'my-team',
       expect.stringContaining(
         'FORBIDDEN: editing files, changing code, changing task/board state, delegating work, launching Agent/subagents'
       ),
-      undefined
+      undefined,
+      expect.objectContaining({ userRequestMessageId: expect.any(String) })
     );
     expect(service.sendDirectToLead).toHaveBeenCalledWith(
       'my-team',
@@ -2456,7 +2458,8 @@ describe('ipc teams handlers', () => {
     expect(teamHandlerMocks.sendMessageToTeam).toHaveBeenCalledWith(
       'my-team',
       expect.stringContaining('MessageId: attempt-lead-1'),
-      undefined
+      undefined,
+      expect.objectContaining({ userRequestMessageId: expect.any(String) })
     );
     expect(service.sendDirectToLead).toHaveBeenCalledWith(
       'my-team',
@@ -2522,19 +2525,22 @@ describe('ipc teams handlers', () => {
     expect(teamHandlerMocks.sendMessageToTeam).toHaveBeenCalledWith(
       'my-team',
       expect.stringContaining('Current durable team context:'),
-      undefined
+      undefined,
+      expect.objectContaining({ userRequestMessageId: expect.any(String) })
     );
     expect(teamHandlerMocks.sendMessageToTeam).toHaveBeenCalledWith(
       'my-team',
       expect.stringContaining(
         'Persistent teammates currently configured: alice (reviewer), jack (developer)'
       ),
-      undefined
+      undefined,
+      expect.objectContaining({ userRequestMessageId: expect.any(String) })
     );
     expect(teamHandlerMocks.sendMessageToTeam).toHaveBeenCalledWith(
       'my-team',
       expect.stringContaining('This team is NOT in solo mode'),
-      undefined
+      undefined,
+      expect.objectContaining({ userRequestMessageId: expect.any(String) })
     );
   });
 
@@ -2552,14 +2558,16 @@ describe('ipc teams handlers', () => {
     expect(teamHandlerMocks.sendMessageToTeam).toHaveBeenCalledWith(
       'my-team',
       expect.stringContaining('DELEGATE MODE USER ACK CONTRACT:'),
-      undefined
+      undefined,
+      expect.objectContaining({ userRequestMessageId: expect.any(String) })
     );
     expect(teamHandlerMocks.sendMessageToTeam).toHaveBeenCalledWith(
       'my-team',
       expect.stringContaining(
         'Make the acknowledgement at least 40 characters so it is preserved in the Messages panel.'
       ),
-      undefined
+      undefined,
+      expect.objectContaining({ userRequestMessageId: expect.any(String) })
     );
   });
 
@@ -2601,6 +2609,7 @@ describe('ipc teams handlers', () => {
     expect(teamHandlerMocks.sendMessageToTeam).toHaveBeenCalledWith(
       'my-team',
       '/COMPACT keep kanban',
+      undefined,
       undefined
     );
     const compactCall = vi.mocked(teamHandlerMocks.sendMessageToTeam).mock.calls as unknown[][];
@@ -2635,6 +2644,7 @@ describe('ipc teams handlers', () => {
     expect(teamHandlerMocks.sendMessageToTeam).toHaveBeenCalledWith(
       'my-team',
       '/foo bar',
+      undefined,
       undefined
     );
     const unknownSlashCall = vi.mocked(teamHandlerMocks.sendMessageToTeam).mock
@@ -2688,7 +2698,8 @@ describe('ipc teams handlers', () => {
             id: 'att-1',
             filename: 'note.txt',
           }),
-        ])
+        ]),
+        expect.objectContaining({ userRequestMessageId: expect.any(String) })
       );
     } finally {
       vi.unstubAllEnvs();

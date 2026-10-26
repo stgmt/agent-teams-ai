@@ -10,6 +10,7 @@ import {
 } from 'react';
 import { Sheet, type SheetRef } from 'react-modal-sheet';
 
+import { useChatFocusMode } from '@features/chat-focus-mode/renderer';
 import { ChatVisualizationPresentationProvider } from '@features/chat-visualizations/renderer';
 import { useAppTranslation } from '@features/localization/renderer';
 import {
@@ -31,12 +32,10 @@ import { useTeamMessagesExpanded } from '@renderer/hooks/useTeamMessagesExpanded
 import { useStore } from '@renderer/store';
 import { selectTeamMessages } from '@renderer/store/slices/teamSlice';
 import { toMessageKey } from '@renderer/utils/teamMessageKey';
-import { isLeadMember } from '@shared/utils/leadDetection';
 import { CheckCheck, MessageSquare, MoreHorizontal } from 'lucide-react';
 import { useShallow } from 'zustand/react/shallow';
 
 import { type TimelineViewport } from '../activity/ActivityTimeline';
-import { isLeadThought } from '../activity/LeadThoughtsGroup';
 import {
   CollapsibleTeamSection,
   type CollapsibleTeamSectionVariant,
@@ -68,9 +67,9 @@ import {
   conversationDraftAddress,
   conversationIdentity as createConversationIdentity,
   localDraftsByConversationScope,
-  memberConversationParticipants,
   outboxViewAddress,
   replyCandidates,
+  timelineLeadState,
   visibleTeamMessages,
 } from './messagesPanelDerivedData';
 import {
@@ -95,6 +94,7 @@ import { useMessagesComposerSections } from './useMessagesComposerSections';
 import { useMessagesGroupConversation } from './useMessagesGroupConversation';
 import {
   useDirectThreadAutoOlder,
+  useMessagesPanelMemberNames,
   useResetScrollOnConversationChange,
   useTeamChatListItems,
   useThreadUnreadSnapshot,
@@ -626,12 +626,7 @@ export const MessagesPanel = memo(function MessagesPanel({
     scrollElementRef: activeScrollContainerRef ?? threadScrollRef,
   });
 
-  const leadNames = useMemo(
-    () => members.filter((member) => isLeadMember(member)).map((member) => member.name),
-    [members]
-  );
-  const memberNames = useMemo(() => new Set(members.map((member) => member.name)), [members]);
-  const normalizedMemberNames = useMemo(() => memberConversationParticipants(members), [members]);
+  const { leadNames, memberNames, normalizedMemberNames } = useMessagesPanelMemberNames(members);
   const canonicalMessages = useMemo(
     () =>
       canonicalTeamMessages(
@@ -667,6 +662,14 @@ export const MessagesPanel = memo(function MessagesPanel({
     () => filterScopedMessages(canonicalMessages, scope, leadNames),
     [canonicalMessages, leadNames, scope]
   );
+  const focusMode = useChatFocusMode({
+    teamName,
+    scope,
+    leadNames,
+    messages: threadMessages,
+    thread: renderSurface === 'thread',
+    actions: groupArchiveAction,
+  });
   const visibleConversationAddress = useMemo<ComposerDraftAddress>(
     () => conversationDraftAddress(activeContextId, teamName, scope),
     [activeContextId, scope, teamName]
@@ -705,15 +708,10 @@ export const MessagesPanel = memo(function MessagesPanel({
       timeWindow,
     ]
   );
-  const firstTimelineMessage = activityTimelineMessages[0];
-  const hasVisibleCurrentLeadThought =
-    firstTimelineMessage != null &&
-    isLeadThought(firstTimelineMessage) &&
-    (currentLeadSessionId ? firstTimelineMessage.leadSessionId === currentLeadSessionId : true);
-  const timelineLeadActivity = hasVisibleCurrentLeadThought ? leadActivity : undefined;
-  const timelineLeadContextUpdatedAt = hasVisibleCurrentLeadThought
-    ? leadContextUpdatedAt
-    : undefined;
+  const timelineLead = timelineLeadState(activityTimelineMessages, currentLeadSessionId, {
+    leadActivity,
+    leadContextUpdatedAt,
+  });
 
   const hasTrackedPendingReplies = useMemo(
     () => Object.keys(pendingRepliesByMember).length > 0,
@@ -1117,8 +1115,8 @@ export const MessagesPanel = memo(function MessagesPanel({
         onToggleExpandOverride={toggleExpandOverride}
         currentLeadSessionId={currentLeadSessionId}
         isTeamAlive={isTeamAlive}
-        leadActivity={timelineLeadActivity}
-        leadContextUpdatedAt={timelineLeadContextUpdatedAt}
+        leadActivity={timelineLead.leadActivity}
+        leadContextUpdatedAt={timelineLead.leadContextUpdatedAt}
         teamNames={teamNames}
         teamColorByName={teamColorByName}
         onTeamClick={openTeamTab}
@@ -1157,6 +1155,7 @@ export const MessagesPanel = memo(function MessagesPanel({
         expandedOwner={timelineActions.expandedOwner}
         expandedItemKey={expandedItemKey}
         onExpandDialogChange={timelineActions.closeExpand}
+        focus={focusMode.view}
       />
     </ChatVisualizationPresentationProvider>
   );
@@ -1200,7 +1199,7 @@ export const MessagesPanel = memo(function MessagesPanel({
   const wideThreadHeader = (
     <WideThreadHeader
       title={lockedRecipient ?? conversationTitle}
-      actions={groupArchiveAction}
+      actions={focusMode.headerActions}
       participant={scope.kind === 'direct' ? scope.participant : undefined}
       unreadCount={threadUnread.unreadCount}
       attentionCount={threadUnread.attentionCount}
@@ -1286,7 +1285,7 @@ export const MessagesPanel = memo(function MessagesPanel({
       <MessagesSidebarSurface
         conversationHeader={
           <ConversationHeader
-            actions={groupArchiveAction}
+            actions={focusMode.headerActions}
             group={!!groupId}
             title={showChatList ? t('messages.title') : (lockedRecipient ?? conversationTitle)}
             unreadCount={messagesUnreadCount}
@@ -1394,7 +1393,7 @@ export const MessagesPanel = memo(function MessagesPanel({
               </div>
               <div className="flex h-full items-center gap-1.5">
                 <ConversationHeader
-                  actions={groupArchiveAction}
+                  actions={focusMode.headerActions}
                   group={!!groupId}
                   title={lockedRecipient ?? conversationTitle}
                   unreadCount={messagesUnreadCount}
@@ -1527,7 +1526,7 @@ export const MessagesPanel = memo(function MessagesPanel({
           onMoveToFloatingComposer={moveToFloatingComposer}
           onMoveToSidebar={moveToSidebar}
         >
-          {groupArchiveAction}
+          {focusMode.headerActions}
         </MessagesInlineLayoutActions>
       }
       defaultOpen

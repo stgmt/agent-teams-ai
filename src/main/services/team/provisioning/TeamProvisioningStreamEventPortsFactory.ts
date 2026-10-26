@@ -67,6 +67,7 @@ export interface TeamProvisioningStreamEventPortCallbacks<
   getRunLeadName: TeamProvisioningStreamEventPorts<TRun>['getRunLeadName'];
   captureTeamSpawnEvents: TeamProvisioningStreamEventPorts<TRun>['captureTeamSpawnEvents'];
   captureSendMessages: TeamProvisioningStreamEventPorts<TRun>['captureSendMessages'];
+  finishLeadUserReplyTurn: TeamProvisioningStreamEventPorts<TRun>['finishLeadUserReplyTurn'];
   emitLeadContextUsage: TeamProvisioningStreamEventPorts<TRun>['emitLeadContextUsage'];
   resetRuntimeToolActivity: TeamProvisioningStreamEventPorts<TRun>['resetRuntimeToolActivity'];
   setLeadActivity: TeamProvisioningStreamEventPorts<TRun>['setLeadActivity'];
@@ -144,6 +145,7 @@ export interface TeamProvisioningStreamEventPortsBoundaryDeps<
   prepareMixedSecondaryLaunch(run: TRun): Promise<boolean>;
   updateProgress: TeamProvisioningStreamEventPorts<TRun>['updateProgress'];
   emitTeamChange?: TeamProvisioningStreamEventPorts<TRun>['emitTeamChange'];
+  leadUserReplies: Pick<TeamProvisioningStreamEventPorts<TRun>, 'finishLeadUserReplyTurn'>;
 }
 
 export function createTeamProvisioningStreamEventPortsBoundary<
@@ -174,6 +176,7 @@ export function createTeamProvisioningStreamEventPortsBoundary<
     getRunLeadName: (run) => deps.service.getRunLeadName(run),
     captureTeamSpawnEvents: (run, content) => deps.service.captureTeamSpawnEvents(run, content),
     captureSendMessages: (run, content) => deps.service.captureSendMessages(run, content),
+    finishLeadUserReplyTurn: (run) => deps.leadUserReplies.finishLeadUserReplyTurn(run),
     emitLeadContextUsage: (run) => deps.service.emitLeadContextUsage(run),
     resetRuntimeToolActivity: (run, memberName) =>
       deps.service.resetRuntimeToolActivity(run, memberName),
@@ -239,6 +242,7 @@ export function createTeamProvisioningStreamEventPorts<
     getRunLeadName: callbacks.getRunLeadName,
     captureTeamSpawnEvents: callbacks.captureTeamSpawnEvents,
     captureSendMessages: callbacks.captureSendMessages,
+    finishLeadUserReplyTurn: callbacks.finishLeadUserReplyTurn,
     updateLeadContextUsageFromUsage: updateLeadContextUsageFromUsageForRun,
     emitLeadContextUsage: callbacks.emitLeadContextUsage,
     resetRuntimeToolActivity: callbacks.resetRuntimeToolActivity,

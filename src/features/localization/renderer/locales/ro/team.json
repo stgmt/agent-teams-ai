@@ -911,6 +911,17 @@
     },
     "search": {
       "placeholder": "Caută..."
+    },
+    "focus": {
+      "toggle": "Mod focus",
+      "toggleHint": "Focus: doar cererile tale și răspunsurile la ele (Alt+F)",
+      "pending": "Fără răspuns: {{count}}",
+      "waiting": "Așteaptă răspuns",
+      "fallbackTag": "Răspuns din jurnalul de lucru",
+      "serviceEvents": "Evenimente de serviciu: {{count}}",
+      "hideServiceEvents": "Ascunde evenimentele de serviciu",
+      "empty": "Încă nu există cereri în acest chat",
+      "searching": "Caut cererile tale în istoricul mai vechi…"
     }
   },
   "modelSelector": {

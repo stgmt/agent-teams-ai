@@ -67,7 +67,21 @@ describe('lead relay reply projection', () => {
         summary: 'I created a task for this.',
         messageId: 'lead-process-run-1-123',
         source: 'lead_process',
+        replyChannel: 'fallback',
       },
+    });
+  });
+
+  it('links a plain-text relay reply to the user requests of the batch', () => {
+    const projection = projectLeadRelayReply({
+      ...baseInput,
+      replyVisibility: 'user',
+      replyText: 'Report is ready.',
+      userRequestIds: ['req-1', 'req-2'],
+    });
+    expect(projection).toMatchObject({
+      kind: 'user_message',
+      message: { replyChannel: 'fallback', replyToMessageIds: ['req-1', 'req-2'] },
     });
   });
 });

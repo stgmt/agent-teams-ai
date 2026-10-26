@@ -911,6 +911,17 @@
     },
     "search": {
       "placeholder": "Maghanap..."
+    },
+    "focus": {
+      "toggle": "Focus mode",
+      "toggleHint": "Focus: ang iyong mga kahilingan at mga sagot lamang (Alt+F)",
+      "pending": "Walang sagot: {{count}}",
+      "waiting": "Naghihintay ng sagot",
+      "fallbackTag": "Sagot mula sa work log",
+      "serviceEvents": "Mga service event: {{count}}",
+      "hideServiceEvents": "Itago ang mga service event",
+      "empty": "Wala pang kahilingan sa chat na ito",
+      "searching": "Hinahanap ang iyong mga kahilingan sa mas lumang history…"
     }
   },
   "modelSelector": {

@@ -5189,6 +5189,17 @@ export default interface Resources {
         "to": "To",
         "tooltip": "Filter messages"
       },
+      "focus": {
+        "empty": "No requests in this chat yet",
+        "fallbackTag": "Reply from the working log",
+        "hideServiceEvents": "Hide service events",
+        "pending": "Unanswered: {{count}}",
+        "searching": "Looking for your requests in older history…",
+        "serviceEvents": "Service events: {{count}}",
+        "toggle": "Focus mode",
+        "toggleHint": "Focus: only your requests and the replies to them (Alt+F)",
+        "waiting": "Waiting for a reply"
+      },
       "fullScreen": {
         "label": "Full Screen",
         "teamOnly": "Full Screen is available on the team screen"

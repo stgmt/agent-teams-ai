@@ -989,6 +989,17 @@
       "schemaError": "Saved queue uses unsupported data; left untouched.",
       "conflict": "Queue or draft changed. Your text was kept; try again.",
       "notFound": "No matching message in loaded history. Delivery remains unknown."
+    },
+    "focus": {
+      "toggle": "Focus mode",
+      "toggleHint": "Focus: only your requests and the replies to them (Alt+F)",
+      "pending": "Unanswered: {{count}}",
+      "waiting": "Waiting for a reply",
+      "fallbackTag": "Reply from the working log",
+      "serviceEvents": "Service events: {{count}}",
+      "hideServiceEvents": "Hide service events",
+      "empty": "No requests in this chat yet",
+      "searching": "Looking for your requests in older history…"
     }
   },
   "modelSelector": {

@@ -911,6 +911,17 @@
     },
     "search": {
       "placeholder": "অনুসন্ধান..."
+    },
+    "focus": {
+      "toggle": "ফোকাস মোড",
+      "toggleHint": "ফোকাস: শুধু আপনার অনুরোধ ও তার উত্তর (Alt+F)",
+      "pending": "উত্তরহীন: {{count}}",
+      "waiting": "উত্তরের অপেক্ষায়",
+      "fallbackTag": "কাজের লগ থেকে উত্তর",
+      "serviceEvents": "সার্ভিস ইভেন্ট: {{count}}",
+      "hideServiceEvents": "সার্ভিস ইভেন্ট লুকান",
+      "empty": "এই চ্যাটে এখনও কোনো অনুরোধ নেই",
+      "searching": "পুরোনো ইতিহাসে আপনার অনুরোধ খোঁজা হচ্ছে…"
     }
   },
   "modelSelector": {

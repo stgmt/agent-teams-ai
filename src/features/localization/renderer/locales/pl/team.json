@@ -911,6 +911,17 @@
     },
     "search": {
       "placeholder": "Szukaj..."
+    },
+    "focus": {
+      "toggle": "Tryb skupienia",
+      "toggleHint": "Skupienie: tylko Twoje prośby i odpowiedzi na nie (Alt+F)",
+      "pending": "Bez odpowiedzi: {{count}}",
+      "waiting": "Czeka na odpowiedź",
+      "fallbackTag": "Odpowiedź z dziennika pracy",
+      "serviceEvents": "Zdarzenia serwisowe: {{count}}",
+      "hideServiceEvents": "Ukryj zdarzenia serwisowe",
+      "empty": "Brak próśb w tym czacie",
+      "searching": "Szukam Twoich próśb w starszej historii…"
     }
   },
   "modelSelector": {

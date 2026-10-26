@@ -911,6 +911,17 @@
     },
     "search": {
       "placeholder": "शोधा..."
+    },
+    "focus": {
+      "toggle": "फोकस मोड",
+      "toggleHint": "फोकस: फक्त तुमच्या विनंत्या आणि त्यांची उत्तरे (Alt+F)",
+      "pending": "उत्तर नाही: {{count}}",
+      "waiting": "उत्तराची प्रतीक्षा",
+      "fallbackTag": "कार्य लॉगमधील उत्तर",
+      "serviceEvents": "सेवा इव्हेंट: {{count}}",
+      "hideServiceEvents": "सेवा इव्हेंट लपवा",
+      "empty": "या चॅटमध्ये अद्याप विनंत्या नाहीत",
+      "searching": "जुन्या इतिहासात तुमच्या विनंत्या शोधत आहे…"
     }
   },
   "modelSelector": {

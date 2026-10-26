@@ -911,6 +911,17 @@
     },
     "search": {
       "placeholder": "Suche..."
+    },
+    "focus": {
+      "toggle": "Fokusmodus",
+      "toggleHint": "Fokus: nur deine Anfragen und die Antworten darauf (Alt+F)",
+      "pending": "Unbeantwortet: {{count}}",
+      "waiting": "Wartet auf Antwort",
+      "fallbackTag": "Antwort aus dem Arbeitsprotokoll",
+      "serviceEvents": "Dienstereignisse: {{count}}",
+      "hideServiceEvents": "Dienstereignisse ausblenden",
+      "empty": "Noch keine Anfragen in diesem Chat",
+      "searching": "Suche deine Anfragen im älteren Verlauf…"
     }
   },
   "modelSelector": {

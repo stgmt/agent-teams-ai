@@ -93,6 +93,7 @@ function createCallbacks(
     getRunLeadName: vi.fn(() => 'Lead'),
     captureTeamSpawnEvents: vi.fn(),
     captureSendMessages: vi.fn(),
+    finishLeadUserReplyTurn: vi.fn(),
     emitLeadContextUsage: vi.fn(),
     resetRuntimeToolActivity: vi.fn(),
     setLeadActivity: vi.fn(),
@@ -259,6 +260,7 @@ describe('TeamProvisioningStreamEventPortsFactory', () => {
         stopPersistentTeamMembers: callbacks.stopPersistentTeamMembers,
       },
       outputRecovery: createOutputRecoveryAdapter(callbacks),
+      leadUserReplies: { finishLeadUserReplyTurn: callbacks.finishLeadUserReplyTurn },
       prepareMixedSecondaryLaunch: vi.fn(async () => true),
       updateProgress: callbacks.updateProgress,
       emitTeamChange,
@@ -310,6 +312,7 @@ describe('TeamProvisioningStreamEventPortsFactory', () => {
         stopPersistentTeamMembers: callbacks.stopPersistentTeamMembers,
       },
       outputRecovery: createOutputRecoveryAdapter(callbacks),
+      leadUserReplies: { finishLeadUserReplyTurn: callbacks.finishLeadUserReplyTurn },
       prepareMixedSecondaryLaunch: vi.fn(async () => true),
       updateProgress: callbacks.updateProgress,
     });
@@ -357,6 +360,7 @@ describe('TeamProvisioningStreamEventPortsFactory', () => {
       service: createServiceAdapter(callbacks),
       persistentRuntimeCleanup: { stopPersistentTeamMembers: callbacks.stopPersistentTeamMembers },
       outputRecovery: createOutputRecoveryAdapter(callbacks),
+      leadUserReplies: { finishLeadUserReplyTurn: callbacks.finishLeadUserReplyTurn },
       updateProgress: callbacks.updateProgress,
       prepareMixedSecondaryLaunch,
     });
@@ -385,6 +389,7 @@ describe('TeamProvisioningStreamEventPortsFactory', () => {
           stopPersistentTeamMembers: callbacks.stopPersistentTeamMembers,
         },
         outputRecovery: createOutputRecoveryAdapter(callbacks),
+        leadUserReplies: { finishLeadUserReplyTurn: callbacks.finishLeadUserReplyTurn },
         updateProgress: callbacks.updateProgress,
         prepareMixedSecondaryLaunch: async () => {
           if (outcome === 'cancelled') run.cancelRequested = true;

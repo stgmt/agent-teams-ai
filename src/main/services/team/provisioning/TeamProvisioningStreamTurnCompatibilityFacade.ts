@@ -149,6 +149,10 @@ export abstract class TeamProvisioningStreamTurnCompatibilityFacade<
         }),
       updateProgress,
       emitTeamChange: (event) => this.teamChangeEmitter?.(event),
+      leadUserReplies: {
+        finishLeadUserReplyTurn: (run: TRun) =>
+          this.liveLeadMessagePortsBoundary.finishLeadUserReplyTurn(run),
+      },
     });
   }
 

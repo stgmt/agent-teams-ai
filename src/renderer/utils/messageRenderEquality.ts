@@ -130,6 +130,9 @@ export function areInboxMessagesEquivalentForRender(
   if (prev.color !== next.color) return false;
   if (prev.read !== next.read) return false;
   if (prev.relayOfMessageId !== next.relayOfMessageId) return false;
+  if (prev.replyChannel !== next.replyChannel) return false;
+  if (prev.focusOnly !== next.focusOnly) return false;
+  if (prev.replyToMessageIds?.join(',') !== next.replyToMessageIds?.join(',')) return false;
   if (prev.source !== next.source) return false;
   if (prev.leadSessionId !== next.leadSessionId) return false;
   if (prev.toolSummary !== next.toolSummary) return false;

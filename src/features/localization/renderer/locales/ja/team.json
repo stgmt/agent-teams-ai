@@ -911,6 +911,17 @@
     },
     "search": {
       "placeholder": "お問い合わせ"
+    },
+    "focus": {
+      "toggle": "フォーカスモード",
+      "toggleHint": "フォーカス: あなたの依頼とその返信のみ (Alt+F)",
+      "pending": "未回答: {{count}}",
+      "waiting": "返信待ち",
+      "fallbackTag": "作業ログからの返信",
+      "serviceEvents": "サービスイベント: {{count}}",
+      "hideServiceEvents": "サービスイベントを隠す",
+      "empty": "このチャットにはまだ依頼がありません",
+      "searching": "古い履歴からあなたの依頼を探しています…"
     }
   },
   "modelSelector": {

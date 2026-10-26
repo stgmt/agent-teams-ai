@@ -17,6 +17,7 @@ import {
   getLeadInboxRelayNoiseIds,
   getLeadRelayReadCommitBatch,
   hasStableInboxMessageId,
+  isUserOriginatedLeadRelayMessage,
   planLeadInboxRelayReadOnlyMessages,
   type RelayInboxMessage,
   selectActionableLeadRelayUnread,
@@ -30,6 +31,10 @@ import {
   observeRunLeadRelayCancellation,
 } from './TeamProvisioningLeadRelayCancellation';
 import { projectLeadRelayReply } from './TeamProvisioningLeadRelayProjection';
+import {
+  closeRelayUserRequests,
+  registerRelayUserRequests,
+} from './TeamProvisioningLeadUserReplyTracker';
 
 import type { InboxMessage, TeamChangeEvent } from '@shared/types';
 import type { ParsedPermissionRequest } from '@shared/utils/inboxNoise';
@@ -476,6 +481,11 @@ async function runLeadInboxRelayForTeam<TRun extends LeadInboxRelayFlowRun>(
     redeliveredMessageIds,
   });
   if (isStaleRelayRun()) return 0;
+  const userRequestIds =
+    replyVisibility === 'user'
+      ? batch.filter(isUserOriginatedLeadRelayMessage).map((row) => row.messageId)
+      : [];
+  registerRelayUserRequests(run, userRequestIds);
 
   const capturePromise = startLeadRelayCapture(
     run,
@@ -516,6 +526,7 @@ async function runLeadInboxRelayForTeam<TRun extends LeadInboxRelayFlowRun>(
   } finally {
     cancellation.dispose();
     ports.clearTimeout(transportDeadline);
+    closeRelayUserRequests(run, userRequestIds);
   }
 
   if (isStaleRelayRun()) return 0;
@@ -575,6 +586,7 @@ async function runLeadInboxRelayForTeam<TRun extends LeadInboxRelayFlowRun>(
     runId,
     nowIso: ports.nowIso(),
     nowMs: ports.nowMs(),
+    userRequestIds,
   });
   if (replyProjection.kind === 'suppressed') {
     if (replyProjection.reason === 'internal_control') {

@@ -24,6 +24,9 @@ const semanticFields: Record<keyof InboxMessage, true> = {
   groupHandoffStartedAt: true,
 
   relayOfMessageId: true,
+  replyToMessageIds: true,
+  replyChannel: true,
+  focusOnly: true,
   source: true,
   attachments: true,
   fileReferences: true,
