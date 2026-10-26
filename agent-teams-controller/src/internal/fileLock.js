@@ -61,22 +61,15 @@ function isWindowsDeletePending(error) {
   return process.platform === 'win32' && ['EPERM', 'EACCES', 'EBUSY'].includes(codeOf(error) ?? '');
 }
 
-// The owner entry of this process's own gate: while the attempt is still unpublished a
-// delete-pending refusal is waited out briefly, since an entry left behind blocks every
-// other process until this one exits.
-function unlinkGateEntry(name, waitOutDeletePending) {
+// The owner entry of this process's own gate: a delete-pending refusal is waited out
+// briefly, since an entry left behind blocks every other process until this one exits.
+function unlinkGateEntry(name) {
   for (let attempt = 0; ; attempt += 1) {
     try {
       unlinkOrMissing(name);
       return;
     } catch (error) {
-      if (
-        !waitOutDeletePending ||
-        !isWindowsDeletePending(error) ||
-        attempt >= DELETE_PENDING_UNLINK_RETRIES
-      ) {
-        throw error;
-      }
+      if (!isWindowsDeletePending(error) || attempt >= DELETE_PENDING_UNLINK_RETRIES) throw error;
       sleepSync(DELETE_PENDING_UNLINK_WAIT_MS);
     }
   }
@@ -272,7 +265,7 @@ function tryAcquire(lockPath, token, contention) {
       return published;
     } finally {
       // All protected mutations have ended BEFORE making the gate empty.
-      unlinkGateEntry(path.join(gate, entry), !published);
+      unlinkGateEntry(path.join(gate, entry));
       removeEmptyGateIfPossible(gate);
     }
   } catch (error) {

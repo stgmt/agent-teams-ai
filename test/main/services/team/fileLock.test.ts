@@ -378,10 +378,9 @@ describe('file lock publication invariants', () => {
 
   it('rolls back its data publication if gate cleanup fails before callback', () => {
     const unlink = fs.unlinkSync;
-    let failed = false;
+    // Persistent: on Windows a single refusal is waited out, not reported.
     vi.spyOn(fs, 'unlinkSync').mockImplementation((name) => {
-      if (!failed && String(name).includes(`.lock-transition-v2${path.sep}owner-`)) {
-        failed = true;
+      if (String(name).includes(`.lock-transition-v2${path.sep}owner-`)) {
         throw Object.assign(new Error('cleanup denied'), { code: 'EACCES' });
       }
       return unlink(name);
@@ -470,6 +469,25 @@ describe('file lock under Windows delete-pending refusals', () => {
       withFileLockSync(resource, () => {}, { acquireTimeoutMs: 1000, retryIntervalMs: 1 })
     ).toThrow('EPERM');
     expect(calls.total).toBe(1);
+  });
+
+  it('waits out a refusal to delete its own gate entry after publishing the lock', () => {
+    setPlatform('win32');
+    const unlink = fs.unlinkSync;
+    let refused = 0;
+    vi.spyOn(fs, 'unlinkSync').mockImplementation((name) => {
+      if (refused === 0 && String(name).includes(`.lock-transition-v2${path.sep}owner-`)) {
+        refused += 1;
+        throw refusal();
+      }
+      return unlink(name);
+    });
+    const callback = vi.fn(() => 'done');
+    expect(
+      withFileLockSync(resource, callback, { acquireTimeoutMs: 1000, retryIntervalMs: 1 })
+    ).toBe('done');
+    expect(refused).toBe(1);
+    expect(fs.readdirSync(dir)).toEqual([]);
   });
 
   it('waits out a refusal to delete its own gate entry so the gate is not left blocking others', () => {
