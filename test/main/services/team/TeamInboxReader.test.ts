@@ -98,6 +98,39 @@ describe('TeamInboxReader', () => {
     expect(names).toEqual(['alice', 'bob']);
   });
 
+  it('listInboxNames leaves out inboxes whose name is not a valid member name', async () => {
+    hoisted.dirs.set(inboxDir, [
+      'alice.json',
+      '--------------------------.json',
+      'user.json',
+      'team-lead.json',
+      'bad name.json',
+      '*.json',
+    ]);
+
+    const names = await reader.listInboxNames('my-team');
+    expect(names).toEqual(['alice', 'user', 'team-lead']);
+  });
+
+  it('getMessages still reads an inbox that is not a valid member name', async () => {
+    hoisted.dirs.set(inboxDir, ['--------------------------.json']);
+    hoisted.files.set(
+      '/mock/teams/my-team/inboxes/--------------------------.json',
+      JSON.stringify([
+        {
+          from: 'REVIWER',
+          text: 'approved',
+          timestamp: '2026-10-25T13:05:06.888Z',
+          read: false,
+          messageId: 'm-dash-1',
+        },
+      ])
+    );
+
+    const messages = await reader.getMessages('my-team');
+    expect(messages.map((message) => message.messageId)).toEqual(['m-dash-1']);
+  });
+
   it('getMessagesFor returns empty for corrupted JSON', async () => {
     hoisted.files.set('/mock/teams/my-team/inboxes/alice.json', '{bad');
     const messages = await reader.getMessagesFor('my-team', 'alice');

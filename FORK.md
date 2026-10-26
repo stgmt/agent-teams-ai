@@ -17,6 +17,8 @@ Everything that differs from upstream `main`, so a merge never hides a fork chan
 | Progress of **HTTP-launched** runs reaches the window (so the notice also covers them) | `publishProvisioningProgress` in the provisioning service, `bindTeamHttpHandlerApis` |
 | **Startup work after confirmation**: a native teammate's task queue is not put into the startup context (`deferTaskQueue`); the work arrives as messages once the launch is confirmed | `agent-teams-controller/src/internal/{taskBoard,tasks,deferredTaskQueue,startupWork,memberStatus,messageStore}.js` |
 | Every launch attempt gets its own copy of the bootstrap check (`allowRepeatedDelivery`) | `agent-teams-controller/src/internal/messageStore.js`, `TeamProvisioningMessagePersistence.ts` |
+| **File lock on Windows**: a path another process is still deleting answers `EPERM`/`EACCES`/`EBUSY`; while acquiring, that now means "try again" (bounded), not an error. Before, 8 processes writing one inbox lost about half of their acquisitions, and an inbox row could be lost with `EPERM open/rename/rmdir/scandir` | `agent-teams-controller/src/internal/fileLock.js`, `src/main/services/team/fileLock.ts` |
+| **Inbox named like nothing a member can be called** (an agent addressed a message to `--------------------------`): the name no longer becomes a roster member, blocks **Launch team**, or gets a work-sync directory; the messages stay readable | `TeamInboxReader.listInboxNames`, `MemberWorkSyncTeamChangeRouter` |
 
 Tests for these changes sit next to the code (`__tests__/`) and in `test/main/...`. The `test/live/*.live.test.ts` suites drive the real app with real models in a sandbox team; they are billed and are not part of `pnpm test` (run them with `pnpm test:live`).
 
@@ -67,6 +69,7 @@ The installer, its `.blockmap` and `latest.yml` come out in `release/`. Publish 
 - The installer is not code-signed (SmartScreen warns).
 - Text of the "team is not running" dialog is English in all locales.
 - `/stop` over HTTP does not refresh the dialog immediately.
+- Release `v2.18.0-tokenplan.1` (runtime 0.0.138) cannot start a team on a Windows profile where `%LOCALAPPDATA%\claude-multimodel-nodejs\Data` was created by an older runtime: the runtime refuses it with `execution_owner_not_private:private_acl_foreign_allow`. Runtime 0.0.139 removed that check; use `v2.18.2-tokenplan.1` or later.
 
 ## Upstream
 

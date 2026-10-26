@@ -1,3 +1,5 @@
+import { validateTeamMemberNameFormat } from '@shared/utils/teamMemberName';
+
 import { extractMemberWorkSyncTaskId } from './MemberWorkSyncTaskImpactResolver';
 
 import type {
@@ -141,7 +143,9 @@ export class MemberWorkSyncTeamChangeRouter {
 
     if (event.type === 'inbox' || event.type === 'lead-message') {
       const recipient = parseInboxRecipient(event.detail);
-      if (recipient) {
+      // An agent can address a message to a name the app would never accept for a member
+      // (a row of dashes); that inbox gets no member directory and no journal.
+      if (recipient && validateTeamMemberNameFormat(recipient) === null) {
         this.queue.enqueue({
           teamName: event.teamName,
           memberName: recipient,

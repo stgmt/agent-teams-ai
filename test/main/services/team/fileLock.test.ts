@@ -392,3 +392,107 @@ describe('file lock publication invariants', () => {
     expect(fs.existsSync(`${resource}.lock`)).toBe(false);
   });
 });
+
+describe('file lock under Windows delete-pending refusals', () => {
+  const platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform')!;
+  const setPlatform = (value: NodeJS.Platform) =>
+    Object.defineProperty(process, 'platform', { ...platformDescriptor, value });
+  const refusal = () => Object.assign(new Error('EPERM: delete pending'), { code: 'EPERM' });
+  let dir: string;
+  let resource: string;
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'delete-pending-unit-'));
+    resource = path.join(dir, 'data');
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    Object.defineProperty(process, 'platform', platformDescriptor);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  function refuseGatePublication(times: number) {
+    const rename = fs.renameSync;
+    const calls = { total: 0 };
+    vi.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+      if (String(to).endsWith('.lock-transition-v2')) {
+        calls.total += 1;
+        if (calls.total <= times) throw refusal();
+      }
+      return rename(from, to);
+    });
+    return calls;
+  }
+
+  it('retries when the gate is refused once because another process is still deleting it', () => {
+    setPlatform('win32');
+    const calls = refuseGatePublication(1);
+    const result = withFileLockSync(resource, () => 'done', {
+      acquireTimeoutMs: 1000,
+      retryIntervalMs: 1,
+    });
+    expect(result).toBe('done');
+    expect(calls.total).toBe(2);
+    expect(fs.readdirSync(dir)).toEqual([]);
+  });
+
+  it('retries the same way for async callers', async () => {
+    setPlatform('win32');
+    const calls = refuseGatePublication(3);
+    await expect(
+      withFileLock(resource, async () => 'done', { acquireTimeoutMs: 1000, retryIntervalMs: 1 })
+    ).resolves.toBe('done');
+    expect(calls.total).toBe(4);
+  });
+
+  it('surfaces the refusal itself once it outlasts the retry budget', () => {
+    setPlatform('win32');
+    const calls = refuseGatePublication(Number.POSITIVE_INFINITY);
+    expect(() =>
+      withFileLockSync(resource, () => {}, { acquireTimeoutMs: 5000, retryIntervalMs: 1 })
+    ).toThrow('EPERM');
+    expect(calls.total).toBe(26);
+    expect(fs.readdirSync(dir)).toEqual([]);
+  });
+
+  it('throws the refusal instead of a timeout when the deadline arrives first', () => {
+    setPlatform('win32');
+    refuseGatePublication(Number.POSITIVE_INFINITY);
+    expect(() =>
+      withFileLockSync(resource, () => {}, { acquireTimeoutMs: 5, retryIntervalMs: 1 })
+    ).toThrow('EPERM');
+  });
+
+  it('does not treat the refusal as contention on other platforms', () => {
+    setPlatform('linux');
+    const calls = refuseGatePublication(1);
+    expect(() =>
+      withFileLockSync(resource, () => {}, { acquireTimeoutMs: 1000, retryIntervalMs: 1 })
+    ).toThrow('EPERM');
+    expect(calls.total).toBe(1);
+  });
+
+  it('waits out a refusal to delete its own gate entry so the gate is not left blocking others', () => {
+    setPlatform('win32');
+    // A live owner (this process, another token) makes the attempt end unpublished.
+    fs.writeFileSync(`${resource}.lock`, `${process.pid}
+${Date.now()}
+other-token
+`);
+    const unlink = fs.unlinkSync;
+    let refused = 0;
+    vi.spyOn(fs, 'unlinkSync').mockImplementation((name) => {
+      if (refused === 0 && String(name).includes(`.lock-transition-v2${path.sep}owner-`)) {
+        refused += 1;
+        throw refusal();
+      }
+      return unlink(name);
+    });
+    expect(() =>
+      withFileLockSync(resource, () => {}, { acquireTimeoutMs: 30, retryIntervalMs: 5 })
+    ).toThrow('File lock timeout');
+    expect(refused).toBe(1);
+    expect(fs.existsSync(`${resource}.lock-transition-v2`)).toBe(false);
+  });
+});
+

@@ -5,6 +5,9 @@ import * as path from 'path';
 const STALE_TIMEOUT_MS = 30_000;
 const ACQUIRE_TIMEOUT_MS = 5_000;
 const RETRY_INTERVAL_MS = 20;
+const MAX_DELETE_PENDING_STREAK = 25;
+const DELETE_PENDING_UNLINK_RETRIES = 50;
+const DELETE_PENDING_UNLINK_WAIT_MS = 2;
 
 export interface FileLockOptions {
   acquireTimeoutMs?: number;
@@ -54,6 +57,51 @@ function removeEmptyGate(gate: string): void {
   } catch (error) {
     // A successor's nonempty gate must survive delayed cleanup of an old token.
     if (!['ENOENT', 'ENOTEMPTY', 'EEXIST'].includes(codeOf(error) ?? '')) throw error;
+  }
+}
+
+// Consecutive delete-pending refusals seen by one acquisition loop.
+interface Contention {
+  streak: number;
+  error: Error | undefined;
+}
+
+// Windows keeps a path whose delete is still pending (another process is unlinking or
+// removing it) visible and answers EPERM, EACCES or EBUSY for it. While this process is
+// still acquiring, that means another process is mid-operation: report "not acquired" and
+// let the loop retry. A refusal that outlasts MAX_DELETE_PENDING_STREAK attempts is a real
+// permission problem and surfaces as itself.
+function isWindowsDeletePending(error: unknown): boolean {
+  return process.platform === 'win32' && ['EPERM', 'EACCES', 'EBUSY'].includes(codeOf(error) ?? '');
+}
+
+// The owner entry of this process's own gate: while the attempt is still unpublished a
+// delete-pending refusal is waited out briefly, since an entry left behind blocks every
+// other process until this one exits.
+function unlinkGateEntry(name: string, waitOutDeletePending: boolean): void {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      unlinkOrMissing(name);
+      return;
+    } catch (error) {
+      if (
+        !waitOutDeletePending ||
+        !isWindowsDeletePending(error) ||
+        attempt >= DELETE_PENDING_UNLINK_RETRIES
+      ) {
+        throw error;
+      }
+      sleepSync(DELETE_PENDING_UNLINK_WAIT_MS);
+    }
+  }
+}
+
+// An empty gate that cannot be removed right now is garbage: the next acquirer removes it.
+function removeEmptyGateIfPossible(gate: string): void {
+  try {
+    removeEmptyGate(gate);
+  } catch (error) {
+    if (!isWindowsDeletePending(error)) throw error;
   }
 }
 
@@ -207,10 +255,30 @@ function releaseLock(lockPath: string, token: string): void {
   if (lines?.[0] === String(process.pid) && lines[2] === token) unlinkOrMissing(lockPath);
 }
 
-function tryAcquire(lockPath: string, options: Required<FileLockOptions>, token: string): boolean {
+function tryAcquire(
+  lockPath: string,
+  options: Required<FileLockOptions>,
+  token: string,
+  contention: Contention
+): boolean {
+  const carried = contention.streak;
+  contention.streak = 0;
+  contention.error = undefined;
+  const absorbDeletePending = (error: unknown): boolean => {
+    if (!isWindowsDeletePending(error) || carried >= MAX_DELETE_PENDING_STREAK) return false;
+    contention.streak = carried + 1;
+    contention.error = error instanceof Error ? error : new Error(String(error));
+    return true;
+  };
   fs.mkdirSync(path.dirname(lockPath), { recursive: true, mode: 0o700 });
   const gate = `${lockPath}-transition-v2`;
-  const entry = acquireGate(gate, token);
+  let entry: string | null;
+  try {
+    entry = acquireGate(gate, token);
+  } catch (error) {
+    if (absorbDeletePending(error)) return false;
+    throw error;
+  }
   if (entry === null) return false;
   let published = false;
   try {
@@ -234,13 +302,14 @@ function tryAcquire(lockPath: string, options: Required<FileLockOptions>, token:
       return published;
     } finally {
       // All protected mutations have ended BEFORE making the gate empty.
-      unlinkOrMissing(path.join(gate, entry));
-      removeEmptyGate(gate);
+      unlinkGateEntry(path.join(gate, entry), !published);
+      removeEmptyGateIfPossible(gate);
     }
   } catch (error) {
     // A cleanup error after publication must not strand a live owner whose
     // callback was never entered. Release needs no gate: live PIDs cannot be stolen.
     if (published) releaseLock(lockPath, token);
+    else if (absorbDeletePending(error)) return false;
     throw error;
   }
 }
@@ -271,9 +340,10 @@ export function withFileLockSync<T>(
   const deadline = Date.now() + resolvedOptions.acquireTimeoutMs;
   const token = resolvedOptions.preventLiveOwnerTakeover ? `strict-${randomUUID()}` : randomUUID();
 
-  while (!tryAcquire(lockPath, resolvedOptions, token)) {
+  const contention: Contention = { streak: 0, error: undefined };
+  while (!tryAcquire(lockPath, resolvedOptions, token, contention)) {
     if (Date.now() >= deadline) {
-      throw new Error(`File lock timeout: ${filePath}`);
+      throw contention.error ?? new Error(`File lock timeout: ${filePath}`);
     }
     sleepSync(Math.min(resolvedOptions.retryIntervalMs, Math.max(0, deadline - Date.now())));
   }
@@ -295,9 +365,10 @@ export async function withFileLock<T>(
   const deadline = Date.now() + resolvedOptions.acquireTimeoutMs;
   const token = resolvedOptions.preventLiveOwnerTakeover ? `strict-${randomUUID()}` : randomUUID();
 
-  while (!tryAcquire(lockPath, resolvedOptions, token)) {
+  const contention: Contention = { streak: 0, error: undefined };
+  while (!tryAcquire(lockPath, resolvedOptions, token, contention)) {
     if (Date.now() >= deadline) {
-      throw new Error(`File lock timeout: ${filePath}`);
+      throw contention.error ?? new Error(`File lock timeout: ${filePath}`);
     }
     await new Promise((resolve) => setTimeout(resolve, resolvedOptions.retryIntervalMs));
   }

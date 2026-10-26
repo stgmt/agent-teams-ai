@@ -217,6 +217,19 @@ describe('MemberWorkSyncTeamChangeRouter', () => {
     });
   });
 
+  it('ignores an inbox whose name is not a valid member name', () => {
+    const { queue, router } = createRouter();
+
+    router.noteTeamChange({
+      type: 'inbox',
+      teamName: 'team-a',
+      detail: 'inboxes/--------------------------.json',
+    });
+    router.noteTeamChange({ type: 'inbox', teamName: 'team-a', detail: 'inboxes/bad name.json' });
+
+    expect(queue.enqueue).not.toHaveBeenCalled();
+  });
+
   it('refreshes member runtime state when the team goes offline', async () => {
     const { queue, router } = createRouter();
 
