@@ -1,4 +1,5 @@
 import { TeamProvisioningRuntimeResourceSampling } from '@main/services/team/provisioning/TeamProvisioningRuntimeResourceSampling';
+import { DEFAULT_RUNTIME_RESOURCE_SAMPLING_OPTIONS } from '@main/services/team/provisioning/TeamProvisioningRuntimeResourceSamplingFactory';
 import { describe, expect, it, vi } from 'vitest';
 
 function createSampling(overrides: {
@@ -226,4 +227,36 @@ describe('TeamProvisioningRuntimeResourceSampling', () => {
       }
     }
   );
+
+  // The Windows host table is the only liveness evidence for an idle native
+  // teammate on win32. It is a cold PowerShell CIM query: 1.6-3.6 s on a
+  // Windows 11 desktop. A default that cuts it off earlier fails every read,
+  // and every idle teammate then reads as not alive.
+  it('accepts a cold Windows host process table read with the default options', async () => {
+    vi.useFakeTimers();
+    try {
+      const listWindowsProcessTable = vi.fn(
+        () =>
+          new Promise<unknown>((resolve) => {
+            setTimeout(() => resolve([{ pid: 4242, ppid: 100, command: 'teammate' }]), 3_600);
+          })
+      );
+      const sampling = new TeamProvisioningRuntimeResourceSampling(
+        DEFAULT_RUNTIME_RESOURCE_SAMPLING_OPTIONS,
+        { getRuntimeSnapshotCacheGeneration: () => 1, getTrackedRunId: () => 'run-1' },
+        { logDebug: vi.fn() },
+        { listRuntimeProcessTable: vi.fn(() => Promise.resolve([])), listWindowsProcessTable }
+      );
+
+      const read = sampling.readWindowsHostProcessRowsForLiveRuntimeMetadata('runtime-team');
+      await vi.advanceTimersByTimeAsync(3_600);
+
+      await expect(read).resolves.toMatchObject({
+        processTableAvailable: true,
+        rows: [{ pid: 4242, runtimeTelemetrySource: 'windows-host' }],
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

@@ -4397,7 +4397,9 @@ describe('TeamProvisioningService', () => {
         );
 
         expect(listRuntimeProcessTableForCurrentPlatform).toHaveBeenCalledTimes(1);
-        expect(listWindowsProcessTable).toHaveBeenCalledWith(1_500);
+        expect(listWindowsProcessTable).toHaveBeenCalledWith(
+          (TeamProvisioningService as any).RUNTIME_WINDOWS_PROCESS_TABLE_TIMEOUT_MS
+        );
         expect(rows).toEqual([
           { pid: 111, ppid: 1, command: 'wsl-runtime', runtimeTelemetrySource: 'wsl' },
           {
