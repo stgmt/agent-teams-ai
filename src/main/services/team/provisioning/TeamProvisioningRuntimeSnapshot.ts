@@ -85,6 +85,7 @@ import {
   resolveActiveRunRuntimeAdapterEvidence,
 } from './TeamProvisioningRuntimeSnapshotMemberLookup';
 import { resolveTeamProvisioningRuntimeSnapshotLiveness } from './TeamProvisioningRuntimeSnapshotResolver';
+import { shouldReadWindowsHostRowsForMemberLane } from './TeamProvisioningWindowsHostRowsPolicy';
 
 import type { TeamRuntimeMemberLaunchEvidence } from '../runtime';
 import type { buildRuntimeProcessLoadStats as buildRuntimeProcessLoadStatsDefault } from '../TeamRuntimeTelemetry';
@@ -321,42 +322,6 @@ export function isOpenCodeLaneHostOverridableLiveness(
     livenessKind === 'not_found' ||
     livenessKind === 'runtime_process_candidate' ||
     livenessKind == null
-  );
-}
-
-/**
- * Windows runs OpenCode lane hosts natively, outside the WSL process table this
- * snapshot otherwise reads, so every OpenCode lane - primary and secondary -
- * has to be verified against the Windows host table instead.
- *
- * With no provisioning run in flight (owner 'none', for example right after an
- * app restart) the recorded pid is all that is left to verify, so the host
- * table is read exactly when such a pid exists: that keeps this an added
- * evidence source and never turns a pid-less registration into a fresh
- * process-table verdict.
- *
- * `platform` is a parameter rather than a direct `process.platform` read so
- * both sides of the rule are reachable from a test on either platform.
- */
-export function shouldReadWindowsHostRowsForMemberLane(params: {
-  platform: NodeJS.Platform;
-  isOpenCodeLaneMember: boolean;
-  backendType: TeamAgentRuntimeBackendType | undefined;
-  evidenceOwner: 'primary' | 'secondary' | 'none';
-  recordedRuntimePid: number | undefined;
-  adapterRuntimeAlive: boolean | undefined;
-  adapterBootstrapConfirmed: boolean | undefined;
-}): boolean {
-  return (
-    params.platform === 'win32' &&
-    (params.isOpenCodeLaneMember || params.backendType !== 'tmux') &&
-    (params.evidenceOwner === 'primary' ||
-      (params.evidenceOwner === 'secondary' && params.isOpenCodeLaneMember) ||
-      (params.evidenceOwner === 'none' &&
-        params.isOpenCodeLaneMember &&
-        params.recordedRuntimePid != null)) &&
-    (params.evidenceOwner === 'secondary' ||
-      (params.adapterRuntimeAlive !== true && params.adapterBootstrapConfirmed !== true))
   );
 }
 

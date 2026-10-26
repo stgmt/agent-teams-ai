@@ -68,7 +68,7 @@
     "src/main/services/team/provisioning/TeamProvisioningPromptBuilders.ts": 1122,
     "src/main/services/team/provisioning/TeamProvisioningProviderDiagnostics.ts": 1287,
     "src/main/services/team/provisioning/TeamProvisioningRuntimeLaunchSelection.ts": 945,
-    "src/main/services/team/provisioning/TeamProvisioningRuntimeSnapshot.ts": 2062,
+    "src/main/services/team/provisioning/TeamProvisioningRuntimeSnapshot.ts": 2027,
     "src/main/services/team/provisioning/TeamProvisioningServiceComposition.ts": 843,
     "src/main/services/team/provisioning/TeamProvisioningStreamEvents.ts": 1178,
     "src/main/services/team/ReviewApplierService.ts": 2062,

@@ -6,8 +6,8 @@ import {
   findLiveOpenCodeLaneHostRow,
   isOpenCodeLaneHostOverridableLiveness,
   type PersistedRuntimeMemberLike,
-  shouldReadWindowsHostRowsForMemberLane,
 } from '../TeamProvisioningRuntimeSnapshot';
+import { shouldReadWindowsHostRowsForMemberLane } from '../TeamProvisioningWindowsHostRowsPolicy';
 
 import type { RuntimeTelemetryProcessTableRow } from '../../TeamRuntimeTelemetry';
 import type { LiveTeamAgentRuntimeMetadata } from '../TeamProvisioningRuntimeMetadataPolicy';
@@ -1843,4 +1843,42 @@ describe('shouldReadWindowsHostRowsForMemberLane', () => {
       })
     ).toBe(false);
   });
+
+  // A Claude teammate is a native Windows process with no runtime adapter; it is
+  // matched by its team and agent flags, so it needs no recorded pid.
+  it.each([CURRENT_PID, undefined])(
+    'reads the Windows host table for an unowned direct-process teammate, recorded pid %s',
+    (recordedRuntimePid) => {
+      expect(
+        shouldReadWindowsHostRowsForMemberLane({
+          ...laneDefaults,
+          platform: 'win32',
+          isOpenCodeLaneMember: false,
+          evidenceOwner: 'none',
+          recordedRuntimePid,
+        })
+      ).toBe(true);
+    }
+  );
+
+  // Negative controls: no process of its own (in-process), no known backend, or
+  // not on win32 at all.
+  it.each([
+    ['win32', 'in-process'],
+    ['win32', undefined],
+    ['linux', 'process'],
+  ] as const)(
+    'does not read the host table for an unowned non-OpenCode member on %s with backend %s',
+    (platform, backendType) => {
+      expect(
+        shouldReadWindowsHostRowsForMemberLane({
+          ...laneDefaults,
+          platform,
+          isOpenCodeLaneMember: false,
+          backendType,
+          evidenceOwner: 'none',
+        })
+      ).toBe(false);
+    }
+  );
 });
