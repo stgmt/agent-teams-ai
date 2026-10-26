@@ -2,7 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { writeJsonFileSync } = require('./atomicFile.js');
-const { assertValidGroupInboxRows } = require('./groupEnvelope.js');
+const { assertValidGroupInboxRows, pickGroupProtocolFields } = require('./groupEnvelope.js');
 const { withFileLock, withFileLockSync } = require('./fileLock.js');
 const { looksLikeIdleAckOnlyText } = require('./idleAckText.js');
 const runtimeHelpers = require('./runtimeHelpers.js');
@@ -174,6 +174,7 @@ function buildMessage(flags, defaults) {
   const workSyncReviewRequestEventIds = normalizeStringList(flags.workSyncReviewRequestEventIds);
   const slashCommand = normalizeSlashCommand(flags.slashCommand);
   const commandOutput = normalizeCommandOutput(flags.commandOutput);
+  const replyToMessageIds = normalizeStringList(flags.replyToMessageIds);
 
   return {
     from:
@@ -185,21 +186,7 @@ function buildMessage(flags, defaults) {
     timestamp,
     read: defaults.read,
     ...(taskRefs ? { taskRefs } : {}),
-    ...Object.fromEntries(
-      [
-        'groupChatId',
-        'groupChatName',
-        'groupMessageId',
-        'groupChatProtocolVersion',
-        'groupRunKey',
-        'groupRecipientNames',
-        'groupRecipientRunKeys',
-        'groupDeliverySummary',
-        'groupHandoffStartedAt',
-      ]
-        .filter((key) => flags[key] !== undefined)
-        .map((key) => [key, flags[key]])
-    ),
+    ...pickGroupProtocolFields(flags),
     ...(flags.actionMode === 'do' || flags.actionMode === 'ask' || flags.actionMode === 'delegate'
       ? { actionMode: flags.actionMode }
       : {}),
@@ -212,6 +199,11 @@ function buildMessage(flags, defaults) {
     ...(typeof flags.relayOfMessageId === 'string' && flags.relayOfMessageId.trim()
       ? { relayOfMessageId: flags.relayOfMessageId.trim() }
       : {}),
+    ...(replyToMessageIds ? { replyToMessageIds } : {}),
+    ...(flags.replyChannel === 'explicit' || flags.replyChannel === 'fallback'
+      ? { replyChannel: flags.replyChannel }
+      : {}),
+    ...(flags.focusOnly === true ? { focusOnly: true } : {}),
     ...(typeof flags.source === 'string' && flags.source.trim()
       ? { source: flags.source.trim() }
       : {}),

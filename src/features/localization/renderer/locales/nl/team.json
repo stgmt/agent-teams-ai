@@ -911,6 +911,17 @@
     },
     "search": {
       "placeholder": "Zoeken..."
+    },
+    "focus": {
+      "toggle": "Focusmodus",
+      "toggleHint": "Focus: alleen je verzoeken en de antwoorden erop (Alt+F)",
+      "pending": "Onbeantwoord: {{count}}",
+      "waiting": "Wacht op antwoord",
+      "fallbackTag": "Antwoord uit het werklogboek",
+      "serviceEvents": "Servicegebeurtenissen: {{count}}",
+      "hideServiceEvents": "Servicegebeurtenissen verbergen",
+      "empty": "Nog geen verzoeken in deze chat",
+      "searching": "Je verzoeken zoeken in oudere geschiedenis…"
     }
   },
   "modelSelector": {

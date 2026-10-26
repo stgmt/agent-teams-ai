@@ -997,13 +997,11 @@ describe('teamSlice actions', () => {
       store.getState().onProvisioningProgress(failure);
       expect(store.getState().provisioningRuns[ready.runId]).toEqual(failure);
       expect(store.getState().provisioningErrorByTeam['my-team']).toBe(failure.error);
-      store
-        .getState()
-        .onProvisioningProgress({
-          ...ready,
-          state: 'ready',
-          updatedAt: '2026-03-12T10:02:00.000Z',
-        });
+      store.getState().onProvisioningProgress({
+        ...ready,
+        state: 'ready',
+        updatedAt: '2026-03-12T10:02:00.000Z',
+      });
       expect(store.getState().provisioningRuns[ready.runId]).toEqual(failure);
       expect(store.getState().provisioningErrorByTeam['my-team']).toBe(failure.error);
     }
@@ -3287,7 +3285,7 @@ describe('teamSlice actions', () => {
     expect(hoisted.getMessagesPage.mock.calls.every(([, params]) => !params.cursor)).toBe(true);
   });
 
-  it('invalidates explicitly loaded history on a rewritten source and exposes explicit reload demand', async () => {
+  it('keeps explicitly loaded history while a changed head still overlaps it', async () => {
     const store = createSliceStore();
     const head: InboxMessage = {
       from: 'alice',
@@ -3303,6 +3301,12 @@ describe('teamSlice actions', () => {
       timestamp: new Date(1000).toISOString(),
       messageId: 'older',
     };
+    const fresh: InboxMessage = {
+      ...head,
+      text: 'fresh',
+      timestamp: new Date(3000).toISOString(),
+      messageId: 'fresh',
+    };
     hoisted.getMessagesPage
       .mockResolvedValueOnce({
         messages: [head],
@@ -3317,7 +3321,7 @@ describe('teamSlice actions', () => {
         feedRevision: 'rev-1',
       })
       .mockResolvedValueOnce({
-        messages: [head],
+        messages: [fresh, head],
         nextCursor: 'fresh-head-cursor',
         hasMore: true,
         feedRevision: 'rev-2',
@@ -3326,23 +3330,61 @@ describe('teamSlice actions', () => {
     await store.getState().loadOlderTeamMessages('my-team');
     await store.getState().refreshTeamMessagesHead('my-team');
     const entry = store.getState().teamMessagesByName['my-team'];
-    expect(entry.canonicalMessages).toEqual([head]);
-    expect(entry.historyReloadRequired).toBe(true);
-    expect(entry.messagesError).toContain('Load older');
-    expect(entry.hasMore).toBe(true);
-    expect(entry.nextCursor).toBe('fresh-head-cursor');
-    expect(hoisted.getMessagesPage).toHaveBeenCalledTimes(3);
-    hoisted.getMessagesPage.mockResolvedValueOnce({
-      messages: [{ ...older, text: 'rewritten older' }],
+    expect(entry.canonicalMessages.map((message) => message.messageId)).toEqual([
+      'fresh',
+      'head',
+      'older',
+    ]);
+    expect(entry).toMatchObject({
+      historyReloadRequired: false,
+      messagesError: null,
+      feedRevision: 'rev-2',
       nextCursor: null,
       hasMore: false,
-      feedRevision: 'rev-2',
     });
+    expect(entry.provenance?.pages.every((page) => page.sourceRevision === 'rev-2')).toBe(true);
+  });
+
+  it('asks for an explicit reload when the changed head no longer overlaps loaded history', async () => {
+    const store = createSliceStore();
+    const at = (id: string, ms: number): InboxMessage => ({
+      from: 'alice',
+      to: 'user',
+      text: id,
+      read: true,
+      timestamp: new Date(ms).toISOString(),
+      messageId: id,
+    });
+    hoisted.getMessagesPage
+      .mockResolvedValueOnce({
+        messages: [at('head', 2000)],
+        nextCursor: 'head-cursor',
+        hasMore: true,
+        feedRevision: 'rev-1',
+      })
+      .mockResolvedValueOnce({
+        messages: [at('older', 1000)],
+        nextCursor: null,
+        hasMore: false,
+        feedRevision: 'rev-1',
+      })
+      .mockResolvedValueOnce({
+        messages: [at('new-2', 4000), at('new-1', 3000)],
+        nextCursor: 'new-head-cursor',
+        hasMore: true,
+        feedRevision: 'rev-2',
+      });
+    await store.getState().refreshTeamMessagesHead('my-team');
     await store.getState().loadOlderTeamMessages('my-team');
-    expect(store.getState().teamMessagesByName['my-team'].canonicalMessages[1].text).toBe(
-      'rewritten older'
-    );
-    expect(store.getState().teamMessagesByName['my-team'].messagesError).toBeNull();
+    await store.getState().refreshTeamMessagesHead('my-team');
+    const entry = store.getState().teamMessagesByName['my-team'];
+    expect(entry.canonicalMessages.map((message) => message.messageId)).toEqual(['new-2', 'new-1']);
+    expect(entry).toMatchObject({
+      historyReloadRequired: true,
+      messagesError: expect.stringContaining('Load older'),
+      nextCursor: 'new-head-cursor',
+      hasMore: true,
+    });
   });
 
   it('acknowledges optimistic messages found in an explicitly loaded older page', async () => {
@@ -3490,7 +3532,7 @@ describe('teamSlice actions', () => {
     expect(current.provenance?.pages[0].inputCursor).toBe('current-head-cursor');
   });
 
-  it('invalidates an exhausted older range when a same-revision live overlay shifts the head boundary', async () => {
+  it('keeps an exhausted older range when a same-revision live overlay shifts the head boundary', async () => {
     const store = createSliceStore();
     const durable = Array.from(
       { length: 100 },
@@ -3536,29 +3578,15 @@ describe('teamSlice actions', () => {
     expect(store.getState().teamMessagesByName['my-team'].hasMore).toBe(false);
     await store.getState().refreshTeamMessagesHead('my-team');
     const entry = store.getState().teamMessagesByName['my-team'];
-    expect(entry.canonicalMessages).toEqual([...live, ...durable.slice(0, 40)]);
-    expect(entry.provenance?.pages).toEqual([]);
+    // Rows D60..D51 slid out of the head but are still loaded, so the range stays whole.
+    expect(entry.canonicalMessages).toEqual([...live, ...durable]);
+    expect(entry.provenance?.pages.map((page) => page.messages.length)).toEqual([10, 50]);
     expect(entry).toMatchObject({
-      nextCursor: 'D61-cursor',
-      hasMore: true,
-      historyReloadRequired: true,
-      messagesError: expect.stringContaining('Load older'),
+      nextCursor: null,
+      hasMore: false,
+      historyReloadRequired: false,
     });
     expect(hoisted.getMessagesPage).toHaveBeenCalledTimes(3);
-    hoisted.getMessagesPage.mockResolvedValueOnce({
-      messages: durable.slice(40, 90),
-      nextCursor: 'D11-cursor',
-      hasMore: true,
-      feedRevision: 'durable-revision',
-    });
-    await store.getState().loadOlderTeamMessages('my-team');
-    expect(hoisted.getMessagesPage.mock.calls[3]).toEqual([
-      'my-team',
-      { cursor: 'D61-cursor', limit: 50 },
-    ]);
-    expect(
-      store.getState().teamMessagesByName['my-team'].canonicalMessages.map((m) => m.messageId)
-    ).toContain('D60');
   });
 
   it.each(['initial hydration', 'owner rehydration', 'stale-page recovery'] as const)(
@@ -3598,9 +3626,19 @@ describe('teamSlice actions', () => {
       expect(failed.messagesError).toBe(`head unavailable during ${path}`);
       expect(failed.loadingHead).toBe(false);
       expect(failed.loadingOlder).toBe(false);
-      expect(failed.canonicalMessages).toEqual(before?.canonicalMessages ?? []);
-      expect(failed.provenance).toBe(before?.provenance);
-      expect(failed.nextCursor).toBe(before?.nextCursor ?? null);
+      if (path === 'stale-page recovery') {
+        // The older page still joins the trusted history, so it is kept although the feed moved.
+        expect(failed.canonicalMessages.map((m) => m.messageId).sort()).toEqual([
+          'stale-page',
+          'trusted',
+        ]);
+        expect(failed.provenance?.pages).toHaveLength(1);
+        expect(failed.nextCursor).toBeNull();
+      } else {
+        expect(failed.canonicalMessages).toEqual(before?.canonicalMessages ?? []);
+        expect(failed.provenance).toBe(before?.provenance);
+        expect(failed.nextCursor).toBe(before?.nextCursor ?? null);
+      }
       expect(failed.feedRevision).toBe(before?.feedRevision ?? null);
       expect(__getTeamScopedTransientStateForTests('my-team')).toMatchObject({
         hasQueuedHeadRefreshAfterOlder: false,
@@ -3617,12 +3655,15 @@ describe('teamSlice actions', () => {
       await store.getState().refreshTeamMessagesHead('my-team');
       expect(hoisted.getMessagesPage).toHaveBeenCalledTimes(callsAfterFailure + 1);
       expect(store.getState().teamMessagesByName['my-team'].feedRevision).toBe('rev-3');
-      hoisted.getMessagesPage.mockResolvedValueOnce({
-        messages: [],
-        nextCursor: null,
-        hasMore: false,
-        feedRevision: 'rev-3',
-      });
+      // After stale-page recovery the whole history is loaded, so paging has nothing to read.
+      if (path !== 'stale-page recovery') {
+        hoisted.getMessagesPage.mockResolvedValueOnce({
+          messages: [],
+          nextCursor: null,
+          hasMore: false,
+          feedRevision: 'rev-3',
+        });
+      }
       await expect(store.getState().loadOlderTeamMessages('my-team')).resolves.toBeUndefined();
       expect(store.getState().teamMessagesByName['my-team'].messagesError).toBeNull();
     }
@@ -3904,12 +3945,13 @@ describe('teamSlice actions', () => {
         .teamMessagesByName[
           'my-team'
         ]?.canonicalMessages.map((message: { messageId?: string }) => message.messageId)
-    ).toEqual(['msg-4', 'msg-3']);
+    ).toEqual(['msg-4', 'msg-3', 'msg-2', 'msg-1']);
+    // The fresh head overlaps the old one, so the older page and the row that slid out stay.
     expect(store.getState().teamMessagesByName['my-team']).toMatchObject({
-      historyReloadRequired: true,
-      messagesError: expect.stringContaining('Load older'),
-      nextCursor: 'cursor-head',
-      hasMore: true,
+      historyReloadRequired: false,
+      messagesError: null,
+      nextCursor: null,
+      hasMore: false,
       loadingHead: false,
       loadingOlder: false,
     });

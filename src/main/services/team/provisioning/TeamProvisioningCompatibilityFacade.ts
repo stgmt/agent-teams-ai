@@ -1,4 +1,8 @@
 import { TeamProvisioningAppShellFacade } from './TeamProvisioningAppShellFacade';
+import {
+  forgetUserRequest,
+  registerDirectUserRequest,
+} from './TeamProvisioningLeadUserReplyTracker';
 
 import type { TeamProvisioningCancellationBoundary } from './TeamProvisioningCancellationBoundary';
 import type { TeamProvisioningConfigFacade } from './TeamProvisioningConfigFacade';
@@ -207,7 +211,8 @@ export abstract class TeamProvisioningCompatibilityFacade<
   async sendMessageToTeam(
     teamName: string,
     message: string,
-    attachments?: { data: string; mimeType: string; filename?: string }[]
+    attachments?: { data: string; mimeType: string; filename?: string }[],
+    options?: { userRequestMessageId?: string }
   ): Promise<void> {
     const runId = this.compatibilityDelegation.runTracking.getAliveRunId(teamName);
     if (!runId) {
@@ -218,7 +223,18 @@ export abstract class TeamProvisioningCompatibilityFacade<
       throw new Error(`Team "${teamName}" process stdin is not writable`);
     }
 
-    await this.sendMessageToRun(run, message, attachments);
+    const userRequestMessageId = options?.userRequestMessageId?.trim();
+    if (!userRequestMessageId) {
+      await this.sendMessageToRun(run, message, attachments);
+      return;
+    }
+    registerDirectUserRequest(run, userRequestMessageId);
+    try {
+      await this.sendMessageToRun(run, message, attachments);
+    } catch (error) {
+      forgetUserRequest(run, userRequestMessageId);
+      throw error;
+    }
   }
 
   protected async sendMessageToRun(

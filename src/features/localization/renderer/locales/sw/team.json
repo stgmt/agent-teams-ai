@@ -913,6 +913,17 @@
     },
     "search": {
       "placeholder": "Tafuta..."
+    },
+    "focus": {
+      "toggle": "Hali ya umakini",
+      "toggleHint": "Umakini: maombi yako na majibu yake tu (Alt+F)",
+      "pending": "Bila jibu: {{count}}",
+      "waiting": "Inasubiri jibu",
+      "fallbackTag": "Jibu kutoka kumbukumbu ya kazi",
+      "serviceEvents": "Matukio ya huduma: {{count}}",
+      "hideServiceEvents": "Ficha matukio ya huduma",
+      "empty": "Bado hakuna maombi katika gumzo hili",
+      "searching": "Inatafuta maombi yako katika historia ya zamani…"
     }
   },
   "modelSelector": {

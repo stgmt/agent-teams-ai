@@ -162,6 +162,7 @@ import {
   cloneLaunchIoGovernorPayload,
   type LaunchIoGovernor,
 } from '../services/team/LaunchIoGovernor';
+import { buildDirectUserMessageReplyInstruction } from '../services/team/leadUserReplyChannel';
 import {
   clearPendingOpenCodePromptDeliveriesForTeam,
   countLiveRecordedRuntimeHostsForTeam,
@@ -2910,7 +2911,7 @@ async function handleSendMessage(
         ? rawSlashCommandText
         : [
             `You received a direct message from the user.`,
-            `IMPORTANT: Your text response here is shown to the user in the Messages panel. Always include a brief human-readable reply. Do NOT respond with only an agent-only block.`,
+            buildDirectUserMessageReplyInstruction(),
             ...(rosterContextBlock ? [rosterContextBlock] : []),
             ...(delegateAckBlock ? [delegateAckBlock] : []),
             buildOriginalUserRequestBlock(preGeneratedMessageId),
@@ -2934,7 +2935,8 @@ async function handleSendMessage(
         await messaging.sendMessageToTeam(
           tn,
           stdinTextForLead,
-          rawSlashCommandText ? undefined : preparedAttachments?.nativePayloads
+          rawSlashCommandText ? undefined : preparedAttachments?.nativePayloads,
+          rawSlashCommandText ? undefined : { userRequestMessageId: preGeneratedMessageId }
         );
         stdinSent = true;
       } catch (stdinError: unknown) {

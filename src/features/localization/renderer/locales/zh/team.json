@@ -911,6 +911,17 @@
     },
     "search": {
       "placeholder": "搜索…"
+    },
+    "focus": {
+      "toggle": "专注模式",
+      "toggleHint": "专注：只显示你的请求及其回复 (Alt+F)",
+      "pending": "未回复：{{count}}",
+      "waiting": "等待回复",
+      "fallbackTag": "来自工作日志的回复",
+      "serviceEvents": "服务事件：{{count}}",
+      "hideServiceEvents": "隐藏服务事件",
+      "empty": "此聊天中还没有请求",
+      "searching": "正在较早的历史中查找你的请求…"
     }
   },
   "modelSelector": {

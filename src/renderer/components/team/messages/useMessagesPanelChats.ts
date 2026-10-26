@@ -10,10 +10,27 @@ import {
   TEAM_DIRECT_CHAT_AUTO_OLDER_PAGE_CAP,
 } from '@features/team-direct-chats/renderer';
 import { toMessageKey } from '@renderer/utils/teamMessageKey';
+import { isLeadMember } from '@shared/utils/leadDetection';
 
 import { collectThreadUnreadSnapshotKeys } from './messagesPanelConversations';
+import { memberConversationParticipants } from './messagesPanelDerivedData';
 
 import type { InboxMessage, ResolvedTeamMember } from '@shared/types';
+
+export function useMessagesPanelMemberNames(members: readonly ResolvedTeamMember[]): {
+  leadNames: string[];
+  memberNames: Set<string>;
+  normalizedMemberNames: Set<string>;
+} {
+  return useMemo(
+    () => ({
+      leadNames: members.filter((member) => isLeadMember(member)).map((member) => member.name),
+      memberNames: new Set(members.map((member) => member.name)),
+      normalizedMemberNames: memberConversationParticipants(members),
+    }),
+    [members]
+  );
+}
 
 export function useTeamChatListItems(args: {
   members: readonly ResolvedTeamMember[];

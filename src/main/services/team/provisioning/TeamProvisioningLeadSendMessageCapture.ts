@@ -14,6 +14,7 @@ import {
   type InboxRelayCandidateRunState,
   type SilentTeammateForward,
 } from './TeamProvisioningInboxRelayCandidates';
+import { takeRequestIdsForExplicitReply } from './TeamProvisioningLeadUserReplyTracker';
 import { teamToolTaskRefs } from './TeamProvisioningRuntimeMetadata';
 
 import type { InboxMessage, TaskRef } from '@shared/types';
@@ -244,6 +245,7 @@ export function captureLeadSendMessages<TRun extends TeamProvisioningLeadSendMes
       recipient !== 'user'
         ? consumePendingInboxRelayCandidate(run, recipient, strippedCrossTeamContent, summary)
         : undefined;
+    const replyToMessageIds = recipient === 'user' ? takeRequestIdsForExplicitReply(run) : [];
 
     const msg: InboxMessage = {
       from: leadName,
@@ -257,6 +259,8 @@ export function captureLeadSendMessages<TRun extends TeamProvisioningLeadSendMes
           : summary || strippedCrossTeamContent,
       messageId: `lead-sendmsg-${run.runId}-${ports.nowMs()}`,
       ...(relayOfMessageId ? { relayOfMessageId } : {}),
+      ...(recipient === 'user' ? { replyChannel: 'explicit' as const } : {}),
+      ...(replyToMessageIds.length > 0 ? { replyToMessageIds } : {}),
       source: 'lead_process',
     };
 

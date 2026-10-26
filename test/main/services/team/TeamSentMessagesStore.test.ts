@@ -146,4 +146,36 @@ describe('TeamSentMessagesStore', () => {
     vi.mocked(console.error).mockClear();
     await expect(fs.readFile(sentMessagesPath, 'utf8')).resolves.toBe('NOT VALID JSON');
   });
+  it('preserves user reply-link fields when reading sent messages', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'team-sent-store-'));
+    tempDirs.push(root);
+
+    const teamDir = path.join(root, 'my-team');
+    await fs.mkdir(teamDir, { recursive: true });
+    await fs.writeFile(
+      path.join(teamDir, 'sentMessages.json'),
+      JSON.stringify([
+        {
+          from: 'team-lead',
+          to: 'user',
+          text: 'Report is ready',
+          timestamp: '2026-03-27T12:00:00.000Z',
+          read: false,
+          messageId: 'reply-1',
+          source: 'lead_process',
+          replyToMessageIds: ['req-1'],
+          replyChannel: 'fallback',
+          focusOnly: true,
+        },
+      ]),
+      'utf8'
+    );
+
+    const [message] = await new TeamSentMessagesStore().readMessages('my-team');
+    expect(message).toMatchObject({
+      replyToMessageIds: ['req-1'],
+      replyChannel: 'fallback',
+      focusOnly: true,
+    });
+  });
 });

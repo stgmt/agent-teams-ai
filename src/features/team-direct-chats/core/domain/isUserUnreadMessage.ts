@@ -33,7 +33,8 @@ export function isUserUnreadMessage(
   readSet: ReadonlySet<string>,
   toKey: ConversationMessageKeyFn
 ): boolean {
-  if (isOutboundUserMessage(message)) {
+  // Focus-only fallback replies repeat a lead thought that already counts as unread.
+  if (isOutboundUserMessage(message) || message.focusOnly === true) {
     return false;
   }
   if (readSet.has(toKey(message))) {

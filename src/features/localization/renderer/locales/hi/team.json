@@ -911,6 +911,17 @@
     },
     "search": {
       "placeholder": "खोज..."
+    },
+    "focus": {
+      "toggle": "फ़ोकस मोड",
+      "toggleHint": "फ़ोकस: केवल आपके अनुरोध और उनके जवाब (Alt+F)",
+      "pending": "बिना जवाब: {{count}}",
+      "waiting": "जवाब की प्रतीक्षा",
+      "fallbackTag": "कार्य लॉग से जवाब",
+      "serviceEvents": "सेवा इवेंट: {{count}}",
+      "hideServiceEvents": "सेवा इवेंट छिपाएँ",
+      "empty": "इस चैट में अभी कोई अनुरोध नहीं",
+      "searching": "पुराने इतिहास में आपके अनुरोध खोजे जा रहे हैं…"
     }
   },
   "modelSelector": {

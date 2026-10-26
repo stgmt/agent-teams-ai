@@ -10,6 +10,10 @@ import {
   type ClassifiedMainProcessIdle,
   classifyIdleNotificationForMainProcess,
 } from '../idleNotificationMainProcessSemantics';
+import {
+  buildUserRelayReplyVisibilityLines,
+  type LeadUserReplyChannelMode,
+} from '../leadUserReplyChannel';
 import { classifyOpenCodeRuntimeDeliveryReasonCode } from '../opencode/delivery/OpenCodeRuntimeDeliveryAdvisoryPolicy';
 import {
   normalizeOpenCodeTaskRefsForComparison,
@@ -616,6 +620,7 @@ export function buildLeadInboxRelayPrompt(input: {
   leadName: string;
   batch: readonly RelayInboxMessage[];
   replyVisibility: 'user' | 'internal_activity';
+  userReplyChannelMode?: LeadUserReplyChannelMode;
   teammates: { name: string; role?: string }[];
   workSyncControlUrl: string | null;
   redeliveredMessageIds?: ReadonlySet<string>;
@@ -630,11 +635,7 @@ export function buildLeadInboxRelayPrompt(input: {
     : '';
   const replyVisibilityInstruction =
     input.replyVisibility === 'user'
-      ? [
-          `Plain text reply visibility for this batch: user-visible.`,
-          `These inbox rows originated from the human user, so a concise plain text reply is allowed and will be shown to the user.`,
-          `If a visible reply is needed for a teammate or another team, use the appropriate messaging tool; plain text is only for the human response.`,
-        ]
+      ? buildUserRelayReplyVisibilityLines(input.userReplyChannelMode)
       : [
           `Plain text reply visibility for this batch: internal lead activity only.`,
           `Do NOT write a user-facing summary for teammate/system/cross-team relay traffic. If the human user must be notified, explicitly call SendMessage with recipient "user".`,

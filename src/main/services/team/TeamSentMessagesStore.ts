@@ -1,6 +1,7 @@
 import { FileReadTimeoutError, readFileUtf8WithTimeout } from '@main/utils/fsRead';
 import { getTeamsBasePath } from '@main/utils/pathDecoder';
 import { createLogger } from '@shared/utils/logger';
+import { readUserReplyLinkFields } from '@shared/utils/userReplyLink';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -114,6 +115,7 @@ export class TeamSentMessagesStore {
         messageId: row.messageId,
         relayOfMessageId:
           typeof row.relayOfMessageId === 'string' ? row.relayOfMessageId : undefined,
+        ...readUserReplyLinkFields(row),
         color: typeof row.color === 'string' ? row.color : undefined,
         attachments: Array.isArray(row.attachments) ? row.attachments : undefined,
         fileReferences: Array.isArray(row.fileReferences) ? row.fileReferences : undefined,

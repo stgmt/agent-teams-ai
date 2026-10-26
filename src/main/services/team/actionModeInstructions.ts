@@ -1,6 +1,8 @@
 import { wrapAgentBlock } from '@shared/constants/agentBlocks';
 import * as agentTeamsControllerModule from 'agent-teams-controller';
 
+import { buildLeadUserReplyChannelRule } from './leadUserReplyChannel';
+
 import type { AgentActionMode } from '@shared/types';
 
 const { protocols } = agentTeamsControllerModule;
@@ -37,7 +39,13 @@ const ACTION_MODE_BLOCKS: Record<AgentActionMode, string[]> = {
 };
 
 export function buildActionModeProtocol(): string {
-  return protocols.buildActionModeProtocolText(LEAD_DELEGATE_DESCRIPTION);
+  const replyChannelRule = buildLeadUserReplyChannelRule();
+  const protocol = protocols.buildActionModeProtocolText(LEAD_DELEGATE_DESCRIPTION);
+  return replyChannelRule
+    ? `${protocol}
+
+${replyChannelRule}`
+    : protocol;
 }
 
 export function buildActionModeAgentBlock(mode: AgentActionMode | undefined): string {

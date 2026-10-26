@@ -25,6 +25,7 @@ import {
   clearGeminiPostLaunchHydrationState,
   clearPostCompactReminderState,
 } from './TeamProvisioningCleanup';
+import { readLiveLeadTextBuffer, recordLeadTurnText } from './TeamProvisioningLeadUserReplyTracker';
 import { buildRestartStillRunningReason } from './TeamProvisioningMemberSpawnStatusPolicy';
 import { recordProvisioningFirstTurnStart } from './TeamProvisioningTimeoutLifecycle';
 
@@ -158,6 +159,8 @@ export interface TeamProvisioningStreamEventPorts<TRun extends TeamProvisioningS
   getRunLeadName(run: TRun): string;
   captureTeamSpawnEvents(run: TRun, content: Record<string, unknown>[]): void;
   captureSendMessages(run: TRun, content: Record<string, unknown>[]): void;
+  /** Closes the user requests this lead turn answered; may persist a fallback reply. */
+  finishLeadUserReplyTurn(run: TRun): void;
   updateLeadContextUsageFromUsage(
     run: TRun,
     usage: Record<string, unknown>,
@@ -656,6 +659,11 @@ export function handleTeamProvisioningStreamJsonMessage<TRun extends TeamProvisi
               messageTimestamp,
               { coalesceStreamChunk: isSyntheticChunk }
             );
+            recordLeadTurnText(
+              run,
+              (isSyntheticChunk ? readLiveLeadTextBuffer(run.liveLeadTextBuffer) : null) ??
+                displayText
+            );
           }
         }
       } else if (!run.silentUserDmForward && !hasVisibleSendMessage) {
@@ -781,6 +789,9 @@ function handleResultMessage<TRun extends TeamProvisioningStreamRun>(
           const inner = (result as Record<string, unknown>).subtype;
           return typeof inner === 'string' ? inner : undefined;
         })();
+  if (run.provisioningComplete) {
+    ports.finishLeadUserReplyTurn(run);
+  }
   if (subtype === 'success') {
     logger.info(`[${run.teamName}] stream-json result: success — turn complete, process alive`);
     handleSuccessResultMessage(run, msg, ports);

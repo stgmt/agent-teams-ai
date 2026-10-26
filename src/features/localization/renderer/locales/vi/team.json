@@ -911,6 +911,17 @@
     },
     "search": {
       "placeholder": "Tìm kiếm..."
+    },
+    "focus": {
+      "toggle": "Chế độ tập trung",
+      "toggleHint": "Tập trung: chỉ yêu cầu của bạn và câu trả lời (Alt+F)",
+      "pending": "Chưa trả lời: {{count}}",
+      "waiting": "Đang chờ trả lời",
+      "fallbackTag": "Trả lời từ nhật ký làm việc",
+      "serviceEvents": "Sự kiện dịch vụ: {{count}}",
+      "hideServiceEvents": "Ẩn sự kiện dịch vụ",
+      "empty": "Chưa có yêu cầu nào trong cuộc trò chuyện này",
+      "searching": "Đang tìm yêu cầu của bạn trong lịch sử cũ hơn…"
     }
   },
   "modelSelector": {

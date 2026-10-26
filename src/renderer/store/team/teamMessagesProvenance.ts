@@ -12,6 +12,7 @@ import {
   getTeamMessagesCacheEntry,
   pruneOptimisticMessages,
 } from './teamMessagesCache';
+import { carryOverLoadedPages } from './teamMessagesHistoryCarryOver';
 
 import type { TeamSlice } from '../slices/teamSlice';
 import type { AppState } from '../types';
@@ -175,22 +176,28 @@ export function createTeamMessagesProvenanceActions(ports: MessageActionPorts): 
 
           set((state) => {
             const current = getTeamMessagesCacheEntry(state, teamName);
-            // Revisions hash all sources. Overlap cannot prove append-only history.
+            // Revisions hash all sources, so a new message changes them. Loaded history stays
+            // only while the new head still joins it (see carryOverLoadedPages).
             const oldPages = current.provenance?.pages ?? [];
-            const pages =
-              current.feedRevision === page.feedRevision &&
+            const scopeIntact =
               hasCurrentProvenance(teamName, current) &&
-              // Live lead overlays are not included in feedRevision. Cursor continuity is
-              // needed as well, otherwise the new head can leave an unseen durable gap.
-              page.nextCursor === oldPages[0]?.inputCursor &&
               oldPages.every(
                 (loaded) =>
                   loaded.requestScope.contextId === requestScope.contextId &&
                   loaded.requestScope.contextEpoch === requestScope.contextEpoch &&
                   loaded.requestScope.teamStateEpoch === requestScope.teamStateEpoch
-              )
+              );
+            const pages = !scopeIntact
+              ? []
+              : current.feedRevision === page.feedRevision &&
+                  page.nextCursor === oldPages[0]?.inputCursor
                 ? oldPages
-                : [];
+                : (carryOverLoadedPages({
+                    previousHead: current.provenance?.head ?? current.canonicalMessages,
+                    previousPages: oldPages,
+                    head: page,
+                    feedRevision: page.feedRevision,
+                  }) ?? []);
             const historyReloadRequired = oldPages.length > 0 && pages.length === 0;
             const projected =
               pages.length > 0
@@ -345,10 +352,14 @@ export function createTeamMessagesProvenanceActions(ports: MessageActionPorts): 
           }
 
           const current = getTeamMessagesCacheEntry(get(), teamName);
-          if (
+          const feedMoved =
             current.feedRevision !== baseFeedRevision ||
-            (current.feedRevision && current.feedRevision !== page.feedRevision)
-          ) {
+            (current.feedRevision && current.feedRevision !== page.feedRevision);
+          // New messages at the head do not touch older history: a page read while the feed
+          // moved is kept as long as the loaded history still ends at its input cursor.
+          const joinsLoadedHistory =
+            current.nextCursor === inputCursor && hasCurrentProvenance(teamName, current);
+          if (feedMoved && !joinsLoadedHistory) {
             set((state) => ({
               teamMessagesByName: {
                 ...state.teamMessagesByName,
@@ -383,7 +394,7 @@ export function createTeamMessagesProvenanceActions(ports: MessageActionPorts): 
                 inputCursor,
                 outputCursor: page.nextCursor,
                 hasMore: page.hasMore,
-                sourceRevision: page.feedRevision,
+                sourceRevision: liveEntry.feedRevision ?? page.feedRevision,
                 requestScope,
               },
             ];
@@ -406,12 +417,22 @@ export function createTeamMessagesProvenanceActions(ports: MessageActionPorts): 
                   messagesError: null,
                   nextCursor: page.nextCursor,
                   hasMore: page.hasMore,
-                  feedRevision: page.feedRevision,
+                  feedRevision: liveEntry.feedRevision ?? page.feedRevision,
                   loadingOlder: false,
                 },
               },
             };
           });
+          if (feedMoved) {
+            // The head is stale: refresh it the same way as after a dropped page.
+            inFlightTeamMessagesOlderRequests.release(teamName, requestRef.current);
+            const queuedHead = queuedTeamMessagesHeadRefreshesAfterOlder.get(teamName);
+            await observeHeadForPaging(
+              queuedHead && isTeamRequestScopeCurrent(get, teamName, queuedHead.scope)
+                ? queuedHead.start()
+                : get().refreshTeamMessagesHead(teamName)
+            );
+          }
         } catch (error) {
           if (
             !isTeamRequestScopeCurrent(get, teamName, requestScope) ||

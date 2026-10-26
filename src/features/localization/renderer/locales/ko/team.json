@@ -911,6 +911,17 @@
     },
     "search": {
       "placeholder": "기타..."
+    },
+    "focus": {
+      "toggle": "집중 모드",
+      "toggleHint": "집중: 내 요청과 그 답변만 표시 (Alt+F)",
+      "pending": "미응답: {{count}}",
+      "waiting": "답변 대기 중",
+      "fallbackTag": "작업 로그의 답변",
+      "serviceEvents": "서비스 이벤트: {{count}}",
+      "hideServiceEvents": "서비스 이벤트 숨기기",
+      "empty": "이 채팅에는 아직 요청이 없습니다",
+      "searching": "이전 기록에서 요청을 찾는 중…"
     }
   },
   "modelSelector": {

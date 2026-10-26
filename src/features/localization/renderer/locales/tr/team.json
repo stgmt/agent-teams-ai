@@ -911,6 +911,17 @@
     },
     "search": {
       "placeholder": "Ara..."
+    },
+    "focus": {
+      "toggle": "Odak modu",
+      "toggleHint": "Odak: yalnızca istekleriniz ve yanıtları (Alt+F)",
+      "pending": "Yanıtsız: {{count}}",
+      "waiting": "Yanıt bekleniyor",
+      "fallbackTag": "Çalışma günlüğünden yanıt",
+      "serviceEvents": "Hizmet olayları: {{count}}",
+      "hideServiceEvents": "Hizmet olaylarını gizle",
+      "empty": "Bu sohbette henüz istek yok",
+      "searching": "İstekleriniz eski geçmişte aranıyor…"
     }
   },
   "modelSelector": {

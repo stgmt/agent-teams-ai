@@ -2,6 +2,7 @@ import type { NotificationTarget, TeamEventType } from './notifications';
 import type { OpenCodeStopHandshakeFailureFacts } from './openCodeStopHandshakeFailure';
 import type { TaskRef } from './teamBoardTask';
 import type * as TeamProvisioningTypes from './teamProvisioning';
+import type { UserReplyLinkFields } from './userReplyLink';
 import type {
   AttachmentMediaType,
   AttachmentMeta,
@@ -14,6 +15,7 @@ import type { TeamManagementCommittedChange } from '@features/team-prompt-manage
 
 export type * from './teamBoardTask';
 export type * from './teamProvisioning';
+export type * from './userReplyLink';
 export type {
   AttachmentFileData,
   AttachmentMediaType,
@@ -440,7 +442,7 @@ export interface ToolActivityEventPayload {
   isError?: boolean;
 }
 
-export interface InboxMessage extends GroupChatEnvelope {
+export interface InboxMessage extends GroupChatEnvelope, UserReplyLinkFields {
   from: string;
   to?: string;
   text: string;

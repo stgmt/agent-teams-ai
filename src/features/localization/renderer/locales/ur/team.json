@@ -911,6 +911,17 @@
     },
     "search": {
       "placeholder": "تلاش..."
+    },
+    "focus": {
+      "toggle": "فوکس موڈ",
+      "toggleHint": "فوکس: صرف آپ کی درخواستیں اور ان کے جوابات (Alt+F)",
+      "pending": "بغیر جواب: {{count}}",
+      "waiting": "جواب کا انتظار",
+      "fallbackTag": "ورکنگ لاگ سے جواب",
+      "serviceEvents": "سروس ایونٹس: {{count}}",
+      "hideServiceEvents": "سروس ایونٹس چھپائیں",
+      "empty": "اس چیٹ میں ابھی کوئی درخواست نہیں",
+      "searching": "پرانی ہسٹری میں آپ کی درخواستیں تلاش ہو رہی ہیں…"
     }
   },
   "modelSelector": {

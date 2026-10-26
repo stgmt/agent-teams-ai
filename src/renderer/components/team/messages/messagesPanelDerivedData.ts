@@ -1,3 +1,4 @@
+import { isFocusOnlyMessage } from '@features/chat-focus-mode';
 import {
   type ChatListDraftPreview,
   type ConversationScope,
@@ -16,7 +17,11 @@ import {
   isTaskStallRemediationMessage,
 } from '@shared/utils/teamAutomationMessages';
 
-import { getThoughtGroupKey, groupTimelineItems } from '../activity/LeadThoughtsGroup';
+import {
+  getThoughtGroupKey,
+  groupTimelineItems,
+  isLeadThought,
+} from '../activity/LeadThoughtsGroup';
 
 import { conversationScopeKey, filterScopedMessages } from './messagesPanelConversations';
 import { canOpenComposerDraftAddress } from './useComposerDraftAddressRequest';
@@ -165,9 +170,11 @@ export function activityMessages(args: {
       searchQuery: args.searchQuery,
     }
   );
+  // Fallback replies repeat a lead thought; only focus mode shows them.
+  const timeline = unscoped.filter((message) => !isFocusOnlyMessage(message));
   return args.renderSurface === 'thread'
-    ? filterScopedMessages(unscoped, args.scope, args.leadNames)
-    : unscoped;
+    ? filterScopedMessages(timeline, args.scope, args.leadNames)
+    : timeline;
 }
 
 export function canonicalTeamMessages(
@@ -194,4 +201,18 @@ export function visibleTeamMessages(args: {
     filter: args.filter,
     searchQuery: args.searchQuery,
   });
+}
+
+/** Lead activity shows on the timeline only while it starts with a current lead thought. */
+export function timelineLeadState<TActivity, TUpdatedAt>(
+  messages: readonly InboxMessage[],
+  currentLeadSessionId: string | undefined,
+  lead: { leadActivity: TActivity; leadContextUpdatedAt: TUpdatedAt }
+): { leadActivity?: TActivity; leadContextUpdatedAt?: TUpdatedAt } {
+  const first = messages[0];
+  const visible =
+    first != null &&
+    isLeadThought(first) &&
+    (currentLeadSessionId ? first.leadSessionId === currentLeadSessionId : true);
+  return visible ? lead : {};
 }

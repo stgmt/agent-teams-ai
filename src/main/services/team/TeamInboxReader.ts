@@ -11,6 +11,7 @@ import { FileReadTimeoutError, readFileUtf8WithTimeout } from '@main/utils/fsRea
 import { getTeamsBasePath } from '@main/utils/pathDecoder';
 import { isLeadThoughtSourceMessage } from '@shared/utils/leadDetection';
 import { validateTeamMemberNameFormat } from '@shared/utils/teamMemberName';
+import { readUserReplyLinkFields } from '@shared/utils/userReplyLink';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -122,6 +123,7 @@ function normalizeInboxMessageItem(item: unknown): InboxMessage | null {
     messageId,
     ...copyGroupChatEnvelope(row),
     relayOfMessageId: typeof row.relayOfMessageId === 'string' ? row.relayOfMessageId : undefined,
+    ...readUserReplyLinkFields(row),
     source: typeof row.source === 'string' ? (row.source as InboxMessage['source']) : undefined,
     leadSessionId: typeof row.leadSessionId === 'string' ? row.leadSessionId : undefined,
     conversationId: typeof row.conversationId === 'string' ? row.conversationId : undefined,

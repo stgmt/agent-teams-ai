@@ -911,6 +911,17 @@
     },
     "search": {
       "placeholder": "ค้นหา..."
+    },
+    "focus": {
+      "toggle": "โหมดโฟกัส",
+      "toggleHint": "โฟกัส: เฉพาะคำขอของคุณและคำตอบ (Alt+F)",
+      "pending": "ยังไม่ได้ตอบ: {{count}}",
+      "waiting": "รอคำตอบ",
+      "fallbackTag": "คำตอบจากบันทึกการทำงาน",
+      "serviceEvents": "เหตุการณ์ระบบ: {{count}}",
+      "hideServiceEvents": "ซ่อนเหตุการณ์ระบบ",
+      "empty": "ยังไม่มีคำขอในแชทนี้",
+      "searching": "กำลังค้นหาคำขอของคุณในประวัติเก่า…"
     }
   },
   "modelSelector": {

@@ -92,4 +92,10 @@ function assertValidGroupInboxRows(rows) {
   }
 }
 
-module.exports = { assertValidGroupInboxRows };
+function pickGroupProtocolFields(flags) {
+  return Object.fromEntries(
+    GROUP_PROTOCOL_FIELDS.filter((key) => flags[key] !== undefined).map((key) => [key, flags[key]])
+  );
+}
+
+module.exports = { assertValidGroupInboxRows, pickGroupProtocolFields };

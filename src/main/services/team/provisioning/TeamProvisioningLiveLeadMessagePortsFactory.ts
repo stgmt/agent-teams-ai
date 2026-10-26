@@ -18,6 +18,7 @@ import {
   type TeamProvisioningLeadSendMessageCapturePorts,
   type TeamProvisioningLeadSendMessageRun,
 } from './TeamProvisioningLeadSendMessageCapture';
+import { finishLeadUserReplyTurn } from './TeamProvisioningLeadUserReplyTracker';
 
 import type { InboxMessage, TeamChangeEvent } from '@shared/types';
 
@@ -53,6 +54,7 @@ export interface TeamProvisioningLiveLeadMessagePortsBoundary<
   getCurrentLeadSessionId(teamName: string): string | null;
   pruneLiveLeadMessagesForCleanedRun(run: TRun): void;
   captureSendMessages(run: TRun, content: Record<string, unknown>[]): void;
+  finishLeadUserReplyTurn(run: TRun): void;
   pushLiveLeadProcessMessage(teamName: string, message: InboxMessage): void;
   resolveCrossTeamReplyMetadata(
     teamName: string,
@@ -188,6 +190,17 @@ export function createTeamProvisioningLiveLeadMessagePortsBoundary<
           deps.emitTeamChange({ type: 'lead-message', teamName, runId, detail }),
         emitInboxChange: (teamName, detail) =>
           deps.emitTeamChange({ type: 'inbox', teamName, detail }),
+      }),
+    finishLeadUserReplyTurn: (run) =>
+      finishLeadUserReplyTurn(run, {
+        leadName: deps.getRunLeadName(run),
+        nowIso: deps.nowIso,
+        nowMs: deps.nowMs,
+        persistSentMessage: (teamName, message) => deps.persistSentMessage(teamName, message),
+        pushLiveLeadProcessMessage: pushLiveLeadProcessMessageForTeam,
+        emitInboxChange: (teamName, detail) =>
+          deps.emitTeamChange({ type: 'inbox', teamName, detail }),
+        logger: deps.logger,
       }),
     pushLiveLeadProcessMessage: pushLiveLeadProcessMessageForTeam,
     resolveCrossTeamReplyMetadata,
