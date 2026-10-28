@@ -6,6 +6,11 @@ import {
   hasOpenCodeGroupAcknowledgement,
   type OpenCodeGroupAcknowledgementReader,
 } from './OpenCodeGroupAcknowledgement';
+import { isOpenCodeCompletedGroupNonResponse } from './OpenCodeGroupNonResponse';
+import {
+  HUMAN_GROUP_REPLY_REQUIRED,
+  isOpenCodeHumanGroupNonResponse,
+} from './OpenCodeHumanGroupReply';
 import {
   isOpenCodePromptDeliveryCancelled,
   isOpenCodePromptResponseStateResponded,
@@ -200,6 +205,11 @@ export async function isOpenCodeDeliveryResponseReadCommitAllowed(input: {
   if (input.ledgerRecord && isOpenCodePromptDeliveryCancelled(input.ledgerRecord)) return false;
   if (input.ledgerRecord?.groupChatId) {
     const record = input.ledgerRecord;
+    if (
+      input.responseState === 'responded_plain_text' &&
+      isOpenCodeCompletedGroupNonResponse(record)
+    )
+      return true;
     if (await hasOpenCodeGroupAcknowledgement(input)) return true;
     const sender = record.replyRecipient.trim().toLowerCase();
     // Group peers may finish silently. The runtime's explicit completed-child
@@ -321,6 +331,7 @@ export function getOpenCodeDeliveryPendingReason(input: {
 }): string {
   const record = input.ledgerRecord;
   const state = input.responseState ?? record?.responseState;
+  if (record && isOpenCodeHumanGroupNonResponse(record)) return HUMAN_GROUP_REPLY_REQUIRED;
   if (record?.messageKind === 'member_work_sync_nudge') {
     if (state === 'responded_plain_text' || state === 'responded_visible_message') {
       return 'member_work_sync_report_required';
@@ -509,6 +520,18 @@ export function isOpenCodeDeliveryRetryablePendingResponse(input: {
   visibleReply?: OpenCodeVisibleReplyProof | null;
   readAllowed: boolean;
 }): boolean {
+  if (!input.readAllowed && isOpenCodeHumanGroupNonResponse(input.ledgerRecord)) return true;
+  if (input.ledgerRecord.groupChatId && input.ledgerRecord.promptNotSubmitted === true) {
+    const record = input.ledgerRecord;
+    return (
+      !input.readAllowed &&
+      !record.acceptanceUnknown &&
+      !record.groupRepairHandoffPending &&
+      !record.cancelledAt &&
+      record.status === 'retry_scheduled' &&
+      record.attempts < record.maxAttempts
+    );
+  }
   if (input.readAllowed || input.ledgerRecord.groupChatId) {
     return false;
   }

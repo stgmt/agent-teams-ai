@@ -17,10 +17,12 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 
 import { parseSingleBridgeJsonResult, validateBridgeResultEnvelope } from '../../src/main/services/team/opencode/bridge/OpenCodeBridgeCommandContract';
+import { projectTaskPersistenceDifference } from './opencode-diagnostics/task-persistence';
+import { reprojectV2OwnedSessionDiagnostic, v2TerminalFailureReaderCode } from './opencode-diagnostics/v2-terminal-failure';
 import { projectV2NativeTranscript } from './opencode-native-v2-transcript';
 import { stageNativeTestNode } from './opencode-native-test-node';
 import { verifyWindowsCommandSyntax, type WindowsCommandSyntaxFact } from './opencode-native-windows-command';
@@ -2242,6 +2244,7 @@ async function main() {
     peersConfirmed: false,
     heldStopConfirmed: false,
     persistenceConfirmed: false,
+    persistenceDifference: null as ReturnType<typeof projectTaskPersistenceDifference> | null,
     heldAssignmentReleasedAfterPersistence: false,
     relaunchConfirmed: false,
     finalStopConfirmed: false,
@@ -2252,6 +2255,9 @@ async function main() {
     nativeV2TranscriptFailure: null as null | {
       observation: 'captured' | 'unavailable'; member: 'alice' | 'bob';
       packet?: ReturnType<typeof projectV2NativeTranscript>;
+      terminalEvent?: ReturnType<typeof reprojectV2OwnedSessionDiagnostic>['terminalEvent'];
+      candidateProjection?: ReturnType<typeof reprojectV2OwnedSessionDiagnostic>['candidateProjection'];
+      requestedInput?: ReturnType<typeof reprojectV2OwnedSessionDiagnostic>['requestedInput'];
       failure?: { classification: string; kind?: string; sdkCode?: string | null; nativeOperation?: string | null; nativeErrno?: number | null; nativeStage?: string | null };
       inputFileRemoved?: boolean;
     },
@@ -2704,6 +2710,7 @@ async function main() {
     await checkpoint('held-stop');
     const held = await hold('initial');
     proof.heldStopConfirmed = true;
+    await checkpoint('restart-persistence');
     await app.close();
     assert(/^[a-zA-Z0-9_-]+$/.test(held.task.id));
     const retainedPath = path.join(
@@ -2723,8 +2730,11 @@ async function main() {
     assert.equal(await app.call('processAlive'), false);
     assert(Object.values((await app.call('getRuntime')).members).every((member) => !member.alive));
     const loaded = (await app.call('getData')).tasks.find((task) => task.id === held.task.id);
+    const persistedAfterRestart = JSON.parse(await readFile(retainedPath, 'utf8'));
+    proof.persistenceDifference = projectTaskPersistenceDifference(retained, persistedAfterRestart);
+    await checkpoint('restart-persistence');
     assert(loaded && loaded.owner === retained.owner && loaded.status === retained.status);
-    assert.deepEqual(JSON.parse(await readFile(retainedPath, 'utf8')), retained);
+    assert.deepEqual(persistedAfterRestart, retained);
     assert.equal(await readFile(held.marker, 'utf8'), held.markerBytes);
     proof.persistenceConfirmed = true;
     await checkpoint('restart-persistence');
@@ -2894,6 +2904,26 @@ async function main() {
             selectedModel: model, runtimePromptMessageId,
             command: commandExpectations.get(failedTask.id) });
           capture.observation = 'captured';
+          capture.terminalEvent = { observation: 'unavailable' };
+          capture.candidateProjection = { observation: 'unavailable' };
+          capture.requestedInput = 'unknown';
+          try {
+            const sdkRoot = process.env.OPENCODE_NATIVE_DIAGNOSTIC_SDK_ROOT;
+            assert(sdkRoot && path.isAbsolute(sdkRoot) && /(?:^|[\\/])TEST-[^\\/]+(?:[\\/]|$)/.test(sdkRoot));
+            const gitOptions = { env: desktop.env, cwd: desktop.projectPath, timeout: Math.min(5000, Math.max(1, captureDeadline - Date.now())), maxBuffer: 4096, signal: captureController.signal };
+            assert.equal((await execute('git', ['-C', sdkRoot, 'rev-parse', 'HEAD'], gitOptions)).stdout.trim(), bundled.bundledSdkSha);
+            assert.equal((await execute('git', ['-C', sdkRoot, 'status', '--porcelain', '--untracked-files=all', '--ignored=matching', '--', 'src'], gitOptions)).stdout, '');
+            const { stdout: terminal } = await execute(bun,
+              ['--no-env-file', `--config=${bunConfig}`, '--eval', v2TerminalFailureReaderCode(), JSON.stringify({
+                sdkRoot, projectorPath: fileURLToPath(new URL('./opencode-diagnostics/v2-terminal-failure.ts', import.meta.url)),
+                dataRoot: desktop.env.CLAUDE_MULTIMODEL_DATA_HOME, teamId: desktop.teamName,
+                runId: proof.runIds.at(-1), memberId: failedTask.owner, sessionId: nativeSession, nativeInputId: runtimePromptMessageId, nativeVersion: version,
+              })], { env: desktop.env, cwd: desktop.projectPath, timeout: Math.max(1, captureDeadline - Date.now()), maxBuffer: 8192, signal: captureController.signal });
+            const fact = reprojectV2OwnedSessionDiagnostic(JSON.parse(terminal));
+            capture.terminalEvent = fact.terminalEvent;
+            capture.candidateProjection = fact.candidateProjection;
+            capture.requestedInput = fact.requestedInput;
+          } catch { /* Missing trusted source, original input or live owner stays unavailable. */ }
         }
         })().finally(async () => {
           // Also retire any setup file whose asynchronous write settled after the cutoff.
