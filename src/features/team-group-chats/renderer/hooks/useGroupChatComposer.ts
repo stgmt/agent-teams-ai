@@ -280,9 +280,38 @@ export function useGroupChatComposer(
   }, [session]);
   const retryPersistence = useCallback(async () => {
     if (session.sending || session.consuming) return false;
-    const recovered = await composerDraftRepository.retryPersistence?.(contextId, teamName);
-    if (recovered && current.current === address) setPersistenceStatus('durable');
-    return recovered === true;
+    const capturedText = textRef.current;
+    const capturedRecipient = recipientRef.current;
+    if (!(await composerDraftRepository.retryPersistence?.(contextId, teamName))) return false;
+    const refreshed = session.queue.then(async () => {
+      const loaded = await composerDraftRepository.loadWorking(address);
+      if (
+        loaded.working.workingRevision !== session.revision &&
+        current.current === address &&
+        textRef.current === capturedText &&
+        recipientRef.current === capturedRecipient
+      ) {
+        const saved = loaded.working.content;
+        const recipient = saved?.groupRecipient;
+        const name = recipient?.kind === 'member' ? recipient.memberName : null;
+        textRef.current = saved?.text ?? '';
+        recipientRef.current = name;
+        setText(textRef.current);
+        setSelection(name);
+        setAttemptId(saved?.restoredOrigin?.attemptId ?? null);
+      }
+      session.revision = loaded.working.workingRevision;
+      if (current.current === address) {
+        setPersistenceStatus(loaded.status);
+        setError(loaded.status === 'memory-only' ? null : (loaded.readError ?? null));
+      }
+      return loaded.status === 'durable' && !loaded.readError && !loaded.writeBlocked;
+    });
+    session.queue = refreshed.then(
+      () => undefined,
+      () => undefined
+    );
+    return refreshed;
   }, [address, contextId, session, teamName]);
   return {
     address,

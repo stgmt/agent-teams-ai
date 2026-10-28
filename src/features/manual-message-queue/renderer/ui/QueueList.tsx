@@ -101,6 +101,8 @@ export const QueueList = ({
   const [editor, setEditor] = useState<{ item: QueueItem; text: string } | null>(null);
   const [pending, setPending] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
+  const [retryError, setRetryError] = useState<{ parent: string; message: string } | null>(null);
+  const visibleRetryError = retryError?.parent === error ? retryError?.message : null;
   const editorRef = useRef<HTMLTextAreaElement>(null);
   const pencils = useRef(new Map<string, HTMLButtonElement>());
   const rows = useRef(new Map<string, HTMLLIElement>());
@@ -121,6 +123,7 @@ export const QueueList = ({
     pendingRef.current = true;
     setPending(true);
     setLocalError(null);
+    setRetryError(null);
     try {
       await action();
     } catch (cause) {
@@ -342,16 +345,28 @@ export const QueueList = ({
           );
         })}
       </ul>
-      {(error || localError) && (
+      {(error || localError || visibleRetryError) && (
         <div className="px-3 pb-2 text-xs text-[var(--color-text-secondary)]">
-          <p role="alert">{localError || error}</p>
+          <p role="alert">{localError || visibleRetryError || error}</p>
           {onRetryStorage && (
             <Button
               type="button"
               variant="ghost"
               size="sm"
               disabled={disabled}
-              onClick={() => void run(onRetryStorage)}
+              onClick={() =>
+                void run(async () => {
+                  try {
+                    await onRetryStorage();
+                  } catch (cause) {
+                    if (error)
+                      setRetryError({
+                        parent: error,
+                        message: cause instanceof Error ? cause.message : error,
+                      });
+                  }
+                })
+              }
             >
               {t('messageComposer.status.retryStorage')}
             </Button>

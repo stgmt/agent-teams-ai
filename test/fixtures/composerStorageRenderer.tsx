@@ -63,10 +63,14 @@ testWindow.composerStorageTest = (async () => {
       rawError: document.getElementById('root')!.textContent.includes('Internal error.'),
     };
     indexedDB.open = originalOpen;
-    await act(async () => {
-      document.querySelector('button')!.click();
-      await new Promise((resolve) => setTimeout(resolve, 150));
-    });
+    act(() => document.querySelector('button')!.click());
+    const deadline = Date.now() + 5_000;
+    while (draft.persistenceStatus !== 'durable' || !draft.isSaved) {
+      if (Date.now() >= deadline) throw new Error('TEST-storage-recovery-timeout');
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      });
+    }
     // Typing after retry must use the recovered revision rather than replacing the draft.
     act(() => {
       draft.setText(draft.text + '\nTEST-newer');

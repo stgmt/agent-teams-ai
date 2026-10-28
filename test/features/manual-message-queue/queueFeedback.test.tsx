@@ -143,7 +143,14 @@ describe('queue-only feedback', () => {
       ports.listener?.();
       return Promise.resolve();
     });
-    const Probe = (): React.JSX.Element => <>{useManualMessageQueue(input).list}</>;
+    let queue!: ReturnType<typeof useManualMessageQueue>;
+    const Probe = (): React.JSX.Element => {
+      const binding = useManualMessageQueue(input);
+      useLayoutEffect(() => {
+        queue = binding;
+      });
+      return <>{binding.list}</>;
+    };
     const host = document.createElement('div');
     const root = createRoot(host);
     try {
@@ -156,6 +163,9 @@ describe('queue-only feedback', () => {
       act(() => root.render(<Probe />));
       expect(host.textContent).toContain('storageUnavailable');
       expect(host.textContent).not.toContain('Internal error.');
+      act(() => queue.onEnqueue());
+      expect(host.textContent).toContain('storageUnavailable');
+      expect(host.textContent).not.toContain('unsupported.delegate');
       await act(async () => {
         host.querySelector('button')!.click();
         await Promise.resolve();

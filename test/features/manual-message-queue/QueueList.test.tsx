@@ -78,6 +78,38 @@ function render(items = [item], onEdit = vi.fn().mockResolvedValue(undefined)) {
   };
 }
 
+it('clears failed storage retry feedback when another view recovers storage', async () => {
+  const host = document.createElement('div');
+  const root = createRoot(host);
+  roots.push(root);
+  const unused = (): Promise<void> => Promise.resolve();
+  const retry = vi.fn().mockRejectedValue(new Error('TEST-retry-failed'));
+  const draw = (error: string | null): void =>
+    root.render(
+      <QueueList
+        items={[]}
+        busy={false}
+        error={error}
+        onRetryStorage={retry}
+        blockedReason={() => null}
+        onEdit={unused}
+        onSend={unused}
+        onRemove={unused}
+        onCheck={unused}
+        onCopy={unused}
+      />
+    );
+  act(() => draw('TEST-storage-unavailable'));
+  await act(async () => {
+    host.querySelector('button')!.click();
+    await Promise.resolve();
+  });
+  expect(host.textContent).toContain('TEST-retry-failed');
+  act(() => draw(null));
+  expect(host.textContent).not.toContain('TEST-retry-failed');
+  expect(host.querySelector('[role="alert"]')).toBeNull();
+});
+
 it('preserves edit and working draft on CAS rejection, keeps captured Ask mode and cancels with focus', async () => {
   const reference = createEncodedTaskReference('12', 'task-12', 'test');
   const retained = createEncodedTaskReference('99', 'task-99', 'other-team');

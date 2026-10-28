@@ -79,8 +79,8 @@ export class ComposerDraftWorkingRepository {
       const namespace = this.namespace(contextId, teamName);
       this.memoryNamespaces.delete(namespace);
       this.memoryReadErrors.delete(namespace);
-      this.emit({ kind: 'working', contextId, teamName });
-      this.recoveriesEvent(contextId, teamName);
+      for (const kind of ['working', 'working-index', 'recoveries'] as const)
+        this.emit({ kind, contextId, teamName });
     }
   );
   retryPersistence(contextId: string, teamName: string): Promise<boolean> {

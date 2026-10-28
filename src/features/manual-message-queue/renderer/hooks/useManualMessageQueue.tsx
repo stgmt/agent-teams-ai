@@ -196,11 +196,16 @@ export function useManualMessageQueue(options: ManualQueueOptions): ManualQueueB
   const enqueue = (): void => {
     if (!options.text.trim()) return;
     if (options.unavailableReason || !scope) {
-      setError({
-        identity,
-        message: options.unavailableReason || String(t('messages.manualQueue.rootUnavailable')),
-        eligibility: options.unavailableReason || undefined,
-      });
+      setError((previous) =>
+        previous?.identity === identity && previous.storage
+          ? previous
+          : {
+              identity,
+              message:
+                options.unavailableReason || String(t('messages.manualQueue.rootUnavailable')),
+              eligibility: options.unavailableReason || undefined,
+            }
+      );
       return;
     }
     const epoch = captureContextScopedRequestEpoch();

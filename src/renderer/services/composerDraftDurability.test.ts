@@ -96,6 +96,7 @@ describe('explicit composer durability recovery', () => {
     expect(loaded.status).toBe('durable');
     expect(loaded.readError).toBeUndefined();
     expect(changed).toHaveBeenCalledWith(expect.objectContaining({ kind: 'working' }));
+    expect(changed).toHaveBeenCalledWith(expect.objectContaining({ kind: 'working-index' }));
     expect(
       await repository.saveWorking(address, 'newer', 'next', content('TEST-next'), {
         kind: 'plain',

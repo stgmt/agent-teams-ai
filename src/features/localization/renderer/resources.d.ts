@@ -5093,7 +5093,7 @@ export default interface Resources {
       "status": {
         "memoryOnly": "Not saved to disk. Keep this window open and copy important text before closing.",
         "previousDeliveryUnknown": "Previous delivery is unknown; sending again may create a duplicate",
-        "retryFailed": "Local saving is still unavailable or saved data changed. Your current text was kept; no message was sent.",
+        "retryFailed": "Local saving is still unavailable or saved data changed. Your current text remains in this window. Storage retry does not send messages.",
         "retryStorage": "Retry local storage",
         "reusedCrossTeamRequest": "Reused recent cross-team request",
         "storageReadFailed": "Saved drafts could not be read. Existing data was left untouched.",
@@ -5264,7 +5264,7 @@ export default interface Resources {
         "schemaError": "Saved queue uses unsupported data; left untouched.",
         "send": "Send",
         "sending": "Sending",
-        "storageUnavailable": "The saved queue could not be opened. Your current message has not been sent. Retry local storage below.",
+        "storageUnavailable": "The saved queue is unavailable. Retry local storage; this does not send messages.",
         "title": "Queued messages",
         "unknownWarning": "Delivery is unknown. Removing this record will not cancel the message; sending the text again may create a duplicate.",
         "unsupported": {
