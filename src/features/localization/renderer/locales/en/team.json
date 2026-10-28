@@ -982,7 +982,16 @@
       "invalidText": "Enter text of up to {{maximum}} characters.",
       "operationFailed": "Could not update the queue.",
       "queueDisabled": "Add to queue (Cmd/Ctrl+Enter)",
-      "richUnsupported": "Only plain text in Do or Ask mode can be queued. Remove attachments, file chips, commands or review actions first.",
+      "storageUnavailable": "The saved queue is unavailable. Retry local storage; this does not send messages.",
+      "unsupported": {
+        "delegate": "Delegate cannot be added to the queue. Use Send for immediate delivery.",
+        "crossTeam": "Cross-team messages cannot be added to this queue.",
+        "attachments": "Messages with attachments cannot be added to the queue.",
+        "files": "Messages with file chips cannot be added to the queue.",
+        "revision": "Message corrections cannot be added to the queue.",
+        "unknownDelivery": "Check the previous delivery before adding this message to the queue.",
+        "command": "Slash commands cannot be added to the queue. Use Send instead."
+      },
       "persistenceRequired": "The draft must be saved durably before adding it to the queue.",
       "rootUnavailable": "The message destination is still loading.",
       "recipientUnavailable": "This recipient is no longer available.",
@@ -1888,7 +1897,10 @@
     "status": {
       "reusedCrossTeamRequest": "Reused recent cross-team request",
       "teamOffline": "offline",
-      "memoryOnly": "Saved only until the app closes",
+      "memoryOnly": "Not saved to disk. Keep this window open and copy important text before closing.",
+      "storageReadFailed": "Saved drafts could not be read. Existing data was left untouched.",
+      "retryStorage": "Retry local storage",
+      "retryFailed": "Local saving is still unavailable or saved data changed. Your current text remains in this window. Storage retry does not send messages.",
       "previousDeliveryUnknown": "Previous delivery is unknown; sending again may create a duplicate"
     },
     "revision": {

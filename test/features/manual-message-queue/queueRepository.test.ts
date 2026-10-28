@@ -115,10 +115,19 @@ describe('manual queue real IndexedDB transaction', () => {
     });
     const changed = vi.fn();
     repository.subscribe(changed);
-    await expect(repository.enqueue(scope, directRoute, newer, () => true)).rejects.toThrow(
-      'Test quota failure'
-    );
-    put.mockRestore();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      await expect(repository.enqueue(scope, directRoute, newer, () => true)).rejects.toMatchObject(
+        {
+          stage: 'operation',
+          causeName: 'QuotaExceededError',
+        }
+      );
+      expect(warn).toHaveBeenCalledOnce();
+    } finally {
+      put.mockRestore();
+      warn.mockClear();
+    }
     expect(changed).not.toHaveBeenCalled();
     expect(await readWorking(old)).toEqual(newer);
     expect(await repository.list(scope, () => false)).toEqual([]);

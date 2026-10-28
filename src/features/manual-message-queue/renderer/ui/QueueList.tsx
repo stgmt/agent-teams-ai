@@ -21,6 +21,7 @@ export interface QueueListProps {
   readonly items: readonly QueueItem[];
   readonly busy: boolean;
   readonly error?: string | null;
+  readonly onRetryStorage?: () => Promise<void>;
   readonly blockedReason: (item: QueueItem) => string | null;
   readonly onSend: (item: QueueItem) => Promise<void>;
   readonly onEdit: (item: QueueItem, text: string) => Promise<void>;
@@ -88,6 +89,7 @@ export const QueueList = ({
   items,
   busy,
   error,
+  onRetryStorage,
   blockedReason,
   onSend,
   onEdit,
@@ -341,9 +343,20 @@ export const QueueList = ({
         })}
       </ul>
       {(error || localError) && (
-        <p role="alert" className="px-3 pb-2 text-xs text-[var(--color-text-secondary)]">
-          {localError || error}
-        </p>
+        <div className="px-3 pb-2 text-xs text-[var(--color-text-secondary)]">
+          <p role="alert">{localError || error}</p>
+          {onRetryStorage && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              disabled={disabled}
+              onClick={() => void run(onRetryStorage)}
+            >
+              {t('messageComposer.status.retryStorage')}
+            </Button>
+          )}
+        </div>
       )}
     </section>
   );

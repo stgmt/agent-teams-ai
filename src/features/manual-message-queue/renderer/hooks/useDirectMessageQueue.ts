@@ -10,9 +10,12 @@ import {
 } from '@renderer/utils/taskReferenceUtils';
 import { parseStandaloneSlashCommand } from '@shared/utils/slashCommands';
 
-import { type ManualQueueBinding, useManualMessageQueue } from './useManualMessageQueue';
+import { queueIneligibility } from '../../core/domain/queueEligibility';
+
+import { useManualMessageQueue } from './useManualMessageQueue';
 
 import type { QueueItem } from '../../core/domain/queue';
+import type { ManualQueueBinding } from './useManualMessageQueue';
 import type { MemberMessageComposerProps } from '@renderer/components/team/messages/MessageComposer';
 import type { UseComposerDraftResult } from '@renderer/hooks/useComposerDraft';
 import type { ResolvedTeamMember } from '@shared/types';
@@ -38,14 +41,16 @@ export function useDirectMessageQueue(options: {
     ...(member?.agentId ? { agentId: member.agentId } : {}),
     ...(member?.joinedAt !== undefined ? { joinedAt: member.joinedAt } : {}),
   };
-  const unsupported =
-    options.isCrossTeam ||
-    draft.chips.length > 0 ||
-    draft.attachments.length > 0 ||
-    draft.actionMode === 'delegate' ||
-    draft.editorContext.kind !== 'plain' ||
-    draft.snapshot().restoredOrigin ||
-    parseStandaloneSlashCommand(stripEncodedTaskReferenceMetadata(draft.text).trim()) !== null;
+  const unsupported = queueIneligibility({
+    isCrossTeam: options.isCrossTeam,
+    actionMode: draft.actionMode,
+    chipCount: draft.chips.length,
+    attachmentCount: draft.attachments.length,
+    editorKind: draft.editorContext.kind,
+    restoredDeliveryUnknown: !!draft.snapshot().restoredOrigin,
+    isSlashCommand:
+      parseStandaloneSlashCommand(stripEncodedTaskReferenceMetadata(draft.text).trim()) !== null,
+  });
   const recipientFor = (item: QueueItem): ResolvedTeamMember | undefined => {
     if (item.route.kind !== 'direct') return undefined;
     const captured = item.route;
@@ -65,8 +70,9 @@ export function useDirectMessageQueue(options: {
     teamName: options.teamName,
     route,
     text: draft.text,
+    storageNoticeVisible: draft.persistenceStatus === 'memory-only',
     unavailableReason: unsupported
-      ? String(t('messages.manualQueue.richUnsupported'))
+      ? String(t(`messages.manualQueue.unsupported.${unsupported}`))
       : !draft.canSubmit || options.disabled
         ? String(t('messages.manualQueue.queueDisabled'))
         : draft.persistenceStatus === 'memory-only'

@@ -46,9 +46,10 @@ export function useGroupMessageQueue(options: {
       recipientName: composer.recipientName,
     },
     text: composer.text,
+    storageNoticeVisible: composer.persistenceStatus === 'memory-only',
     unavailableReason:
       parseStandaloneSlashCommand(stripEncodedTaskReferenceMetadata(composer.text).trim()) !== null
-        ? String(t('messages.manualQueue.richUnsupported'))
+        ? String(t('messages.manualQueue.unsupported.command'))
         : !composer.ready || composer.pending || composer.attemptId || group?.archivedAt
           ? String(t('messages.manualQueue.queueDisabled'))
           : undefined,

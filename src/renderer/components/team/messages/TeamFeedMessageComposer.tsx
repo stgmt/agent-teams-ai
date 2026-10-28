@@ -9,6 +9,7 @@ import { formatAgentRole } from '@renderer/utils/formatAgentRole';
 import { buildMemberAvatarMap, buildMemberColorMap } from '@renderer/utils/memberHelpers';
 import { isLeadMember } from '@shared/utils/leadDetection';
 
+import { ComposerStorageNotice } from './ComposerStorageNotice';
 import { getGroupComposerPresentation } from './groupComposerPresentation';
 import { TextMessageComposer } from './TextMessageComposer';
 
@@ -143,6 +144,12 @@ export const TeamFeedMessageComposer = ({
           onSend: () => void composer.send(),
           notice: (
             <>
+              <ComposerStorageNotice
+                address={composer.address}
+                flush={composer.flush}
+                recover={composer.retryPersistence}
+                persistenceStatus={composer.persistenceStatus}
+              />
               <p role="status" className="text-xs text-[var(--color-text-muted)]">
                 {members.length < 2
                   ? t('messages.groups.minimum')

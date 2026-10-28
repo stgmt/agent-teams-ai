@@ -12,8 +12,8 @@ const database = vi.hoisted(() => ({
   prefixScans: 0,
 }));
 
-vi.mock('idb-keyval', () => ({
-  get: vi.fn(async (key: string) => {
+vi.mock('@renderer/services/composerDraftIndexedDb', () => ({
+  composerDraftGet: vi.fn(async (key: string) => {
     if (database.unavailable) throw new Error('IndexedDB unavailable');
     if (database.failNextGetKey === key) {
       database.failNextGetKey = null;
@@ -27,9 +27,6 @@ vi.mock('idb-keyval', () => ({
     }
     return value;
   }),
-}));
-
-vi.mock('@renderer/services/composerDraftIndexedDb', () => ({
   requestValue: async (request: { result: unknown }) => request.result,
   composerDraftEntriesByPrefix: async (_store: IDBObjectStore, prefix: string) => {
     database.prefixScans += 1;

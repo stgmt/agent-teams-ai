@@ -13,6 +13,7 @@ import { formatAgentRole } from '@renderer/utils/formatAgentRole';
 import { buildMemberAvatarMap, buildMemberColorMap } from '@renderer/utils/memberHelpers';
 import { isLeadMember } from '@shared/utils/leadDetection';
 
+import { ComposerStorageNotice } from './ComposerStorageNotice';
 import { getGroupComposerPresentation } from './groupComposerPresentation';
 import { ThreadAwareMessageComposer } from './ThreadAwareMessageComposer';
 
@@ -116,15 +117,25 @@ export function useMessagesGroupConversation(
           },
           onChange: composer.change,
           onSend: () => void composer.send(),
-          notice: blocked ? (
-            <p role="status" className="text-xs text-[var(--color-text-muted)]">
-              {group?.archivedAt
-                ? t('messages.groups.archivedHint')
-                : composer.recipientName === null
-                  ? t('messages.groups.restartHint')
-                  : t('messages.groups.recipientRestartHint', { name: composer.recipientName })}
-            </p>
-          ) : null,
+          notice: (
+            <>
+              <ComposerStorageNotice
+                address={composer.address}
+                flush={composer.flush}
+                recover={composer.retryPersistence}
+                persistenceStatus={composer.persistenceStatus}
+              />
+              {blocked ? (
+                <p role="status" className="text-xs text-[var(--color-text-muted)]">
+                  {group?.archivedAt
+                    ? t('messages.groups.archivedHint')
+                    : composer.recipientName === null
+                      ? t('messages.groups.restartHint')
+                      : t('messages.groups.recipientRestartHint', { name: composer.recipientName })}
+                </p>
+              ) : null}
+            </>
+          ),
         })}
       />
     </div>

@@ -180,6 +180,7 @@ export interface ComposerDraftRepositoryEvent {
 }
 
 export interface ComposerDraftRepository {
+  retryPersistence?(contextId: string, teamName: string): Promise<boolean>;
   /** Notify guarded draft subscribers only after an external atomic transaction commits. */
   acceptExternalWorkingCommit?(working: ComposerWorkingRecord): void;
   loadWorking(address: ComposerDraftAddress): Promise<{

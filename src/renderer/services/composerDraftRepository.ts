@@ -1,4 +1,6 @@
+import { clone } from '@renderer/services/composerDraftClone';
 import {
+  composerDraftGet as get,
   composerDraftReadwrite as readwrite,
   requestValue,
 } from '@renderer/services/composerDraftIndexedDb';
@@ -20,10 +22,7 @@ import {
   removeComposerRecoverySummary as removeSummary,
   upsertComposerRecoverySummary as upsertSummary,
 } from '@renderer/services/composerDraftRecovery';
-import {
-  clone,
-  ComposerDraftWorkingRepository,
-} from '@renderer/services/composerDraftWorkingRepository';
+import { ComposerDraftWorkingRepository } from '@renderer/services/composerDraftWorkingRepository';
 import {
   nextWorkingSummaries,
   workingIndexRecord,
@@ -37,7 +36,6 @@ import {
   legacyComposerKeys,
   sameComposerDraftAddress,
 } from '@renderer/utils/composerDraftIdentity';
-import { get } from 'idb-keyval';
 
 import type {
   BeginAttemptResult,

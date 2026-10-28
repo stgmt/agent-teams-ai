@@ -49,8 +49,9 @@ export function subscribeToComposerWorkingChanges(options: {
   return repository.subscribe((event) => {
     if (
       event.kind !== 'working' ||
-      !event.address ||
-      !sameComposerDraftAddress(event.address, options.addressRef.current)
+      event.contextId !== options.addressRef.current.contextId ||
+      event.teamName !== options.addressRef.current.teamName ||
+      (event.address && !sameComposerDraftAddress(event.address, options.addressRef.current))
     )
       return;
     const version = ++options.workingEventVersionRef.current;
