@@ -22,6 +22,7 @@ function sameOwner(a: Readonly<AppConnectionContext>, b: Readonly<AppConnectionC
 export class DesktopTeamLifecycleHost {
   private lifecycle: NativeTeamLifecycle;
   private owner: Readonly<AppConnectionContext>;
+  private stopped = false;
 
   constructor(private readonly deps: DesktopTeamLifecycleHostDependencies) {
     this.owner = Object.freeze({ ...deps.owner() });
@@ -38,13 +39,19 @@ export class DesktopTeamLifecycleHost {
 
   async replaceOwner(owner: Readonly<AppConnectionContext>): Promise<boolean> {
     if (sameOwner(this.owner, owner)) return false;
+    const nextOwner = Object.freeze({ ...owner });
+    // Build before shutdown: a failed composition must not leave the app without a lifecycle.
+    const next = this.deps.build(nextOwner);
     await this.lifecycle.shutdown();
-    this.owner = Object.freeze({ ...owner });
-    this.lifecycle = this.deps.build(this.owner);
+    this.owner = nextOwner;
+    this.lifecycle = next;
+    this.stopped = false;
     return true;
   }
 
   async shutdown(): Promise<void> {
+    if (this.stopped) return;
     await this.lifecycle.shutdown();
+    this.stopped = true;
   }
 }

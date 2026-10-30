@@ -48,12 +48,28 @@ describe('desktop native lifecycle host', () => {
     expect(host.currentOwner).toEqual(owner(2));
   });
 
-  it('shuts down only the current lifecycle', async () => {
+  it('keeps the current lifecycle when the replacement cannot be composed', async () => {
+    const first = fakeLifecycle();
+    const build = vi
+      .fn()
+      .mockReturnValueOnce(first)
+      .mockImplementationOnce(() => {
+        throw new Error('TEST composition failed');
+      });
+    const host = new DesktopTeamLifecycleHost({ owner: () => owner(1), build });
+    await expect(host.replaceOwner(owner(2))).rejects.toThrow('TEST composition failed');
+    expect(host.current).toBe(first);
+    expect(host.currentOwner).toEqual(owner(1));
+    expect(first.shutdown).not.toHaveBeenCalled();
+  });
+
+  it('shuts down only the current lifecycle once', async () => {
     const lifecycle = fakeLifecycle();
     const host = new DesktopTeamLifecycleHost({
       owner: () => owner(1),
       build: () => lifecycle,
     });
+    await host.shutdown();
     await host.shutdown();
     expect(lifecycle.shutdown).toHaveBeenCalledOnce();
   });
