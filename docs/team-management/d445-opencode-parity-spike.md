@@ -86,11 +86,15 @@ used.
   `runtimeLoadScope:'shared-host'`, `pidSource:'opencode_bridge'`,
   `permission_blocked`/`runtime_pending_permission`, `runtime_pending_bootstrap`.
   A lane member is never reported with a member pid and is not restartable yet.
-- Remaining before A is complete: lane start/stop through
-  `MemberLifecycleCommands`, an adapter reconcile port that feeds
-  `observeLane`/`observeLaneLost`, permission answer/list, lane restart
-  semantics, and recovery after app restart. The legacy OpenCode route is not
-  deleted until these land.
+- 6a.2 (partial): `MemberRuntimePort` distinguishes `process`/`lane` providers and
+  gains `startLane`; `MemberLifecycleCommands` starts, observes (`laneObserved`),
+  loses, writes to and stops an adapter lane through the same exact-token fence
+  as a process. A provider that answers `lane` without an implementation fails
+  the attempt explicitly instead of spawning a process.
+- Remaining before A is complete: a concrete `startLane` implementation over
+  `TeamLaunchRuntimeAdapter` (launch/reconcile/stop, shared host, session ids),
+  permission answer/list, lane restart semantics, and recovery after app restart.
+  The legacy OpenCode route is not deleted until these land.
 
 ## Recommendation
 

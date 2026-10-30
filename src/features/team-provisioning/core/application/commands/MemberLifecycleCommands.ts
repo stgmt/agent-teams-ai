@@ -11,9 +11,11 @@ import type {
 } from '../../../contracts';
 import type { MemberLifecycleRegistry } from '../../domain/MemberLifecycleRegistry';
 import type {
+  ConfiguredMemberLaunch,
   MemberLaunchSettingsPort,
   MemberRuntimePort,
-  OwnedMemberProcess,
+  OwnedMemberLane,
+  OwnedMemberRuntime,
   TeamOperationGate,
 } from '../ports/MemberRuntimePorts';
 
@@ -34,7 +36,7 @@ interface PendingRestart {
 interface Execution {
   token: Readonly<MemberProcessToken>;
   abort: AbortController;
-  process: OwnedMemberProcess | null;
+  runtime: OwnedMemberRuntime | null;
   unsubscribe: (() => void) | null;
   released: boolean;
   cleanup: (() => Promise<void>) | null;
@@ -137,7 +139,7 @@ export class MemberLifecycleCommands {
         if (restart.abort.signal.aborted) throw new Error('Member restart was cancelled');
         this.ports.registry.assertRestartTarget(target);
         const member = this.ports.registry.snapshot(target.teamName).members[target.memberName];
-        if (member.process || member.resources !== 'released')
+        if (member.process || member.lane || member.resources !== 'released')
           throw new Error('Member restart resources were not released');
         const admission = this.ports.registry.beginStart(
           target,
@@ -163,15 +165,15 @@ export class MemberLifecycleCommands {
       const execution = this.executions.get(key(token, token.memberName));
       if (
         member?.desired !== 'running' ||
-        !member.process ||
+        (!member.process && !member.lane) ||
         member.generation !== token.generation ||
         member.operationId !== token.operationId ||
-        !execution?.process ||
+        !execution?.runtime ||
         execution.abort.signal.aborted
       )
-        throw new Error('Member process input is no longer current');
+        throw new Error('Member runtime input is no longer current');
       // writeInput validates the owned pipe synchronously; backpressure never holds the operation gate.
-      return { written: execution.process.writeInput(line) };
+      return { written: execution.runtime.writeInput(line) };
     });
     await selected.written;
   }
@@ -207,7 +209,7 @@ export class MemberLifecycleCommands {
       if (!execution) continue;
       execution.abort.abort();
       stops.push(
-        execution.stop || execution.process || execution.cleanup
+        execution.stop || execution.runtime || execution.cleanup
           ? this.stopOwnedProcess(execution)
           : execution.completion.then(async () => {
               if (execution.cleanup) await this.stopOwnedProcess(execution);
@@ -241,7 +243,7 @@ export class MemberLifecycleCommands {
     const execution: Execution = {
       token,
       abort: new AbortController(),
-      process: null,
+      runtime: null,
       unsubscribe: null,
       released: false,
       cleanup: null,
@@ -250,6 +252,16 @@ export class MemberLifecycleCommands {
     };
     this.executions.set(key(token, token.memberName), execution);
     execution.completion = this.spawn(execution);
+  }
+
+  private startLane(
+    settings: Readonly<ConfiguredMemberLaunch>,
+    token: Readonly<MemberProcessToken>,
+    signal: AbortSignal
+  ): Promise<OwnedMemberLane> {
+    const startLane = this.ports.runtime.startLane;
+    if (!startLane) throw new Error('Adapter lane runtime is not wired for this provider');
+    return startLane.call(this.ports.runtime, settings, token, signal);
   }
 
   private async spawn(execution: Execution): Promise<void> {
@@ -268,18 +280,22 @@ export class MemberLifecycleCommands {
       ) {
         throw new Error('Configured launch settings are missing or stale');
       }
-      const process = await this.ports.runtime.spawn(
-        Object.freeze({
-          ...settings,
-          team: Object.freeze({ ...settings.team }),
-        }),
-        token,
-        execution.abort.signal
-      );
-      execution.process = process;
-      const accepted = this.ports.registry.observeSpawn(token, process.identity);
-      let exited = false;
-      const unsubscribe = process.subscribe({
+      const launchSettings = Object.freeze({
+        ...settings,
+        team: Object.freeze({ ...settings.team }),
+      });
+      const kind = this.ports.runtime.kind?.(settings.providerId) ?? 'process';
+      const runtime =
+        kind === 'lane'
+          ? await this.startLane(launchSettings, token, execution.abort.signal)
+          : await this.ports.runtime.spawn(launchSettings, token, execution.abort.signal);
+      execution.runtime = runtime;
+      const accepted =
+        'identity' in runtime
+          ? this.ports.registry.observeSpawn(token, runtime.identity)
+          : this.ports.registry.observeLane(token, runtime.lane);
+      let terminated = false;
+      const unsubscribe = runtime.subscribe({
         connected: () => {
           if (accepted) this.ports.registry.observeConnected(token);
         },
@@ -295,14 +311,22 @@ export class MemberLifecycleCommands {
           this.ports.registry.observeMemberReleaseFailed(token);
         },
         exited: (exit) => {
-          exited = true;
-          if (accepted) this.ports.registry.observeExit(token, process.identity, exit);
+          terminated = true;
+          if (accepted && 'identity' in runtime)
+            this.ports.registry.observeExit(token, runtime.identity, exit);
+        },
+        laneObserved: (observation) => {
+          if (accepted) this.ports.registry.observeLane(token, observation);
+        },
+        laneLost: (error) => {
+          terminated = true;
+          if (accepted) this.ports.registry.observeLaneLost(token, error);
         },
         released: () => {
-          if (!exited) return;
+          if (!terminated) return;
           // Release belongs to this subscribed handle even when its generation is no longer current.
           if (accepted) this.ports.registry.observeMemberReleased(token);
-          execution.process = null;
+          execution.runtime = null;
           execution.released = true;
           execution.unsubscribe?.();
           execution.unsubscribe = null;
@@ -314,7 +338,7 @@ export class MemberLifecycleCommands {
       if (!accepted || execution.abort.signal.aborted) await this.stopOwnedProcess(execution);
     } catch (error) {
       if (error instanceof OwnedRuntimeCleanupError) execution.cleanup = error.release;
-      else if (!execution.process) execution.released = true;
+      else if (!execution.runtime) execution.released = true;
       this.ports.registry.observeStartFailed(
         token,
         error instanceof Error ? error.message : String(error)
@@ -327,12 +351,12 @@ export class MemberLifecycleCommands {
   private stopOwnedProcess(execution: Execution): Promise<void> {
     if (execution.stop) return execution.stop;
     if (execution.released) return Promise.resolve();
-    if (!execution.process && !execution.cleanup) return Promise.resolve();
+    if (!execution.runtime && !execution.cleanup) return Promise.resolve();
     execution.stop = Promise.resolve()
       .then(async () => {
-        if (execution.process) {
+        if (execution.runtime) {
           try {
-            await execution.process.stop();
+            await execution.runtime.stop();
           } catch (error) {
             // A prior runtime failure stays in the snapshot, but exact release ends ownership.
             if (!execution.released) throw error;

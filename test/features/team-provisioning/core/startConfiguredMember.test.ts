@@ -2,18 +2,19 @@ import { describe, expect, it } from 'vitest';
 
 import { MemberLifecycleCommands } from '../../../../src/features/team-provisioning/core/application/commands/MemberLifecycleCommands';
 import { OwnedRuntimeCleanupError } from '../../../../src/features/team-provisioning/core/application/OwnedRuntimeCleanupError';
+import { TeamOperationQueue } from '../../../../src/features/team-provisioning/core/application/TeamOperationQueue';
+import { MemberLifecycleRegistry } from '../../../../src/features/team-provisioning/core/domain/MemberLifecycleRegistry';
+
 import type {
   MemberRuntimeEvents,
   MemberRuntimePort,
   OwnedMemberProcess,
 } from '../../../../src/features/team-provisioning/core/application/ports/MemberRuntimePorts';
-import { TeamOperationQueue } from '../../../../src/features/team-provisioning/core/application/TeamOperationQueue';
-import { MemberLifecycleRegistry } from '../../../../src/features/team-provisioning/core/domain/MemberLifecycleRegistry';
 
 const owner = { appInstanceId: 'app-1', dataRootFingerprint: 'root', connectionGeneration: 1 };
 const run = { ...owner, teamName: 'TEST-team', runId: 'run-1' };
 
-function setup(runtime: MemberRuntimePort) {
+function setup(runtime: MemberRuntimePort, providerId = 'anthropic') {
   const registry = new MemberLifecycleRegistry(owner);
   registry.configureTeam(run, [{ memberName: 'builder', role: 'member' }]);
   let sequence = 0;
@@ -27,7 +28,7 @@ function setup(runtime: MemberRuntimePort) {
           team,
           memberName,
           configurationRevision: 'revision-1',
-          providerId: 'anthropic',
+          providerId,
           model: null,
           workingDirectory: 'TEST-workspace',
           instructions: 'Test worker',
@@ -331,5 +332,128 @@ describe('configured member start command', () => {
     });
     await expect(commands.start(run, 'invented')).rejects.toThrow('not configured');
     expect(starts).toBe(0);
+  });
+
+  it('starts an adapter lane, applies observations and releases it', async () => {
+    let events: MemberRuntimeEvents | undefined;
+    const stops: string[] = [];
+    const lane = {
+      laneId: 'TEST-lane',
+      sessionId: 'TEST-session',
+      hostPid: 900,
+      runtimeAlive: true,
+      bootstrapConfirmed: true,
+      permissionBlocked: false,
+    };
+    const { registry, commands } = setup(
+      {
+        kind: () => 'lane',
+        async spawn() {
+          throw new Error('process spawn must not be used for a lane');
+        },
+        async startLane() {
+          return {
+            lane,
+            subscribe(next) {
+              events = next;
+              return () => undefined;
+            },
+            async writeInput() {},
+            async stop() {
+              stops.push('stop');
+            },
+          };
+        },
+      },
+      'opencode'
+    );
+    const admission = await commands.start(run, 'builder');
+    if (admission.kind !== 'launch') throw new Error('Expected a launch admission');
+    await commands.settled(run, 'builder');
+    expect(registry.snapshot(run.teamName).members.builder).toMatchObject({
+      phase: 'ready',
+      process: null,
+      lane,
+    });
+    expect(registry.aliveTeamNames()).toEqual([run.teamName]);
+
+    events?.laneObserved?.({ ...lane, bootstrapConfirmed: false, permissionBlocked: true });
+    expect(registry.snapshot(run.teamName).members.builder.phase).toBe('connecting');
+    expect(registry.aliveTeamNames()).toEqual([]);
+    events?.laneObserved?.({ ...lane, bootstrapConfirmed: false, permissionBlocked: false });
+    expect(registry.aliveTeamNames()).toEqual([run.teamName]);
+
+    await commands.writeInput(admission.token, 'TEST input');
+    await commands.stop(run, 'builder');
+    expect(stops).toEqual(['stop']);
+
+    events?.laneLost?.('TEST lane lost');
+    events?.released?.();
+    expect(registry.snapshot(run.teamName).members.builder).toMatchObject({
+      phase: 'stopped',
+      lane: null,
+      error: null,
+      resources: 'released',
+    });
+  });
+
+  it('reports an unexpected lane loss as a failed attempt', async () => {
+    let events: MemberRuntimeEvents | undefined;
+    const lane = {
+      laneId: 'TEST-lane',
+      sessionId: null,
+      hostPid: 900,
+      runtimeAlive: true,
+      bootstrapConfirmed: true,
+      permissionBlocked: false,
+    };
+    const { registry, commands } = setup(
+      {
+        kind: () => 'lane',
+        async spawn() {
+          throw new Error('process spawn must not be used for a lane');
+        },
+        async startLane() {
+          return {
+            lane,
+            subscribe(next) {
+              events = next;
+              return () => undefined;
+            },
+            async writeInput() {},
+            async stop() {},
+          };
+        },
+      },
+      'opencode'
+    );
+    const admission = await commands.start(run, 'builder');
+    if (admission.kind !== 'launch') throw new Error('Expected a launch admission');
+    await commands.settled(run, 'builder');
+    events?.laneLost?.('TEST lane lost');
+    expect(registry.snapshot(run.teamName).members.builder).toMatchObject({
+      phase: 'exited',
+      lane: null,
+      error: 'TEST lane lost',
+    });
+  });
+
+  it('fails a lane start when the runtime has no lane implementation', async () => {
+    const { registry, commands } = setup(
+      {
+        kind: () => 'lane',
+        async spawn() {
+          throw new Error('process spawn must not be used for a lane');
+        },
+      },
+      'opencode'
+    );
+    const admission = await commands.start(run, 'builder');
+    if (admission.kind !== 'launch') throw new Error('Expected a launch admission');
+    await commands.settled(run, 'builder');
+    expect(registry.snapshot(run.teamName).members.builder).toMatchObject({
+      phase: 'failed',
+      error: 'Adapter lane runtime is not wired for this provider',
+    });
   });
 });
