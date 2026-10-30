@@ -204,6 +204,12 @@
 4. Тесты UI: exit, restart, skipped, source unavailable.
 5. Выход: экран и инструменты читают один native snapshot.
 
+### Phase 3b status
+
+- `createBoundTeamLiveStatusQueries` даёт context-fenced `memberSpawnStatuses` и `runtimeSnapshot` из одного native snapshot; неизвестная команда отвечает пустой live-проекцией, а не выдуманным ростером.
+- Переключение IPC/HTTP/preload/renderer на эти чтения возможно только вместе с native production composition (фаза 8): пока старый root владеет snapshot, параллельное чтение было бы вторым authority.
+- `TeamLaunchStateEvaluator`/`snapshotToMemberSpawnStatuses` остаются для persisted history/бейджей; текущая liveness в них больше не должна использоваться.
+
 ## Фаза 4. Member start/restart/skip
 
 1. `member_start` через `MemberLifecycleCommands.start` + `LeadMemberStartAuthority`.
