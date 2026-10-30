@@ -292,10 +292,14 @@ lane restart, recovery после рестарта приложения.
 - logs, diagnostics, context usage, task activity repair;
 
 Native logs: `NativeTeamLogStore` (bounded 2000 lines, newest-first через
-`sliceClaudeLogs`) + захват planner output; `getClaudeLogs` wiring остаётся.
-Task activity repair: `NativeTaskActivityRepair` уже связывает legacy repair с native
-registry (`aliveRunId`/`findByRunId`/`isLive`): живой run пропускает repair,
-остановленный — чинится один раз. Остальные пункты 6b ещё не портированы.
+`sliceClaudeLogs`) + захват planner output; `NativeTeamClaudeLogs` отдаёт
+`getClaudeLogs`. Diagnostics: `NativeTeamDiagnostics` отдаёт runtime snapshot;
+lead activity/context usage пока fail-closed. Member lifecycle:
+`NativeTeamMemberLifecycleApi` (statuses/restart/skip); attach/detach и OpenCode
+secondary retry fail-closed. Task activity repair: `NativeTaskActivityRepair` уже
+связывает legacy repair с native registry (`aliveRunId`/`findByRunId`/`isLive`):
+живой run пропускает repair, остановленный — чинится один раз. Остальные пункты
+6b ещё не портированы.
 
 - approvals/tool settings;
 - attachments, action mode, slash/relay/cross-team correlation;
