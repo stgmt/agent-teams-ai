@@ -481,6 +481,22 @@ export class MemberLifecycleRegistry {
     return this.teams.has(teamName) ? this.snapshot(teamName) : null;
   }
 
+  find(teamName: string): Readonly<TeamLifecycleSnapshot> | null {
+    return this.findSnapshot(teamName);
+  }
+
+  hasRun(identity: Readonly<TeamRunIdentity>): boolean {
+    const snapshot = this.findSnapshot(identity.teamName);
+    if (!snapshot) return false;
+    return (
+      snapshot.identity.appInstanceId === identity.appInstanceId &&
+      snapshot.identity.dataRootFingerprint === identity.dataRootFingerprint &&
+      snapshot.identity.connectionGeneration === identity.connectionGeneration &&
+      snapshot.identity.teamName === identity.teamName &&
+      snapshot.identity.runId === identity.runId
+    );
+  }
+
   /** Teams with at least one owned process; historical connections do not count. */
   aliveTeamNames(): readonly string[] {
     return [...this.teams]

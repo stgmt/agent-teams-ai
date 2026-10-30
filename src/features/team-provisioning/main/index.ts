@@ -1,3 +1,9 @@
+export { registerHumanRequestSubmissionIpc } from './adapters/input/registerHumanRequestSubmissionIpc';
+export { registerLifecycleCommandsHttp } from './adapters/input/registerLifecycleCommandsHttp';
+export { registerLifecycleCommandsIpc } from './adapters/input/registerLifecycleCommandsIpc';
+export { registerLifecycleIpc } from './adapters/input/registerLifecycleIpc';
+export { registerLifecycleSnapshotHttp } from './adapters/input/registerLifecycleSnapshotHttp';
+export { registerMemberLifecycleHttp } from './adapters/input/registerMemberLifecycleHttp';
 export {
   registerTeamMemberSettingsIpc,
   removeTeamMemberSettingsIpc,
@@ -6,6 +12,25 @@ export {
   createNodeLegacyMemberSettingsRepositoryDependencies,
   type NodeLegacyMemberSettingsRepositoryOptions,
 } from './adapters/output/LegacyMemberSettingsRepositoryAdapter';
+export { NodeTeamDefinitionStore } from './adapters/output/NodeTeamDefinitionStore';
+export { createBoundHumanRequestSubmission } from './composition/createBoundHumanRequestSubmission';
+export {
+  createMemberLifecycle,
+  type MemberLifecycleDependencies,
+} from './composition/createMemberLifecycle';
+export {
+  createNativeLeadReporting,
+  type NativeLeadReporting,
+} from './composition/createNativeLeadReporting';
+export {
+  createNativeProviderPorts,
+  type NativeProviderProfile,
+} from './composition/createNativeProviderPorts';
+export {
+  createNativeTeamLifecycle,
+  type NativeTeamLifecycle,
+  type NativeTeamLifecycleDependencies,
+} from './composition/createNativeTeamLifecycle';
 export {
   createNodeTeamMemberSettingsFeature,
   createTeamMemberSettingsFeature,

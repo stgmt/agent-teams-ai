@@ -31,6 +31,9 @@ describe('authoritative member lifecycle', () => {
     const registry = setup();
     expect(registry.aliveTeamNames()).toEqual([]);
     expect(registry.aliveRunId(run.teamName)).toBeNull();
+    expect(registry.hasRun(run)).toBe(true);
+    expect(registry.hasRun({ ...run, runId: 'other-run' })).toBe(false);
+    expect(registry.find(run.teamName)?.identity).toEqual(run);
     const { token, process } = ready(registry);
     expect(registry.aliveTeamNames()).toEqual([run.teamName]);
     expect(registry.aliveRunId(run.teamName)).toBe(run.runId);
