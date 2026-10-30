@@ -133,10 +133,11 @@ used.
   `answerRuntimePermission` with the lane's expected members and launch history.
   `MemberLifecycleCommands` exposes `listLanePermissions`/`answerLanePermission`
   scoped to the exact run; unknown requests fail closed.
-- 6a.7 (landed): single-member lane restart. A member that owns its own lane is
-  stopped and relaunched through the normal exact-generation restart path; a
-  member of a shared aggregate lane is still rejected until lane-wide restart is
-  designed, so one teammate cannot silently restart the whole primary lane.
+- 6a.7 (landed): lane restart. A member that owns its own lane is stopped and
+  relaunched through the normal exact-generation restart path. A shared teammate
+  lane can be restarted as a unit (`restartLane`) — all of its members get new
+  generations; a lane that contains the lead still requires a team relaunch
+  because there is no per-member adapter restart.
 - 6a.8 (landed): the native lifecycle accepts the production
   `TeamRuntimeAdapterRegistry` directly; `selectOpenCodeLaneAdapter` returns the
   OpenCode entry only when it is registered, and an explicit `openCodeAdapter`
