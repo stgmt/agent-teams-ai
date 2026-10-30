@@ -41,6 +41,8 @@ export interface NativeDesktopTeamRuntimeDependencies {
 export interface NativeDesktopTeamRuntime {
   lifecycle: NativeTeamLifecycle;
   runtime: DesktopTeamRuntime;
+  /** Native in-memory logs; persistence across restart is a phase 7 concern. */
+  logs: Pick<NativeTeamLifecycle['logs'], 'read'>;
   /** Clears claims whose runs are not alive in this process. */
   recoverStartup(): Promise<readonly string[]>;
 }
@@ -79,6 +81,7 @@ export function createNativeDesktopTeamRuntime(
   return {
     lifecycle,
     runtime,
+    logs: lifecycle.logs,
     recoverStartup: async () => lifecycle.recoverOrphanedRuns(await deps.listTeamNames()),
   };
 }

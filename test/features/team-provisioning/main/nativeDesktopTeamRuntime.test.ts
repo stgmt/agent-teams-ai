@@ -64,7 +64,7 @@ function setup(
 
 describe('native desktop team runtime composition', () => {
   it('assembles lifecycle and runtime reads without a production owner switch', async () => {
-    const { lifecycle, runtime } = setup();
+    const { lifecycle, runtime, logs } = setup();
     expect(lifecycle.runs.aliveTeamNames()).toEqual([]);
     expect(lifecycle.runs.aliveRunId('TEST-team')).toBeNull();
     await expect(runtime.getRuntimeState('TEST-team')).resolves.toEqual({
@@ -76,6 +76,7 @@ describe('native desktop team runtime composition', () => {
     expect(runtime.hasProvisioningRun('TEST-team')).toBe(false);
     expect(runtime.getAliveTeams()).toEqual([]);
     await expect(lifecycle.recoverOrphanedRuns([])).resolves.toEqual([]);
+    expect(logs.read('TEST-team')).toMatchObject({ lines: [], total: 0, hasMore: false });
   });
 
   it('selects the OpenCode adapter from the startup registry', () => {
