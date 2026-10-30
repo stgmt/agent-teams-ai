@@ -137,9 +137,15 @@ used.
   stopped and relaunched through the normal exact-generation restart path; a
   member of a shared aggregate lane is still rejected until lane-wide restart is
   designed, so one teammate cannot silently restart the whole primary lane.
-- Remaining before A is complete: pass the real `TeamRuntimeAdapterRegistry`
-  entry into the production composition, shared-lane restart, and recovery after
-  app restart. The legacy OpenCode route is not deleted until these land.
+- 6a.8 (landed): the native lifecycle accepts the production
+  `TeamRuntimeAdapterRegistry` directly; `selectOpenCodeLaneAdapter` returns the
+  OpenCode entry only when it is registered, and an explicit `openCodeAdapter`
+  still wins. The startup composition can now pass the registry it already
+  creates without a second adapter source.
+- Remaining before A is complete: build the native desktop composition that
+  passes the registry plus settings/provider/workspace/inbox/control deps,
+  shared-lane restart, and recovery after app restart. The legacy OpenCode route
+  is not deleted until these land.
 
 ## Recommendation
 

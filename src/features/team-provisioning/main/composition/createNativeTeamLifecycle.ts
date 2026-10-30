@@ -22,6 +22,7 @@ import { createBoundLifecycleCommands } from './createBoundLifecycleCommands';
 import { createBoundLifecycleQueries } from './createBoundLifecycleQueries';
 import { createMemberLifecycle } from './createMemberLifecycle';
 import { createNativeMemberRuntimeRouting } from './createNativeMemberRuntimeRouting';
+import { type OpenCodeLaneAdapter, selectOpenCodeLaneAdapter } from './selectOpenCodeLaneAdapter';
 
 import type { TeamRunIdentity, TeamRunRegistryRead } from '../../contracts';
 import type { LifecycleCommands } from '../../core/application/ports/LifecycleCommands';
@@ -30,7 +31,7 @@ import type { ConfiguredMemberLaunch } from '../../core/application/ports/Member
 import type { NativeConfiguredProviderPorts } from '../adapters/output/NativeConfiguredProvider';
 import type { MemberLifecycle } from './createMemberLifecycle';
 import type { AppConnectionContext } from '@features/external-agent-connection/contracts';
-import type { TeamLaunchRuntimeAdapter } from '@main/services/team/runtime';
+import type { TeamRuntimeAdapterRegistry } from '@main/services/team/runtime';
 import type { AttachmentPayload } from '@shared/types';
 
 export interface NativeTeamLifecycleDependencies {
@@ -45,10 +46,9 @@ export interface NativeTeamLifecycleDependencies {
   controlUrl(): Promise<string>;
   briefing(settings: Readonly<ConfiguredMemberLaunch>): Promise<string>;
   /** Adapter for OpenCode lanes; omitted keeps OpenCode unsupported by native launch. */
-  openCodeAdapter?: Pick<
-    TeamLaunchRuntimeAdapter,
-    'launch' | 'reconcile' | 'stop' | 'answerRuntimePermission' | 'listRuntimePermissions'
-  >;
+  openCodeAdapter?: OpenCodeLaneAdapter;
+  /** Production registry entry source; used when `openCodeAdapter` is omitted. */
+  runtimeAdapterRegistry?: Pick<TeamRuntimeAdapterRegistry, 'has' | 'get'>;
   invalidate(teamName: string): void;
   contextInvalidationSignal(expected: AppConnectionContext): AbortSignal;
   withExpectedContext<T>(expected: AppConnectionContext, operation: () => Promise<T>): Promise<T>;
@@ -104,10 +104,12 @@ export function createNativeTeamLifecycle(
   const nativeRuntime = new NodeMemberRuntime(planner, (expected, operation) =>
     deps.withExpectedContext(expected, operation)
   );
+  const openCodeAdapter =
+    deps.openCodeAdapter ?? selectOpenCodeLaneAdapter(deps.runtimeAdapterRegistry);
   const routing = createNativeMemberRuntimeRouting({
     processRuntime: nativeRuntime,
     settings,
-    ...(deps.openCodeAdapter ? { openCodeAdapter: deps.openCodeAdapter } : {}),
+    ...(openCodeAdapter ? { openCodeAdapter } : {}),
   });
   const config = new NodeNativeTeamConfig({
     teamsRoot: deps.teamsRoot,
