@@ -30,7 +30,7 @@ export interface MemberLifecycleDependencies {
   laneGroups?(
     run: Readonly<TeamRunIdentity>,
     members: readonly ConfiguredMemberIdentity[]
-  ): readonly TeamLaneGroup[];
+  ): readonly TeamLaneGroup[] | Promise<readonly TeamLaneGroup[]>;
 }
 
 export interface MemberLifecycle {

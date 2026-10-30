@@ -120,10 +120,17 @@ used.
   hard failure), launches one lane per group, reconciles on an interval, stops
   the lane, and rejects stdin input because OpenCode delivery belongs to the
   inbox relay. Missing evidence stops the lane before failing the launch.
-- Remaining before A is complete: compose the lane runtime into the production
-  lifecycle (provider routing + adapter registry), permission answer/list,
-  lane restart semantics, and recovery after app restart. The legacy OpenCode
-  route is not deleted until these land.
+- 6a.5 (landed): provider routing. `createNativeMemberRuntimeRouting` sends
+  `opencode` to the lane runtime and every other provider to owned member
+  processes; a pure OpenCode roster shares the primary lane, mixed rosters give
+  each OpenCode member a secondary lane. `createNativeTeamLifecycle` accepts an
+  optional `openCodeAdapter` and supplies the routing planner to the lifecycle.
+  Without an adapter, OpenCode stays process-only and the native planner rejects
+  it explicitly.
+- Remaining before A is complete: pass the real `TeamRuntimeAdapterRegistry`
+  entry into the production composition, permission answer/list, lane restart
+  semantics, and recovery after app restart. The legacy OpenCode route is not
+  deleted until these land.
 
 ## Recommendation
 

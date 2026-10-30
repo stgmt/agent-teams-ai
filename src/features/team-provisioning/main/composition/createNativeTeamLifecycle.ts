@@ -21,6 +21,7 @@ import { nativeTeamTaskLedgerProjectDirectory } from '../infrastructure/nativeTe
 import { createBoundLifecycleCommands } from './createBoundLifecycleCommands';
 import { createBoundLifecycleQueries } from './createBoundLifecycleQueries';
 import { createMemberLifecycle } from './createMemberLifecycle';
+import { createNativeMemberRuntimeRouting } from './createNativeMemberRuntimeRouting';
 
 import type { TeamRunIdentity, TeamRunRegistryRead } from '../../contracts';
 import type { LifecycleCommands } from '../../core/application/ports/LifecycleCommands';
@@ -29,6 +30,7 @@ import type { ConfiguredMemberLaunch } from '../../core/application/ports/Member
 import type { NativeConfiguredProviderPorts } from '../adapters/output/NativeConfiguredProvider';
 import type { MemberLifecycle } from './createMemberLifecycle';
 import type { AppConnectionContext } from '@features/external-agent-connection/contracts';
+import type { TeamLaunchRuntimeAdapter } from '@main/services/team/runtime';
 import type { AttachmentPayload } from '@shared/types';
 
 export interface NativeTeamLifecycleDependencies {
@@ -42,6 +44,8 @@ export interface NativeTeamLifecycleDependencies {
   inbox: ConstructorParameters<typeof NodeNativeMemberRegistration>[0]['inbox'];
   controlUrl(): Promise<string>;
   briefing(settings: Readonly<ConfiguredMemberLaunch>): Promise<string>;
+  /** Adapter for OpenCode lanes; omitted keeps OpenCode unsupported by native launch. */
+  openCodeAdapter?: Pick<TeamLaunchRuntimeAdapter, 'launch' | 'reconcile' | 'stop'>;
   invalidate(teamName: string): void;
   contextInvalidationSignal(expected: AppConnectionContext): AbortSignal;
   withExpectedContext<T>(expected: AppConnectionContext, operation: () => Promise<T>): Promise<T>;
@@ -97,6 +101,11 @@ export function createNativeTeamLifecycle(
   const nativeRuntime = new NodeMemberRuntime(planner, (expected, operation) =>
     deps.withExpectedContext(expected, operation)
   );
+  const routing = createNativeMemberRuntimeRouting({
+    processRuntime: nativeRuntime,
+    settings,
+    ...(deps.openCodeAdapter ? { openCodeAdapter: deps.openCodeAdapter } : {}),
+  });
   const config = new NodeNativeTeamConfig({
     teamsRoot: deps.teamsRoot,
     settings,
@@ -106,7 +115,8 @@ export function createNativeTeamLifecycle(
     owner: deps.owner,
     settings,
     authority,
-    runtime: nativeRuntime,
+    runtime: routing.runtime,
+    laneGroups: routing.laneGroups,
     teamResources: {
       prepare: async (run, signal) => {
         await settings.prepareWorkspace(run, workspace, signal);

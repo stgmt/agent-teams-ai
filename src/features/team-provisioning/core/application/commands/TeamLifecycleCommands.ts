@@ -18,7 +18,7 @@ interface Dependencies {
   laneGroups?(
     run: Readonly<TeamRunIdentity>,
     members: readonly ConfiguredMemberIdentity[]
-  ): readonly TeamLaneGroup[];
+  ): readonly TeamLaneGroup[] | Promise<readonly TeamLaneGroup[]>;
   nextOperationId(): string;
   nextRunId(): string;
   nextCredential(): string;
@@ -258,10 +258,11 @@ export class TeamLifecycleCommands {
       request.abort.signal.throwIfAborted();
       const members = await awaitWithAbort(load(request.abort.signal), request.abort.signal);
       request.abort.signal.throwIfAborted();
+      const laneGroups = (await this.ports.laneGroups?.(request.run, members)) ?? [];
       const existing = await this.ports.gate.run(request.run.teamName, async () => {
         request.abort.signal.throwIfAborted();
         return this.admissions.get(request.run.teamName)?.receipt.run.runId === request.run.runId
-          ? this.admit(request.run, members)
+          ? this.admit(request.run, members, laneGroups)
           : null;
       });
       if (existing) return existing;
@@ -271,7 +272,7 @@ export class TeamLifecycleCommands {
       request.abort.signal.throwIfAborted();
       return await this.ports.gate.run(request.run.teamName, async () => {
         request.abort.signal.throwIfAborted();
-        return this.admit(request.run, members);
+        return this.admit(request.run, members, laneGroups);
       });
     } catch (error) {
       if (resourcesStarted) {
@@ -308,10 +309,10 @@ export class TeamLifecycleCommands {
 
   private admit(
     run: TeamRunIdentity,
-    members: readonly ConfiguredMemberIdentity[]
+    members: readonly ConfiguredMemberIdentity[],
+    laneGroups: readonly TeamLaneGroup[]
   ): Readonly<TeamLaunchAdmission> {
     const roster = rosterKey(members);
-    const laneGroups = this.ports.laneGroups?.(run, members) ?? [];
     this.assertLaneGroups(members, laneGroups);
     const lanePlan = lanePlanKey(laneGroups);
     const previous = this.admissions.get(run.teamName);
