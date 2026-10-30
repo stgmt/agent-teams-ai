@@ -291,6 +291,8 @@ lane restart, recovery после рестарта приложения.
 - settings/update состава, member settings, model preflight;
 - logs, diagnostics, context usage, task activity repair;
 
+Native logs: `NativeTeamLogStore` (bounded 2000 lines, newest-first через
+`sliceClaudeLogs`) + захват planner output; `getClaudeLogs` wiring остаётся.
 Task activity repair: `NativeTaskActivityRepair` уже связывает legacy repair с native
 registry (`aliveRunId`/`findByRunId`/`isLive`): живой run пропускает repair,
 остановленный — чинится один раз. Остальные пункты 6b ещё не портированы.

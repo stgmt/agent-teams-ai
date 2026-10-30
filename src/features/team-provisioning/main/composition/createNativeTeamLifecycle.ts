@@ -9,6 +9,7 @@ import { SendLeadMessage } from '../../core/application/commands/SendLeadMessage
 import { LeadMemberStartAuthority } from '../../core/application/LeadMemberStartAuthority';
 import { NativeClaudeLaunchPlanner } from '../adapters/output/NativeClaudeLaunchPlanner';
 import { NativeConfiguredProvider } from '../adapters/output/NativeConfiguredProvider';
+import { NativeTeamLogStore } from '../adapters/output/NativeTeamLogStore';
 import { NativeTeamTaskLedgerReader } from '../adapters/output/NativeTeamTaskLedgerReader';
 import { NodeMemberRuntime } from '../adapters/output/NodeMemberRuntime';
 import { NodeNativeLaunchArtifacts } from '../adapters/output/NodeNativeLaunchArtifacts';
@@ -58,6 +59,7 @@ export interface NativeTeamLifecycle {
   runs: TeamRunRegistryRead;
   commands: LifecycleCommands;
   queries: LifecycleQueries;
+  logs: Pick<NativeTeamLogStore, 'read'>;
   taskChanges: Pick<NativeTeamTaskLedgerReader, 'read'>;
   leadStart: Pick<MemberLifecycle['leadStart'], 'execute'>;
   resolveLeadCredential(credential: string): Readonly<TeamRunIdentity>;
@@ -103,7 +105,24 @@ export function createNativeTeamLifecycle(
     prepareProvider: (launch, signal) => provider.prepare(launch, signal),
     prepareArtifacts: (launch, token, signal) => artifacts.prepare(launch, token, signal),
   });
-  const nativeRuntime = new NodeMemberRuntime(planner, (expected, operation) =>
+  const logs = new NativeTeamLogStore();
+  const plannerWithLogs = {
+    prepare: async (
+      launch: Parameters<typeof planner.prepare>[0],
+      token: Parameters<typeof planner.prepare>[1],
+      signal: AbortSignal
+    ) => {
+      const plan = await planner.prepare(launch, token, signal);
+      return {
+        ...plan,
+        observeOutput: (line: string, stream: 'stdout' | 'stderr') => {
+          logs.append(token.runId, token.teamName, stream === 'stderr' ? `[stderr] ${line}` : line);
+          return plan.observeOutput?.(line, stream) ?? null;
+        },
+      };
+    },
+  };
+  const nativeRuntime = new NodeMemberRuntime(plannerWithLogs, (expected, operation) =>
     deps.withExpectedContext(expected, operation)
   );
   const openCodeAdapter =
@@ -132,6 +151,7 @@ export function createNativeTeamLifecycle(
       release: async (run) => {
         await config.release(run);
         settings.release(run);
+        logs.clear(run.runId);
       },
     },
   });
@@ -190,6 +210,7 @@ export function createNativeTeamLifecycle(
   });
   return {
     runs,
+    logs,
     taskChanges,
     commands: createBoundLifecycleCommands({
       owner: deps.owner,
