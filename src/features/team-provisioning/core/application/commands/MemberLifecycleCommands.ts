@@ -117,7 +117,10 @@ export class MemberLifecycleCommands {
     try {
       const selected = await this.ports.gate.run(target.teamName, async () => {
         signal?.throwIfAborted();
-        if (this.laneGroupsFor(target, target.memberName).length > 0)
+        const sharedLane = this.laneGroupsFor(target, target.memberName).find(
+          (group) => group.tokens.length > 1
+        );
+        if (sharedLane)
           throw new MemberRestartConflictError(
             'Restarting a member of a shared adapter lane is not supported yet'
           );

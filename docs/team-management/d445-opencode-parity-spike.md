@@ -133,9 +133,13 @@ used.
   `answerRuntimePermission` with the lane's expected members and launch history.
   `MemberLifecycleCommands` exposes `listLanePermissions`/`answerLanePermission`
   scoped to the exact run; unknown requests fail closed.
+- 6a.7 (landed): single-member lane restart. A member that owns its own lane is
+  stopped and relaunched through the normal exact-generation restart path; a
+  member of a shared aggregate lane is still rejected until lane-wide restart is
+  designed, so one teammate cannot silently restart the whole primary lane.
 - Remaining before A is complete: pass the real `TeamRuntimeAdapterRegistry`
-  entry into the production composition, lane restart semantics, and recovery
-  after app restart. The legacy OpenCode route is not deleted until these land.
+  entry into the production composition, shared-lane restart, and recovery after
+  app restart. The legacy OpenCode route is not deleted until these land.
 
 ## Recommendation
 

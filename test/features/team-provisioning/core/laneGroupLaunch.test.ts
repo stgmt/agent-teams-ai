@@ -43,7 +43,13 @@ const settingsFor = async (
   instructions: 'TEST',
 });
 
-function setup(options: { omitObservation?: string; stopEmitsRelease?: boolean } = {}) {
+function setup(
+  options: {
+    omitObservation?: string;
+    stopEmitsRelease?: boolean;
+    lanePlan?: readonly { laneId: string; memberNames: readonly string[] }[];
+  } = {}
+) {
   const stops: string[] = [];
   const inputs: { memberName: string; line: string }[] = [];
   const answers: {
@@ -58,6 +64,33 @@ function setup(options: { omitObservation?: string; stopEmitsRelease?: boolean }
     kind: () => 'lane',
     async spawn() {
       throw new Error('process spawn must not be used for a lane group');
+    },
+    async startLane(settings, token, signal) {
+      const group = await runtime.startLaneGroup!(
+        [settings],
+        [token],
+        `secondary:opencode:${token.memberName}`,
+        signal
+      );
+      return {
+        lane: group.observations[token.memberName]!,
+        subscribe(events) {
+          return group.subscribe({
+            observed: (memberName, observation) => {
+              if (memberName === token.memberName) events.laneObserved?.(observation);
+            },
+            lost: (memberName, error) => {
+              if (memberName === token.memberName) events.laneLost?.(error);
+            },
+            failed: (memberName, error) => {
+              if (memberName === token.memberName) events.failed(error);
+            },
+            released: () => events.released(),
+          });
+        },
+        stop: () => group.stop(),
+        writeInput: (line) => group.writeInput(token.memberName, line),
+      };
     },
     async startLaneGroup(settings, tokens, laneId) {
       const record = {
@@ -100,7 +133,8 @@ function setup(options: { omitObservation?: string; stopEmitsRelease?: boolean }
     owner,
     settings: { findConfiguredMember: settingsFor },
     runtime,
-    laneGroups: () => [{ laneId: 'primary', memberNames: ['team-lead', 'builder'] }],
+    laneGroups: () =>
+      options.lanePlan ?? [{ laneId: 'primary', memberNames: ['team-lead', 'builder'] }],
   });
   return { lifecycle, stops, inputs, answers, groups };
 }
@@ -196,6 +230,37 @@ describe('team lane-group launch', () => {
     await expect(
       lifecycle.commands.answerLanePermission({ run, requestId: 'TEST-unknown', allow: true })
     ).rejects.toThrow('Unknown permission request');
+  });
+
+  it('restarts a single-member lane and rejects a shared lane', async () => {
+    const single = setup({
+      lanePlan: [{ laneId: 'secondary:opencode:builder', memberNames: ['builder'] }],
+    });
+    await single.lifecycle.teams.launchConfigured(run, async () => roster);
+    await single.lifecycle.commands.settled(run, 'builder');
+    const before = single.lifecycle.snapshot(run.teamName).members.builder;
+    const admission = await single.lifecycle.commands.restart({
+      ...run,
+      memberName: 'builder',
+      generation: before.generation,
+    });
+    expect(admission.kind).toBe('launch');
+    await single.lifecycle.commands.settled(run, 'builder');
+    const after = single.lifecycle.snapshot(run.teamName).members.builder;
+    expect(after.generation).toBe(before.generation + 1);
+    expect(after.phase).toBe('ready');
+
+    const shared = setup();
+    await shared.lifecycle.teams.launchConfigured(run, async () => roster);
+    await shared.lifecycle.commands.settled(run, 'builder');
+    const member = shared.lifecycle.snapshot(run.teamName).members.builder;
+    await expect(
+      shared.lifecycle.commands.restart({
+        ...run,
+        memberName: 'builder',
+        generation: member.generation,
+      })
+    ).rejects.toThrow('shared adapter lane');
   });
 
   it('rejects a lane group that names an unconfigured or duplicated member', async () => {
