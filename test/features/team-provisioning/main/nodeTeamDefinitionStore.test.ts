@@ -199,7 +199,11 @@ describe('app-owned canonical team definition creation', () => {
     const changed = JSON.parse(
       await readFile(join(teamsRoot, request.teamName, 'team.meta.json'), 'utf8')
     );
-    expect(changed).toMatchObject({ providerId: 'anthropic', model: 'TEST-model' });
+    expect(changed).toMatchObject({ providerId: 'anthropic', prompt: 'TEST work' });
+    // Provider-scoped values cannot survive a provider switch.
+    expect(changed.model).toBeUndefined();
+    expect(changed.effort).toBeUndefined();
+    expect(changed.fastMode).toBeUndefined();
     expect(changed.providerBackendId).toBeUndefined();
   });
 
@@ -244,6 +248,59 @@ describe('app-owned canonical team definition creation', () => {
     );
     expect(cleared.model).toBe('TEST-other-model');
     expect(cleared.launchIdentity).toBeUndefined();
+    await metadata.updateMeta(
+      request.teamName,
+      (meta) => ({
+        ...meta!,
+        launchIdentity: {
+          providerId: 'anthropic',
+          providerBackendId: null,
+          selectedModel: 'TEST-other-model',
+          selectedModelKind: 'explicit',
+          resolvedLaunchModel: 'TEST-other-model',
+          catalogId: 'TEST-other-model',
+          catalogSource: 'runtime',
+          catalogFetchedAt: null,
+          selectedEffort: null,
+          resolvedEffort: null,
+        },
+      }),
+      teamsRoot
+    );
+    await store.updateLaunchSettings(
+      request.teamName,
+      { cwd: request.cwd, providerId: 'gemini' },
+      new AbortController().signal
+    );
+    const switched = JSON.parse(
+      await readFile(join(teamsRoot, request.teamName, 'team.meta.json'), 'utf8')
+    );
+    expect(switched.providerId).toBe('gemini');
+    expect(switched.launchIdentity).toBeUndefined();
+  });
+
+  it('rejects an invalid working directory, effort, fast mode or provider before writing', async () => {
+    const { store, request, teamsRoot } = await setup();
+    await store.create(request, new AbortController().signal);
+    for (const update of [
+      { cwd: 'relative/cwd' },
+      { cwd: request.cwd, effort: 'extreme' as never },
+      { cwd: request.cwd, fastMode: 'turbo' as never },
+      { cwd: request.cwd, providerId: 'unknown' as never },
+    ]) {
+      await expect(
+        store.updateLaunchSettings(request.teamName, update, new AbortController().signal)
+      ).rejects.toThrow();
+    }
+    const meta = JSON.parse(
+      await readFile(join(teamsRoot, request.teamName, 'team.meta.json'), 'utf8')
+    );
+    expect(meta).toMatchObject({
+      cwd: request.cwd,
+      providerId: 'anthropic',
+      model: 'TEST-model',
+      effort: 'high',
+    });
   });
 
   it('rejects an unknown team, a trashed team, an invalid backend and a cancelled update', async () => {

@@ -94,6 +94,19 @@ describe('authoritative member lifecycle', () => {
     expect(registry.find(run.teamName)?.members.builder.phase).toBe('stopped');
   });
 
+  it('stamps the run start once and keeps it when the roster is configured', () => {
+    let tick = 0;
+    const registry = new MemberLifecycleRegistry(owner, () => `TEST-time-${++tick}`);
+    const first = { ...run, teamName: 'test-first' };
+    registry.beginPreparation(first);
+    expect(registry.snapshot(first.teamName).startedAt).toBe('TEST-time-1');
+    registry.configureTeam(first, [member]);
+    expect(registry.snapshot(first.teamName).startedAt).toBe('TEST-time-1');
+    const second = { ...run, teamName: 'test-second', runId: 'run-2' };
+    registry.beginPreparation(second);
+    expect(registry.snapshot(second.teamName).startedAt).toBe('TEST-time-2');
+  });
+
   it('reports process loss after a successful connection, not a new pending join', () => {
     const registry = setup();
     const { token, process } = ready(registry);

@@ -2,6 +2,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { LifecycleSnapshotFeed } from '../../../../src/features/team-provisioning/core/domain/LifecycleSnapshotFeed';
+import { TeamDefinitionExistsError } from '../../../../src/features/team-provisioning/main/adapters/output/NodeTeamDefinitionStore';
 import { createDesktopTeamRuntime } from '../../../../src/features/team-provisioning/main/composition/createDesktopTeamRuntime';
 
 import type {
@@ -10,7 +11,7 @@ import type {
   TeamRunIdentity,
 } from '../../../../src/features/team-provisioning/contracts';
 import type { DesktopTeamRuntimeDependencies } from '../../../../src/features/team-provisioning/main/composition/createDesktopTeamRuntime';
-import type { TeamProvisioningProgress } from '../../../../src/shared/types';
+import type { TeamProvisioningProgress, TeamRuntimeState } from '../../../../src/shared/types';
 
 const owner = {
   appInstanceId: 'TEST-app',
@@ -43,6 +44,8 @@ function member(
     ...overrides,
   };
 }
+
+const lead = (): MemberLifecycleSnapshot => member('team-lead', 'ready');
 
 function harness(options: { initial?: TeamLifecycleSnapshot } = {}) {
   let version = 0;
@@ -82,18 +85,21 @@ function harness(options: { initial?: TeamLifecycleSnapshot } = {}) {
   const commands = {
     launch: vi.fn(async (input: unknown) => {
       const request = input as { teamName: string };
+      if (request.teamName !== teamName) throw new Error('TEST unexpected team');
+      if (current?.desired === 'running' && current.state !== 'failed')
+        return { run: current.identity };
       publish(run, { state: 'preparing', resources: 'preparing', members: {} });
       publish(run, {
         state: 'starting',
         resources: 'held',
-        members: Object.fromEntries(
-          [member('team-lead', 'connecting')].map((entry) => [entry.memberName, entry])
-        ),
+        members: { 'team-lead': member('team-lead', 'connecting') },
       });
-      if (request.teamName !== teamName) throw new Error('TEST unexpected team');
       return { run };
     }),
-    stop: vi.fn(async () => undefined),
+    stop: vi.fn(async () => {
+      if (current)
+        publish(current.identity, { state: 'stopped', desired: 'stopped', resources: 'released' });
+    }),
     restartMember: vi.fn(async () => ({ kind: 'already-running' as const })),
     skipMember: vi.fn(async () => undefined),
   };
@@ -102,20 +108,26 @@ function harness(options: { initial?: TeamLifecycleSnapshot } = {}) {
     updateLaunchSettings: vi.fn(async () => undefined),
   };
   const history = { findByRunId: vi.fn(async () => undefined) };
+  const bootstrapRuntime = {
+    read: vi.fn(async (): Promise<TeamRuntimeState | null> => null),
+  };
   const deps: DesktopTeamRuntimeDependencies = {
     currentContext: () => owner,
     lifecycle: { commands, runs, watch: () => feed },
     definitions,
     progressHistory: history,
+    bootstrapRuntime,
     now: () => now,
   };
   return {
     deps,
+    feed,
     run,
     publish,
     commands,
     definitions,
     history,
+    bootstrapRuntime,
     runtime: createDesktopTeamRuntime(deps),
   };
 }
@@ -163,35 +175,78 @@ describe('desktop team runtime over the native lifecycle', () => {
     expect(definitions.updateLaunchSettings).not.toHaveBeenCalled();
   });
 
-  it('reports an already running team without inventing a new run', async () => {
-    const { runtime, publish, run } = harness();
-    publish(run, {
-      state: 'ready',
-      resources: 'held',
-      members: Object.fromEntries([member('team-lead', 'ready')].map((e) => [e.memberName, e])),
+  it('reuses a metadata-only draft instead of failing creation', async () => {
+    const { runtime, definitions } = harness();
+    definitions.create.mockRejectedValueOnce(new TeamDefinitionExistsError(teamName));
+    const request = {
+      teamName,
+      cwd: '/TEST/cwd',
+      providerId: 'anthropic' as const,
+      members: [{ name: 'builder', role: 'Builder' }],
+    };
+    await expect(runtime.createTeam(request, collect().onProgress)).resolves.toMatchObject({
+      runId: 'TEST-run',
     });
-    const { onProgress } = collect();
+    expect(definitions.updateLaunchSettings).toHaveBeenCalledWith(
+      teamName,
+      expect.objectContaining({ cwd: '/TEST/cwd' }),
+      expect.any(AbortSignal)
+    );
+  });
+
+  it('does not rewrite a live definition when the team is already running', async () => {
+    const { runtime, publish, run, definitions, feed } = harness();
+    publish(run, { state: 'ready', members: { 'team-lead': lead() } });
+    const { progress, onProgress } = collect();
     await expect(runtime.launchTeam({ teamName, cwd: '/TEST/cwd' }, onProgress)).resolves.toEqual({
       runId: 'TEST-run',
       launchStatus: 'already_running',
       alreadyRunning: true,
     });
+    expect(definitions.updateLaunchSettings).not.toHaveBeenCalled();
+    await expect.poll(() => progress.map((entry) => entry.state)).toEqual(['ready']);
+    // The admitted run is already terminal, so the progress feed must detach.
+    await expect(feed.next()).resolves.toMatchObject({ done: true });
   });
 
-  it('reports a pending launch as already launching', async () => {
-    const { runtime, publish, run } = harness();
+  it('keeps streaming an already launching run until it becomes terminal', async () => {
+    const { runtime, publish, run, feed } = harness();
     publish(run, { state: 'preparing', resources: 'preparing', members: {} });
-    const { onProgress } = collect();
+    const { progress, onProgress } = collect();
     await expect(runtime.launchTeam({ teamName, cwd: '/TEST/cwd' }, onProgress)).resolves.toEqual({
       runId: 'TEST-run',
       launchStatus: 'already_launching',
       alreadyLaunching: true,
     });
+    await expect.poll(() => progress.map((entry) => entry.state)).toEqual(['configuring']);
+    publish(run, { state: 'ready', members: { 'team-lead': lead() } });
+    await expect.poll(() => progress.map((entry) => entry.state)).toEqual(['configuring', 'ready']);
+    await expect(feed.next()).resolves.toMatchObject({ done: true });
   });
 
-  it('stops the exact observed run and ignores an absent or stopped team', async () => {
+  it('stops a failed run before admitting a relaunch', async () => {
+    const { runtime, publish, run, commands, definitions } = harness();
+    publish(run, {
+      state: 'failed',
+      resources: 'held',
+      error: 'TEST failure',
+      members: { 'team-lead': member('team-lead', 'failed', { error: 'TEST failure' }) },
+    });
+    await expect(
+      runtime.launchTeam({ teamName, cwd: '/TEST/cwd' }, collect().onProgress)
+    ).resolves.toMatchObject({ launchStatus: 'started' });
+    expect(commands.stop).toHaveBeenCalledWith({
+      expectedContext: owner,
+      teamName,
+      runId: 'TEST-run',
+    });
+    expect(definitions.updateLaunchSettings).toHaveBeenCalled();
+    expect(commands.launch).toHaveBeenCalledTimes(1);
+  });
+
+  it('stops the exact observed run and retries a failed release', async () => {
     const { runtime, publish, run, commands } = harness();
-    publish(run, { state: 'ready', members: { 'team-lead': member('team-lead', 'ready') } });
+    publish(run, { state: 'ready', members: { 'team-lead': lead() } });
     await runtime.stopTeam(teamName);
     expect(commands.stop).toHaveBeenCalledWith({
       expectedContext: owner,
@@ -201,14 +256,32 @@ describe('desktop team runtime over the native lifecycle', () => {
     const empty = harness();
     await empty.runtime.stopTeam('test-absent');
     expect(empty.commands.stop).not.toHaveBeenCalled();
-    empty.publish(empty.run, { state: 'stopped', desired: 'stopped', resources: 'released' });
-    await empty.runtime.stopTeam(teamName);
-    expect(empty.commands.stop).not.toHaveBeenCalled();
+    const stopped = harness();
+    stopped.publish(stopped.run, { state: 'stopped', desired: 'stopped', resources: 'released' });
+    await stopped.runtime.stopTeam(teamName);
+    expect(stopped.commands.stop).not.toHaveBeenCalled();
+    const failedRelease = harness();
+    failedRelease.publish(failedRelease.run, {
+      state: 'release-failed',
+      desired: 'stopped',
+      resources: 'release-failed',
+      error: 'TEST release',
+    });
+    await failedRelease.runtime.stopTeam(teamName);
+    expect(failedRelease.commands.stop).toHaveBeenCalledWith({
+      expectedContext: owner,
+      teamName,
+      runId: 'TEST-run',
+    });
   });
 
-  it('cancels only a known running run and rejects unknown or finished ones', async () => {
+  it('cancels only a provisioning run and rejects unknown, ready or stopped ones', async () => {
     const { runtime, publish, run, commands } = harness();
     await expect(runtime.cancelProvisioning('TEST-unknown')).rejects.toThrow('Unknown runId');
+    publish(run, { state: 'ready', members: { 'team-lead': lead() } });
+    await expect(runtime.cancelProvisioning('TEST-run')).rejects.toThrow(
+      'cannot be cancelled in current state'
+    );
     publish(run, { state: 'preparing', resources: 'preparing', members: {} });
     await runtime.cancelProvisioning('TEST-run');
     expect(commands.stop).toHaveBeenCalledWith({
@@ -222,33 +295,46 @@ describe('desktop team runtime over the native lifecycle', () => {
     );
   });
 
-  it('answers runtime reads from the native registry', async () => {
-    const { runtime, publish, run } = harness();
+  it('answers runtime reads from the native registry and fills progress', async () => {
+    const { runtime, publish, run, bootstrapRuntime } = harness();
     await expect(runtime.getRuntimeState(teamName)).resolves.toEqual({
       teamName,
       isAlive: false,
       runId: null,
       progress: null,
     });
-    publish(run, {
-      state: 'ready',
-      members: { 'team-lead': member('team-lead', 'ready') },
+    bootstrapRuntime.read.mockResolvedValueOnce({
+      teamName,
+      isAlive: true,
+      runId: 'TEST-persisted',
+      progress: null,
     });
-    await expect(runtime.getRuntimeState(teamName)).resolves.toEqual({
+    await expect(runtime.getRuntimeState(teamName)).resolves.toMatchObject({
+      runId: 'TEST-persisted',
+    });
+    publish(run, { state: 'ready', members: { 'team-lead': lead() } });
+    await expect(runtime.getRuntimeState(teamName)).resolves.toMatchObject({
       teamName,
       isAlive: true,
       runId: 'TEST-run',
-      progress: null,
+      progress: { state: 'ready', startedAt },
     });
     expect(runtime.isTeamAlive(teamName)).toBe(true);
     expect(runtime.getAliveTeams()).toEqual([teamName]);
     expect(runtime.getCurrentRunId(teamName)).toBe('TEST-run');
+    expect(runtime.hasProvisioningRun(teamName)).toBe(false);
+    publish(run, { state: 'preparing', resources: 'preparing', members: {} });
     expect(runtime.hasProvisioningRun(teamName)).toBe(true);
+    publish(run, { state: 'stopped', desired: 'stopped', resources: 'released' });
+    await expect(runtime.getRuntimeState(teamName)).resolves.toMatchObject({
+      runId: null,
+      progress: null,
+    });
   });
 
   it('reads progress from the native run first and persisted history second', async () => {
     const { runtime, publish, run, history } = harness();
-    publish(run, { state: 'ready', members: { 'team-lead': member('team-lead', 'ready') } });
+    publish(run, { state: 'ready', members: { 'team-lead': lead() } });
     await expect(runtime.findByRunId('TEST-run')).resolves.toMatchObject({
       runId: 'TEST-run',
       state: 'ready',
@@ -260,7 +346,7 @@ describe('desktop team runtime over the native lifecycle', () => {
   });
 
   it('reports a failed launch and closes the progress feed', async () => {
-    const { deps, runtime, publish, run } = harness();
+    const { deps, runtime, publish, run, feed } = harness();
     deps.lifecycle.commands.launch = vi.fn(async () => {
       publish(run, { state: 'preparing', resources: 'preparing', members: {} });
       publish(run, {
@@ -282,5 +368,6 @@ describe('desktop team runtime over the native lifecycle', () => {
       error: 'TEST launch failed',
       messageSeverity: 'error',
     });
+    await expect(feed.next()).resolves.toMatchObject({ done: true });
   });
 });

@@ -1,5 +1,5 @@
 import { promises as fs } from 'node:fs';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
 import { validateTeamName } from '@main/services/team/TeamIdentifierValidation';
@@ -8,9 +8,10 @@ import {
   parseProviderBackendId,
 } from '@main/services/team/TeamRequestValidation';
 import { applyDistinctRosterColors } from '@main/services/team/teamRosterColors';
+import { normalizeOptionalTeamProviderId } from '@shared/utils/teamProvider';
 
 import type { TeamMembersMetaStore } from '@main/services/team/TeamMembersMetaStore';
-import type { TeamMetaStore } from '@main/services/team/TeamMetaStore';
+import type { TeamMetaFile, TeamMetaStore } from '@main/services/team/TeamMetaStore';
 import type {
   EffortLevel,
   TeamCreateConfigRequest,
@@ -20,6 +21,18 @@ import type {
   TeamProviderId,
 } from '@shared/types';
 import type { Stats } from 'node:fs';
+
+const EFFORT_LEVELS = new Set<string>([
+  'none',
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+  'ultra',
+]);
+const FAST_MODES = new Set<string>(['inherit', 'on', 'off']);
 
 interface Dependencies {
   teamsRoot: string;
@@ -57,6 +70,14 @@ function validated(request: TeamCreateConfigRequest): TeamCreateConfigRequest {
     }
   }
   return parsed;
+}
+
+/** A canonical definition already exists; the caller may reuse its saved roster. */
+export class TeamDefinitionExistsError extends Error {
+  constructor(teamName: string) {
+    super(`Team already exists: ${teamName}`);
+    this.name = 'TeamDefinitionExistsError';
+  }
 }
 
 /** Creates canonical intent only. Runtime config is materialized by the admitted launch command. */
@@ -145,7 +166,7 @@ export class NodeTeamDefinitionStore {
           'Team definition creation failed; owned cleanup is incomplete'
         );
       if ((error as NodeJS.ErrnoException).code === 'EEXIST')
-        throw new Error(`Team already exists: ${request.teamName}`);
+        throw new TeamDefinitionExistsError(request.teamName);
       throw error;
     }
     this.ports.invalidate();
@@ -153,8 +174,8 @@ export class NodeTeamDefinitionStore {
 
   /**
    * Persists the launch request into the canonical definition before launch.
-   * Omitted fields keep their saved value; changing the provider drops a backend
-   * that is no longer valid for it.
+   * Omitted fields keep their saved value; changing the provider drops values
+   * that belong to the previous provider and a saved resolved-model cache.
    */
   async updateLaunchSettings(
     teamName: string,
@@ -165,6 +186,17 @@ export class NodeTeamDefinitionStore {
     const validatedName = validateTeamName(teamName);
     if (!validatedName.valid || validatedName.value !== teamName)
       throw new Error('Invalid canonical team name');
+    if (!isAbsolute(update.cwd))
+      throw new Error('An absolute launch working directory is required');
+    if (
+      update.providerId !== undefined &&
+      normalizeOptionalTeamProviderId(update.providerId) !== update.providerId
+    )
+      throw new Error('Configured provider is not valid');
+    if (update.effort !== undefined && !EFFORT_LEVELS.has(update.effort))
+      throw new Error('Configured effort is not valid');
+    if (update.fastMode !== undefined && !FAST_MODES.has(update.fastMode))
+      throw new Error('Configured fast mode is not valid');
     await this.ports.metadata.updateMeta(
       teamName,
       (meta) => {
@@ -180,29 +212,35 @@ export class NodeTeamDefinitionStore {
               ? undefined
               : meta.providerBackendId
         );
-        // A saved resolved-model cache cannot describe an explicitly changed model.
+        const backendChanged = providerBackendId !== meta.providerBackendId;
         const { launchIdentity, ...persisted } = meta;
-        const keepsLaunchIdentity = update.model === undefined && update.effort === undefined;
-        return {
-          ...persisted,
-          ...(keepsLaunchIdentity && launchIdentity ? { launchIdentity } : {}),
-          cwd: update.cwd,
-          ...(update.prompt !== undefined ? { prompt: update.prompt } : {}),
-          ...(providerId !== undefined ? { providerId } : {}),
-          ...(providerBackendId !== undefined ? { providerBackendId } : {}),
-          ...(update.model !== undefined ? { model: update.model } : {}),
-          ...(update.effort !== undefined ? { effort: update.effort } : {}),
-          ...(update.fastMode !== undefined ? { fastMode: update.fastMode } : {}),
-          ...(update.syncModelsWithLead !== undefined
-            ? { syncModelsWithLead: update.syncModelsWithLead }
-            : {}),
-          ...(update.limitContext !== undefined ? { limitContext: update.limitContext } : {}),
-          ...(update.skipPermissions !== undefined
-            ? { skipPermissions: update.skipPermissions }
-            : {}),
-          ...(update.worktree !== undefined ? { worktree: update.worktree } : {}),
-          ...(update.extraCliArgs !== undefined ? { extraCliArgs: update.extraCliArgs } : {}),
-        };
+        const next: Omit<TeamMetaFile, 'version'> = { ...persisted, cwd: update.cwd };
+        if (providerChanged) {
+          // Provider-scoped values cannot survive a provider switch.
+          delete next.model;
+          delete next.effort;
+          delete next.fastMode;
+        } else if (
+          launchIdentity &&
+          !backendChanged &&
+          update.model === undefined &&
+          update.effort === undefined
+        ) {
+          next.launchIdentity = launchIdentity;
+        }
+        if (update.prompt !== undefined) next.prompt = update.prompt;
+        if (providerId !== undefined) next.providerId = providerId;
+        if (providerBackendId !== undefined) next.providerBackendId = providerBackendId;
+        if (update.model !== undefined) next.model = update.model;
+        if (update.effort !== undefined) next.effort = update.effort;
+        if (update.fastMode !== undefined) next.fastMode = update.fastMode;
+        if (update.syncModelsWithLead !== undefined)
+          next.syncModelsWithLead = update.syncModelsWithLead;
+        if (update.limitContext !== undefined) next.limitContext = update.limitContext;
+        if (update.skipPermissions !== undefined) next.skipPermissions = update.skipPermissions;
+        if (update.worktree !== undefined) next.worktree = update.worktree;
+        if (update.extraCliArgs !== undefined) next.extraCliArgs = update.extraCliArgs;
+        return next;
       },
       this.ports.teamsRoot
     );

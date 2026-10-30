@@ -188,10 +188,13 @@
 ### Phase 3 implementation status
 
 - `createDesktopTeamRuntime` реализует lifecycle-часть `TeamProvisioningApis`: `createTeam`/`launchTeam` (сначала канонический definition, затем native launch), `cancelProvisioning` по runId, `hasProvisioningRun`, `getRuntimeState`, `stopTeam`, `isTeamAlive`, `getAliveTeams`, `getCurrentRunId`, `findByRunId`.
-- Launch progress идёт из `watch` по admitted run; уже запущенная команда возвращает `already_running`/`already_launching`, не создавая новый run.
-- `launchTeam` сохраняет provider/model/effort/prompt/cwd/flags/worktree/extraCliArgs в `team.meta.json` через `NodeTeamDefinitionStore.updateLaunchSettings`; смена provider сбрасывает несовместимый backend, явная смена model/effort сбрасывает `launchIdentity`.
-- `TeamLifecycleSnapshot.startedAt` теперь фиксируется при admission и используется progress-проекцией; `MemberLifecycleRegistry` принимает clock (по умолчанию ISO now).
-- Production IPC/HTTP всё ещё на старом root: переключение — фаза 8. `stopTeam` на остановленной/отсутствующей команде — no-op, stale run отклоняется точным runId.
+- Launch progress идёт из `watch` по admitted run; уже запущенная команда возвращает `already_running`/`already_launching`, не создавая новый run. History-снапшот из подписки не replay-ится, но admitted run эмитится и после admission; terminal/failed закрывает feed.
+- `launchTeam` сохраняет provider/model/effort/prompt/cwd/flags/worktree/extraCliArgs в `team.meta.json` через `NodeTeamDefinitionStore.updateLaunchSettings`; живой run definition не перезаписывает. Смена provider сбрасывает backend, model/effort/fastMode и `launchIdentity`; явная смена model/effort сбрасывает `launchIdentity`.
+- `createTeam` на существующем metadata-only draft переиспользует ростер (`TeamDefinitionExistsError`) и обновляет только launch-поля.
+- Failed/release-failed run останавливается точным runId перед relaunch; `stopTeam` повторяет failed release; `cancelProvisioning` принимает только `preparing`/`starting`; `hasProvisioningRun` — только эти состояния.
+- `getRuntimeState` заполняет `progress` из snapshot; для stopped run `runId`/`progress` — null; пустой registry читает persisted bootstrap через опциональный порт.
+- `TeamLifecycleSnapshot.startedAt` фиксируется при admission и не меняется при configureTeam того же run.
+- Production IPC/HTTP всё ещё на старом root: переключение — фаза 8.
 
 ## Фаза 3b. Переключение snapshot/read
 

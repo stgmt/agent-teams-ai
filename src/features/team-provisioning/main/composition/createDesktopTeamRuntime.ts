@@ -1,7 +1,9 @@
 import { toTeamProvisioningProgress } from '@main/team-runtime/nativeTeamProgressProjection';
 import { toTeamRuntimeState } from '@main/team-runtime/nativeTeamRuntimeProjection';
 
-import type { TeamRunIdentity } from '../../contracts';
+import { TeamDefinitionExistsError } from '../adapters/output/NodeTeamDefinitionStore';
+
+import type { TeamLifecycleSnapshot, TeamRunIdentity } from '../../contracts';
 import type { ProvisioningStatusReaderPort } from '../../core/application/use-cases/GetProvisioningStatusUseCase';
 import type { TeamLaunchSettingsUpdate } from '../adapters/output/NodeTeamDefinitionStore';
 import type { NativeTeamLifecycle } from './createNativeTeamLifecycle';
@@ -32,6 +34,8 @@ export interface DesktopTeamRuntimeDependencies {
   definitions: TeamLaunchRequestPersistence;
   /** Persisted progress for runs the native registry no longer holds (app restart). */
   progressHistory: ProvisioningStatusReaderPort;
+  /** Persisted runtime state for a team the current registry never saw. */
+  bootstrapRuntime?: { read(teamName: string): Promise<TeamRuntimeState | null> };
   now(): string;
 }
 
@@ -54,36 +58,46 @@ export interface DesktopTeamRuntime extends ProvisioningStatusReaderPort {
   getCurrentRunId(teamName: string): string | null;
 }
 
+const PROVISIONING_STATES = new Set(['preparing', 'starting']);
+const FAILED_STATES = new Set(['failed', 'release-failed']);
 const TERMINAL_STATES = new Set(['ready', 'degraded', 'failed', 'stopped', 'release-failed']);
 
-function hasOwnedProcess(snapshot: ReturnType<NativeTeamLifecycle['snapshot']>): boolean {
+function hasOwnedProcess(snapshot: Readonly<TeamLifecycleSnapshot>): boolean {
   return Object.values(snapshot.members).some(
     (member) => member.membership === 'configured' && member.process !== null
   );
 }
 
+function isActive(snapshot: Readonly<TeamLifecycleSnapshot> | null): boolean {
+  return snapshot !== null && snapshot.desired === 'running' && !FAILED_STATES.has(snapshot.state);
+}
+
 export function createDesktopTeamRuntime(deps: DesktopTeamRuntimeDependencies): DesktopTeamRuntime {
   const context = (): Readonly<AppConnectionContext> => Object.freeze({ ...deps.currentContext() });
-  const emit = (
-    snapshot: NonNullable<ReturnType<NativeTeamLifecycle['snapshot']>>,
-    onProgress: (progress: TeamProvisioningProgress) => void,
-    last: { version: number }
-  ): void => {
-    if (snapshot.version === last.version) return;
-    last.version = snapshot.version;
-    onProgress(toTeamProvisioningProgress(snapshot, deps.now()));
+
+  const stop = async (run: Readonly<TeamRunIdentity>): Promise<void> => {
+    await deps.lifecycle.commands.stop({
+      expectedContext: context(),
+      teamName: run.teamName,
+      runId: run.runId,
+    });
   };
 
   const launch = async (
     teamName: string,
     onProgress: (progress: TeamProvisioningProgress) => void
   ): Promise<TeamLaunchResponse> => {
+    const admittedContext = context();
+    // A failed run still owns resources; stop it exactly before admitting a successor.
+    const observed = deps.lifecycle.runs.find(teamName);
+    if (observed && observed.desired === 'running' && FAILED_STATES.has(observed.state)) {
+      await stop(observed.identity);
+    }
     const before = deps.lifecycle.runs.find(teamName);
-    const alreadyRunning = before ? before.desired === 'running' && hasOwnedProcess(before) : false;
-    const alreadyLaunching = before
-      ? before.desired === 'running' && !hasOwnedProcess(before)
-      : false;
-    const previousRunId = before?.identity.runId ?? null;
+    const alreadyRunning = before !== null && isActive(before) && hasOwnedProcess(before);
+    const alreadyLaunching = before !== null && isActive(before) && !hasOwnedProcess(before);
+    // The feed replays the last snapshot on subscribe; it is history, not this launch.
+    let historyVersion = before?.version ?? -1;
     const feed = deps.lifecycle.watch(teamName);
     const last = { version: -1 };
     let admittedRunId: string | null = null;
@@ -93,18 +107,25 @@ export function createDesktopTeamRuntime(deps: DesktopTeamRuntimeDependencies): 
       closed = true;
       await feed.return();
     };
+    const emit = (snapshot: Readonly<TeamLifecycleSnapshot>): void => {
+      if (snapshot.version <= historyVersion || snapshot.version === last.version) return;
+      last.version = snapshot.version;
+      onProgress(toTeamProvisioningProgress(snapshot, deps.now()));
+    };
     void (async () => {
       try {
         for (;;) {
           const next = await feed.next();
           if (next.done || closed) return;
           const snapshot = next.value;
-          // The feed replays the last stopped run; it is not this launch's progress.
-          if (snapshot.identity.runId === previousRunId) continue;
-          emit(snapshot, onProgress, last);
-          if (admittedRunId && snapshot.identity.runId === admittedRunId) {
-            if (TERMINAL_STATES.has(snapshot.state)) return;
-          }
+          if (snapshot.version <= historyVersion) continue;
+          emit(snapshot);
+          if (
+            admittedRunId &&
+            snapshot.identity.runId === admittedRunId &&
+            TERMINAL_STATES.has(snapshot.state)
+          )
+            return;
         }
       } catch {
         // Feed closed by stop, context invalidation or shutdown.
@@ -115,13 +136,15 @@ export function createDesktopTeamRuntime(deps: DesktopTeamRuntimeDependencies): 
     })();
     try {
       const receipt = await deps.lifecycle.commands.launch({
-        expectedContext: context(),
+        expectedContext: admittedContext,
         teamName,
       });
       const runId = receipt.run.runId;
       admittedRunId = runId;
+      // The admitted run may itself be the snapshot replayed on subscribe.
+      historyVersion = -1;
       const current = deps.lifecycle.runs.findByRunId(runId);
-      if (current) emit(current, onProgress, last);
+      if (current) emit(current);
       if (!current || TERMINAL_STATES.has(current.state)) await close();
       return {
         runId,
@@ -134,72 +157,93 @@ export function createDesktopTeamRuntime(deps: DesktopTeamRuntimeDependencies): 
         ...(alreadyLaunching ? { alreadyLaunching: true } : {}),
       };
     } catch (error) {
-      const observed = admittedRunId
+      const failed = admittedRunId
         ? deps.lifecycle.runs.findByRunId(admittedRunId)
         : deps.lifecycle.runs.find(teamName);
-      if (observed && observed.identity.runId !== previousRunId) emit(observed, onProgress, last);
+      if (failed) emit(failed);
       await close();
       throw error;
     }
   };
 
-  const stop = async (run: Readonly<TeamRunIdentity>): Promise<void> => {
-    await deps.lifecycle.commands.stop({
-      expectedContext: context(),
-      teamName: run.teamName,
-      runId: run.runId,
-    });
+  const persistLaunchSettings = async (request: TeamLaunchRequest): Promise<void> => {
+    await deps.definitions.updateLaunchSettings(
+      request.teamName,
+      {
+        cwd: request.cwd,
+        prompt: request.prompt,
+        providerId: request.providerId,
+        providerBackendId: request.providerBackendId,
+        model: request.model,
+        effort: request.effort,
+        fastMode: request.fastMode,
+        syncModelsWithLead: request.syncModelsWithLead,
+        limitContext: request.limitContext,
+        skipPermissions: request.skipPermissions,
+        worktree: request.worktree,
+        extraCliArgs: request.extraCliArgs,
+      },
+      new AbortController().signal
+    );
   };
 
   return {
     async createTeam(request, onProgress) {
-      await deps.definitions.create(request, new AbortController().signal);
+      try {
+        await deps.definitions.create(request, new AbortController().signal);
+      } catch (error) {
+        // A metadata-only draft already exists; keep its roster and only update launch fields.
+        if (!(error instanceof TeamDefinitionExistsError)) throw error;
+        if (!isActive(deps.lifecycle.runs.find(request.teamName))) {
+          await persistLaunchSettings(request);
+        }
+      }
       return launch(request.teamName, onProgress);
     },
 
     async launchTeam(request, onProgress) {
-      await deps.definitions.updateLaunchSettings(
-        request.teamName,
-        {
-          cwd: request.cwd,
-          prompt: request.prompt,
-          providerId: request.providerId,
-          providerBackendId: request.providerBackendId,
-          model: request.model,
-          effort: request.effort,
-          fastMode: request.fastMode,
-          syncModelsWithLead: request.syncModelsWithLead,
-          limitContext: request.limitContext,
-          skipPermissions: request.skipPermissions,
-          worktree: request.worktree,
-          extraCliArgs: request.extraCliArgs,
-        },
-        new AbortController().signal
-      );
+      // Never rewrite the definition of a live run: its captured revision is fenced.
+      if (!isActive(deps.lifecycle.runs.find(request.teamName))) {
+        await persistLaunchSettings(request);
+      }
       return launch(request.teamName, onProgress);
     },
 
     async cancelProvisioning(runId) {
       const snapshot = deps.lifecycle.runs.findByRunId(runId);
       if (!snapshot) throw new Error('Unknown runId');
-      if (snapshot.desired !== 'running')
+      if (!PROVISIONING_STATES.has(snapshot.state))
         throw new Error('Provisioning cannot be cancelled in current state');
       await stop(snapshot.identity);
     },
 
     hasProvisioningRun(teamName) {
-      return deps.lifecycle.runs.find(teamName)?.desired === 'running';
+      const snapshot = deps.lifecycle.runs.find(teamName);
+      return snapshot !== null && PROVISIONING_STATES.has(snapshot.state);
     },
 
     async getRuntimeState(teamName) {
       const snapshot = deps.lifecycle.runs.find(teamName);
-      if (!snapshot) return { teamName, isAlive: false, runId: null, progress: null };
-      return toTeamRuntimeState(snapshot);
+      if (!snapshot) {
+        return (
+          (await deps.bootstrapRuntime?.read(teamName)) ?? {
+            teamName,
+            isAlive: false,
+            runId: null,
+            progress: null,
+          }
+        );
+      }
+      const runtime = toTeamRuntimeState(snapshot);
+      if (snapshot.state === 'stopped') return { ...runtime, runId: null, progress: null };
+      return { ...runtime, progress: toTeamProvisioningProgress(snapshot, deps.now()) };
     },
 
     async stopTeam(teamName) {
       const snapshot = deps.lifecycle.runs.find(teamName);
-      if (!snapshot || snapshot.desired !== 'running') return;
+      // A stopped and released run has nothing to stop; anything else (including a
+      // failed release) must reach the command so the release can be retried.
+      if (!snapshot || snapshot.state === 'stopped') return;
       await stop(snapshot.identity);
     },
 

@@ -321,9 +321,11 @@ run that left the registry has no progress until native progress persistence
 lands in the recovery phase.
 
 `createDesktopTeamRuntime` is the lifecycle-facing production adapter built on
-this snapshot: create/launch persist the canonical definition first, progress
-streams from the run feed, stop/cancel name the exact run, and runtime reads use
-the registry. It is composed and tested but not yet wired into IPC/HTTP; the
+this snapshot: create/launch persist the canonical definition first (never while a
+run is live, and a metadata-only draft is reused instead of failing), progress
+streams from the run feed, a failed run is stopped exactly before a relaunch,
+stop/cancel name the exact run, and runtime reads use the registry with derived
+progress. It is composed and tested but not yet wired into IPC/HTTP; the
 transport cutover is phase 8.
 
 ## Existing production slices awaiting replacement
