@@ -132,6 +132,15 @@
 4. Проверить renderer types, stores, views и тесты; зафиксировать, какие поля UI перестанут получать.
 5. Выход: mapper-контракт и список UI-правок без переключения чтения.
 
+### Phase 1b decisions (after independent review)
+
+- Liveness = `member.process !== null`; phase names are not liveness. `starting` without a process is not alive; `stopping`/`failed` with an owned process is alive.
+- `restartable`: configured teammate (`role === 'member'`) — true; lead — false. It means the native restart command is admissible, not "currently stopped".
+- `status`/`launchState`: ready → online/confirmed_alive; starting/connecting → spawning/runtime_pending_bootstrap; failed → error/failed_to_start; stopping → waiting; stopped/exited → offline/skipped with `launchState:'starting'` placeholder. `hasUnresolvedMemberSpawnStatus` ignores offline/skipped/error, so the placeholder does not poll forever.
+- `error`/`hardFailure` only for `phase === 'failed'`; retained cancellation errors on skipped/stopped members are suppressed. `unresponsive` is online with `runtimeDiagnostic:'connection lost'` and warning severity.
+- `expectedMembers` excludes the lead; runtime entries include the lead.
+- `TeamViewSnapshot`/`TeamSummary` state mapping and non-derivable runtime fields (`pidSource`, `runtimeModel`, `cwd`, `laneId`, `providerId`) are deferred to phase 3b; team-level `error`/`release-failed` needs a team diagnostic and is recorded as a phase 1b gap.
+
 ## Фаза 2. Mapper и contract tests
 
 1. Реализовать mapper `TeamLifecycleSnapshot` → read-DTO (без переключения callers).
