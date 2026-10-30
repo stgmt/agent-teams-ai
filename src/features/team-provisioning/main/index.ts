@@ -30,6 +30,11 @@ export {
   type MemberLifecycleDependencies,
 } from './composition/createMemberLifecycle';
 export {
+  createNativeDesktopTeamRuntime,
+  type NativeDesktopTeamRuntime,
+  type NativeDesktopTeamRuntimeDependencies,
+} from './composition/createNativeDesktopTeamRuntime';
+export {
   createNativeLeadReporting,
   type NativeLeadReporting,
 } from './composition/createNativeLeadReporting';

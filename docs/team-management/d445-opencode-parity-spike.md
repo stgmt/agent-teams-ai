@@ -142,8 +142,12 @@ used.
   OpenCode entry only when it is registered, and an explicit `openCodeAdapter`
   still wins. The startup composition can now pass the registry it already
   creates without a second adapter source.
-- Remaining before A is complete: build the native desktop composition that
-  passes the registry plus settings/provider/workspace/inbox/control deps,
+- 6a.9 (landed): `createNativeDesktopTeamRuntime` assembles the native lifecycle
+  and the lifecycle-facing runtime from production deps (settings/provider/
+  workspace/inbox/control/briefing/registry/definitions/progress history). It is
+  composed and tested but not wired into `src/main/index.ts`; the transport
+  cutover is phase 8.
+- Remaining before A is complete: switch the production root to this factory,
   shared-lane restart, and recovery after app restart. The legacy OpenCode route
   is not deleted until these land.
 
