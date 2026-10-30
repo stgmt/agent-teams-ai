@@ -71,6 +71,8 @@ export interface NativeTeamLifecycle {
     text: string,
     attachments?: readonly Readonly<AttachmentPayload>[]
   ): Promise<void>;
+  /** Clears native run claims that are not alive in this process. */
+  recoverOrphanedRuns(teamNames: readonly string[]): Promise<readonly string[]>;
 }
 
 /** Composes native launch components without the former provisioning host or restart algorithm. */
@@ -211,6 +213,19 @@ export function createNativeTeamLifecycle(
     },
     sendLeadMessage: (run, text, attachments) =>
       deps.withExpectedContext(run, () => send.execute(run, text, attachments)),
+    recoverOrphanedRuns: async (teamNames) => {
+      const recovered: string[] = [];
+      for (const teamName of teamNames) {
+        if (
+          await config.recoverOrphanedClaim(
+            teamName,
+            (run) => lifecycle.registry.hasRun(run) && lifecycle.registry.isLive(run)
+          )
+        )
+          recovered.push(teamName);
+      }
+      return recovered;
+    },
     snapshot: (teamName) => lifecycle.snapshot(teamName),
     watch: (teamName) => lifecycle.watch(teamName),
     stopConfigured: (run) => lifecycle.teams.stop(run),

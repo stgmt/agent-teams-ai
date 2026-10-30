@@ -311,8 +311,10 @@ lane restart, recovery после рестарта приложения.
 
 Реализовано: `NodeNativeTeamConfig.recoverOrphanedClaim(teamName, isRunAlive)`
 снимает `appManagedRun` только когда run не жив в текущем процессе; живой claim
-сохраняется, повторный вызов идемпотентен. Startup recovery вызывает его до нового
-launch. Тесты — `nativeTeamConfigRecovery.test.ts`. 4. Root/context change не оставляет второй owner; updater handoff и crash/restart проверены. 5. Тесты:
+сохраняется, повторный вызов идемпотентен. `NativeTeamLifecycle.recoverOrphanedRuns`
+вызывает его для переданных команд, используя `registry.hasRun && registry.isLive`
+как критерий жизни. Startup recovery вызывает это до нового launch. Тесты —
+`nativeTeamConfigRecovery.test.ts`. 4. Root/context change не оставляет второй owner; updater handoff и crash/restart проверены. 5. Тесты:
 
 - exit/release во время pending stop;
 - late spawn после shutdown;

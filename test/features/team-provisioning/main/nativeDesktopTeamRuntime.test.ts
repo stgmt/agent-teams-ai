@@ -54,6 +54,7 @@ describe('native desktop team runtime composition', () => {
     });
     expect(runtime.hasProvisioningRun('TEST-team')).toBe(false);
     expect(runtime.getAliveTeams()).toEqual([]);
+    await expect(lifecycle.recoverOrphanedRuns([])).resolves.toEqual([]);
   });
 
   it('selects the OpenCode adapter from the startup registry', () => {
