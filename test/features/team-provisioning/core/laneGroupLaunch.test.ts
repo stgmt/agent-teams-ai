@@ -48,6 +48,7 @@ function setup(
     omitObservation?: string;
     stopEmitsRelease?: boolean;
     lanePlan?: readonly { laneId: string; memberNames: readonly string[] }[];
+    roster?: readonly { memberName: string; role: 'lead' | 'member' }[];
   } = {}
 ) {
   const stops: string[] = [];
@@ -136,7 +137,7 @@ function setup(
     laneGroups: () =>
       options.lanePlan ?? [{ laneId: 'primary', memberNames: ['team-lead', 'builder'] }],
   });
-  return { lifecycle, stops, inputs, answers, groups };
+  return { lifecycle, stops, inputs, answers, groups, roster: options.roster ?? roster };
 }
 
 function createWithGroups(
@@ -261,6 +262,41 @@ describe('team lane-group launch', () => {
         generation: member.generation,
       })
     ).rejects.toThrow('shared adapter lane');
+  });
+
+  it('restarts a shared teammate lane and refuses the lead lane', async () => {
+    const sharedRoster = [
+      { memberName: 'team-lead', role: 'lead' as const },
+      { memberName: 'builder', role: 'member' as const },
+      { memberName: 'tester', role: 'member' as const },
+    ];
+    const shared = setup({
+      roster: sharedRoster,
+      lanePlan: [{ laneId: 'secondary:shared', memberNames: ['builder', 'tester'] }],
+    });
+    await shared.lifecycle.teams.launchConfigured(run, async () => sharedRoster);
+    await shared.lifecycle.commands.settled(run, 'builder');
+    await shared.lifecycle.commands.settled(run, 'tester');
+    const before = shared.lifecycle.snapshot(run.teamName).members;
+    const admissions = await shared.lifecycle.commands.restartLane({
+      run,
+      laneId: 'secondary:shared',
+    });
+    expect(admissions.map((admission) => admission.kind)).toEqual(['launch', 'launch']);
+    await shared.lifecycle.commands.settled(run, 'builder');
+    await shared.lifecycle.commands.settled(run, 'tester');
+    const after = shared.lifecycle.snapshot(run.teamName).members;
+    expect(after.builder.generation).toBe(before.builder.generation + 1);
+    expect(after.tester.generation).toBe(before.tester.generation + 1);
+    expect(after.builder.phase).toBe('ready');
+    expect(after.tester.phase).toBe('ready');
+
+    const primary = setup();
+    await primary.lifecycle.teams.launchConfigured(run, async () => roster);
+    await primary.lifecycle.commands.settled(run, 'builder');
+    await expect(
+      primary.lifecycle.commands.restartLane({ run, laneId: 'primary' })
+    ).rejects.toThrow('lead lane requires a team relaunch');
   });
 
   it('rejects a lane group that names an unconfigured or duplicated member', async () => {

@@ -281,6 +281,44 @@ export class MemberLifecycleCommands {
     throw new Error('Unknown permission request');
   }
 
+  /**
+   * Restarts every member of one adapter lane. A lane that contains the lead
+   * requires a team relaunch instead; there is no per-member adapter restart.
+   */
+  async restartLane(input: {
+    run: TeamRunIdentity;
+    laneId: string;
+  }): Promise<readonly MemberStartAdmission[]> {
+    const run = input.run;
+    const group = this.laneGroups.get(laneGroupKey(run, input.laneId));
+    if (!group) throw new Error('Unknown lane');
+    const memberNames = group.tokens.map((token) => token.memberName);
+    const snapshot = this.ports.registry.snapshot(run.teamName);
+    if (memberNames.some((name) => snapshot.members[name]?.role === 'lead'))
+      throw new Error('Restarting the lead lane requires a team relaunch');
+    const stops = await this.ports.gate.run(run.teamName, async () => {
+      for (const name of memberNames) this.ports.registry.requestStop(run, name);
+      return this.cancelAdmitted(run, memberNames);
+    });
+    await this.awaitStops(stops);
+    return this.ports.gate.run(run.teamName, async () => {
+      for (const name of memberNames) {
+        const member = this.ports.registry.snapshot(run.teamName).members[name];
+        if (member.process || member.lane || member.resources !== 'released')
+          throw new Error('Lane restart resources were not released');
+      }
+      const admissions = memberNames.map((name) =>
+        this.ports.registry.beginStart(run, name, this.ports.nextOperationId())
+      );
+      const tokens = admissions.flatMap((admission) =>
+        admission.kind === 'launch' ? [admission.token] : []
+      );
+      if (tokens.length !== memberNames.length) throw new Error('Lane restart was not admitted');
+      this.launchLane(tokens, input.laneId);
+      return admissions;
+    });
+  }
+
   async stop(team: TeamRunIdentity, memberName: string): Promise<void> {
     const stops = await this.ports.gate.run(team.teamName, async () => {
       this.ports.registry.requestStop(team, memberName);
