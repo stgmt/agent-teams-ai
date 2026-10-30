@@ -2,6 +2,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { NativeTeamMemberLifecycleApi } from '../../../../src/features/team-provisioning/main/adapters/input/NativeTeamMemberLifecycleApi';
+import { NativeTeamToolApprovalApi } from '../../../../src/features/team-provisioning/main/adapters/input/NativeTeamToolApprovalApi';
 import { NativeTeamClaudeLogs } from '../../../../src/features/team-provisioning/main/adapters/output/NativeTeamClaudeLogs';
 import { NativeTeamDiagnostics } from '../../../../src/features/team-provisioning/main/adapters/output/NativeTeamDiagnostics';
 
@@ -112,5 +113,24 @@ describe('native team API adapters', () => {
       source: 'live',
     });
     expect(memberSpawnStatuses).toHaveBeenCalledWith({ teamName: 'test-team' });
+  });
+
+  it('answers lane tool approvals by the exact run and rejects unknown runs', async () => {
+    const answerLanePermission = vi.fn(async () => undefined);
+    const api = new NativeTeamToolApprovalApi({
+      runs: { find: (teamName) => (teamName === run.teamName ? snapshot : null) },
+      commands: { answerLanePermission },
+    });
+    await api.respondToToolApproval('test-team', run.runId, 'TEST-request', true, 'TEST allow');
+    expect(answerLanePermission).toHaveBeenCalledWith({
+      run: snapshot.identity,
+      requestId: 'TEST-request',
+      allow: true,
+      message: 'TEST allow',
+    });
+    await expect(
+      api.respondToToolApproval('test-team', 'TEST-other-run', 'TEST-request', false)
+    ).rejects.toThrow('Unknown runId');
+    expect(() => api.updateToolApprovalSettings('test-team', {} as never)).toThrow('not migrated');
   });
 });

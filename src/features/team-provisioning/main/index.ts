@@ -1,4 +1,5 @@
 export { NativeTeamMemberLifecycleApi } from './adapters/input/NativeTeamMemberLifecycleApi';
+export { NativeTeamToolApprovalApi } from './adapters/input/NativeTeamToolApprovalApi';
 export { registerHumanRequestSubmissionIpc } from './adapters/input/registerHumanRequestSubmissionIpc';
 export { registerLifecycleCommandsHttp } from './adapters/input/registerLifecycleCommandsHttp';
 export { registerLifecycleCommandsIpc } from './adapters/input/registerLifecycleCommandsIpc';
