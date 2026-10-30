@@ -375,6 +375,9 @@ export class MemberLifecycleRegistry {
     member.resources = 'held';
     if (member.desired === 'stopped') {
       member.phase = 'stopping';
+    } else if (lane.failure) {
+      member.phase = 'failed';
+      member.error = lane.failure;
     } else if (lane.runtimeAlive && !lane.permissionBlocked) {
       member.phase = 'ready';
       if (lane.bootstrapConfirmed) {

@@ -34,6 +34,8 @@ export interface MemberLaneObservation {
   runtimeAlive: boolean;
   bootstrapConfirmed: boolean;
   permissionBlocked: boolean;
+  /** Adapter-reported hard failure for this member, if any. */
+  failure?: string | null;
 }
 
 export type MemberPhase =

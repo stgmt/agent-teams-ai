@@ -114,10 +114,16 @@ used.
   resolved group stop is authoritative even without a release event; a partial
   observation failure rolls back applied lanes or leaves the release debt
   visible.
-- Remaining before A is complete: a concrete `startLaneGroup` implementation over
-  `TeamLaunchRuntimeAdapter` (launch/reconcile/stop, shared host, session ids),
-  permission answer/list, lane restart semantics, and recovery after app restart.
-  The legacy OpenCode route is not deleted until these land.
+- 6a.4 (landed): `NativeOpenCodeLaneRuntime` over `TeamLaunchRuntimeAdapter`.
+  Maps settings/tokens to `TeamRuntimeLaunchInput`, maps per-member evidence to
+  `MemberLaneObservation` (session, shared host pid, bootstrap, permission block,
+  hard failure), launches one lane per group, reconciles on an interval, stops
+  the lane, and rejects stdin input because OpenCode delivery belongs to the
+  inbox relay. Missing evidence stops the lane before failing the launch.
+- Remaining before A is complete: compose the lane runtime into the production
+  lifecycle (provider routing + adapter registry), permission answer/list,
+  lane restart semantics, and recovery after app restart. The legacy OpenCode
+  route is not deleted until these land.
 
 ## Recommendation
 

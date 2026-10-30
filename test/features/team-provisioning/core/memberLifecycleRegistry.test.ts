@@ -238,6 +238,26 @@ describe('authoritative member lifecycle', () => {
     expect(registry.observeSpawn(token, { pid: 901, birthId: 'TEST-birth' })).toBe(false);
   });
 
+  it('marks an adapter-reported lane failure as a failed attempt', () => {
+    const registry = setup();
+    const token = start(registry, 'lane-start');
+    registry.observeLane(token, {
+      laneId: 'TEST-lane',
+      sessionId: null,
+      hostPid: 900,
+      runtimeAlive: false,
+      bootstrapConfirmed: false,
+      permissionBlocked: false,
+      failure: 'TEST lane failure',
+    });
+    expect(registry.snapshot(run.teamName).members.builder).toMatchObject({
+      phase: 'failed',
+      error: 'TEST lane failure',
+      lane: { laneId: 'TEST-lane' },
+    });
+    expect(registry.aliveTeamNames()).toEqual([]);
+  });
+
   it('reports process loss after a successful connection, not a new pending join', () => {
     const registry = setup();
     const { token, process } = ready(registry);

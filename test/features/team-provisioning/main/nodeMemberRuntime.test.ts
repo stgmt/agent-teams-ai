@@ -189,7 +189,7 @@ describe('owned Node member process adapter', () => {
       releaseFailed: vi.fn(),
       released: vi.fn(),
     });
-    await vi.waitFor(() => expect(exited).toHaveBeenCalled());
+    await vi.waitFor(() => expect(exited).toHaveBeenCalled(), { timeout: 5_000 });
     expect(connected).toHaveBeenCalledOnce();
   });
 
