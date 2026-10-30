@@ -91,10 +91,18 @@ used.
   loses, writes to and stops an adapter lane through the same exact-token fence
   as a process. A provider that answers `lane` without an implementation fails
   the attempt explicitly instead of spawning a process.
-- Remaining before A is complete: a concrete `startLane` implementation over
-  `TeamLaunchRuntimeAdapter` (launch/reconcile/stop, shared host, session ids),
-  permission answer/list, lane restart semantics, and recovery after app restart.
-  The legacy OpenCode route is not deleted until these land.
+- 6a.2 finding: the real adapter is **lane-scoped, not member-scoped**. In
+  `pure_opencode` mode one primary lane hosts the whole roster
+  (`planTeamRuntimeLanes.ts:231`), and only distinct-model/root members get
+  `secondary:opencode:<name>` lanes (`:219-223`). A per-member `startLane` can
+  drive a secondary lane, but the aggregate primary lane must be launched once
+  with all of its members and then bind per-member evidence to tokens.
+- Remaining before A is complete: a team-level `launchLane(run, laneId, members)`
+  unit in `TeamLifecycleCommands` (aggregate primary + secondary lanes), a
+  concrete adapter over `TeamLaunchRuntimeAdapter` (launch/reconcile/stop, shared
+  host, session ids), permission answer/list, lane restart semantics, and
+  recovery after app restart. The legacy OpenCode route is not deleted until
+  these land.
 
 ## Recommendation
 
