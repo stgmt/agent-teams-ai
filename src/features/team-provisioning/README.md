@@ -314,9 +314,10 @@ Liveness is current-process evidence only (`process !== null`, configured
 membership) or an adapter-owned lane (`runtimeAlive && !permissionBlocked`). A
 lane carries `laneId`/`sessionId`/shared `hostPid` and never a member pid; it is
 projected as `shared-host` with `opencode_bridge` pid source and is not
-restartable until lane commands land. A crash that produces no exit event leaves
-the run live until a reconcile/stop path observes it; OpenCode lane start/stop
-and reconcile are the phase 6a remainder.
+restartable yet. A member release requires both handles to be cleared, and a
+fully live lane roster reaches `ready`. A crash that produces no exit event
+leaves the run live until a reconcile/stop path observes it; the aggregate
+primary lane launch and reconcile are the phase 6a remainder.
 
 `toTeamProvisioningProgress` derives `TeamProvisioningProgress` from the same
 snapshot for the launch progress stream and status reads. It stores nothing, so a

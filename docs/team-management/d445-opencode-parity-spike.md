@@ -97,6 +97,12 @@ used.
   `secondary:opencode:<name>` lanes (`:219-223`). A per-member `startLane` can
   drive a secondary lane, but the aggregate primary lane must be launched once
   with all of its members and then bind per-member evidence to tokens.
+- 6a.2 review fixes (landed): a fully live lane roster now reaches
+  `state:'ready'` (`memberIsLive` in readiness); member/team release requires
+  `lane === null`; `beginStart` on a live lane answers `already-running`; lane
+  `released` is authoritative and clears a lane that never reported `laneLost`;
+  failed lanes project as `error`, not `waiting`; a live lane blocks team
+  replacement and recovery/skip require lane release.
 - Remaining before A is complete: a team-level `launchLane(run, laneId, members)`
   unit in `TeamLifecycleCommands` (aggregate primary + secondary lanes), a
   concrete adapter over `TeamLaunchRuntimeAdapter` (launch/reconcile/stop, shared

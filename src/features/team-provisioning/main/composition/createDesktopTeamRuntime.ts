@@ -1,3 +1,4 @@
+import { memberIsLive } from '@features/team-provisioning';
 import { toTeamProvisioningProgress } from '@main/team-runtime/nativeTeamProgressProjection';
 import { toTeamRuntimeState } from '@main/team-runtime/nativeTeamRuntimeProjection';
 
@@ -62,9 +63,9 @@ const PROVISIONING_STATES = new Set(['preparing', 'starting']);
 const FAILED_STATES = new Set(['failed', 'release-failed']);
 const TERMINAL_STATES = new Set(['ready', 'degraded', 'failed', 'stopped', 'release-failed']);
 
-function hasOwnedProcess(snapshot: Readonly<TeamLifecycleSnapshot>): boolean {
+function hasLiveMember(snapshot: Readonly<TeamLifecycleSnapshot>): boolean {
   return Object.values(snapshot.members).some(
-    (member) => member.membership === 'configured' && member.process !== null
+    (member) => member.membership === 'configured' && memberIsLive(member)
   );
 }
 
@@ -94,8 +95,8 @@ export function createDesktopTeamRuntime(deps: DesktopTeamRuntimeDependencies): 
       await stop(observed.identity);
     }
     const before = deps.lifecycle.runs.find(teamName);
-    const alreadyRunning = before !== null && isActive(before) && hasOwnedProcess(before);
-    const alreadyLaunching = before !== null && isActive(before) && !hasOwnedProcess(before);
+    const alreadyRunning = before !== null && isActive(before) && hasLiveMember(before);
+    const alreadyLaunching = before !== null && isActive(before) && !hasLiveMember(before);
     // The feed replays the last snapshot on subscribe; it is history, not this launch.
     let historyVersion = before?.version ?? -1;
     const feed = deps.lifecycle.watch(teamName);

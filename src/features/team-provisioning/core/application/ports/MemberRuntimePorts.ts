@@ -60,7 +60,12 @@ export interface MemberRuntimeEvents {
   connectionLost(): void;
   failed(error: string): void;
   releaseFailed(error: string): void;
+  /** Process runtimes emit this before `released`; lane runtimes provide a no-op. */
   exited(exit: { code: number | null; signal: string | null }): void;
+  /**
+   * Terminal for the owned runtime. For a lane it is authoritative on its own:
+   * the command clears a lane that never reported `laneLost` first.
+   */
   released(): void;
   /** Adapter lane evidence; only lane runtimes emit these. */
   laneObserved?(observation: Readonly<MemberLaneObservation>): void;

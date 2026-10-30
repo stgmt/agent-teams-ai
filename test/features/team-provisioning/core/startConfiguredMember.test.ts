@@ -438,6 +438,48 @@ describe('configured member start command', () => {
     });
   });
 
+  it('treats a lane release without a prior loss as terminal', async () => {
+    let events: MemberRuntimeEvents | undefined;
+    const lane = {
+      laneId: 'TEST-lane',
+      sessionId: null,
+      hostPid: 900,
+      runtimeAlive: true,
+      bootstrapConfirmed: true,
+      permissionBlocked: false,
+    };
+    const { registry, commands } = setup(
+      {
+        kind: () => 'lane',
+        async spawn() {
+          throw new Error('process spawn must not be used for a lane');
+        },
+        async startLane() {
+          return {
+            lane,
+            subscribe(next) {
+              events = next;
+              return () => undefined;
+            },
+            async writeInput() {},
+            async stop() {},
+          };
+        },
+      },
+      'opencode'
+    );
+    const admission = await commands.start(run, 'builder');
+    if (admission.kind !== 'launch') throw new Error('Expected a launch admission');
+    await commands.settled(run, 'builder');
+    events?.released?.();
+    expect(registry.snapshot(run.teamName).members.builder).toMatchObject({
+      phase: 'exited',
+      lane: null,
+      resources: 'released',
+    });
+    expect(commands.hasUnreleased(run)).toBe(false);
+  });
+
   it('fails a lane start when the runtime has no lane implementation', async () => {
     const { registry, commands } = setup(
       {

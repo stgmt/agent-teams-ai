@@ -210,9 +210,9 @@ export class MemberLifecycleCommands {
       execution.abort.abort();
       stops.push(
         execution.stop || execution.runtime || execution.cleanup
-          ? this.stopOwnedProcess(execution)
+          ? this.stopOwnedRuntime(execution)
           : execution.completion.then(async () => {
-              if (execution.cleanup) await this.stopOwnedProcess(execution);
+              if (execution.cleanup) await this.stopOwnedRuntime(execution);
             })
       );
     }
@@ -323,7 +323,10 @@ export class MemberLifecycleCommands {
           if (accepted) this.ports.registry.observeLaneLost(token, error);
         },
         released: () => {
-          if (!terminated) return;
+          // A lane release is authoritative: clear any lane that never reported a loss.
+          if ('lane' in runtime) {
+            if (accepted) this.ports.registry.observeLaneLost(token);
+          } else if (!terminated) return;
           // Release belongs to this subscribed handle even when its generation is no longer current.
           if (accepted) this.ports.registry.observeMemberReleased(token);
           execution.runtime = null;
@@ -335,7 +338,7 @@ export class MemberLifecycleCommands {
       // Resource release may have been replayed synchronously by subscribe().
       if (execution.released) unsubscribe();
       else execution.unsubscribe = unsubscribe;
-      if (!accepted || execution.abort.signal.aborted) await this.stopOwnedProcess(execution);
+      if (!accepted || execution.abort.signal.aborted) await this.stopOwnedRuntime(execution);
     } catch (error) {
       if (error instanceof OwnedRuntimeCleanupError) execution.cleanup = error.release;
       else if (!execution.runtime) execution.released = true;
@@ -348,7 +351,7 @@ export class MemberLifecycleCommands {
     }
   }
 
-  private stopOwnedProcess(execution: Execution): Promise<void> {
+  private stopOwnedRuntime(execution: Execution): Promise<void> {
     if (execution.stop) return execution.stop;
     if (execution.released) return Promise.resolve();
     if (!execution.runtime && !execution.cleanup) return Promise.resolve();

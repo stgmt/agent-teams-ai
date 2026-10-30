@@ -210,6 +210,35 @@ describe('desktop team runtime over the native lifecycle', () => {
     await expect(feed.next()).resolves.toMatchObject({ done: true });
   });
 
+  it('reports an already running lane team as already_running', async () => {
+    const { runtime, publish, run, definitions, feed } = harness();
+    publish(run, {
+      state: 'ready',
+      members: {
+        'team-lead': member('team-lead', 'ready', {
+          process: null,
+          lane: {
+            laneId: 'TEST-lane',
+            sessionId: 'TEST-session',
+            hostPid: 900,
+            runtimeAlive: true,
+            bootstrapConfirmed: true,
+            permissionBlocked: false,
+          },
+        }),
+      },
+    });
+    const { progress, onProgress } = collect();
+    await expect(runtime.launchTeam({ teamName, cwd: '/TEST/cwd' }, onProgress)).resolves.toEqual({
+      runId: 'TEST-run',
+      launchStatus: 'already_running',
+      alreadyRunning: true,
+    });
+    expect(definitions.updateLaunchSettings).not.toHaveBeenCalled();
+    await expect.poll(() => progress.map((entry) => entry.state)).toEqual(['ready']);
+    await expect(feed.next()).resolves.toMatchObject({ done: true });
+  });
+
   it('keeps streaming an already launching run until it becomes terminal', async () => {
     const { runtime, publish, run, feed } = harness();
     publish(run, { state: 'preparing', resources: 'preparing', members: {} });

@@ -108,6 +108,7 @@ export class MemberLifecycleRegistry {
             member.desired === 'running' ||
             member.resources !== 'released' ||
             member.process !== null ||
+            member.lane !== null ||
             member.phase === 'stopping'
         ))
     )
@@ -150,7 +151,8 @@ export class MemberLifecycleRegistry {
     const team = this.requireRun(identity);
     if (
       [...team.members.values()].some(
-        (member) => member.resources !== 'released' || member.process !== null
+        (member) =>
+          member.resources !== 'released' || member.process !== null || member.lane !== null
       )
     )
       throw new Error('Member resources are not released');
@@ -262,7 +264,7 @@ export class MemberLifecycleRegistry {
       !['failed', 'exited'].includes(member.phase)
     )
       throw new MemberSkipConflictError('Member has no failed startup in the observed generation');
-    if (member.process !== null || member.resources !== 'released')
+    if (member.process !== null || member.lane !== null || member.resources !== 'released')
       throw new MemberSkipConflictError('Member startup resources are not released');
     member.desired = 'stopped';
     member.phase = 'stopped';
@@ -295,7 +297,7 @@ export class MemberLifecycleRegistry {
     if (member.phase === 'starting' || member.phase === 'connecting') {
       return { kind: 'pending', token: tokenFor(team, member) };
     }
-    if (member.process !== null) return { kind: 'already-running' };
+    if (member.process !== null || member.lane !== null) return { kind: 'already-running' };
     if (member.resources !== 'released') return { kind: 'stopping' };
     if (!operationId.trim()) throw new Error('Start operation ID is required');
     member.desired = 'running';
@@ -317,7 +319,11 @@ export class MemberLifecycleRegistry {
     const current = this.current(token);
     if (!current) return false;
     const { team, member } = current;
-    if (member.process !== null || (member.phase !== 'starting' && member.phase !== 'stopping'))
+    if (
+      member.process !== null ||
+      member.lane !== null ||
+      (member.phase !== 'starting' && member.phase !== 'stopping')
+    )
       return false;
     member.process = Object.freeze({ ...process });
     member.resources = 'held';
@@ -413,6 +419,7 @@ export class MemberLifecycleRegistry {
     const current = this.current(token);
     if (
       current?.member.process !== null ||
+      current.member.lane !== null ||
       (current.member.phase !== 'starting' && current.member.phase !== 'stopping')
     )
       return false;
@@ -438,7 +445,7 @@ export class MemberLifecycleRegistry {
 
   observeMemberReleased(token: MemberProcessToken): boolean {
     const current = this.current(token);
-    if (current?.member.process !== null) return false;
+    if (current?.member.process !== null || current.member.lane !== null) return false;
     if (current.member.resources === 'released') return true;
     current.member.resources = 'released';
     this.changed(current.team);
@@ -465,7 +472,8 @@ export class MemberLifecycleRegistry {
     }
     const pending = member.phase === 'starting' || member.phase === 'connecting';
     member.desired = 'stopped';
-    member.phase = member.process !== null || pending ? 'stopping' : 'stopped';
+    member.phase =
+      member.process !== null || member.lane !== null || pending ? 'stopping' : 'stopped';
     this.changed(team);
     return member.operationId ? tokenFor(team, member) : null;
   }
@@ -499,6 +507,7 @@ export class MemberLifecycleRegistry {
             member.desired === 'running' &&
             member.resources === 'released' &&
             member.process === null &&
+            member.lane === null &&
             (member.phase === 'exited' || member.phase === 'failed')
         )
         .map((member) => member.memberName)

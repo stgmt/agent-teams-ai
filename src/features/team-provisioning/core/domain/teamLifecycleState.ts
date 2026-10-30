@@ -37,7 +37,6 @@ export function teamLifecycleState(team: {
     ['stopped', 'stopping', 'exited', 'failed', 'unresponsive'].includes(member.phase);
   if (!lead || unavailable(lead)) return 'failed';
   if (members.some(unavailable)) return 'degraded';
-  if (members.every((member) => member.phase === 'ready' && member.process !== null))
-    return 'ready';
+  if (members.every((member) => member.phase === 'ready' && memberIsLive(member))) return 'ready';
   return 'starting';
 }

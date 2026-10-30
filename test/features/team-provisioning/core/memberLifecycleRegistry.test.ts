@@ -184,6 +184,60 @@ describe('authoritative member lifecycle', () => {
     expect(laneRegistry.snapshot(run.teamName).members.builder.process).toBeNull();
   });
 
+  it('reaches ready when every configured member is a live lane', () => {
+    const registry = setup();
+    const tokens = registry.beginTeamStart(run, () => 'TEST-lane-op');
+    for (const token of tokens) {
+      registry.observeLane(token, {
+        laneId: `TEST-lane-${token.memberName}`,
+        sessionId: `TEST-session-${token.memberName}`,
+        hostPid: 900,
+        runtimeAlive: true,
+        bootstrapConfirmed: true,
+        permissionBlocked: false,
+      });
+    }
+    expect(registry.snapshot(run.teamName).state).toBe('ready');
+    expect(registry.aliveTeamNames()).toEqual([run.teamName]);
+    // A live lane still owns the team: it cannot be replaced by a new run.
+    expect(() => registry.beginPreparation({ ...run, runId: 'run-2' })).toThrow(
+      'Cannot replace an active team run'
+    );
+  });
+
+  it('refuses a member release while its lane is still owned', () => {
+    const registry = setup();
+    const token = start(registry, 'lane-start');
+    registry.observeLane(token, {
+      laneId: 'TEST-lane',
+      sessionId: null,
+      hostPid: 900,
+      runtimeAlive: true,
+      bootstrapConfirmed: true,
+      permissionBlocked: false,
+    });
+    expect(registry.observeMemberReleased(token)).toBe(false);
+    expect(registry.observeLaneLost(token)).toBe(true);
+    expect(registry.observeMemberReleased(token)).toBe(true);
+  });
+
+  it('treats a live lane member as already running and refuses process evidence', () => {
+    const registry = setup();
+    const token = start(registry, 'lane-start');
+    registry.observeLane(token, {
+      laneId: 'TEST-lane',
+      sessionId: null,
+      hostPid: 900,
+      runtimeAlive: true,
+      bootstrapConfirmed: true,
+      permissionBlocked: false,
+    });
+    expect(registry.beginStart(run, 'builder', 'lane-start-2')).toEqual({
+      kind: 'already-running',
+    });
+    expect(registry.observeSpawn(token, { pid: 901, birthId: 'TEST-birth' })).toBe(false);
+  });
+
   it('reports process loss after a successful connection, not a new pending join', () => {
     const registry = setup();
     const { token, process } = ready(registry);

@@ -22,6 +22,10 @@ function lanePendingBootstrap(member: MemberLifecycleSnapshot): boolean {
 }
 
 function spawnStatus(member: MemberLifecycleSnapshot): MemberSpawnStatus {
+  // Terminal phases win over lane heuristics: a failed lane is an error, not "waiting".
+  if (member.phase === 'failed') return 'error';
+  if (member.phase === 'stopped' || member.phase === 'exited')
+    return member.skippedForLaunch ? 'skipped' : 'offline';
   if (isLaneBlocked(member)) return 'spawning';
   if (lanePendingBootstrap(member)) return 'spawning';
   if (member.lane !== null && !member.lane.runtimeAlive) return 'waiting';
@@ -32,13 +36,8 @@ function spawnStatus(member: MemberLifecycleSnapshot): MemberSpawnStatus {
     case 'starting':
     case 'connecting':
       return 'spawning';
-    case 'failed':
-      return 'error';
     case 'stopping':
       return 'waiting';
-    case 'stopped':
-    case 'exited':
-      return member.skippedForLaunch ? 'skipped' : 'offline';
   }
 }
 

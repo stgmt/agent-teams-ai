@@ -315,6 +315,29 @@ describe('native lifecycle projection', () => {
     });
   });
 
+  it('reports a failed lane as an error, not as waiting', () => {
+    const source = snapshot([
+      member('worker', 'failed', {
+        process: null,
+        error: 'TEST lane failure',
+        lane: {
+          laneId: 'TEST-lane',
+          sessionId: null,
+          hostPid: 900,
+          runtimeAlive: false,
+          bootstrapConfirmed: false,
+          permissionBlocked: false,
+        },
+      }),
+    ]);
+    expect(toMemberSpawnStatuses(source, now).statuses.worker).toMatchObject({
+      status: 'error',
+      launchState: 'failed_to_start',
+      error: 'TEST lane failure',
+      hardFailure: true,
+    });
+  });
+
   it('drops a lost lane back to offline', () => {
     const source = snapshot([
       member('worker', 'exited', { process: null, lane: null, error: 'TEST lane lost' }),
