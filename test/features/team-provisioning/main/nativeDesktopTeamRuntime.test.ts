@@ -1,7 +1,12 @@
 // @vitest-environment node
-import { describe, expect, it, vi } from 'vitest';
+import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createNativeDesktopTeamRuntime } from '../../../../src/features/team-provisioning/main/composition/createNativeDesktopTeamRuntime';
+import { NativeTeamConfigStore } from '../../../../src/features/team-provisioning/main/infrastructure/NativeTeamConfigStore';
 
 import type { NativeDesktopTeamRuntimeDependencies } from '../../../../src/features/team-provisioning/main/composition/createNativeDesktopTeamRuntime';
 import type { TeamLaunchRuntimeAdapter } from '../../../../src/main/services/team/runtime';
@@ -12,11 +17,26 @@ const owner = {
   connectionGeneration: 1,
 };
 
-function setup(registry?: { has: (id: string) => boolean; get: (id: string) => unknown }) {
+const directories: string[] = [];
+afterEach(async () => {
+  await Promise.all(
+    directories
+      .splice(0)
+      .map((directory) => rm(directory, { recursive: true, force: true, maxRetries: 20 }))
+  );
+});
+
+function setup(
+  registry?: { has: (id: string) => boolean; get: (id: string) => unknown },
+  options: {
+    teamsRoot?: string;
+    listTeamNames?: () => Promise<readonly string[]>;
+  } = {}
+) {
   const deps: NativeDesktopTeamRuntimeDependencies = {
     owner,
     currentContext: () => owner,
-    teamsRoot: 'C:/TEST/teams',
+    teamsRoot: options.teamsRoot ?? 'C:/TEST/teams',
     settings: {
       metadata: { getMeta: async () => null },
       members: { getMeta: async () => null },
@@ -37,6 +57,7 @@ function setup(registry?: { has: (id: string) => boolean; get: (id: string) => u
       updateLaunchSettings: async () => undefined,
     },
     progressHistory: { findByRunId: async () => undefined },
+    listTeamNames: options.listTeamNames ?? (async () => []),
   };
   return createNativeDesktopTeamRuntime(deps);
 }
@@ -75,5 +96,35 @@ describe('native desktop team runtime composition', () => {
     setup({ has, get });
     expect(has).toHaveBeenCalledWith('opencode');
     expect(get).not.toHaveBeenCalled();
+  });
+
+  it('clears an orphaned native claim during startup recovery', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'TEST-native-desktop-'));
+    directories.push(root);
+    const teamsRoot = join(root, 'teams');
+    await mkdir(join(teamsRoot, 'test-team'), { recursive: true });
+    const store = new NativeTeamConfigStore(teamsRoot);
+    await store.mutate('test-team', new AbortController().signal, async () => ({
+      name: 'test-team',
+      appManagedRun: {
+        identity: {
+          appInstanceId: 'TEST-old-app',
+          dataRootFingerprint: 'TEST-root',
+          connectionGeneration: 1,
+          teamName: 'test-team',
+          runId: 'TEST-old-run',
+        },
+        configurationRevision: 'TEST-revision',
+      },
+    }));
+    const { recoverStartup } = setup(undefined, {
+      teamsRoot,
+      listTeamNames: async () => ['test-team'],
+    });
+    await expect(recoverStartup()).resolves.toEqual(['test-team']);
+    const config = JSON.parse(
+      await readFile(join(teamsRoot, 'test-team', 'config.json'), 'utf8')
+    ) as Record<string, unknown>;
+    expect(config.appManagedRun).toBeUndefined();
   });
 });

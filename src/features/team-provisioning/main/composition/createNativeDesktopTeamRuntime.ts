@@ -33,12 +33,16 @@ export interface NativeDesktopTeamRuntimeDependencies {
   definitions: TeamLaunchRequestPersistence;
   progressHistory: ProvisioningStatusReaderPort;
   bootstrapRuntime?: DesktopTeamRuntimeDependencies['bootstrapRuntime'];
+  /** Teams to scan for orphaned native run claims at startup. */
+  listTeamNames(): Promise<readonly string[]>;
   now?(): string;
 }
 
 export interface NativeDesktopTeamRuntime {
   lifecycle: NativeTeamLifecycle;
   runtime: DesktopTeamRuntime;
+  /** Clears claims whose runs are not alive in this process. */
+  recoverStartup(): Promise<readonly string[]>;
 }
 
 /**
@@ -72,5 +76,9 @@ export function createNativeDesktopTeamRuntime(
     ...(deps.bootstrapRuntime ? { bootstrapRuntime: deps.bootstrapRuntime } : {}),
     now: deps.now ?? (() => new Date().toISOString()),
   });
-  return { lifecycle, runtime };
+  return {
+    lifecycle,
+    runtime,
+    recoverStartup: async () => lifecycle.recoverOrphanedRuns(await deps.listTeamNames()),
+  };
 }
