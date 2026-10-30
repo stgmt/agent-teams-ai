@@ -484,7 +484,11 @@ export class MemberLifecycleRegistry {
   /** Teams with at least one owned process; historical connections do not count. */
   aliveTeamNames(): readonly string[] {
     return [...this.teams]
-      .filter(([, team]) => [...team.members.values()].some((entry) => entry.process !== null))
+      .filter(([, team]) =>
+        [...team.members.values()].some(
+          (entry) => entry.membership === 'configured' && entry.process !== null
+        )
+      )
       .map(([teamName]) => teamName)
       .sort((a, b) => a.localeCompare(b));
   }
@@ -493,7 +497,9 @@ export class MemberLifecycleRegistry {
   aliveRunId(teamName: string): string | null {
     const team = this.teams.get(teamName);
     if (!team) return null;
-    return [...team.members.values()].some((entry) => entry.process !== null)
+    return [...team.members.values()].some(
+      (entry) => entry.membership === 'configured' && entry.process !== null
+    )
       ? team.identity.runId
       : null;
   }
