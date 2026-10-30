@@ -14,6 +14,8 @@ export {
 } from './adapters/output/LegacyMemberSettingsRepositoryAdapter';
 export type { NativeOpenCodeLaneRuntimeDependencies } from './adapters/output/NativeOpenCodeLaneRuntime';
 export { NativeOpenCodeLaneRuntime } from './adapters/output/NativeOpenCodeLaneRuntime';
+export type { NativeTaskActivityRepairDependencies } from './adapters/output/NativeTaskActivityRepair';
+export { NativeTaskActivityRepair } from './adapters/output/NativeTaskActivityRepair';
 export { NodeTeamDefinitionStore } from './adapters/output/NodeTeamDefinitionStore';
 export { createBoundHumanRequestSubmission } from './composition/createBoundHumanRequestSubmission';
 export {
