@@ -15,6 +15,11 @@ export {
 export { NodeTeamDefinitionStore } from './adapters/output/NodeTeamDefinitionStore';
 export { createBoundHumanRequestSubmission } from './composition/createBoundHumanRequestSubmission';
 export {
+  createDesktopTeamRuntime,
+  type DesktopTeamRuntime,
+  type DesktopTeamRuntimeDependencies,
+} from './composition/createDesktopTeamRuntime';
+export {
   createMemberLifecycle,
   type MemberLifecycleDependencies,
 } from './composition/createMemberLifecycle';

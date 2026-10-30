@@ -185,6 +185,14 @@
 - Cancel = stop точного run; runId появляется в первом progress-событии из `watch`, поэтому отмена во время подготовки не требует отдельного prepare-контракта.
 - Известные ограничения: crash без exit-события остаётся live до reconcile/stop; OpenCode secondary-lane liveness — gate фазы 6a; `aliveTeamNames` не означает «процессов нет» после `removeMember`.
 
+### Phase 3 implementation status
+
+- `createDesktopTeamRuntime` реализует lifecycle-часть `TeamProvisioningApis`: `createTeam`/`launchTeam` (сначала канонический definition, затем native launch), `cancelProvisioning` по runId, `hasProvisioningRun`, `getRuntimeState`, `stopTeam`, `isTeamAlive`, `getAliveTeams`, `getCurrentRunId`, `findByRunId`.
+- Launch progress идёт из `watch` по admitted run; уже запущенная команда возвращает `already_running`/`already_launching`, не создавая новый run.
+- `launchTeam` сохраняет provider/model/effort/prompt/cwd/flags/worktree/extraCliArgs в `team.meta.json` через `NodeTeamDefinitionStore.updateLaunchSettings`; смена provider сбрасывает несовместимый backend, явная смена model/effort сбрасывает `launchIdentity`.
+- `TeamLifecycleSnapshot.startedAt` теперь фиксируется при admission и используется progress-проекцией; `MemberLifecycleRegistry` принимает clock (по умолчанию ISO now).
+- Production IPC/HTTP всё ещё на старом root: переключение — фаза 8. `stopTeam` на остановленной/отсутствующей команде — no-op, stale run отклоняется точным runId.
+
 ## Фаза 3b. Переключение snapshot/read
 
 1. Переключить IPC/HTTP/preload/renderer на mapper из фазы 2.

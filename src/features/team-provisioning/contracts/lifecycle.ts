@@ -75,6 +75,8 @@ export interface TeamLifecycleSnapshot {
   state: TeamLifecycleState;
   error: string | null;
   version: number;
+  /** When this run was admitted; it never changes for the run's lifetime. */
+  startedAt: string;
   members: Readonly<Record<string, Readonly<MemberLifecycleSnapshot>>>;
 }
 
@@ -89,6 +91,8 @@ export interface TeamLifecycleSnapshot {
 export interface TeamRunRegistryRead {
   /** Registered run for a team, including a stopped run kept as history. */
   find(teamName: string): Readonly<TeamLifecycleSnapshot> | null;
+  /** Registered run by id, including stopped history; used by cancel and status. */
+  findByRunId(runId: string): Readonly<TeamLifecycleSnapshot> | null;
   /** Registered identity match, including stopped history. */
   hasRun(run: Readonly<TeamRunIdentity>): boolean;
   /** Registered and still owning the run: not stopped, released, or release-failed. */

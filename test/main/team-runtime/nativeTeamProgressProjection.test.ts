@@ -53,18 +53,17 @@ function snapshot(
     state,
     error: null,
     version: 1,
+    startedAt,
     members: Object.fromEntries(members.map((entry) => [entry.memberName, entry])),
     ...overrides,
   };
 }
 
-const times = { startedAt, now };
-
 describe('native lifecycle provisioning progress', () => {
   it('reports preparation as configuring without claiming config readiness', () => {
     const progress = toTeamProvisioningProgress(
       snapshot('preparing', [], { resources: 'preparing' }),
-      times
+      now
     );
     expect(progress).toEqual({
       runId: identity.runId,
@@ -80,7 +79,7 @@ describe('native lifecycle provisioning progress', () => {
     expect(
       toTeamProvisioningProgress(
         snapshot('starting', [member('team-lead', 'connecting'), member('worker', 'starting')]),
-        times
+        now
       )
     ).toMatchObject({ state: 'spawning', message: 'Starting team members' });
   });
@@ -89,7 +88,7 @@ describe('native lifecycle provisioning progress', () => {
     expect(
       toTeamProvisioningProgress(
         snapshot('ready', [member('team-lead', 'ready'), member('worker', 'ready')]),
-        times
+        now
       )
     ).toMatchObject({ state: 'ready', configReady: true, message: 'Team is running' });
   });
@@ -102,7 +101,7 @@ describe('native lifecycle provisioning progress', () => {
         member('alpha', 'exited'),
         member('skipped', 'stopped', { skippedForLaunch: true }),
       ]),
-      times
+      now
     );
     expect(progress).toMatchObject({
       state: 'ready',
@@ -119,7 +118,7 @@ describe('native lifecycle provisioning progress', () => {
         snapshot('failed', [member('team-lead', 'failed', { error: 'TEST failure' })], {
           error: 'TEST failure',
         }),
-        times
+        now
       )
     ).toMatchObject({
       state: 'failed',
@@ -130,7 +129,7 @@ describe('native lifecycle provisioning progress', () => {
   });
 
   it('reports a failed team without inventing an error string', () => {
-    const progress = toTeamProvisioningProgress(snapshot('failed', []), times);
+    const progress = toTeamProvisioningProgress(snapshot('failed', []), now);
     expect(progress.state).toBe('failed');
     expect(progress.error).toBeUndefined();
   });
@@ -139,7 +138,7 @@ describe('native lifecycle provisioning progress', () => {
     expect(
       toTeamProvisioningProgress(
         snapshot('release-failed', [], { resources: 'release-failed', error: 'TEST release' }),
-        times
+        now
       )
     ).toMatchObject({ state: 'failed', error: 'TEST release', messageSeverity: 'error' });
   });
@@ -147,7 +146,7 @@ describe('native lifecycle provisioning progress', () => {
   it('reports stopping and stopped as a user stop', () => {
     const stopping = toTeamProvisioningProgress(
       snapshot('stopping', [], { desired: 'stopped', resources: 'releasing' }),
-      times
+      now
     );
     expect(stopping).toMatchObject({
       state: 'disconnected',
@@ -155,16 +154,16 @@ describe('native lifecycle provisioning progress', () => {
     });
     const stopped = toTeamProvisioningProgress(
       snapshot('stopped', [], { desired: 'stopped', resources: 'released' }),
-      times
+      now
     );
     expect(stopped).toMatchObject({ state: 'disconnected', disconnect: { kind: 'user_stop' } });
   });
 
   it('keeps run identity and timestamps exactly as observed', () => {
-    const progress = toTeamProvisioningProgress(snapshot('ready', [member('team-lead', 'ready')]), {
-      startedAt,
-      now,
-    });
+    const progress = toTeamProvisioningProgress(
+      snapshot('ready', [member('team-lead', 'ready')]),
+      now
+    );
     expect(progress.runId).toBe('TEST-run');
     expect(progress.teamName).toBe('TEST-team');
     expect(progress.startedAt).toBe(startedAt);

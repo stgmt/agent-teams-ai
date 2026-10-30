@@ -26,6 +26,7 @@ interface TeamState {
   resources: TeamRunResourceState;
   error: string | null;
   version: number;
+  startedAt: string;
   members: Map<string, MemberState>;
 }
 
@@ -62,7 +63,10 @@ export class MemberLifecycleRegistry {
   private readonly pendingPublications = new Set<string>();
   private startsClosed = false;
 
-  constructor(owner: AppConnectionContext) {
+  constructor(
+    owner: AppConnectionContext,
+    private readonly now: () => string = () => new Date().toISOString()
+  ) {
     this.owner = Object.freeze({ ...owner });
   }
 
@@ -112,6 +116,7 @@ export class MemberLifecycleRegistry {
       resources: 'preparing',
       error: null,
       version: (previous?.version ?? 0) + 1,
+      startedAt: this.now(),
       members: new Map(),
     });
     this.publishChanged(identity.teamName);
@@ -188,6 +193,7 @@ export class MemberLifecycleRegistry {
       resources: 'held',
       error: null,
       version: (previous?.version ?? 0) + 1,
+      startedAt: previous?.identity.runId === identity.runId ? previous.startedAt : this.now(),
       members: configured,
     });
     this.publishChanged(identity.teamName);
@@ -489,6 +495,15 @@ export class MemberLifecycleRegistry {
     return this.findSnapshot(teamName);
   }
 
+  /** Run-id lookup for cancellation and status; a run id is unique per application owner. */
+  findByRunId(runId: string): Readonly<TeamLifecycleSnapshot> | null {
+    if (!runId.trim()) return null;
+    for (const team of this.teams.values()) {
+      if (team.identity.runId === runId) return this.snapshot(team.identity.teamName);
+    }
+    return null;
+  }
+
   /** Registered identity, including a stopped run kept as history for status reads. */
   hasRun(identity: Readonly<TeamRunIdentity>): boolean {
     const team = this.teams.get(identity.teamName);
@@ -542,6 +557,7 @@ export class MemberLifecycleRegistry {
       state: teamLifecycleState({ ...team, members: team.members.values() }),
       error: team.error,
       version: team.version,
+      startedAt: team.startedAt,
       members: Object.freeze(Object.fromEntries(entries)),
     });
   }

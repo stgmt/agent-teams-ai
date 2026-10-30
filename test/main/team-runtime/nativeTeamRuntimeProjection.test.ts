@@ -60,6 +60,7 @@ function snapshot(members: MemberLifecycleSnapshot[]): TeamLifecycleSnapshot {
     state: 'ready',
     error: null,
     version: 1,
+    startedAt: now,
     members: Object.fromEntries(members.map((entry) => [entry.memberName, entry])),
   };
 }

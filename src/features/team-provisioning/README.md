@@ -293,6 +293,7 @@ identity and liveness only:
 | Method                 | Answer                                                                         |
 | ---------------------- | ------------------------------------------------------------------------------ |
 | `find(teamName)`       | registered run snapshot, including a stopped run kept as history               |
+| `findByRunId(runId)`   | registered run by id; used by cancel and status                                |
 | `hasRun(run)`          | full identity match (app, root, connection, team, run)                         |
 | `isLive(run)`          | registered and still owning the run: running, not released, not release-failed |
 | `aliveTeamNames()`     | teams with at least one configured member owning a process                     |
@@ -318,6 +319,12 @@ phase 6 gate.
 snapshot for the launch progress stream and status reads. It stores nothing, so a
 run that left the registry has no progress until native progress persistence
 lands in the recovery phase.
+
+`createDesktopTeamRuntime` is the lifecycle-facing production adapter built on
+this snapshot: create/launch persist the canonical definition first, progress
+streams from the run feed, stop/cancel name the exact run, and runtime reads use
+the registry. It is composed and tested but not yet wired into IPC/HTTP; the
+transport cutover is phase 8.
 
 ## Existing production slices awaiting replacement
 

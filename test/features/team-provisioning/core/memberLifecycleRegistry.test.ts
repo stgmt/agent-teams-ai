@@ -62,6 +62,9 @@ describe('authoritative member lifecycle', () => {
     expect(registry.hasRun({ ...run, runId: '' })).toBe(false);
     expect(registry.find('other-team')).toBeNull();
     expect(registry.find('')).toBeNull();
+    expect(registry.findByRunId(run.runId)?.identity).toEqual(run);
+    expect(registry.findByRunId('other-run')).toBeNull();
+    expect(registry.findByRunId('')).toBeNull();
   });
 
   it('excludes a removed member from liveness even while its process is still owned', () => {

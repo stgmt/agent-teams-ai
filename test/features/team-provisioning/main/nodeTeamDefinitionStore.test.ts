@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -25,10 +25,11 @@ async function setup() {
   directories.push(root);
   const teamsRoot = join(root, 'teams');
   const tasksRoot = join(root, 'tasks');
+  const metadata = new TeamMetaStore();
   const store = new NodeTeamDefinitionStore({
     teamsRoot,
     tasksRoot,
-    metadata: new TeamMetaStore(),
+    metadata,
     members: new TeamMembersMetaStore(),
     invalidate() {},
   });
@@ -41,7 +42,7 @@ async function setup() {
     prompt: 'TEST work',
     members: [{ name: 'builder', role: 'Builder', workflow: 'TEST build' }],
   };
-  return { root, teamsRoot, tasksRoot, store, request };
+  return { root, teamsRoot, tasksRoot, store, request, metadata };
 }
 
 describe('app-owned canonical team definition creation', () => {
@@ -128,5 +129,145 @@ describe('app-owned canonical team definition creation', () => {
       ).rejects.toThrow();
     }
     await expect(readdir(teamsRoot)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('persists launch overrides into the canonical definition', async () => {
+    const { store, request, teamsRoot } = await setup();
+    await store.create(request, new AbortController().signal);
+    await store.updateLaunchSettings(
+      request.teamName,
+      {
+        cwd: join(teamsRoot, 'TEST-next-cwd'),
+        providerId: 'codex',
+        model: 'TEST-next-model',
+        effort: 'low',
+        fastMode: 'on',
+        syncModelsWithLead: false,
+        limitContext: true,
+        skipPermissions: false,
+        worktree: 'TEST-worktree',
+        extraCliArgs: '--TEST-flag',
+        prompt: 'TEST next work',
+      },
+      new AbortController().signal
+    );
+    const meta = JSON.parse(
+      await readFile(join(teamsRoot, request.teamName, 'team.meta.json'), 'utf8')
+    );
+    expect(meta).toMatchObject({
+      cwd: join(teamsRoot, 'TEST-next-cwd'),
+      providerId: 'codex',
+      model: 'TEST-next-model',
+      effort: 'low',
+      fastMode: 'on',
+      syncModelsWithLead: false,
+      limitContext: true,
+      skipPermissions: false,
+      worktree: 'TEST-worktree',
+      extraCliArgs: '--TEST-flag',
+      prompt: 'TEST next work',
+    });
+    expect(meta.providerBackendId).toBe('codex-native');
+  });
+
+  it('keeps omitted launch fields and drops a backend invalid for the new provider', async () => {
+    const { store, request, teamsRoot } = await setup();
+    await store.create(
+      { ...request, providerId: 'gemini', providerBackendId: 'api' },
+      new AbortController().signal
+    );
+    await store.updateLaunchSettings(
+      request.teamName,
+      { cwd: request.cwd },
+      new AbortController().signal
+    );
+    const unchanged = JSON.parse(
+      await readFile(join(teamsRoot, request.teamName, 'team.meta.json'), 'utf8')
+    );
+    expect(unchanged).toMatchObject({
+      providerId: 'gemini',
+      providerBackendId: 'api',
+      model: 'TEST-model',
+      effort: 'high',
+      prompt: 'TEST work',
+    });
+    await store.updateLaunchSettings(
+      request.teamName,
+      { cwd: request.cwd, providerId: 'anthropic' },
+      new AbortController().signal
+    );
+    const changed = JSON.parse(
+      await readFile(join(teamsRoot, request.teamName, 'team.meta.json'), 'utf8')
+    );
+    expect(changed).toMatchObject({ providerId: 'anthropic', model: 'TEST-model' });
+    expect(changed.providerBackendId).toBeUndefined();
+  });
+
+  it('clears a saved resolved-model cache when the model is explicitly changed', async () => {
+    const { store, request, teamsRoot, metadata } = await setup();
+    await store.create(request, new AbortController().signal);
+    await metadata.updateMeta(
+      request.teamName,
+      (meta) => ({
+        ...meta!,
+        launchIdentity: {
+          providerId: 'anthropic',
+          providerBackendId: null,
+          selectedModel: 'TEST-model',
+          selectedModelKind: 'explicit',
+          resolvedLaunchModel: 'TEST-model',
+          catalogId: 'TEST-model',
+          catalogSource: 'runtime',
+          catalogFetchedAt: null,
+          selectedEffort: 'high',
+          resolvedEffort: 'high',
+        },
+      }),
+      teamsRoot
+    );
+    await store.updateLaunchSettings(
+      request.teamName,
+      { cwd: request.cwd },
+      new AbortController().signal
+    );
+    const kept = JSON.parse(
+      await readFile(join(teamsRoot, request.teamName, 'team.meta.json'), 'utf8')
+    );
+    expect(kept.launchIdentity).toMatchObject({ resolvedLaunchModel: 'TEST-model' });
+    await store.updateLaunchSettings(
+      request.teamName,
+      { cwd: request.cwd, model: 'TEST-other-model' },
+      new AbortController().signal
+    );
+    const cleared = JSON.parse(
+      await readFile(join(teamsRoot, request.teamName, 'team.meta.json'), 'utf8')
+    );
+    expect(cleared.model).toBe('TEST-other-model');
+    expect(cleared.launchIdentity).toBeUndefined();
+  });
+
+  it('rejects an unknown team, a trashed team, an invalid backend and a cancelled update', async () => {
+    const { store, request, teamsRoot } = await setup();
+    await store.create(request, new AbortController().signal);
+    await expect(
+      store.updateLaunchSettings('test-absent', { cwd: request.cwd }, new AbortController().signal)
+    ).rejects.toThrow('unavailable');
+    await expect(
+      store.updateLaunchSettings(
+        request.teamName,
+        { cwd: request.cwd, providerId: 'codex', providerBackendId: 'bogus-backend' as never },
+        new AbortController().signal
+      )
+    ).rejects.toThrow();
+    const abort = new AbortController();
+    abort.abort();
+    await expect(
+      store.updateLaunchSettings(request.teamName, { cwd: '/TEST/other' }, abort.signal)
+    ).rejects.toThrow();
+    const meta = JSON.parse(
+      await readFile(join(teamsRoot, request.teamName, 'team.meta.json'), 'utf8')
+    );
+    expect(meta.cwd).toBe(request.cwd);
+    expect(meta.providerId).toBe('anthropic');
   });
 });

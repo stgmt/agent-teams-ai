@@ -98,6 +98,7 @@ function normalizeLaunchIdentity(value: unknown): ProviderModelLaunchIdentity | 
 
   const catalogSource =
     raw.catalogSource === 'anthropic-models-api' ||
+    raw.catalogSource === 'claude-agent-sdk' ||
     raw.catalogSource === 'anthropic-compatible-api' ||
     raw.catalogSource === 'app-server' ||
     raw.catalogSource === 'static-fallback' ||
@@ -264,11 +265,12 @@ export class TeamMetaStore {
     teamName: string,
     update: (
       current: TeamMetaFile | null
-    ) => Omit<TeamMetaFile, 'version'> | Promise<Omit<TeamMetaFile, 'version'>>
+    ) => Omit<TeamMetaFile, 'version'> | Promise<Omit<TeamMetaFile, 'version'>>,
+    teamsBasePath = getTeamsBasePath()
   ): Promise<void> {
-    const metaPath = this.getMetaPath(teamName);
+    const metaPath = this.getMetaPath(teamName, teamsBasePath);
     await withMetaMutationLock(metaPath, async () => {
-      const data = await update(await this.getMeta(teamName));
+      const data = await update(await this.getMeta(teamName, teamsBasePath));
       await this.writeMetaUnlocked(metaPath, data);
     });
   }

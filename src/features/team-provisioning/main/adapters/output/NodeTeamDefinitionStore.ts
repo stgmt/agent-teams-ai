@@ -2,20 +2,47 @@ import { promises as fs } from 'node:fs';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
-import { parseCreateTeamRequest } from '@main/services/team/TeamRequestValidation';
+import { validateTeamName } from '@main/services/team/TeamIdentifierValidation';
+import {
+  parseCreateTeamRequest,
+  parseProviderBackendId,
+} from '@main/services/team/TeamRequestValidation';
 import { applyDistinctRosterColors } from '@main/services/team/teamRosterColors';
 
 import type { TeamMembersMetaStore } from '@main/services/team/TeamMembersMetaStore';
 import type { TeamMetaStore } from '@main/services/team/TeamMetaStore';
-import type { TeamCreateConfigRequest, TeamMember } from '@shared/types';
+import type {
+  EffortLevel,
+  TeamCreateConfigRequest,
+  TeamFastMode,
+  TeamMember,
+  TeamProviderBackendId,
+  TeamProviderId,
+} from '@shared/types';
 import type { Stats } from 'node:fs';
 
 interface Dependencies {
   teamsRoot: string;
   tasksRoot: string;
-  metadata: Pick<TeamMetaStore, 'serializeMeta'>;
+  metadata: Pick<TeamMetaStore, 'serializeMeta' | 'updateMeta'>;
   members: Pick<TeamMembersMetaStore, 'serializeMembers'>;
   invalidate(): void;
+}
+
+/** Launch fields the UI may change without rewriting the roster. */
+export interface TeamLaunchSettingsUpdate {
+  cwd: string;
+  prompt?: string;
+  providerId?: TeamProviderId;
+  providerBackendId?: TeamProviderBackendId;
+  model?: string;
+  effort?: EffortLevel;
+  fastMode?: TeamFastMode;
+  syncModelsWithLead?: boolean;
+  limitContext?: boolean;
+  skipPermissions?: boolean;
+  worktree?: string;
+  extraCliArgs?: string;
 }
 
 function validated(request: TeamCreateConfigRequest): TeamCreateConfigRequest {
@@ -121,6 +148,64 @@ export class NodeTeamDefinitionStore {
         throw new Error(`Team already exists: ${request.teamName}`);
       throw error;
     }
+    this.ports.invalidate();
+  }
+
+  /**
+   * Persists the launch request into the canonical definition before launch.
+   * Omitted fields keep their saved value; changing the provider drops a backend
+   * that is no longer valid for it.
+   */
+  async updateLaunchSettings(
+    teamName: string,
+    update: TeamLaunchSettingsUpdate,
+    signal: AbortSignal
+  ): Promise<void> {
+    signal.throwIfAborted();
+    const validatedName = validateTeamName(teamName);
+    if (!validatedName.valid || validatedName.value !== teamName)
+      throw new Error('Invalid canonical team name');
+    await this.ports.metadata.updateMeta(
+      teamName,
+      (meta) => {
+        if (!meta || meta.deletedAt) throw new Error('Canonical team metadata is unavailable');
+        const providerId = update.providerId ?? meta.providerId;
+        const providerChanged =
+          update.providerId !== undefined && update.providerId !== meta.providerId;
+        const providerBackendId = parseProviderBackendId(
+          providerId,
+          update.providerBackendId !== undefined
+            ? update.providerBackendId
+            : providerChanged
+              ? undefined
+              : meta.providerBackendId
+        );
+        // A saved resolved-model cache cannot describe an explicitly changed model.
+        const { launchIdentity, ...persisted } = meta;
+        const keepsLaunchIdentity = update.model === undefined && update.effort === undefined;
+        return {
+          ...persisted,
+          ...(keepsLaunchIdentity && launchIdentity ? { launchIdentity } : {}),
+          cwd: update.cwd,
+          ...(update.prompt !== undefined ? { prompt: update.prompt } : {}),
+          ...(providerId !== undefined ? { providerId } : {}),
+          ...(providerBackendId !== undefined ? { providerBackendId } : {}),
+          ...(update.model !== undefined ? { model: update.model } : {}),
+          ...(update.effort !== undefined ? { effort: update.effort } : {}),
+          ...(update.fastMode !== undefined ? { fastMode: update.fastMode } : {}),
+          ...(update.syncModelsWithLead !== undefined
+            ? { syncModelsWithLead: update.syncModelsWithLead }
+            : {}),
+          ...(update.limitContext !== undefined ? { limitContext: update.limitContext } : {}),
+          ...(update.skipPermissions !== undefined
+            ? { skipPermissions: update.skipPermissions }
+            : {}),
+          ...(update.worktree !== undefined ? { worktree: update.worktree } : {}),
+          ...(update.extraCliArgs !== undefined ? { extraCliArgs: update.extraCliArgs } : {}),
+        };
+      },
+      this.ports.teamsRoot
+    );
     this.ports.invalidate();
   }
 }

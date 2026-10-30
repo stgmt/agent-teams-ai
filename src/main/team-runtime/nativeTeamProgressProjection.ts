@@ -1,12 +1,6 @@
 import type { TeamLifecycleSnapshot } from '@features/team-provisioning/contracts';
 import type { TeamProvisioningProgress } from '@shared/types';
 
-export interface ProgressTimes {
-  /** When the caller first observed this run; the lifecycle snapshot carries no start time. */
-  startedAt: string;
-  now: string;
-}
-
 function unavailableMembers(snapshot: Readonly<TeamLifecycleSnapshot>): string[] {
   return Object.values(snapshot.members)
     .filter(
@@ -28,13 +22,13 @@ function unavailableMembers(snapshot: Readonly<TeamLifecycleSnapshot>): string[]
  */
 export function toTeamProvisioningProgress(
   snapshot: Readonly<TeamLifecycleSnapshot>,
-  times: ProgressTimes
+  now: string
 ): TeamProvisioningProgress {
   const base = {
     runId: snapshot.identity.runId,
     teamName: snapshot.identity.teamName,
-    startedAt: times.startedAt,
-    updatedAt: times.now,
+    startedAt: snapshot.startedAt,
+    updatedAt: now,
   };
   switch (snapshot.state) {
     case 'preparing':
