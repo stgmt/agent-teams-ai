@@ -1,3 +1,4 @@
+export { NativeTeamMemberLifecycleApi } from './adapters/input/NativeTeamMemberLifecycleApi';
 export { registerHumanRequestSubmissionIpc } from './adapters/input/registerHumanRequestSubmissionIpc';
 export { registerLifecycleCommandsHttp } from './adapters/input/registerLifecycleCommandsHttp';
 export { registerLifecycleCommandsIpc } from './adapters/input/registerLifecycleCommandsIpc';
@@ -16,6 +17,8 @@ export type { NativeOpenCodeLaneRuntimeDependencies } from './adapters/output/Na
 export { NativeOpenCodeLaneRuntime } from './adapters/output/NativeOpenCodeLaneRuntime';
 export type { NativeTaskActivityRepairDependencies } from './adapters/output/NativeTaskActivityRepair';
 export { NativeTaskActivityRepair } from './adapters/output/NativeTaskActivityRepair';
+export { NativeTeamClaudeLogs } from './adapters/output/NativeTeamClaudeLogs';
+export { NativeTeamDiagnostics } from './adapters/output/NativeTeamDiagnostics';
 export { NodeTeamDefinitionStore } from './adapters/output/NodeTeamDefinitionStore';
 export { createBoundHumanRequestSubmission } from './composition/createBoundHumanRequestSubmission';
 export {
