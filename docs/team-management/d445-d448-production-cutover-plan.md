@@ -1,6 +1,6 @@
 # D-445 + D-448 production cutover plan
 
-Дата: 30.10.2026. План реализации полной замены production root, без runtime-флага и без запасного старого пути. Рабочая папка: `E:/tmp/pub/merge`. Ветка: `refactor/team-provisioning-single-owner-20261028`. HEAD: `7af4fa8338cf16ba38071ad21acaf65a59f9a00a`.
+Дата: 30.10.2026. План реализации полной замены production root, без runtime-флага и без запасного старого пути. Рабочая папка: `E:/tmp/pub/merge`. Ветка: `refactor/team-provisioning-single-owner-20261028`. Code HEAD: `36ed96e25` (docs commit on top of `7af4fa83`).
 
 Версия 2: учтены findings ревью плана — ownership map, single writer human history, граница `TeamLaunchStateEvaluator`, credential-only опция, порядок фаз, state/rollback, OpenCode spike.
 
@@ -26,7 +26,8 @@
 | Фаза | Результат | Зависит от | Оценка |
 |---|---|---|---|
 | 0 | Инвентарь callers, ownership map, parity checklist | — | 0.5–1 день |
-| 1 | Production composition native lifecycle | 0 | 2–3 дня |
+| 0.1 | Полный canonical surface (92), target/test, run-registry matrix | 0 | 2–3 дня |
+| 1 | Production composition native lifecycle | 0.1 | 2–3 дня |
 | 1b | DTO/contract mapping без переключения UI | 1 | 1–2 дня |
 | 2 | Mapper snapshot + contract tests | 1b | 1–2 дня |
 | 3 | Launch/create/stop/cancel через native owner | 1, 2 | 2–3 дня |
@@ -40,7 +41,32 @@
 | 9 | Полная sandbox-приёмка, build, package | 8 | 2–3 дня |
 | 10 | Установка релиза и приёмка на ПК | 9 | 0.5–1 день |
 
-Итого: 3–5 недель одного инженера. Главный неизвестный риск — OpenCode/aggregate parity; оценка фазы 6a предварительная, после spike уточняется. Без OpenCode spike дата cutover не фиксируется.
+Итого: 23–37 рабочих дней по суммарной оценке фаз (4.6–7.4 недели), а не 3–5 недель. Главный неизвестный риск — OpenCode/aggregate parity; после spike 6a оценка уточняется. Без OpenCode spike дата cutover не фиксируется.
+
+### 2a. Corrections from independent review (30.10)
+
+До phase 1 обязательны следующие уточнения; иначе cutover создаст split-brain или потеряет возможности.
+
+1. **Run registry.** Native launch не регистрирует run в `service.runs`, который читают approvals, task activity, live lead messages, inbox relay и spawn status. До phase 3 нужен native run-registry port или явно разрешённый read-only bridge с тестами.
+2. **`snapshotToMemberSpawnStatuses`.** Это live-проекция с 12+ call sites, а не historical badge. Нужен отдельный live status port; persisted `confirmed_alive` — только history. Переписать каждый call site.
+3. **`sendMessageToTeam`.** Это lead stdin, используемый и human UI, и системными уведомлениями (AutoResume, language change, task/member notifications). Делить по caller: human reply → D-448 pipeline; system notification → отдельный путь. Тест: system send не создаёт human request.
+4. **Human contract.** `PersistedLeadRequest` text-only; attachments/actionMode/taskRefs/slash не сохраняются. Либо расширить контракт, либо оставить legacy для non-text; mapping `LeadRequestDeliveryReceipt` → `SendMessageResult` в phase 1b.
+5. **Attach/detach.** Native-команды нет; phase 4 не может оставить legacy, если phase 8 удаляет весь process-owning код. Добавить native attach/detach или отдельный parity gate.
+6. **Native ports.** Нет cancel/progress/status query; `stopTeam(teamName)` без runId; `restartMember/skip` без generation. Добавить контракты и тесты stale/queued.
+7. **Lead session ID.** Native config удаляет `config.leadSessionId`; logs/transcript/context usage/message feed его используют. Сохранять session ID или определить replacement.
+8. **`historicalBootstrapConfirmed`.** Используется member-work-sync для OpenCode `registered_only/stale_metadata`; правило «никогда для liveness» неверно. Нужно per-consumer правило и тесты.
+9. **Composition cycle.** Native lifecycle требует `owner`, но сервис создаётся до `externalAgentConnection`; connection делает rebind generation. Нужен lazy owner provider/two-phase composition и recompose при смене root/context.
+10. **Writers.** `TeamSentMessagesStore.appendMessage` используется OpenCode delivery, не `ipc/teams.ts`; human writer — `sendDirectToLead` через controller. Гейт ставить по `source:'user_sent'`, не по имени метода.
+11. **Gates.** Заменить расплывчатые проверки на механические: нет process-owning класса/пути, нет `createDefaultTeamProvisioningService`, нет human `user_sent` writer вне `NodeLeadRequestHistory`, нет `confirmed_alive` в live status.
+12. **Evidence level.** Real-CLI приёмка и fake-provider приёмка — разные уровни; fake provider не закрывает CLI-гейт. Бюджет на модельные прогоны согласовать отдельно.
+13. **State/rollback.** Репетиция new→old→new и откат installer до phase 8; зафиксировать, что старый билд делает с `appManagedRun`.
+
+## Фаза 0.1. Закрытие полного inventory
+
+1. Использовать generated inventory `docs/team-management/d445-ownership-map.generated.md` (92 членов canonical surface, caller counts).
+2. Заполнить target/test для оставшихся `manual review` строк; критичные process-owning строки закрыть до phase 1.
+3. Зафиксировать матрицу потребителей `service.runs` и `snapshotToMemberSpawnStatuses`.
+4. Выход: каждая строка имеет target/test или `block` с причиной; phase 0.1 не начинается phase 3.
 
 ## Фаза 0. Инвентарь, ownership map, parity checklist
 
@@ -151,8 +177,8 @@
 
 ## Фаза 4. Member start/restart/skip
 
-1. `member_start` через `MemberLifecycleCommands.startConfiguredMember` + `LeadMemberStartAuthority`.
-2. `restart`/`skip` через exact generation target.
+1. `member_start` через `MemberLifecycleCommands.start` + `LeadMemberStartAuthority`.
+2. `restart`/`skip` через exact generation target (`commands.restart`, `commands.skip`).
 3. HTTP `/api/team-runtime/member-start`, IPC/preload/UI.
 4. MCP lead profile + tool `member_start`; credential привязан к run.
 5. `attachLiveRosterMember`/`detachLiveRosterMember`: native-команды нет. Либо добавить attach/detach в native lifecycle, либо оставить legacy member settings до parity. Не выдавать legacy за native.
@@ -173,7 +199,7 @@
    - `taskChanges.read`;
    - `sendLeadMessage`.
 2. Credential:
-   - добавить в `TeamMcpConfigBuilder` отдельную опцию `leadCredential` (или `runtimeScope` без смены tool profile);
+   - добавить в `TeamMcpConfigBuilder` отдельную опцию `leadCredential` (или `runtimeScope` без смены tool profile; `runtimeScope` уже существует, но сейчас меняет профиль);
    - не использовать глобальный env для member-профилей;
    - проверить, что lead tool profile не теряет нужные инструменты: `AGENT_TEAMS_OPERATIONAL_LEAD_TOOL_NAMES` сейчас не содержит runtime/team-launch/process; либо добавить с authority, либо доказать, что новый Тимлид их не вызывает.
 3. `registerLeadReportingHttp` на control server; один экземпляр reporting на приложение.
@@ -270,7 +296,7 @@
 
 1. Scoped tests по каждой фазе + полный `test/features/team-provisioning` и `test/features/lead-reporting`.
 2. Contract tests:
-   - `test/main/services/team/TeamProvisioningApis.test.ts`;
+   - `test/main/services/team/contracts/__tests__/TeamProvisioningApis.test.ts`;
    - `TeamDataService`/renderer snapshot tests;
    - `test/main/appInstanceGate.test.ts`, `desktopBootstrapBoundary.test.ts`, `windowsAppMutex.test.ts`.
 3. `pnpm typecheck` (8 конфигураций) или прямой native tsc.

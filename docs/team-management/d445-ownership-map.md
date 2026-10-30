@@ -1,6 +1,6 @@
 # D-445 ownership map (phase 0)
 
-Срез: 30.10.2026, `E:/tmp/pub/merge`, HEAD `7af4fa8338cf16ba38071ad21acaf65a59f9a00a`. Таблица по production-вызовам. Цель — отделить process-owning код от чистых чтений/настроек до cutover.
+Срез: 30.10.2026, `E:/tmp/pub/merge`, code HEAD `36ed96e25` (docs commit on top of `7af4fa83`). Полный canonical surface: `docs/team-management/d445-ownership-map.generated.md` (92 члена). Таблица ниже — migration-critical subset; generated appendix — полный список с caller counts.
 
 ## 1. Точки входа
 
@@ -12,7 +12,18 @@
 | HTTP routes | `src/main/http/index.ts:93` | `registerTeamRoutes` при `teamApis`/`teamDataApi` |
 | Preload | `src/preload/index.ts:1001` | `createTeam`, `launchTeam`, `stopTeam` |
 | Human message | `src/main/ipc/teams.ts:2935` | stdin send, затем `sendDirectToLead` (`:2956`) |
-| Snapshot UI | `teamProvisioningService.getTeamAgentRuntimeSnapshot` | `src/main/index.ts:1957`, `:2020`, `:2454` |
+| Snapshot UI | `teamProvisioningService.getTeamAgentRuntimeSnapshot` | `src/main/index.ts:1957`, `:2020`, `:2454` (`getMemberSpawnStatuses`) |
+
+## 1a. Блокеры до phase 1/3
+
+1. **Run registry split-brain.** Native launch не пишет в `service.runs`; approvals, task activity, live lead messages, inbox relay и spawn status читают его. Нужен native run-registry port или read-only bridge с тестами.
+2. **`snapshotToMemberSpawnStatuses`** — live projection (12+ call sites), не historical badge. Нужен live status port; persisted `confirmed_alive` — только history.
+3. **Human contract text-only.** `PersistedLeadRequest` не несёт attachments/actionMode/taskRefs/slash; phase 5 потеряет их. Расширить контракт или оставить legacy для non-text.
+4. **Native ports gaps.** Нет cancel/progress/status query; `stopTeam` без runId; `restartMember/skip` без generation. Добавить контракты.
+5. **Lead session ID.** Native config удаляет `config.leadSessionId`; logs/transcript/context usage/message feed его используют. Сохранять или заменить.
+6. **Composition cycle.** Native lifecycle требует `owner`, сервис создаётся до `externalAgentConnection`; connection rebind generation. Нужен lazy owner/two-phase/recompose.
+7. **Writers.** Human writer — `sendDirectToLead` через controller `appendSentMessage`; `TeamSentMessagesStore.appendMessage` — OpenCode delivery. Гейт по `source:'user_sent'`, не по имени метода.
+8. **`historicalBootstrapConfirmed`** используется member-work-sync для OpenCode `registered_only/stale_metadata`; правило per-consumer, не абсолютное.
 
 ## 2. Process-owning API
 
