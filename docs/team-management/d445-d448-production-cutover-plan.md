@@ -270,6 +270,12 @@
 3. Не оставлять старый OpenCode runtime как fallback.
 4. Выход: go/no-go и уточнённая оценка. Без этого фаза 8 не начинается.
 
+**Результат (30.10): NO-GO.** Native planner принимает только anthropic/codex/gemini
+(`nativeRuntimeProvider.ts:4-8`), а OpenCode живёт как lane-adapter с reconcile, без
+per-member pid. Полный разбор и варианты — `docs/team-management/d445-opencode-parity-spike.md`.
+Рекомендация: lane ownership в native registry (вариант A), затем cutover. До этого
+production root не переключать.
+
 ## Фаза 6b. Остальной parity
 
 Каждый пункт — строка checklist с тестом:
