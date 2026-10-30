@@ -290,6 +290,11 @@ lane restart, recovery после рестарта приложения.
 
 - settings/update состава, member settings, model preflight;
 - logs, diagnostics, context usage, task activity repair;
+
+Task activity repair: `NativeTaskActivityRepair` уже связывает legacy repair с native
+registry (`aliveRunId`/`findByRunId`/`isLive`): живой run пропускает repair,
+остановленный — чинится один раз. Остальные пункты 6b ещё не портированы.
+
 - approvals/tool settings;
 - attachments, action mode, slash/relay/cross-team correlation;
 - task provenance и change ledger;
