@@ -1,0 +1,219 @@
+import { describe, expect, it } from 'vitest';
+
+import { MemberLifecycleRegistry } from '../../../../src/features/team-provisioning/core/domain/MemberLifecycleRegistry';
+
+const owner = { appInstanceId: 'app-1', dataRootFingerprint: 'root-1', connectionGeneration: 1 };
+const run = { ...owner, teamName: 'TEST-team', runId: 'run-1' };
+const member = { memberName: 'builder', role: 'member' as const };
+
+function setup() {
+  const registry = new MemberLifecycleRegistry(owner);
+  registry.configureTeam(run, [{ memberName: 'team-lead', role: 'lead' }, member]);
+  return registry;
+}
+
+function start(registry: MemberLifecycleRegistry, operationId = 'start-1') {
+  const admission = registry.beginStart(run, member.memberName, operationId);
+  if (admission.kind !== 'launch') throw new Error('Expected launch admission');
+  return admission.token;
+}
+
+function ready(registry: MemberLifecycleRegistry) {
+  const token = start(registry);
+  const process = { pid: 123, birthId: 'birth-1' };
+  registry.observeSpawn(token, process);
+  registry.observeConnected(token);
+  return { token, process };
+}
+
+describe('authoritative member lifecycle', () => {
+  it('reports alive teams and runs only from owned processes', () => {
+    const registry = setup();
+    expect(registry.aliveTeamNames()).toEqual([]);
+    expect(registry.aliveRunId(run.teamName)).toBeNull();
+    const { token, process } = ready(registry);
+    expect(registry.aliveTeamNames()).toEqual([run.teamName]);
+    expect(registry.aliveRunId(run.teamName)).toBe(run.runId);
+    registry.observeExit(token, process, { code: 1, signal: null });
+    expect(registry.aliveTeamNames()).toEqual([]);
+    expect(registry.aliveRunId(run.teamName)).toBeNull();
+  });
+
+  it('reports process loss after a successful connection, not a new pending join', () => {
+    const registry = setup();
+    const { token, process } = ready(registry);
+    expect(registry.snapshot(run.teamName).members.builder.phase).toBe('ready');
+    registry.observeExit(token, process, { code: 1, signal: null });
+    expect(registry.snapshot(run.teamName).members.builder).toMatchObject({
+      phase: 'exited',
+      desired: 'running',
+      process: null,
+      everConnected: true,
+    });
+  });
+
+  it('projects aggregate readiness only from current processes, never historical connections', () => {
+    const registry = setup();
+    const tokens = registry.beginTeamStart(run, () => 'TEST-start');
+    for (const [index, token] of tokens.entries()) {
+      registry.observeSpawn(token, { pid: 200 + index, birthId: token.memberName });
+      registry.observeConnected(token);
+    }
+    const connected = registry.snapshot(run.teamName);
+    expect(connected.state).toBe('ready');
+    const builder = tokens.find((token) => token.memberName === 'builder')!;
+    registry.observeExit(builder, connected.members.builder.process!, { code: 1, signal: null });
+    const lost = registry.snapshot(run.teamName);
+    expect(lost.members.builder.everConnected).toBe(true);
+    expect(lost.state).toBe('degraded');
+    const lead = tokens.find((token) => token.memberName === 'team-lead')!;
+    registry.observeExit(lead, connected.members['team-lead'].process!, { code: 1, signal: null });
+    expect(registry.snapshot(run.teamName).state).toBe('failed');
+    expect(registry.snapshot(run.teamName).version).toBe(lost.version + 1);
+  });
+
+  it('keeps process and resource failure distinct while intentional stop drains', () => {
+    const registry = setup();
+    const { token, process } = ready(registry);
+    registry.requestTeamStop(run);
+    registry.beginRelease(run);
+    expect(registry.snapshot(run.teamName).state).toBe('stopping');
+    registry.observeExit(token, process, { code: 0, signal: null });
+    expect(registry.snapshot(run.teamName).state).toBe('stopping');
+    expect(() => registry.observeReleased(run)).toThrow('Member resources');
+    registry.observeMemberReleaseFailed(token);
+    expect(registry.snapshot(run.teamName).state).toBe('release-failed');
+    registry.observeMemberReleased(token);
+    expect(registry.snapshot(run.teamName).state).toBe('stopping');
+    registry.observeReleaseFailed(run, 'TEST native files still owned');
+    expect(registry.snapshot(run.teamName).state).toBe('release-failed');
+    registry.beginRelease(run);
+    registry.observeReleased(run);
+    expect(registry.snapshot(run.teamName).state).toBe('stopped');
+  });
+
+  it('returns the same operation for concurrent requests and never relaunches a ready member', () => {
+    const registry = setup();
+    const token = start(registry);
+    expect(registry.beginStart(run, 'builder', 'start-2')).toMatchObject({
+      kind: 'pending',
+      token,
+    });
+    registry.observeSpawn(token, { pid: 123, birthId: 'birth-1' });
+    registry.observeConnected(token);
+    expect(registry.beginStart(run, 'builder', 'start-3').kind).toBe('already-running');
+  });
+
+  it('does not infer death or admit a duplicate from a stale heartbeat', () => {
+    const registry = setup();
+    const { token } = ready(registry);
+    registry.observeConnectionLost(token);
+    expect(registry.snapshot(run.teamName).members.builder.phase).toBe('unresponsive');
+    expect(registry.beginStart(run, 'builder', 'start-2').kind).toBe('already-running');
+  });
+
+  it('rejects historical process events even after PID reuse', () => {
+    const registry = setup();
+    const first = ready(registry);
+    registry.observeExit(first.token, first.process, { code: 1, signal: null });
+    expect(registry.beginStart(run, 'builder', 'blocked').kind).toBe('stopping');
+    expect(registry.recoveryCandidates(run.teamName)).toEqual([]);
+    registry.observeMemberReleased(first.token);
+    const second = start(registry, 'start-2');
+    const nextProcess = { pid: first.process.pid, birthId: 'birth-2' };
+    registry.observeSpawn(second, nextProcess);
+    registry.observeConnected(second);
+    const version = registry.snapshot(run.teamName).version;
+    expect(registry.observeExit(first.token, first.process, { code: 1, signal: null })).toBe(false);
+    expect(registry.observeExit(second, first.process, { code: 1, signal: null })).toBe(false);
+    expect(registry.snapshot(run.teamName).version).toBe(version);
+    expect(registry.snapshot(run.teamName).members.builder.phase).toBe('ready');
+  });
+
+  it('keeps intentional stop distinct from failure and refuses recovery after stop', () => {
+    const registry = setup();
+    const { token, process } = ready(registry);
+    registry.requestStop(run, 'builder');
+    expect(registry.snapshot(run.teamName).members.builder.phase).toBe('stopping');
+    expect(registry.beginStart(run, 'builder', 'start-2').kind).toBe('stopping');
+    registry.observeExit(token, process, { code: 0, signal: null });
+    expect(registry.snapshot(run.teamName).members.builder.phase).toBe('stopped');
+    expect(registry.recoveryCandidates(run.teamName)).toEqual([]);
+  });
+
+  it('does not launch unknown, removed, lead, foreign-team, or stale-run targets', () => {
+    const registry = setup();
+    expect(() => registry.beginStart(run, 'unknown', 's')).toThrow('not configured');
+    expect(() => registry.beginStart(run, 'team-lead', 's')).toThrow('lead');
+    expect(() => registry.beginStart({ ...run, teamName: 'other' }, 'builder', 's')).toThrow(
+      'Unknown team'
+    );
+    expect(() => registry.beginStart({ ...run, runId: 'old-run' }, 'builder', 's')).toThrow(
+      'stale'
+    );
+    registry.removeMember(run, 'builder');
+    expect(() => registry.beginStart(run, 'builder', 's')).toThrow('removed');
+  });
+
+  it('does not expose mutable references or change version during reads', () => {
+    const registry = setup();
+    const before = registry.snapshot(run.teamName);
+    const again = registry.snapshot(run.teamName);
+    expect(again).toEqual(before);
+    expect(again).not.toBe(before);
+    expect(() => {
+      (before.members.builder as { phase: string }).phase = 'ready';
+    }).toThrow();
+    expect(registry.snapshot(run.teamName).members.builder.phase).toBe('stopped');
+  });
+
+  it('rejects stale owner events and cannot replace an active run', () => {
+    const registry = setup();
+    const { token } = ready(registry);
+    expect(registry.observeConnected({ ...token, appInstanceId: 'foreign-app' })).toBe(false);
+    expect(() => registry.configureTeam({ ...run, runId: 'run-2' }, [member])).toThrow('active');
+  });
+
+  it('retains a runtime failure after exit but ignores an old attempt failure after replacement', () => {
+    const registry = setup();
+    const first = ready(registry);
+    registry.observeRuntimeFailed(first.token, 'TEST registration failed');
+    expect(registry.snapshot(run.teamName).members.builder).toMatchObject({
+      phase: 'failed',
+      process: first.process,
+      error: 'TEST registration failed',
+    });
+    expect(registry.beginStart(run, 'builder', 'no-overlap').kind).toBe('already-running');
+    registry.observeExit(first.token, first.process, { code: 1, signal: null });
+    expect(registry.snapshot(run.teamName).members.builder).toMatchObject({
+      phase: 'failed',
+      process: null,
+    });
+    registry.observeMemberReleased(first.token);
+    const next = start(registry, 'TEST-next');
+    expect(registry.observeMemberReleased(first.token)).toBe(false);
+    expect(registry.observeMemberReleaseFailed(first.token)).toBe(false);
+    expect(registry.observeRuntimeFailed(first.token, 'TEST late cleanup')).toBe(false);
+    expect(registry.snapshot(run.teamName).members.builder).toMatchObject({
+      phase: 'starting',
+      error: null,
+      generation: next.generation,
+    });
+  });
+
+  it('cancels a pending launch and retains stop ownership if spawn arrives late', () => {
+    const registry = setup();
+    const token = start(registry);
+    registry.requestStop(run, 'builder');
+    const process = { pid: 124, birthId: 'late-birth' };
+    registry.observeSpawn(token, process);
+    expect(registry.snapshot(run.teamName).members.builder).toMatchObject({
+      phase: 'stopping',
+      desired: 'stopped',
+      process,
+    });
+    expect(registry.observeConnected(token)).toBe(false);
+    registry.observeExit(token, process, { code: 0, signal: null });
+    expect(registry.snapshot(run.teamName).members.builder.phase).toBe('stopped');
+  });
+});
