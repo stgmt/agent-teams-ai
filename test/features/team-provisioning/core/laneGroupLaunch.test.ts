@@ -43,7 +43,7 @@ const settingsFor = async (
   instructions: 'TEST',
 });
 
-function setup() {
+function setup(options: { omitObservation?: string; stopEmitsRelease?: boolean } = {}) {
   const stops: string[] = [];
   const inputs: { memberName: string; line: string }[] = [];
   const groups: { laneId: string; memberNames: string[]; events: MemberLaneGroupEvents | null }[] =
@@ -62,7 +62,9 @@ function setup() {
       groups.push(record);
       return {
         observations: Object.fromEntries(
-          tokens.map((token) => [token.memberName, observation(laneId)])
+          tokens
+            .filter((token) => token.memberName !== options.omitObservation)
+            .map((token) => [token.memberName, observation(laneId)])
         ),
         subscribe(events) {
           record.events = events;
@@ -75,6 +77,7 @@ function setup() {
         },
         async stop() {
           stops.push(laneId);
+          if (options.stopEmitsRelease === false) return;
           for (const token of tokens) record.events?.lost(token.memberName);
           record.events?.released();
         },
@@ -175,6 +178,56 @@ describe('team lane-group launch', () => {
     ]);
     await expect(duplicate.teams.launchConfigured(run, async () => roster)).rejects.toThrow(
       'two lanes'
+    );
+  });
+
+  it('fails the whole group when adapter evidence is missing for a member', async () => {
+    const { lifecycle } = setup({ omitObservation: 'builder' });
+    await lifecycle.teams.launchConfigured(run, async () => roster);
+    await lifecycle.commands.settled(run, 'builder');
+    expect(lifecycle.snapshot(run.teamName).members.builder).toMatchObject({
+      phase: 'failed',
+      error: 'Adapter lane evidence is missing for a member',
+    });
+    expect(lifecycle.snapshot(run.teamName).members['team-lead'].resources).toBe('released');
+    expect(lifecycle.commands.hasUnreleased(run)).toBe(false);
+  });
+
+  it('treats a resolved lane stop as release even without a release event', async () => {
+    const { lifecycle, stops } = setup({ stopEmitsRelease: false });
+    await lifecycle.teams.launchConfigured(run, async () => roster);
+    await lifecycle.commands.settled(run, 'team-lead');
+    await lifecycle.teams.stop(run);
+    expect(stops).toEqual(['primary']);
+    expect(lifecycle.snapshot(run.teamName).state).toBe('stopped');
+    expect(lifecycle.registry.aliveTeamNames()).toEqual([]);
+    expect(lifecycle.commands.hasUnreleased(run)).toBe(false);
+  });
+
+  it('rejects the same lane id in two groups and a changed lane plan on retry', async () => {
+    const duplicateLane = createWithGroups(() => [
+      { laneId: 'primary', memberNames: ['team-lead'] },
+      { laneId: 'primary', memberNames: ['builder'] },
+    ]);
+    await expect(duplicateLane.teams.launchConfigured(run, async () => roster)).rejects.toThrow(
+      'launched only once'
+    );
+
+    let plan = [{ laneId: 'primary', memberNames: ['team-lead', 'builder'] }];
+    const changing = createMemberLifecycle({
+      owner,
+      settings: { findConfiguredMember: settingsFor },
+      runtime: {
+        async spawn() {
+          throw new Error('unused');
+        },
+      },
+      laneGroups: () => plan,
+    });
+    await changing.teams.launchConfigured(run, async () => roster);
+    plan = [{ laneId: 'secondary:builder', memberNames: ['builder'] }];
+    await expect(changing.teams.launchConfigured(run, async () => roster)).rejects.toThrow(
+      'lane plan cannot be changed'
     );
   });
 });

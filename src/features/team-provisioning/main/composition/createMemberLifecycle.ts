@@ -8,6 +8,7 @@ import { TeamOperationQueue } from '../../core/application/TeamOperationQueue';
 import { MemberLifecycleRegistry } from '../../core/domain/MemberLifecycleRegistry';
 
 import type {
+  ConfiguredMemberIdentity,
   TeamLaneGroup,
   TeamLifecycleFeed,
   TeamLifecycleSnapshot,
@@ -28,7 +29,7 @@ export interface MemberLifecycleDependencies {
   teamResources?: TeamRunResourcesPort;
   laneGroups?(
     run: Readonly<TeamRunIdentity>,
-    members: readonly { memberName: string; role: 'lead' | 'member' }[]
+    members: readonly ConfiguredMemberIdentity[]
   ): readonly TeamLaneGroup[];
 }
 

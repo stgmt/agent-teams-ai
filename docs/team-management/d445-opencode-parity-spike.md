@@ -109,6 +109,11 @@ used.
   members still start individually. `MemberLifecycleCommands` binds per-member
   observations/events, routes input through the group, stops the group once, and
   rejects a single-member restart of a shared lane until lane restart is designed.
+- 6a.3 review fixes (landed): duplicate lane ids and a changed lane plan on
+  retry are rejected; a missing per-member observation fails the whole group; a
+  resolved group stop is authoritative even without a release event; a partial
+  observation failure rolls back applied lanes or leaves the release debt
+  visible.
 - Remaining before A is complete: a concrete `startLaneGroup` implementation over
   `TeamLaunchRuntimeAdapter` (launch/reconcile/stop, shared host, session ids),
   permission answer/list, lane restart semantics, and recovery after app restart.

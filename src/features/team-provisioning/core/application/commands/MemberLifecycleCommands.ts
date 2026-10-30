@@ -48,6 +48,7 @@ interface Execution {
 interface LaneGroupExecution {
   laneId: string;
   tokens: readonly Readonly<MemberProcessToken>[];
+  accepted: Map<string, boolean>;
   abort: AbortController;
   group: OwnedMemberLaneGroup | null;
   unsubscribe: (() => void) | null;
@@ -227,9 +228,13 @@ export class MemberLifecycleCommands {
     if (!laneId.trim()) throw new Error('Lane identity is required');
     if (tokens.length === 0) return;
     const first = tokens[0]!;
+    const runKey = key(first, '');
+    if (tokens.some((token) => key(token, '') !== runKey))
+      throw new Error('A lane group must belong to one run');
     const execution: LaneGroupExecution = {
       laneId,
       tokens,
+      accepted: new Map(),
       abort: new AbortController(),
       group: null,
       unsubscribe: null,
@@ -429,7 +434,7 @@ export class MemberLifecycleCommands {
 
   private async startLaneGroup(execution: LaneGroupExecution): Promise<void> {
     const { tokens, abort } = execution;
-    const accepted = new Map<string, boolean>();
+    const accepted = execution.accepted;
     const byName = new Map(tokens.map((token) => [token.memberName, token]));
     try {
       const settings = await Promise.all(
@@ -462,10 +467,13 @@ export class MemberLifecycleCommands {
       );
       execution.group = group;
       for (const token of tokens) {
-        const observation = group.observations[token.memberName];
+        if (!group.observations[token.memberName])
+          throw new Error('Adapter lane evidence is missing for a member');
+      }
+      for (const token of tokens) {
         accepted.set(
           token.memberName,
-          observation ? this.ports.registry.observeLane(token, observation) : false
+          this.ports.registry.observeLane(token, group.observations[token.memberName]!)
         );
       }
       const unsubscribe = group.subscribe({
@@ -483,33 +491,47 @@ export class MemberLifecycleCommands {
           if (token && accepted.get(memberName))
             this.ports.registry.observeRuntimeFailed(token, error);
         },
-        released: () => this.releaseLaneGroup(execution, accepted),
+        released: () => this.releaseLaneGroup(execution),
       });
       execution.unsubscribe = unsubscribe;
       if (execution.released) unsubscribe();
-      if (abort.signal.aborted || [...accepted.values()].every((value) => !value))
-        await this.stopLaneGroup(execution);
+      if (abort.signal.aborted) await this.stopLaneGroup(execution);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      if (execution.group) {
+        try {
+          await execution.group.stop();
+        } catch {
+          // The lane may still run: keep the release debt visible instead of hiding it.
+          for (const token of tokens) {
+            if (accepted.get(token.memberName))
+              this.ports.registry.observeMemberReleaseFailed(token);
+          }
+          return;
+        }
+      }
       for (const token of tokens) {
-        this.ports.registry.observeStartFailed(token, message);
-        if (!this.ports.registry.snapshot(token.teamName).members[token.memberName]?.lane) {
+        if (accepted.get(token.memberName)) {
+          this.ports.registry.observeLaneLost(token);
           this.ports.registry.observeMemberReleased(token);
+        } else {
+          this.ports.registry.observeStartFailed(token, message);
+          if (!this.ports.registry.snapshot(token.teamName).members[token.memberName]?.lane)
+            this.ports.registry.observeMemberReleased(token);
         }
       }
       execution.released = true;
+      execution.group = null;
+      execution.unsubscribe?.();
+      execution.unsubscribe = null;
       this.forgetLaneGroup(execution);
-      await this.stopLaneGroup(execution);
     }
   }
 
-  private releaseLaneGroup(
-    execution: LaneGroupExecution,
-    accepted: ReadonlyMap<string, boolean>
-  ): void {
+  private releaseLaneGroup(execution: LaneGroupExecution): void {
     if (execution.released) return;
     for (const token of execution.tokens) {
-      if (!accepted.get(token.memberName)) continue;
+      if (!execution.accepted.get(token.memberName)) continue;
       this.ports.registry.observeLaneLost(token);
       this.ports.registry.observeMemberReleased(token);
     }
@@ -531,6 +553,10 @@ export class MemberLifecycleCommands {
     if (!execution.group) return Promise.resolve();
     execution.stop = Promise.resolve()
       .then(() => execution.group?.stop())
+      .then(() => {
+        // A resolved lane stop is authoritative even if the adapter emitted no release event.
+        if (!execution.released) this.releaseLaneGroup(execution);
+      })
       .finally(() => {
         execution.stop = null;
       });

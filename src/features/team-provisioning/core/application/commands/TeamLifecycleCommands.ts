@@ -46,10 +46,18 @@ function rosterKey(members: readonly ConfiguredMemberIdentity[]): string {
   );
 }
 
+function lanePlanKey(groups: readonly TeamLaneGroup[]): string {
+  return JSON.stringify(
+    [...groups]
+      .map((group) => [group.laneId, [...group.memberNames].sort()])
+      .sort(([left], [right]) => String(left).localeCompare(String(right)))
+  );
+}
+
 export class TeamLifecycleCommands {
   private readonly admissions = new Map<
     string,
-    { receipt: Readonly<TeamLaunchAdmission>; roster: string }
+    { receipt: Readonly<TeamLaunchAdmission>; roster: string; lanePlan: string }
   >();
   private readonly pending = new Map<string, PendingLaunch>();
   private readonly releasing = new Map<string, Promise<void>>();
@@ -303,6 +311,9 @@ export class TeamLifecycleCommands {
     members: readonly ConfiguredMemberIdentity[]
   ): Readonly<TeamLaunchAdmission> {
     const roster = rosterKey(members);
+    const laneGroups = this.ports.laneGroups?.(run, members) ?? [];
+    this.assertLaneGroups(members, laneGroups);
+    const lanePlan = lanePlanKey(laneGroups);
     const previous = this.admissions.get(run.teamName);
     if (previous?.receipt.run.runId === run.runId) {
       this.ports.registry.assertRun(run);
@@ -310,17 +321,17 @@ export class TeamLifecycleCommands {
         throw new Error('Team run is intentionally stopped');
       if (previous.roster !== roster)
         throw new Error('Configured run roster cannot be changed by launch');
+      if (previous.lanePlan !== lanePlan)
+        throw new Error('Configured lane plan cannot be changed by launch');
       return previous.receipt;
     }
     if (members.filter((member) => member.role === 'lead').length !== 1)
       throw new Error('A configured team must have exactly one lead');
-    const laneGroups = this.ports.laneGroups?.(run, members) ?? [];
-    this.assertLaneGroups(members, laneGroups);
     this.ports.registry.configureTeam(run, members);
     const credential = this.ports.nextCredential();
     this.ports.authority.bind(credential, run);
     const receipt = Object.freeze({ run: Object.freeze({ ...run }), leadCredential: credential });
-    this.admissions.set(run.teamName, { receipt, roster });
+    this.admissions.set(run.teamName, { receipt, roster, lanePlan });
     const tokens = this.ports.registry.beginTeamStart(run, () => this.ports.nextOperationId());
     const byName = new Map(tokens.map((token) => [token.memberName, token]));
     const grouped = new Set<string>();
@@ -343,8 +354,11 @@ export class TeamLifecycleCommands {
   ): void {
     const configured = new Set(members.map((member) => member.memberName));
     const hosted = new Set<string>();
+    const lanes = new Set<string>();
     for (const group of groups) {
       if (!group.laneId.trim()) throw new Error('Lane identity is required');
+      if (lanes.has(group.laneId)) throw new Error('A lane can be launched only once');
+      lanes.add(group.laneId);
       if (group.memberNames.length === 0)
         throw new Error('A lane group must host at least one member');
       for (const name of group.memberNames) {
