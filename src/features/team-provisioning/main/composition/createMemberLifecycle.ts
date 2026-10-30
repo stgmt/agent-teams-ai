@@ -7,7 +7,12 @@ import { LeadMemberStartAuthority } from '../../core/application/LeadMemberStart
 import { TeamOperationQueue } from '../../core/application/TeamOperationQueue';
 import { MemberLifecycleRegistry } from '../../core/domain/MemberLifecycleRegistry';
 
-import type { TeamLifecycleFeed, TeamLifecycleSnapshot, TeamRunIdentity } from '../../contracts';
+import type {
+  TeamLaneGroup,
+  TeamLifecycleFeed,
+  TeamLifecycleSnapshot,
+  TeamRunIdentity,
+} from '../../contracts';
 import type {
   MemberLaunchSettingsPort,
   MemberRuntimePort,
@@ -21,6 +26,10 @@ export interface MemberLifecycleDependencies {
   runtime: MemberRuntimePort;
   authority?: LeadMemberStartAuthority;
   teamResources?: TeamRunResourcesPort;
+  laneGroups?(
+    run: Readonly<TeamRunIdentity>,
+    members: readonly { memberName: string; role: 'lead' | 'member' }[]
+  ): readonly TeamLaneGroup[];
 }
 
 export interface MemberLifecycle {
@@ -54,6 +63,7 @@ export function createMemberLifecycle(dependencies: MemberLifecycleDependencies)
       authority,
       gate,
       resources: dependencies.teamResources,
+      ...(dependencies.laneGroups ? { laneGroups: dependencies.laneGroups } : {}),
       nextOperationId: randomUUID,
       nextRunId: randomUUID,
       nextCredential: () => randomBytes(32).toString('base64url'),

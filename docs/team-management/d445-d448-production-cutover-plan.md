@@ -278,12 +278,11 @@ production root не переключать.
 
 6a.1 уже в коде: `MemberLaneObservation`, `observeLane`/`observeLaneLost`, lane-liveness
 в registry и проекция в `laneId`/`shared-host`/`permission_blocked`. 6a.2 partial:
-`MemberRuntimePort.kind`/`startLane`, команды стартуют/наблюдают/останавливают lane
-через тот же exact-token fence. Находка: реальный adapter lane-scoped, не member-scoped —
-primary lane в `pure_opencode` ведёт весь ростер, secondary lanes — по членам. Значит
-нужен team-level `launchLane(run, laneId, members)`, а не только per-member `startLane`.
-Осталось: `launchLane`, concrete adapter над `TeamLaunchRuntimeAdapter`, permission
-answer/list, lane restart, recovery после рестарта приложения.
+`MemberRuntimePort.kind`/`startLane`, команды стартуют/наблюдают/останавливают lane.
+6a.3: team-level lane groups (`laneGroups` planner → `startLaneGroup` один вызов на lane,
+валидация состава, input/stop через группу, single-member restart общего lane отклонён).
+Осталось: concrete `startLaneGroup` над `TeamLaunchRuntimeAdapter`, permission answer/list,
+lane restart, recovery после рестарта приложения.
 
 ## Фаза 6b. Остальной parity
 

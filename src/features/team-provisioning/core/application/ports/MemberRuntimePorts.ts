@@ -72,6 +72,21 @@ export interface MemberRuntimeEvents {
   laneLost?(error?: string): void;
 }
 
+export interface MemberLaneGroupEvents {
+  observed(memberName: string, observation: Readonly<MemberLaneObservation>): void;
+  lost(memberName: string, error?: string): void;
+  failed(memberName: string, error: string): void;
+  released(): void;
+}
+
+/** One adapter launch unit hosting several members in the same lane. */
+export interface OwnedMemberLaneGroup {
+  observations: Readonly<Record<string, Readonly<MemberLaneObservation>>>;
+  subscribe(events: MemberLaneGroupEvents): () => void;
+  stop(): Promise<void>;
+  writeInput(memberName: string, line: string): Promise<void>;
+}
+
 export interface MemberRuntimePort {
   /** How this provider is backed; omitted means a member process. */
   kind?(providerId: string): 'process' | 'lane';
@@ -86,6 +101,13 @@ export interface MemberRuntimePort {
     token: Readonly<MemberProcessToken>,
     signal: AbortSignal
   ): Promise<OwnedMemberLane>;
+  /** Aggregate lane launch: one adapter call binds every member of the lane. */
+  startLaneGroup?(
+    settings: readonly Readonly<ConfiguredMemberLaunch>[],
+    tokens: readonly Readonly<MemberProcessToken>[],
+    laneId: string,
+    signal: AbortSignal
+  ): Promise<OwnedMemberLaneGroup>;
 }
 
 export interface TeamRunResourcesPort {

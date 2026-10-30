@@ -1,7 +1,7 @@
 import { awaitWithAbort } from '../awaitWithAbort';
 import { TeamRunMismatchError } from '../TeamRunMismatchError';
 
-import type { ConfiguredMemberIdentity, TeamRunIdentity } from '../../../contracts';
+import type { ConfiguredMemberIdentity, TeamLaneGroup, TeamRunIdentity } from '../../../contracts';
 import type { MemberLifecycleRegistry } from '../../domain/MemberLifecycleRegistry';
 import type { LeadMemberStartAuthority } from '../LeadMemberStartAuthority';
 import type { TeamOperationGate, TeamRunResourcesPort } from '../ports/MemberRuntimePorts';
@@ -14,6 +14,11 @@ interface Dependencies {
   authority: LeadMemberStartAuthority;
   gate: TeamOperationGate;
   resources?: TeamRunResourcesPort;
+  /** Adapter lane grouping for this launch; omitted means every member is a process. */
+  laneGroups?(
+    run: Readonly<TeamRunIdentity>,
+    members: readonly ConfiguredMemberIdentity[]
+  ): readonly TeamLaneGroup[];
   nextOperationId(): string;
   nextRunId(): string;
   nextCredential(): string;
@@ -309,13 +314,44 @@ export class TeamLifecycleCommands {
     }
     if (members.filter((member) => member.role === 'lead').length !== 1)
       throw new Error('A configured team must have exactly one lead');
+    const laneGroups = this.ports.laneGroups?.(run, members) ?? [];
+    this.assertLaneGroups(members, laneGroups);
     this.ports.registry.configureTeam(run, members);
     const credential = this.ports.nextCredential();
     this.ports.authority.bind(credential, run);
     const receipt = Object.freeze({ run: Object.freeze({ ...run }), leadCredential: credential });
     this.admissions.set(run.teamName, { receipt, roster });
     const tokens = this.ports.registry.beginTeamStart(run, () => this.ports.nextOperationId());
-    this.ports.members.launchAdmitted(tokens);
+    const byName = new Map(tokens.map((token) => [token.memberName, token]));
+    const grouped = new Set<string>();
+    for (const group of laneGroups) {
+      const groupTokens = group.memberNames.map((name) => {
+        const token = byName.get(name);
+        if (!token) throw new Error('Lane group member was not admitted');
+        return token;
+      });
+      for (const name of group.memberNames) grouped.add(name);
+      this.ports.members.launchLane(groupTokens, group.laneId);
+    }
+    this.ports.members.launchAdmitted(tokens.filter((token) => !grouped.has(token.memberName)));
     return receipt;
+  }
+
+  private assertLaneGroups(
+    members: readonly ConfiguredMemberIdentity[],
+    groups: readonly TeamLaneGroup[]
+  ): void {
+    const configured = new Set(members.map((member) => member.memberName));
+    const hosted = new Set<string>();
+    for (const group of groups) {
+      if (!group.laneId.trim()) throw new Error('Lane identity is required');
+      if (group.memberNames.length === 0)
+        throw new Error('A lane group must host at least one member');
+      for (const name of group.memberNames) {
+        if (!configured.has(name)) throw new Error('Lane group references an unconfigured member');
+        if (hosted.has(name)) throw new Error('A member cannot be hosted by two lanes');
+        hosted.add(name);
+      }
+    }
   }
 }

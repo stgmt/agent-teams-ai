@@ -15,6 +15,7 @@ import type {
   MemberLaunchSettingsPort,
   MemberRuntimePort,
   OwnedMemberLane,
+  OwnedMemberLaneGroup,
   OwnedMemberRuntime,
   TeamOperationGate,
 } from '../ports/MemberRuntimePorts';
@@ -44,6 +45,17 @@ interface Execution {
   stop: Promise<void> | null;
 }
 
+interface LaneGroupExecution {
+  laneId: string;
+  tokens: readonly Readonly<MemberProcessToken>[];
+  abort: AbortController;
+  group: OwnedMemberLaneGroup | null;
+  unsubscribe: (() => void) | null;
+  stop: Promise<void> | null;
+  released: boolean;
+  completion: Promise<void>;
+}
+
 function key(team: TeamRunIdentity, memberName: string): string {
   return JSON.stringify([
     team.appInstanceId,
@@ -55,8 +67,13 @@ function key(team: TeamRunIdentity, memberName: string): string {
   ]);
 }
 
+function laneGroupKey(team: TeamRunIdentity, laneId: string): string {
+  return `${key(team, '')}|${laneId}`;
+}
+
 export class MemberLifecycleCommands {
   private readonly executions = new Map<string, Execution>();
+  private readonly laneGroups = new Map<string, LaneGroupExecution>();
   private readonly restarts = new Map<string, PendingRestart>();
 
   constructor(private readonly ports: Dependencies) {}
@@ -98,6 +115,10 @@ export class MemberLifecycleCommands {
     try {
       const selected = await this.ports.gate.run(target.teamName, async () => {
         signal?.throwIfAborted();
+        if (this.laneGroupsFor(target, target.memberName).length > 0)
+          throw new MemberRestartConflictError(
+            'Restarting a member of a shared adapter lane is not supported yet'
+          );
         this.ports.registry.assertRestartTarget(target);
         const identity = key(target, target.memberName);
         let restart = this.restarts.get(identity);
@@ -162,6 +183,24 @@ export class MemberLifecycleCommands {
     const selected = await this.ports.gate.run(token.teamName, async () => {
       this.ports.registry.assertRun(token);
       const member = this.ports.registry.snapshot(token.teamName).members[token.memberName];
+      const group = this.laneGroupsFor(token, token.memberName).find((candidate) =>
+        candidate.tokens.some(
+          (entry) =>
+            entry.generation === token.generation && entry.operationId === token.operationId
+        )
+      );
+      if (group) {
+        if (
+          member?.desired !== 'running' ||
+          !member.lane ||
+          member.generation !== token.generation ||
+          member.operationId !== token.operationId ||
+          !group.group ||
+          group.abort.signal.aborted
+        )
+          throw new Error('Member runtime input is no longer current');
+        return { written: group.group.writeInput(token.memberName, line) };
+      }
       const execution = this.executions.get(key(token, token.memberName));
       if (
         member?.desired !== 'running' ||
@@ -181,6 +220,25 @@ export class MemberLifecycleCommands {
   // Team commands call this while holding the same application operation gate.
   launchAdmitted(tokens: readonly Readonly<MemberProcessToken>[]): void {
     for (const token of tokens) this.launch(token);
+  }
+
+  /** Launches one adapter lane that hosts several members in a single call. */
+  launchLane(tokens: readonly Readonly<MemberProcessToken>[], laneId: string): void {
+    if (!laneId.trim()) throw new Error('Lane identity is required');
+    if (tokens.length === 0) return;
+    const first = tokens[0]!;
+    const execution: LaneGroupExecution = {
+      laneId,
+      tokens,
+      abort: new AbortController(),
+      group: null,
+      unsubscribe: null,
+      stop: null,
+      released: false,
+      completion: Promise.resolve(),
+    };
+    this.laneGroups.set(laneGroupKey(first, laneId), execution);
+    execution.completion = this.startLaneGroup(execution);
   }
 
   async stop(team: TeamRunIdentity, memberName: string): Promise<void> {
@@ -206,24 +264,37 @@ export class MemberLifecycleCommands {
         );
       }
       const execution = this.executions.get(key(team, name));
-      if (!execution) continue;
-      execution.abort.abort();
-      stops.push(
-        execution.stop || execution.runtime || execution.cleanup
-          ? this.stopOwnedRuntime(execution)
-          : execution.completion.then(async () => {
-              if (execution.cleanup) await this.stopOwnedRuntime(execution);
-            })
-      );
+      if (execution) {
+        execution.abort.abort();
+        stops.push(
+          execution.stop || execution.runtime || execution.cleanup
+            ? this.stopOwnedRuntime(execution)
+            : execution.completion.then(async () => {
+                if (execution.cleanup) await this.stopOwnedRuntime(execution);
+              })
+        );
+      }
+      for (const group of this.laneGroupsFor(team, name)) {
+        group.abort.abort();
+        stops.push(this.stopLaneGroup(group));
+      }
     }
     return stops;
   }
 
   hasUnreleased(team: TeamRunIdentity): boolean {
-    return [...this.executions.values()].some(
-      (execution) =>
-        (!execution.released || execution.stop !== null) &&
-        key(execution.token, '') === key(team, '')
+    return (
+      [...this.executions.values()].some(
+        (execution) =>
+          (!execution.released || execution.stop !== null) &&
+          key(execution.token, '') === key(team, '')
+      ) ||
+      [...this.laneGroups.values()].some(
+        (group) =>
+          (!group.released || group.stop !== null) &&
+          group.tokens.length > 0 &&
+          key(group.tokens[0]!, '') === key(team, '')
+      )
     );
   }
 
@@ -236,6 +307,11 @@ export class MemberLifecycleCommands {
   }
 
   async settled(team: TeamRunIdentity, memberName: string): Promise<void> {
+    const group = this.laneGroupsFor(team, memberName)[0];
+    if (group) {
+      await group.completion;
+      return;
+    }
     await this.executions.get(key(team, memberName))?.completion;
   }
 
@@ -349,6 +425,124 @@ export class MemberLifecycleCommands {
       if (execution.cleanup) this.ports.registry.observeMemberReleaseFailed(token);
       else if (execution.released) this.ports.registry.observeMemberReleased(token);
     }
+  }
+
+  private async startLaneGroup(execution: LaneGroupExecution): Promise<void> {
+    const { tokens, abort } = execution;
+    const accepted = new Map<string, boolean>();
+    const byName = new Map(tokens.map((token) => [token.memberName, token]));
+    try {
+      const settings = await Promise.all(
+        tokens.map(async (token) => {
+          const settings = await awaitWithAbort(
+            this.ports.settings.findConfiguredMember(token, token.memberName),
+            abort.signal
+          );
+          abort.signal.throwIfAborted();
+          if (
+            settings?.memberName !== token.memberName ||
+            !settings.configurationRevision.trim() ||
+            key(settings.team, settings.memberName) !== key(token, token.memberName)
+          ) {
+            throw new Error('Configured launch settings are missing or stale');
+          }
+          return Object.freeze({ ...settings, team: Object.freeze({ ...settings.team }) });
+        })
+      );
+      this.ports.registry.assertStartsOpen();
+      const startLaneGroup = this.ports.runtime.startLaneGroup;
+      if (!startLaneGroup)
+        throw new Error('Adapter lane group runtime is not wired for this provider');
+      const group = await startLaneGroup.call(
+        this.ports.runtime,
+        settings,
+        tokens,
+        execution.laneId,
+        abort.signal
+      );
+      execution.group = group;
+      for (const token of tokens) {
+        const observation = group.observations[token.memberName];
+        accepted.set(
+          token.memberName,
+          observation ? this.ports.registry.observeLane(token, observation) : false
+        );
+      }
+      const unsubscribe = group.subscribe({
+        observed: (memberName, observation) => {
+          const token = byName.get(memberName);
+          if (token && accepted.get(memberName))
+            this.ports.registry.observeLane(token, observation);
+        },
+        lost: (memberName, error) => {
+          const token = byName.get(memberName);
+          if (token && accepted.get(memberName)) this.ports.registry.observeLaneLost(token, error);
+        },
+        failed: (memberName, error) => {
+          const token = byName.get(memberName);
+          if (token && accepted.get(memberName))
+            this.ports.registry.observeRuntimeFailed(token, error);
+        },
+        released: () => this.releaseLaneGroup(execution, accepted),
+      });
+      execution.unsubscribe = unsubscribe;
+      if (execution.released) unsubscribe();
+      if (abort.signal.aborted || [...accepted.values()].every((value) => !value))
+        await this.stopLaneGroup(execution);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      for (const token of tokens) {
+        this.ports.registry.observeStartFailed(token, message);
+        if (!this.ports.registry.snapshot(token.teamName).members[token.memberName]?.lane) {
+          this.ports.registry.observeMemberReleased(token);
+        }
+      }
+      execution.released = true;
+      this.forgetLaneGroup(execution);
+      await this.stopLaneGroup(execution);
+    }
+  }
+
+  private releaseLaneGroup(
+    execution: LaneGroupExecution,
+    accepted: ReadonlyMap<string, boolean>
+  ): void {
+    if (execution.released) return;
+    for (const token of execution.tokens) {
+      if (!accepted.get(token.memberName)) continue;
+      this.ports.registry.observeLaneLost(token);
+      this.ports.registry.observeMemberReleased(token);
+    }
+    execution.group = null;
+    execution.released = true;
+    execution.unsubscribe?.();
+    execution.unsubscribe = null;
+    this.forgetLaneGroup(execution);
+  }
+
+  private forgetLaneGroup(execution: LaneGroupExecution): void {
+    if (execution.tokens.length === 0) return;
+    this.laneGroups.delete(laneGroupKey(execution.tokens[0]!, execution.laneId));
+  }
+
+  private stopLaneGroup(execution: LaneGroupExecution): Promise<void> {
+    if (execution.stop) return execution.stop;
+    if (execution.released) return Promise.resolve();
+    if (!execution.group) return Promise.resolve();
+    execution.stop = Promise.resolve()
+      .then(() => execution.group?.stop())
+      .finally(() => {
+        execution.stop = null;
+      });
+    return execution.stop;
+  }
+
+  private laneGroupsFor(team: TeamRunIdentity, memberName: string): LaneGroupExecution[] {
+    return [...this.laneGroups.values()].filter(
+      (group) =>
+        key(group.tokens[0]!, '') === key(team, '') &&
+        group.tokens.some((token) => token.memberName === memberName)
+    );
   }
 
   private stopOwnedRuntime(execution: Execution): Promise<void> {

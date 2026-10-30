@@ -103,12 +103,16 @@ used.
   `released` is authoritative and clears a lane that never reported `laneLost`;
   failed lanes project as `error`, not `waiting`; a live lane blocks team
   replacement and recovery/skip require lane release.
-- Remaining before A is complete: a team-level `launchLane(run, laneId, members)`
-  unit in `TeamLifecycleCommands` (aggregate primary + secondary lanes), a
-  concrete adapter over `TeamLaunchRuntimeAdapter` (launch/reconcile/stop, shared
-  host, session ids), permission answer/list, lane restart semantics, and
-  recovery after app restart. The legacy OpenCode route is not deleted until
-  these land.
+- 6a.3 (landed): team-level lane groups. `TeamLifecycleCommands` accepts a
+  `laneGroups` planner, validates lane membership (configured, no duplicates) and
+  launches each group once through `MemberRuntimePort.startLaneGroup`; process
+  members still start individually. `MemberLifecycleCommands` binds per-member
+  observations/events, routes input through the group, stops the group once, and
+  rejects a single-member restart of a shared lane until lane restart is designed.
+- Remaining before A is complete: a concrete `startLaneGroup` implementation over
+  `TeamLaunchRuntimeAdapter` (launch/reconcile/stop, shared host, session ids),
+  permission answer/list, lane restart semantics, and recovery after app restart.
+  The legacy OpenCode route is not deleted until these land.
 
 ## Recommendation
 

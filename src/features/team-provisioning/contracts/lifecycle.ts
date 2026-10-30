@@ -51,6 +51,12 @@ export interface ConfiguredMemberIdentity {
   role: 'lead' | 'member';
 }
 
+/** One adapter lane and the configured members it hosts. */
+export interface TeamLaneGroup {
+  laneId: string;
+  memberNames: readonly string[];
+}
+
 export interface MemberLifecycleSnapshot extends ConfiguredMemberIdentity {
   membership: 'configured' | 'removed';
   desired: 'running' | 'stopped';
