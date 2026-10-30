@@ -308,13 +308,17 @@ lane restart, recovery после рестарта приложения.
    - старый билд не знает это поле;
    - добавить cleanup осиротевших `appManagedRun`/runtime dirs и тест «новая запись → старый билд → повторный native launch»;
    - `sentMessages.json` и input reservation не должны дублироваться/теряться.
-4. Root/context change не оставляет второй owner; updater handoff и crash/restart проверены.
-5. Тесты:
-   - exit/release во время pending stop;
-   - late spawn после shutdown;
-   - повторный stop освобождает долг;
-   - второй экземпляр приложения не создаёт owner (уже проверено на упакованном билде; helper-процессы не считаются экземплярами);
-   - rollback на предыдущий installer после cleanup.
+
+Реализовано: `NodeNativeTeamConfig.recoverOrphanedClaim(teamName, isRunAlive)`
+снимает `appManagedRun` только когда run не жив в текущем процессе; живой claim
+сохраняется, повторный вызов идемпотентен. Startup recovery вызывает его до нового
+launch. Тесты — `nativeTeamConfigRecovery.test.ts`. 4. Root/context change не оставляет второй owner; updater handoff и crash/restart проверены. 5. Тесты:
+
+- exit/release во время pending stop;
+- late spawn после shutdown;
+- повторный stop освобождает долг;
+- второй экземпляр приложения не создаёт owner (уже проверено на упакованном билде; helper-процессы не считаются экземплярами);
+- rollback на предыдущий installer после cleanup.
 
 ## Фаза 8. Cutover-коммит
 

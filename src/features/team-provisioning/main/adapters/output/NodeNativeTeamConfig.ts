@@ -148,4 +148,32 @@ export class NodeNativeTeamConfig {
     });
     this.ports.invalidate(run.teamName);
   }
+
+  /**
+   * Removes an `appManagedRun` marker whose run is not alive in this process.
+   * Startup recovery calls it before a new launch; a live run keeps its claim.
+   */
+  async recoverOrphanedClaim(
+    teamName: string,
+    isRunAlive: (run: Readonly<TeamRunIdentity>) => boolean
+  ): Promise<boolean> {
+    let recovered = false;
+    await this.store.mutate(teamName, new AbortController().signal, async (current) => {
+      if (!current) return null;
+      const claim = record(current.appManagedRun);
+      if (!claim) {
+        if (current.appManagedRun != null) throw new Error('Native team config owner is invalid');
+        return null;
+      }
+      const identity = record(claim.identity);
+      if (!identity) throw new Error('Native team config owner is invalid');
+      if (isRunAlive(identity as unknown as Readonly<TeamRunIdentity>)) return null;
+      recovered = true;
+      const next = { ...current };
+      delete next.appManagedRun;
+      return next;
+    });
+    if (recovered) this.ports.invalidate(teamName);
+    return recovered;
+  }
 }
