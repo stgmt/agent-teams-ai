@@ -4,6 +4,12 @@ import type {
   TeamRunResourceState,
 } from '../../contracts';
 
+/** A process handle or adapter lane is the only current liveness evidence. */
+export function memberIsLive(member: Readonly<MemberLifecycleSnapshot>): boolean {
+  if (member.process !== null) return true;
+  return member.lane !== null && member.lane.runtimeAlive && !member.lane.permissionBlocked;
+}
+
 /** One projection of current observations; bootstrap history never establishes present readiness. */
 export function teamLifecycleState(team: {
   desired: 'running' | 'stopped';

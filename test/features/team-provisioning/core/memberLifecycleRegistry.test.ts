@@ -107,6 +107,83 @@ describe('authoritative member lifecycle', () => {
     expect(registry.snapshot(second.teamName).startedAt).toBe('TEST-time-2');
   });
 
+  it('treats an adapter lane as liveness without inventing a member process', () => {
+    const registry = setup();
+    const token = start(registry, 'lane-start');
+    const lane = {
+      laneId: 'TEST-lane',
+      sessionId: 'TEST-session',
+      hostPid: 900,
+      runtimeAlive: true,
+      bootstrapConfirmed: true,
+      permissionBlocked: false,
+    };
+    expect(registry.observeLane(token, lane)).toBe(true);
+    expect(registry.snapshot(run.teamName).members.builder).toMatchObject({
+      phase: 'ready',
+      process: null,
+      lane,
+      everConnected: true,
+    });
+    expect(registry.aliveTeamNames()).toEqual([run.teamName]);
+    expect(registry.aliveRunId(run.teamName)).toBe(run.runId);
+
+    // A permission block revokes liveness but keeps the lane identity.
+    expect(
+      registry.observeLane(token, {
+        ...lane,
+        bootstrapConfirmed: false,
+        permissionBlocked: true,
+      })
+    ).toBe(true);
+    expect(registry.snapshot(run.teamName).members.builder.phase).toBe('connecting');
+    expect(registry.aliveTeamNames()).toEqual([]);
+    expect(registry.aliveRunId(run.teamName)).toBeNull();
+
+    expect(
+      registry.observeLane(token, { ...lane, bootstrapConfirmed: false, permissionBlocked: false })
+    ).toBe(true);
+    expect(registry.snapshot(run.teamName).members.builder.phase).toBe('ready');
+    expect(registry.aliveTeamNames()).toEqual([run.teamName]);
+
+    expect(registry.observeLaneLost(token, 'TEST lane lost')).toBe(true);
+    expect(registry.snapshot(run.teamName).members.builder).toMatchObject({
+      lane: null,
+      process: null,
+      phase: 'exited',
+      error: 'TEST lane lost',
+    });
+    expect(registry.aliveTeamNames()).toEqual([]);
+    expect(registry.observeLaneLost(token)).toBe(false);
+  });
+
+  it('rejects lane evidence on a process member and process evidence on a lane member', () => {
+    const registry = setup();
+    const { token } = ready(registry);
+    expect(
+      registry.observeLane(token, {
+        laneId: 'TEST-lane',
+        sessionId: null,
+        hostPid: null,
+        runtimeAlive: true,
+        bootstrapConfirmed: true,
+        permissionBlocked: false,
+      })
+    ).toBe(false);
+    const laneRegistry = setup();
+    const laneToken = start(laneRegistry, 'lane-start');
+    laneRegistry.observeLane(laneToken, {
+      laneId: 'TEST-lane',
+      sessionId: null,
+      hostPid: 900,
+      runtimeAlive: true,
+      bootstrapConfirmed: true,
+      permissionBlocked: false,
+    });
+    expect(laneRegistry.observeSpawn(laneToken, { pid: 901, birthId: 'TEST-birth' })).toBe(false);
+    expect(laneRegistry.snapshot(run.teamName).members.builder.process).toBeNull();
+  });
+
   it('reports process loss after a successful connection, not a new pending join', () => {
     const registry = setup();
     const { token, process } = ready(registry);

@@ -1,3 +1,5 @@
+import { memberIsLive } from '@features/team-provisioning';
+
 import type {
   MemberLifecycleSnapshot,
   TeamLifecycleSnapshot,
@@ -11,12 +13,18 @@ import type {
   TeamRuntimeState,
 } from '@shared/types';
 
-/** A process handle is the only current liveness evidence; a phase name is not. */
-function hasProcess(member: MemberLifecycleSnapshot): boolean {
-  return member.process !== null;
+function isLaneBlocked(member: MemberLifecycleSnapshot): boolean {
+  return member.lane !== null && member.lane.permissionBlocked;
+}
+
+function lanePendingBootstrap(member: MemberLifecycleSnapshot): boolean {
+  return member.lane !== null && member.lane.runtimeAlive && !member.lane.bootstrapConfirmed;
 }
 
 function spawnStatus(member: MemberLifecycleSnapshot): MemberSpawnStatus {
+  if (isLaneBlocked(member)) return 'spawning';
+  if (lanePendingBootstrap(member)) return 'spawning';
+  if (member.lane !== null && !member.lane.runtimeAlive) return 'waiting';
   switch (member.phase) {
     case 'ready':
     case 'unresponsive':
@@ -35,6 +43,8 @@ function spawnStatus(member: MemberLifecycleSnapshot): MemberSpawnStatus {
 }
 
 function launchState(member: MemberLifecycleSnapshot): MemberLaunchState {
+  if (isLaneBlocked(member)) return 'runtime_pending_permission';
+  if (lanePendingBootstrap(member)) return 'runtime_pending_bootstrap';
   switch (member.phase) {
     case 'ready':
     case 'unresponsive':
@@ -53,12 +63,24 @@ function launchState(member: MemberLifecycleSnapshot): MemberLaunchState {
   }
 }
 
+function livenessKind(
+  member: MemberLifecycleSnapshot
+): 'confirmed_bootstrap' | 'runtime_process' | 'permission_blocked' | null {
+  if (isLaneBlocked(member)) return 'permission_blocked';
+  if (member.lane !== null) {
+    if (!member.lane.runtimeAlive) return null;
+    return member.lane.bootstrapConfirmed ? 'confirmed_bootstrap' : 'runtime_process';
+  }
+  if (member.process === null) return null;
+  return member.phase === 'ready' ? 'confirmed_bootstrap' : 'runtime_process';
+}
+
 /** Current lifecycle only; persisted launch metadata is not an input here. */
 export function toTeamRuntimeState(snapshot: Readonly<TeamLifecycleSnapshot>): TeamRuntimeState {
   return {
     teamName: snapshot.identity.teamName,
     isAlive: Object.values(snapshot.members).some(
-      (member) => member.membership === 'configured' && hasProcess(member)
+      (member) => member.membership === 'configured' && memberIsLive(member)
     ),
     runId: snapshot.identity.runId,
     progress: null,
@@ -72,22 +94,26 @@ export function toTeamAgentRuntimeSnapshot(
   const members: Record<string, TeamAgentRuntimeEntry> = {};
   for (const member of Object.values(snapshot.members)) {
     if (member.membership !== 'configured') continue;
-    const alive = hasProcess(member);
+    const alive = memberIsLive(member);
+    const lane = member.lane;
+    const kind = livenessKind(member);
     members[member.memberName] = {
       memberName: member.memberName,
       alive,
       // The lead has its own restart path; only a configured teammate is a member restart target.
-      restartable: member.role === 'member',
+      // An adapter lane restart is not wired yet, so a lane member is not restartable.
+      restartable: member.role === 'member' && lane === null,
       backendType: member.role === 'lead' ? 'lead' : 'process',
       ...(member.process ? { pid: member.process.pid, runtimePid: member.process.pid } : {}),
-      ...(alive
+      ...(lane
         ? {
-            livenessKind:
-              member.phase === 'ready'
-                ? ('confirmed_bootstrap' as const)
-                : ('runtime_process' as const),
+            laneId: lane.laneId,
+            ...(lane.hostPid !== null
+              ? { runtimeLoadScope: 'shared-host' as const, pidSource: 'opencode_bridge' as const }
+              : {}),
           }
         : {}),
+      ...(kind ? { livenessKind: kind } : {}),
       ...(member.phase === 'failed' && member.error
         ? { runtimeDiagnostic: member.error, runtimeDiagnosticSeverity: 'error' as const }
         : {}),
@@ -116,7 +142,9 @@ export function toMemberSpawnStatuses(
   const expectedMembers: string[] = [];
   for (const member of Object.values(snapshot.members)) {
     if (member.membership !== 'configured' || member.role === 'lead') continue;
-    const alive = hasProcess(member);
+    const alive = memberIsLive(member);
+    const lane = member.lane;
+    const kind = livenessKind(member);
     expectedMembers.push(member.memberName);
     statuses[member.memberName] = {
       status: spawnStatus(member),
@@ -126,11 +154,13 @@ export function toMemberSpawnStatuses(
         ? { error: member.error, hardFailure: true }
         : {}),
       ...(member.skippedForLaunch ? { skippedForLaunch: true } : {}),
-      ...(member.phase === 'ready'
-        ? { livenessSource: 'heartbeat' as const, livenessKind: 'confirmed_bootstrap' as const }
+      ...(lane?.bootstrapConfirmed ||
+      (lane === null && member.process !== null && member.phase === 'ready')
+        ? { livenessSource: 'heartbeat' as const }
         : alive
-          ? { livenessSource: 'process' as const, livenessKind: 'runtime_process' as const }
+          ? { livenessSource: 'process' as const }
           : {}),
+      ...(kind ? { livenessKind: kind } : {}),
       ...(member.phase === 'failed' && member.error
         ? { runtimeDiagnostic: member.error, runtimeDiagnosticSeverity: 'error' as const }
         : {}),

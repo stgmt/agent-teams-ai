@@ -1,11 +1,12 @@
 import { LifecycleSnapshotFeed } from './LifecycleSnapshotFeed';
 import { MemberRestartConflictError } from './MemberRestartConflictError';
 import { MemberSkipConflictError } from './MemberSkipConflictError';
-import { teamLifecycleState } from './teamLifecycleState';
+import { memberIsLive, teamLifecycleState } from './teamLifecycleState';
 
 import type {
   ConfiguredMemberIdentity,
   MemberGenerationTarget,
+  MemberLaneObservation,
   MemberLifecycleSnapshot,
   MemberProcessToken,
   MemberStartAdmission,
@@ -16,6 +17,14 @@ import type {
   TeamRunResourceState,
 } from '../../contracts';
 import type { AppConnectionContext } from '@features/external-agent-connection/contracts';
+
+const LANE_OBSERVABLE_PHASES = new Set<MemberLifecycleSnapshot['phase']>([
+  'starting',
+  'connecting',
+  'ready',
+  'unresponsive',
+  'stopping',
+]);
 
 interface MemberState extends MemberLifecycleSnapshot {
   connectedGeneration: number | null;
@@ -180,6 +189,7 @@ export class MemberLifecycleRegistry {
         generation: 0,
         operationId: null,
         process: null,
+        lane: null,
         everConnected: false,
         connectedGeneration: null,
         skippedForLaunch: false,
@@ -339,6 +349,46 @@ export class MemberLifecycleRegistry {
     const current = this.current(token);
     if (current?.member.phase !== 'ready') return false;
     current.member.phase = 'unresponsive';
+    this.changed(current.team);
+    return true;
+  }
+
+  /**
+   * Adapter evidence for a member that owns a lane instead of a process. The lane
+   * may be shared by several members; its host pid is never a member pid.
+   */
+  observeLane(token: MemberProcessToken, lane: MemberLaneObservation): boolean {
+    if (!lane.laneId.trim()) throw new Error('Lane identity is required');
+    if (lane.hostPid !== null && (!Number.isSafeInteger(lane.hostPid) || lane.hostPid < 1))
+      throw new Error('Lane host pid must be a positive integer');
+    const current = this.current(token);
+    if (!current) return false;
+    const { team, member } = current;
+    if (member.process !== null || !LANE_OBSERVABLE_PHASES.has(member.phase)) return false;
+    member.lane = Object.freeze({ ...lane });
+    member.resources = 'held';
+    if (member.desired === 'stopped') {
+      member.phase = 'stopping';
+    } else if (lane.runtimeAlive && !lane.permissionBlocked) {
+      member.phase = 'ready';
+      if (lane.bootstrapConfirmed) {
+        member.everConnected = true;
+        member.connectedGeneration = member.generation;
+      }
+    } else {
+      member.phase = 'connecting';
+    }
+    this.changed(team);
+    return true;
+  }
+
+  observeLaneLost(token: MemberProcessToken, error?: string): boolean {
+    const current = this.current(token);
+    if (!current || current.member.lane === null) return false;
+    current.member.lane = null;
+    current.member.resources = 'releasing';
+    current.member.phase = current.member.desired === 'stopped' ? 'stopped' : 'exited';
+    if (error && current.member.desired !== 'stopped') current.member.error = error;
     this.changed(current.team);
     return true;
   }
@@ -521,24 +571,24 @@ export class MemberLifecycleRegistry {
     );
   }
 
-  /** Teams with at least one owned process; historical connections do not count. */
+  /** Teams with at least one live configured member; historical connections do not count. */
   aliveTeamNames(): readonly string[] {
     return [...this.teams]
       .filter(([, team]) =>
         [...team.members.values()].some(
-          (entry) => entry.membership === 'configured' && entry.process !== null
+          (entry) => entry.membership === 'configured' && memberIsLive(entry)
         )
       )
       .map(([teamName]) => teamName)
       .sort((a, b) => a.localeCompare(b));
   }
 
-  /** Current run identity only while the team still owns a process. */
+  /** Current run identity only while the team still has a live member. */
   aliveRunId(teamName: string): string | null {
     const team = this.teams.get(teamName);
     if (!team) return null;
     return [...team.members.values()].some(
-      (entry) => entry.membership === 'configured' && entry.process !== null
+      (entry) => entry.membership === 'configured' && memberIsLive(entry)
     )
       ? team.identity.runId
       : null;

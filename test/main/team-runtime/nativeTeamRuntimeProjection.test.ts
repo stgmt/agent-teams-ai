@@ -44,6 +44,7 @@ function member(
     generation: 1,
     operationId: `op-${memberName}`,
     process: withProcess.has(phase) ? { pid: 123, birthId: 'birth' } : null,
+    lane: null,
     everConnected: true,
     skippedForLaunch: false,
     error: null,
@@ -230,5 +231,98 @@ describe('native lifecycle projection', () => {
     const source = snapshot([member('worker', 'starting')]);
     const statuses = toMemberSpawnStatuses(source, now);
     expect(hasUnresolvedMemberSpawnStatus(statuses.statuses, statuses)).toBe(true);
+  });
+
+  it('reports an adapter lane as live without inventing a member pid', () => {
+    const source = snapshot([
+      member('worker', 'ready', {
+        process: null,
+        lane: {
+          laneId: 'TEST-lane',
+          sessionId: 'TEST-session',
+          hostPid: 900,
+          runtimeAlive: true,
+          bootstrapConfirmed: true,
+          permissionBlocked: false,
+        },
+      }),
+    ]);
+    expect(toTeamRuntimeState(source).isAlive).toBe(true);
+    expect(toTeamAgentRuntimeSnapshot(source, now).members.worker).toEqual({
+      memberName: 'worker',
+      alive: true,
+      restartable: false,
+      backendType: 'process',
+      laneId: 'TEST-lane',
+      runtimeLoadScope: 'shared-host',
+      pidSource: 'opencode_bridge',
+      livenessKind: 'confirmed_bootstrap',
+      updatedAt: now,
+    });
+    expect(toMemberSpawnStatuses(source, now).statuses.worker).toEqual({
+      status: 'online',
+      launchState: 'confirmed_alive',
+      runtimeAlive: true,
+      livenessSource: 'heartbeat',
+      livenessKind: 'confirmed_bootstrap',
+      updatedAt: now,
+    });
+  });
+
+  it('reports a permission-blocked lane as pending, not alive', () => {
+    const source = snapshot([
+      member('worker', 'connecting', {
+        process: null,
+        lane: {
+          laneId: 'TEST-lane',
+          sessionId: 'TEST-session',
+          hostPid: 900,
+          runtimeAlive: true,
+          bootstrapConfirmed: false,
+          permissionBlocked: true,
+        },
+      }),
+    ]);
+    expect(toTeamRuntimeState(source).isAlive).toBe(false);
+    expect(toMemberSpawnStatuses(source, now).statuses.worker).toMatchObject({
+      status: 'spawning',
+      launchState: 'runtime_pending_permission',
+      runtimeAlive: false,
+      livenessKind: 'permission_blocked',
+    });
+  });
+
+  it('reports a live lane before bootstrap as a pending process', () => {
+    const source = snapshot([
+      member('worker', 'ready', {
+        process: null,
+        lane: {
+          laneId: 'TEST-lane',
+          sessionId: null,
+          hostPid: null,
+          runtimeAlive: true,
+          bootstrapConfirmed: false,
+          permissionBlocked: false,
+        },
+      }),
+    ]);
+    expect(toMemberSpawnStatuses(source, now).statuses.worker).toMatchObject({
+      status: 'spawning',
+      launchState: 'runtime_pending_bootstrap',
+      runtimeAlive: true,
+      livenessSource: 'process',
+      livenessKind: 'runtime_process',
+    });
+  });
+
+  it('drops a lost lane back to offline', () => {
+    const source = snapshot([
+      member('worker', 'exited', { process: null, lane: null, error: 'TEST lane lost' }),
+    ]);
+    expect(toTeamRuntimeState(source).isAlive).toBe(false);
+    expect(toMemberSpawnStatuses(source, now).statuses.worker).toMatchObject({
+      status: 'offline',
+      runtimeAlive: false,
+    });
   });
 });

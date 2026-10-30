@@ -276,6 +276,11 @@ per-member pid. Полный разбор и варианты — `docs/team-man
 Рекомендация: lane ownership в native registry (вариант A), затем cutover. До этого
 production root не переключать.
 
+6a.1 уже в коде: `MemberLaneObservation`, `observeLane`/`observeLaneLost`, lane-liveness
+в registry и проекция в `laneId`/`shared-host`/`permission_blocked`. Осталось: lane
+start/stop в командах, adapter reconcile port, permission answer/list, lane restart,
+recovery после рестарта приложения.
+
 ## Фаза 6b. Остальной parity
 
 Каждый пункт — строка checklist с тестом:

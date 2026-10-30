@@ -37,6 +37,7 @@ function member(
     generation: 1,
     operationId: `op-${memberName}`,
     process: phase === 'ready' ? { pid: 321, birthId: 'birth' } : null,
+    lane: null,
     everConnected: true,
     skippedForLaunch: false,
     error: null,

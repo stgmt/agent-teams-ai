@@ -22,6 +22,20 @@ export interface OwnedProcessIdentity {
   birthId: string;
 }
 
+/**
+ * Adapter-owned runtime lane. OpenCode members run inside a shared host, so the
+ * lane carries its own liveness evidence instead of a member process handle.
+ */
+export interface MemberLaneObservation {
+  laneId: string;
+  sessionId: string | null;
+  /** Host process shared by several members; never a member-owned pid. */
+  hostPid: number | null;
+  runtimeAlive: boolean;
+  bootstrapConfirmed: boolean;
+  permissionBlocked: boolean;
+}
+
 export type MemberPhase =
   | 'stopped'
   | 'starting'
@@ -45,6 +59,8 @@ export interface MemberLifecycleSnapshot extends ConfiguredMemberIdentity {
   generation: number;
   operationId: string | null;
   process: Readonly<OwnedProcessIdentity> | null;
+  /** Adapter-owned lane when the member is not backed by its own process. */
+  lane: Readonly<MemberLaneObservation> | null;
   everConnected: boolean;
   skippedForLaunch: boolean;
   error: string | null;

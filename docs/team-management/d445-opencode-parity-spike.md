@@ -78,6 +78,20 @@ the 92-member legacy surface alive for one provider.
 Not acceptable: `opencode` is a shipped provider and the adapter path is actively
 used.
 
+## Progress
+
+- 6a.1 (landed): `MemberLaneObservation` in the lifecycle contract, registry
+  `observeLane`/`observeLaneLost`, lane-aware liveness in `aliveTeamNames`/
+  `aliveRunId`/`teamLifecycleState`, and projection to `laneId`,
+  `runtimeLoadScope:'shared-host'`, `pidSource:'opencode_bridge'`,
+  `permission_blocked`/`runtime_pending_permission`, `runtime_pending_bootstrap`.
+  A lane member is never reported with a member pid and is not restartable yet.
+- Remaining before A is complete: lane start/stop through
+  `MemberLifecycleCommands`, an adapter reconcile port that feeds
+  `observeLane`/`observeLaneLost`, permission answer/list, lane restart
+  semantics, and recovery after app restart. The legacy OpenCode route is not
+  deleted until these land.
+
 ## Recommendation
 
 Take **A** and treat it as the phase 6a gate. Do not switch the production root
