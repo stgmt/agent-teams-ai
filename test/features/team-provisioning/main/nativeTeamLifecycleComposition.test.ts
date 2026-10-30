@@ -91,6 +91,7 @@ describe('native lifecycle composition admission', () => {
     expect(run).toMatchObject({ ...request.expectedContext, teamName });
     expect(run.runId).toBeTruthy();
     expect(lifecycle.runs.hasRun(run)).toBe(true);
+    expect(lifecycle.runs.isLive(run)).toBe(true);
     expect(lifecycle.runs.find(teamName)?.identity).toEqual(run);
     expect(Object.keys(receipt)).toEqual(['run']);
     expect(JSON.stringify(receipt)).not.toContain('leadCredential');

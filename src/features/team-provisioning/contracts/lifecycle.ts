@@ -78,10 +78,21 @@ export interface TeamLifecycleSnapshot {
   members: Readonly<Record<string, Readonly<MemberLifecycleSnapshot>>>;
 }
 
-/** Read-only run lookup for approvals, task activity, relay, logs and cleanup. */
+/**
+ * Identity and liveness registry for one application owner. It is not a
+ * run-payload store: approvals, relay, logs and live lead messages keep their
+ * own run-scoped state and must not grow a second copy here.
+ *
+ * Composition-internal: reads are not context-fenced, so IPC/HTTP consumers
+ * use the bound lifecycle queries instead.
+ */
 export interface TeamRunRegistryRead {
+  /** Registered run for a team, including a stopped run kept as history. */
   find(teamName: string): Readonly<TeamLifecycleSnapshot> | null;
+  /** Registered identity match, including stopped history. */
   hasRun(run: Readonly<TeamRunIdentity>): boolean;
+  /** Registered and still owning the run: not stopped, released, or release-failed. */
+  isLive(run: Readonly<TeamRunIdentity>): boolean;
   aliveTeamNames(): readonly string[];
   aliveRunId(teamName: string): string | null;
 }

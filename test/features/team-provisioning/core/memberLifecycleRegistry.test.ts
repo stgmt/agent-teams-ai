@@ -32,7 +32,9 @@ describe('authoritative member lifecycle', () => {
     expect(registry.aliveTeamNames()).toEqual([]);
     expect(registry.aliveRunId(run.teamName)).toBeNull();
     expect(registry.hasRun(run)).toBe(true);
+    expect(registry.isLive(run)).toBe(true);
     expect(registry.hasRun({ ...run, runId: 'other-run' })).toBe(false);
+    expect(registry.isLive({ ...run, runId: 'other-run' })).toBe(false);
     expect(registry.find(run.teamName)?.identity).toEqual(run);
     const { token, process } = ready(registry);
     expect(registry.aliveTeamNames()).toEqual([run.teamName]);
@@ -40,6 +42,53 @@ describe('authoritative member lifecycle', () => {
     registry.observeExit(token, process, { code: 1, signal: null });
     expect(registry.aliveTeamNames()).toEqual([]);
     expect(registry.aliveRunId(run.teamName)).toBeNull();
+    // A crashed run still owns its resources until it is stopped.
+    expect(registry.hasRun(run)).toBe(true);
+    expect(registry.isLive(run)).toBe(true);
+    registry.requestTeamStop(run);
+    registry.beginRelease(run);
+    registry.observeMemberReleased(token);
+    registry.observeReleased(run);
+    expect(registry.hasRun(run)).toBe(true);
+    expect(registry.isLive(run)).toBe(false);
+  });
+
+  it('compares the full run identity, not only the team or run id', () => {
+    const registry = setup();
+    expect(registry.hasRun({ ...run, appInstanceId: 'foreign-app' })).toBe(false);
+    expect(registry.hasRun({ ...run, dataRootFingerprint: 'foreign-root' })).toBe(false);
+    expect(registry.hasRun({ ...run, connectionGeneration: 2 })).toBe(false);
+    expect(registry.hasRun({ ...run, teamName: 'other-team' })).toBe(false);
+    expect(registry.hasRun({ ...run, runId: '' })).toBe(false);
+    expect(registry.find('other-team')).toBeNull();
+    expect(registry.find('')).toBeNull();
+  });
+
+  it('excludes a removed member from liveness even while its process is still owned', () => {
+    const registry = setup();
+    const { token, process } = ready(registry);
+    expect(registry.aliveTeamNames()).toEqual([run.teamName]);
+    registry.removeMember(run, member.memberName);
+    expect(registry.snapshot(run.teamName).members[member.memberName]).toMatchObject({
+      membership: 'removed',
+      process,
+    });
+    expect(registry.aliveTeamNames()).toEqual([]);
+    expect(registry.aliveRunId(run.teamName)).toBeNull();
+    expect(registry.observeExit(token, process, { code: 0, signal: null })).toBe(true);
+  });
+
+  it('returns frozen copies from the run lookup port', () => {
+    const registry = setup();
+    const snapshot = registry.find(run.teamName);
+    expect(snapshot).not.toBeNull();
+    expect(Object.isFrozen(snapshot)).toBe(true);
+    expect(Object.isFrozen(snapshot?.identity)).toBe(true);
+    expect(Object.isFrozen(snapshot?.members)).toBe(true);
+    expect(() => {
+      (snapshot?.members.builder as { phase: string }).phase = 'ready';
+    }).toThrow();
+    expect(registry.find(run.teamName)?.members.builder.phase).toBe('stopped');
   });
 
   it('reports process loss after a successful connection, not a new pending join', () => {

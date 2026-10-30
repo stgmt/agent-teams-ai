@@ -37,6 +37,10 @@ function sameOwner(a: AppConnectionContext, b: AppConnectionContext): boolean {
   );
 }
 
+function sameIdentity(a: TeamRunIdentity, b: Readonly<TeamRunIdentity>): boolean {
+  return sameOwner(a, b) && a.teamName === b.teamName && a.runId === b.runId;
+}
+
 function sameProcess(a: Readonly<OwnedProcessIdentity> | null, b: OwnedProcessIdentity): boolean {
   return a !== null && a.pid === b.pid && a.birthId === b.birthId;
 }
@@ -485,15 +489,20 @@ export class MemberLifecycleRegistry {
     return this.findSnapshot(teamName);
   }
 
+  /** Registered identity, including a stopped run kept as history for status reads. */
   hasRun(identity: Readonly<TeamRunIdentity>): boolean {
-    const snapshot = this.findSnapshot(identity.teamName);
-    if (!snapshot) return false;
+    const team = this.teams.get(identity.teamName);
+    return team !== undefined && sameIdentity(team.identity, identity);
+  }
+
+  /** Registered and still owning the run: not stopped, not released, not release-failed. */
+  isLive(identity: Readonly<TeamRunIdentity>): boolean {
+    const team = this.teams.get(identity.teamName);
+    if (!team || !sameIdentity(team.identity, identity)) return false;
     return (
-      snapshot.identity.appInstanceId === identity.appInstanceId &&
-      snapshot.identity.dataRootFingerprint === identity.dataRootFingerprint &&
-      snapshot.identity.connectionGeneration === identity.connectionGeneration &&
-      snapshot.identity.teamName === identity.teamName &&
-      snapshot.identity.runId === identity.runId
+      team.desired === 'running' &&
+      team.resources !== 'released' &&
+      team.resources !== 'release-failed'
     );
   }
 

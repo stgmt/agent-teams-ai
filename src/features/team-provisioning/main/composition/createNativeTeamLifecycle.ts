@@ -166,6 +166,7 @@ export function createNativeTeamLifecycle(
   const runs = Object.freeze<TeamRunRegistryRead>({
     find: (teamName) => lifecycle.registry.find(teamName),
     hasRun: (run) => lifecycle.registry.hasRun(run),
+    isLive: (run) => lifecycle.registry.isLive(run),
     aliveTeamNames: () => lifecycle.registry.aliveTeamNames(),
     aliveRunId: (teamName) => lifecycle.registry.aliveRunId(teamName),
   });

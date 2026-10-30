@@ -23,23 +23,23 @@
 
 ## 2. Порядок работ
 
-| Фаза | Результат | Зависит от | Оценка |
-|---|---|---|---|
-| 0 | Инвентарь callers, ownership map, parity checklist | — | 0.5–1 день |
-| 0.1 | Полный canonical surface (92), target/test, run-registry matrix | 0 | 2–3 дня |
-| 1 | Production composition native lifecycle | 0.1 | 2–3 дня |
-| 1b | DTO/contract mapping без переключения UI | 1 | 1–2 дня |
-| 2 | Mapper snapshot + contract tests | 1b | 1–2 дня |
-| 3 | Launch/create/stop/cancel через native owner | 1, 2 | 2–3 дня |
-| 3b | Переключение snapshot/read на native | 3 | 1–2 дня |
-| 4 | Member start/restart/skip + authority | 3, 3b | 1–2 дня |
-| 5 | Human request + D-448 reporting | 3, 3b | 3–4 дня |
-| 6a | OpenCode spike и go/no-go | 1 | 3–5 дней |
-| 6b | Остальной parity (settings/logs/diagnostics/approvals) | 4–5, 6a | 3–4 дня |
-| 7 | Recovery/shutdown/state migration/rollback | 3–6b | 2–3 дня |
-| 8 | Cutover-коммит и удаление process-owning кода | 2–7 | 1–2 дня |
-| 9 | Полная sandbox-приёмка, build, package | 8 | 2–3 дня |
-| 10 | Установка релиза и приёмка на ПК | 9 | 0.5–1 день |
+| Фаза | Результат                                                       | Зависит от | Оценка     |
+| ---- | --------------------------------------------------------------- | ---------- | ---------- |
+| 0    | Инвентарь callers, ownership map, parity checklist              | —          | 0.5–1 день |
+| 0.1  | Полный canonical surface (92), target/test, run-registry matrix | 0          | 2–3 дня    |
+| 1    | Production composition native lifecycle                         | 0.1        | 2–3 дня    |
+| 1b   | DTO/contract mapping без переключения UI                        | 1          | 1–2 дня    |
+| 2    | Mapper snapshot + contract tests                                | 1b         | 1–2 дня    |
+| 3    | Launch/create/stop/cancel через native owner                    | 1, 2       | 2–3 дня    |
+| 3b   | Переключение snapshot/read на native                            | 3          | 1–2 дня    |
+| 4    | Member start/restart/skip + authority                           | 3, 3b      | 1–2 дня    |
+| 5    | Human request + D-448 reporting                                 | 3, 3b      | 3–4 дня    |
+| 6a   | OpenCode spike и go/no-go                                       | 1          | 3–5 дней   |
+| 6b   | Остальной parity (settings/logs/diagnostics/approvals)          | 4–5, 6a    | 3–4 дня    |
+| 7    | Recovery/shutdown/state migration/rollback                      | 3–6b       | 2–3 дня    |
+| 8    | Cutover-коммит и удаление process-owning кода                   | 2–7        | 1–2 дня    |
+| 9    | Полная sandbox-приёмка, build, package                          | 8          | 2–3 дня    |
+| 10   | Установка релиза и приёмка на ПК                                | 9          | 0.5–1 день |
 
 Итого: 23–37 рабочих дней по суммарной оценке фаз (4.6–7.4 недели), а не 3–5 недель. Главный неизвестный риск — OpenCode/aggregate parity; после spike 6a оценка уточняется. Без OpenCode spike дата cutover не фиксируется.
 
@@ -74,15 +74,15 @@
    - `src/main/index.ts`, `src/main/http/index.ts`, `src/main/http/teams.ts`, `src/main/ipc/teams.ts`, `src/preload/index.ts`, renderer stores/views.
 2. Составить ownership map по каждому публичному методу `TeamProvisioningApis`:
 
-| Поле | Значение |
-|---|---|
-| API method | например `launchTeam` |
-| Process-owning | да / нет |
-| Current owner | `TeamProvisioningService` / `TeamDataService` / `TeamLaunchStateEvaluator` / другое |
-| Target owner | native lifecycle / существующий сервис / удалить |
-| IPC/HTTP/preload/renderer callers | точные пути |
-| Test ID | существующий или новый |
-| Action | replace / keep / delete |
+| Поле                              | Значение                                                                            |
+| --------------------------------- | ----------------------------------------------------------------------------------- |
+| API method                        | например `launchTeam`                                                               |
+| Process-owning                    | да / нет                                                                            |
+| Current owner                     | `TeamProvisioningService` / `TeamDataService` / `TeamLaunchStateEvaluator` / другое |
+| Target owner                      | native lifecycle / существующий сервис / удалить                                    |
+| IPC/HTTP/preload/renderer callers | точные пути                                                                         |
+| Test ID                           | существующий или новый                                                              |
+| Action                            | replace / keep / delete                                                             |
 
 3. Отдельно классифицировать:
    - `process-owning` — launch/stop/restart/skip/recovery/snapshot liveness;
@@ -92,7 +92,7 @@
    - `human messaging` — history/queue/reporting;
    - `OpenCode` — aggregate primary/secondary/checkin/permissions.
 4. Ownership map: `docs/team-management/d445-ownership-map.md`. Каждая строка должна иметь test ID; иначе фаза 0 не закрыта.
-4. Выход: checklist без пустых строк; для каждой строки известен целевой модуль и тест.
+5. Выход: checklist без пустых строк; для каждой строки известен целевой модуль и тест.
 
 ## Фаза 1. Production composition
 
@@ -175,6 +175,15 @@
    - progress не дублируется.
 
 Выход: launch/stop/cancel принадлежат native owner.
+
+### Phase 3a decisions (after independent review)
+
+- `TeamRunRegistryRead` — identity/liveness порт, не run-payload store. `pendingApprovals`, `claudeLogLines`, `detectedSessionId`, `run.child`, reply hints остаются у потребителей до отдельного порта (phase 6b); реестр не должен стать вторым.
+- `hasRun` = зарегистрированная identity, включая остановленную историю для status reads. `isLive` = running, ресурсы не `released`/`release-failed`; именно он заменяет legacy `runs.has(runId)` в task activity. Retirement не нужен: новый run той же команды заменяет запись, память ограничена числом команд.
+- Фасад `runs` — composition-internal без context fencing. IPC/HTTP читают только `LifecycleQueries`, где каждый метод (включая `aliveTeamNames`/`aliveRunId`) проходит `withExpectedContext`.
+- Progress выводится из snapshot (`toTeamProvisioningProgress`) и не хранится: `preparing→configuring`, `starting→spawning`, `ready`, `degraded→ready+warnings`, `failed`/`release-failed`, `stopping`/`stopped→disconnected user_stop`. После вытеснения run из реестра status читается из persisted history; native-запись progress — gap фазы 7.
+- Cancel = stop точного run; runId появляется в первом progress-событии из `watch`, поэтому отмена во время подготовки не требует отдельного prepare-контракта.
+- Известные ограничения: crash без exit-события остаётся live до reconcile/stop; OpenCode secondary-lane liveness — gate фазы 6a; `aliveTeamNames` не означает «процессов нет» после `removeMember`.
 
 ## Фаза 3b. Переключение snapshot/read
 

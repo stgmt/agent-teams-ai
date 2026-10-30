@@ -121,6 +121,29 @@ describe('context-bound authoritative lifecycle reads', () => {
     expect(await feed.next()).toMatchObject({ done: true });
   });
 
+  it('answers alive teams and run ids through the same context fence', async () => {
+    const { registry, run, queries, request } = setup();
+    expect(await queries.aliveTeamNames()).toEqual([]);
+    expect(await queries.aliveRunId(request)).toBeNull();
+    const tokens = registry.beginTeamStart(run, () => 'TEST-operation');
+    const token = tokens.find((entry) => entry.memberName === 'builder')!;
+    const process = { pid: 456, birthId: 'TEST-birth' };
+    registry.observeSpawn(token, process);
+    expect(await queries.aliveTeamNames()).toEqual([run.teamName]);
+    expect(await queries.aliveRunId(request)).toBe(run.runId);
+    registry.observeExit(token, process, { code: 0, signal: null });
+    expect(await queries.aliveTeamNames()).toEqual([]);
+    expect(await queries.aliveRunId(request)).toBeNull();
+  });
+
+  it('fences alive reads after the live context rebinds', async () => {
+    const { context, queries, request } = setup();
+    await context.closeAdmission();
+    context.rebind('TEST-next-root');
+    await expect(queries.aliveTeamNames()).rejects.toThrow('APP_CONTEXT_MISMATCH');
+    await expect(queries.aliveRunId(request)).rejects.toThrow('APP_CONTEXT_MISMATCH');
+  });
+
   it.each([
     null,
     {},
@@ -134,6 +157,7 @@ describe('context-bound authoritative lifecycle reads', () => {
     const request = input && { expectedContext: owner, ...input };
     await expect(queries.snapshot(request)).rejects.toThrow();
     await expect(queries.watch(request)).rejects.toThrow();
+    await expect(queries.aliveRunId(request)).rejects.toThrow();
   });
 
   it('rejects a concurrent feed read without orphaning the first waiter', async () => {

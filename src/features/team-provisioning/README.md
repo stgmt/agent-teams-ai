@@ -285,6 +285,40 @@ The separate early desktop entrypoint already places application ownership befor
 eager application imports; packaged Electron/singleton acceptance is tracked
 separately from the provisioning cutover.
 
+## Run registry read port
+
+`TeamRunRegistryRead` (exposed as `NativeTeamLifecycle.runs`) answers run
+identity and liveness only:
+
+| Method                 | Answer                                                                         |
+| ---------------------- | ------------------------------------------------------------------------------ |
+| `find(teamName)`       | registered run snapshot, including a stopped run kept as history               |
+| `hasRun(run)`          | full identity match (app, root, connection, team, run)                         |
+| `isLive(run)`          | registered and still owning the run: running, not released, not release-failed |
+| `aliveTeamNames()`     | teams with at least one configured member owning a process                     |
+| `aliveRunId(teamName)` | current run id only while such a process exists                                |
+
+Non-goals, on purpose:
+
+- no run payloads (`pendingApprovals`, `claudeLogLines`, `detectedSessionId`,
+  relay `child`, reply hints); those consumers keep their own run-scoped state
+  until a dedicated port exists, so the registry cannot become a second one;
+- no mutation or retirement: a stopped run stays registered as history, and a new
+  run for the same team replaces the entry, so memory stays bounded by team count;
+- no context fencing: the facade is composition-internal. IPC/HTTP consumers use
+  `LifecycleQueries`, whose every method is fenced by the expected
+  `AppConnectionContext`.
+
+Liveness is current-process evidence only (`process !== null`, configured
+membership). A crash that produces no exit event leaves the run live until a
+reconcile/stop path observes it; OpenCode secondary-lane liveness is a separate
+phase 6 gate.
+
+`toTeamProvisioningProgress` derives `TeamProvisioningProgress` from the same
+snapshot for the launch progress stream and status reads. It stores nothing, so a
+run that left the registry has no progress until native progress persistence
+lands in the recovery phase.
+
 ## Existing production slices awaiting replacement
 
 The sections below describe the still-connected implementation, not patterns for
