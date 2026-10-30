@@ -46,6 +46,12 @@ const settingsFor = async (
 function setup(options: { omitObservation?: string; stopEmitsRelease?: boolean } = {}) {
   const stops: string[] = [];
   const inputs: { memberName: string; line: string }[] = [];
+  const answers: {
+    memberName: string;
+    requestId: string;
+    allow: boolean;
+    message?: string;
+  }[] = [];
   const groups: { laneId: string; memberNames: string[]; events: MemberLaneGroupEvents | null }[] =
     [];
   const runtime: MemberRuntimePort = {
@@ -75,6 +81,12 @@ function setup(options: { omitObservation?: string; stopEmitsRelease?: boolean }
         async writeInput(memberName, line) {
           inputs.push({ memberName, line });
         },
+        async listPermissions() {
+          return [{ memberName: 'team-lead', requestId: 'TEST-permission' }];
+        },
+        async answerPermission(input) {
+          answers.push(input);
+        },
         async stop() {
           stops.push(laneId);
           if (options.stopEmitsRelease === false) return;
@@ -90,7 +102,7 @@ function setup(options: { omitObservation?: string; stopEmitsRelease?: boolean }
     runtime,
     laneGroups: () => [{ laneId: 'primary', memberNames: ['team-lead', 'builder'] }],
   });
-  return { lifecycle, stops, inputs, groups };
+  return { lifecycle, stops, inputs, answers, groups };
 }
 
 function createWithGroups(
@@ -163,6 +175,27 @@ describe('team lane-group launch', () => {
       error: 'TEST lane failure',
     });
     expect(lifecycle.snapshot(run.teamName).state).toBe('degraded');
+  });
+
+  it('lists and answers permissions through the owning lane group', async () => {
+    const { lifecycle, answers } = setup();
+    await lifecycle.teams.launchConfigured(run, async () => roster);
+    await lifecycle.commands.settled(run, 'team-lead');
+    await expect(lifecycle.commands.listLanePermissions({ run })).resolves.toEqual([
+      { memberName: 'team-lead', requestId: 'TEST-permission' },
+    ]);
+    await lifecycle.commands.answerLanePermission({
+      run,
+      requestId: 'TEST-permission',
+      allow: true,
+      message: 'TEST allow',
+    });
+    expect(answers).toEqual([
+      { memberName: 'team-lead', requestId: 'TEST-permission', allow: true, message: 'TEST allow' },
+    ]);
+    await expect(
+      lifecycle.commands.answerLanePermission({ run, requestId: 'TEST-unknown', allow: true })
+    ).rejects.toThrow('Unknown permission request');
   });
 
   it('rejects a lane group that names an unconfigured or duplicated member', async () => {

@@ -13,7 +13,10 @@ import type { TeamLaunchRuntimeAdapter } from '@main/services/team/runtime';
 export interface NativeMemberRuntimeRoutingDependencies {
   processRuntime: MemberRuntimePort;
   settings: Pick<MemberLaunchSettingsPort, 'findConfiguredMember'>;
-  openCodeAdapter?: Pick<TeamLaunchRuntimeAdapter, 'launch' | 'reconcile' | 'stop'>;
+  openCodeAdapter?: Pick<
+    TeamLaunchRuntimeAdapter,
+    'launch' | 'reconcile' | 'stop' | 'answerRuntimePermission' | 'listRuntimePermissions'
+  >;
 }
 
 export interface NativeMemberRuntimeRouting {

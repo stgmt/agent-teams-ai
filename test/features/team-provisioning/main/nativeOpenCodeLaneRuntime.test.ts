@@ -99,12 +99,40 @@ function setup() {
     warnings: [],
     diagnostics: [],
   }));
-  const adapter = { launch, reconcile, stop } as unknown as Pick<
+  const listRuntimePermissions = vi.fn(async () => ({
+    permissions: [
+      { providerId: 'opencode' as const, requestId: 'TEST-permission', sessionId: 'TEST-session' },
+    ],
+    diagnostics: [],
+  }));
+  const answerRuntimePermission = vi.fn(async () => ({
+    runId: run.runId,
+    teamName: run.teamName,
+    launchPhase: 'active' as const,
+    teamLaunchState: 'clean_success' as const,
+    members: { 'team-lead': evidence('team-lead') },
+    warnings: [],
+    diagnostics: [],
+  }));
+  const adapter = {
+    launch,
+    reconcile,
+    stop,
+    listRuntimePermissions,
+    answerRuntimePermission,
+  } as unknown as Pick<
     TeamLaunchRuntimeAdapter,
-    'launch' | 'reconcile' | 'stop'
+    'launch' | 'reconcile' | 'stop' | 'answerRuntimePermission' | 'listRuntimePermissions'
   >;
   const runtime = new NativeOpenCodeLaneRuntime({ adapter, reconcileIntervalMs: 2_000 });
-  return { runtime, launch, reconcile, stop };
+  return {
+    runtime,
+    launch,
+    reconcile,
+    stop,
+    listRuntimePermissions,
+    answerRuntimePermission,
+  };
 }
 
 afterEach(() => {
@@ -150,6 +178,7 @@ describe('native OpenCode lane runtime', () => {
       runtimeAlive: true,
       bootstrapConfirmed: false,
       permissionBlocked: true,
+      pendingPermissionRequestIds: ['TEST-permission'],
     });
   });
 
@@ -204,6 +233,35 @@ describe('native OpenCode lane runtime', () => {
       )
     ).rejects.toThrow('evidence is missing');
     expect(stop).toHaveBeenCalledWith(expect.objectContaining({ reason: 'cleanup' }));
+  });
+
+  it('lists and answers lane permissions for the owning member session', async () => {
+    const { runtime, answerRuntimePermission } = setup();
+    const group = await runtime.startLaneGroup(
+      [settings('team-lead', 'lead'), settings('builder', 'member')],
+      [token('team-lead'), token('builder')],
+      'primary',
+      new AbortController().signal
+    );
+    await expect(group.listPermissions?.()).resolves.toEqual([
+      { memberName: 'team-lead', requestId: 'TEST-permission' },
+    ]);
+    await group.answerPermission?.({
+      memberName: 'team-lead',
+      requestId: 'TEST-permission',
+      allow: true,
+      message: 'TEST allow',
+    });
+    expect(answerRuntimePermission).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runId: run.runId,
+        laneId: 'primary',
+        memberName: 'team-lead',
+        requestId: 'TEST-permission',
+        decision: 'allow',
+        message: 'TEST allow',
+      })
+    );
   });
 
   it('reports a lost member from reconcile polling', async () => {

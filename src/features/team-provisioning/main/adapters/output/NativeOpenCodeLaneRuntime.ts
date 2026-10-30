@@ -4,6 +4,7 @@ import type { MemberLaneObservation, MemberProcessToken } from '../../../contrac
 import type {
   ConfiguredMemberLaunch,
   MemberLaneGroupEvents,
+  MemberLanePermission,
   MemberRuntimeEvents,
   MemberRuntimePort,
   OwnedMemberLane,
@@ -19,7 +20,10 @@ import type {
 import type { EffortLevel, PersistedTeamLaunchSnapshot } from '@shared/types';
 
 export interface NativeOpenCodeLaneRuntimeDependencies {
-  adapter: Pick<TeamLaunchRuntimeAdapter, 'launch' | 'reconcile' | 'stop'>;
+  adapter: Pick<
+    TeamLaunchRuntimeAdapter,
+    'launch' | 'reconcile' | 'stop' | 'answerRuntimePermission' | 'listRuntimePermissions'
+  >;
   /** Persisted launch history; native progress persistence is a phase 7 gap. */
   previousLaunchState?: PersistedTeamLaunchSnapshot | null;
   reconcileIntervalMs?: number;
@@ -31,20 +35,24 @@ function toObservation(
   evidence: TeamRuntimeMemberLaunchEvidence,
   laneId: string
 ): MemberLaneObservation {
-  const pendingPermissions =
-    (evidence.pendingPermissionRequestIds?.length ?? 0) +
-    (evidence.pendingApprovals?.length ?? 0) +
-    (evidence.pendingPermissions?.length ?? 0);
+  const pendingRequests = [
+    ...(evidence.pendingPermissionRequestIds ?? []),
+    ...(evidence.pendingApprovals ?? []).map((entry) => entry.requestId),
+    ...(evidence.pendingPermissions ?? []).map((entry) => entry.requestId),
+  ];
+  const pendingPermissionRequestIds = [...new Set(pendingRequests)].filter((id) => id.trim());
   return {
     laneId,
     sessionId: evidence.sessionId?.trim() || null,
     hostPid: evidence.runtimePid ?? null,
     runtimeAlive: evidence.runtimeAlive === true,
     bootstrapConfirmed: evidence.bootstrapConfirmed === true,
-    permissionBlocked: pendingPermissions > 0 || evidence.livenessKind === 'permission_blocked',
+    permissionBlocked:
+      pendingPermissionRequestIds.length > 0 || evidence.livenessKind === 'permission_blocked',
     ...(evidence.hardFailure
       ? { failure: evidence.hardFailureReason ?? 'OpenCode lane member failed' }
       : {}),
+    ...(pendingPermissionRequestIds.length > 0 ? { pendingPermissionRequestIds } : {}),
   };
 }
 
@@ -101,6 +109,48 @@ class OpenCodeLaneGroup implements OwnedMemberLaneGroup {
   async writeInput(): Promise<void> {
     // OpenCode delivery is owned by the inbox relay, not a stdin pipe.
     throw new Error('OpenCode lane input is delivered through the inbox relay');
+  }
+
+  async listPermissions(): Promise<readonly MemberLanePermission[]> {
+    const list = this.deps.adapter.listRuntimePermissions;
+    if (!list) return [];
+    const result = await list.call(this.deps.adapter, {
+      teamName: this.input.teamName,
+      ...(this.input.laneId ? { laneId: this.input.laneId } : {}),
+      cwd: this.input.cwd,
+    });
+    const permissions: MemberLanePermission[] = [];
+    for (const permission of result.permissions) {
+      const member = Object.entries(this.observations).find(
+        ([, observation]) =>
+          permission.sessionId != null && observation.sessionId === permission.sessionId
+      );
+      if (member) permissions.push({ memberName: member[0], requestId: permission.requestId });
+    }
+    return permissions;
+  }
+
+  async answerPermission(input: {
+    memberName: string;
+    requestId: string;
+    allow: boolean;
+    message?: string;
+  }): Promise<void> {
+    const answer = this.deps.adapter.answerRuntimePermission;
+    if (!answer) throw new Error('Adapter permission answers are not available');
+    await answer.call(this.deps.adapter, {
+      runId: this.input.runId,
+      teamName: this.input.teamName,
+      ...(this.input.laneId ? { laneId: this.input.laneId } : {}),
+      cwd: this.input.cwd,
+      providerId: 'opencode',
+      memberName: input.memberName,
+      requestId: input.requestId,
+      decision: input.allow ? 'allow' : 'reject',
+      ...(input.message ? { message: input.message } : {}),
+      expectedMembers: this.input.expectedMembers,
+      previousLaunchState: this.input.previousLaunchState,
+    });
   }
 
   private detach(): void {

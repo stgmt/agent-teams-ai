@@ -45,7 +45,10 @@ export interface NativeTeamLifecycleDependencies {
   controlUrl(): Promise<string>;
   briefing(settings: Readonly<ConfiguredMemberLaunch>): Promise<string>;
   /** Adapter for OpenCode lanes; omitted keeps OpenCode unsupported by native launch. */
-  openCodeAdapter?: Pick<TeamLaunchRuntimeAdapter, 'launch' | 'reconcile' | 'stop'>;
+  openCodeAdapter?: Pick<
+    TeamLaunchRuntimeAdapter,
+    'launch' | 'reconcile' | 'stop' | 'answerRuntimePermission' | 'listRuntimePermissions'
+  >;
   invalidate(teamName: string): void;
   contextInvalidationSignal(expected: AppConnectionContext): AbortSignal;
   withExpectedContext<T>(expected: AppConnectionContext, operation: () => Promise<T>): Promise<T>;

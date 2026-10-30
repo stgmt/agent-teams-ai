@@ -127,10 +127,15 @@ used.
   optional `openCodeAdapter` and supplies the routing planner to the lifecycle.
   Without an adapter, OpenCode stays process-only and the native planner rejects
   it explicitly.
+- 6a.6 (landed): permission answer/list. Lane evidence now carries pending
+  request ids; `NativeOpenCodeLaneRuntime` lists adapter permissions and maps them
+  to the owning member by session id, and answers through
+  `answerRuntimePermission` with the lane's expected members and launch history.
+  `MemberLifecycleCommands` exposes `listLanePermissions`/`answerLanePermission`
+  scoped to the exact run; unknown requests fail closed.
 - Remaining before A is complete: pass the real `TeamRuntimeAdapterRegistry`
-  entry into the production composition, permission answer/list, lane restart
-  semantics, and recovery after app restart. The legacy OpenCode route is not
-  deleted until these land.
+  entry into the production composition, lane restart semantics, and recovery
+  after app restart. The legacy OpenCode route is not deleted until these land.
 
 ## Recommendation
 

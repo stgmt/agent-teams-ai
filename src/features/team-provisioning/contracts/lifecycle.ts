@@ -36,6 +36,8 @@ export interface MemberLaneObservation {
   permissionBlocked: boolean;
   /** Adapter-reported hard failure for this member, if any. */
   failure?: string | null;
+  /** Pending permission request ids owned by this member. */
+  pendingPermissionRequestIds?: readonly string[];
 }
 
 export type MemberPhase =

@@ -371,7 +371,12 @@ export class MemberLifecycleRegistry {
     if (!current) return false;
     const { team, member } = current;
     if (member.process !== null || !LANE_OBSERVABLE_PHASES.has(member.phase)) return false;
-    member.lane = Object.freeze({ ...lane });
+    member.lane = Object.freeze({
+      ...lane,
+      ...(lane.pendingPermissionRequestIds
+        ? { pendingPermissionRequestIds: Object.freeze([...lane.pendingPermissionRequestIds]) }
+        : {}),
+    });
     member.resources = 'held';
     if (member.desired === 'stopped') {
       member.phase = 'stopping';

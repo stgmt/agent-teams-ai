@@ -79,12 +79,25 @@ export interface MemberLaneGroupEvents {
   released(): void;
 }
 
+/** One pending adapter permission, scoped to its lane member. */
+export interface MemberLanePermission {
+  memberName: string;
+  requestId: string;
+}
+
 /** One adapter launch unit hosting several members in the same lane. */
 export interface OwnedMemberLaneGroup {
   observations: Readonly<Record<string, Readonly<MemberLaneObservation>>>;
   subscribe(events: MemberLaneGroupEvents): () => void;
   stop(): Promise<void>;
   writeInput(memberName: string, line: string): Promise<void>;
+  listPermissions?(): Promise<readonly MemberLanePermission[]>;
+  answerPermission?(input: {
+    memberName: string;
+    requestId: string;
+    allow: boolean;
+    message?: string;
+  }): Promise<void>;
 }
 
 export interface MemberRuntimePort {

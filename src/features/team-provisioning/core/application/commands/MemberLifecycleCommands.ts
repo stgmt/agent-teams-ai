@@ -12,6 +12,7 @@ import type {
 import type { MemberLifecycleRegistry } from '../../domain/MemberLifecycleRegistry';
 import type {
   ConfiguredMemberLaunch,
+  MemberLanePermission,
   MemberLaunchSettingsPort,
   MemberRuntimePort,
   OwnedMemberLane,
@@ -244,6 +245,37 @@ export class MemberLifecycleCommands {
     };
     this.laneGroups.set(laneGroupKey(first, laneId), execution);
     execution.completion = this.startLaneGroup(execution);
+  }
+
+  async listLanePermissions(input: {
+    run: TeamRunIdentity;
+  }): Promise<readonly MemberLanePermission[]> {
+    const groups = this.laneGroupsForRun(input.run);
+    const results = await Promise.all(
+      groups.map(async (group) => (await group.group?.listPermissions?.()) ?? [])
+    );
+    return results.flat();
+  }
+
+  async answerLanePermission(input: {
+    run: TeamRunIdentity;
+    requestId: string;
+    allow: boolean;
+    message?: string;
+  }): Promise<void> {
+    for (const group of this.laneGroupsForRun(input.run)) {
+      const permissions = (await group.group?.listPermissions?.()) ?? [];
+      const permission = permissions.find((entry) => entry.requestId === input.requestId);
+      if (!permission) continue;
+      await group.group?.answerPermission?.({
+        memberName: permission.memberName,
+        requestId: input.requestId,
+        allow: input.allow,
+        ...(input.message ? { message: input.message } : {}),
+      });
+      return;
+    }
+    throw new Error('Unknown permission request');
   }
 
   async stop(team: TeamRunIdentity, memberName: string): Promise<void> {
@@ -561,6 +593,12 @@ export class MemberLifecycleCommands {
         execution.stop = null;
       });
     return execution.stop;
+  }
+
+  private laneGroupsForRun(team: TeamRunIdentity): LaneGroupExecution[] {
+    return [...this.laneGroups.values()].filter(
+      (group) => key(group.tokens[0]!, '') === key(team, '')
+    );
   }
 
   private laneGroupsFor(team: TeamRunIdentity, memberName: string): LaneGroupExecution[] {
