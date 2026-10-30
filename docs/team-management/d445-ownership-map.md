@@ -25,6 +25,40 @@
 7. **Writers.** Human writer — `sendDirectToLead` через controller `appendSentMessage`; `TeamSentMessagesStore.appendMessage` — OpenCode delivery. Гейт по `source:'user_sent'`, не по имени метода.
 8. **`historicalBootstrapConfirmed`** используется member-work-sync для OpenCode `registered_only/stale_metadata`; правило per-consumer, не абсолютное.
 
+## 1b. Run registry matrix
+
+`service.runs` — не просто реестр процессов; его читают:
+
+| Потребитель | Файл | Что читает | Целевой порт |
+|---|---|---|---|
+| Approvals | `TeamProvisioningToolApprovalFacade.ts` | run по team | native run registry |
+| Task activity | `TeamProvisioningTaskActivityCompatibilityFacade.ts` | run/team | native run registry |
+| Live lead messages | `TeamProvisioningLiveLeadMessagePortsFactory.ts` | run | native run registry |
+| Inbox relay | `TeamProvisioningCompatibilityFacade.ts:217` | alive run | native run registry |
+| Spawn status | `TeamProvisioningMemberSpawnStatusSnapshotPortsFactory.ts` | run | native snapshot |
+| Logs | `TeamProvisioningClaudeLogs.ts:35-37` | tracked run | native run registry |
+| Cancellation | `TeamProvisioningCancellationBoundary.ts:272` | run by id | native cancel port |
+| Cleanup | `TeamProvisioningCleanup.ts:363` | run delete | native cleanup |
+| Diagnostics | `TeamProvisioningDiagnosticsPreflightCompatibilityFacade.ts:259` | runs | native queries |
+
+Правило: до phase 3 либо один native run-registry port для всех, либо явно разрешённый read-only bridge с тестами. Нельзя оставлять два реестра.
+
+## 1c. `snapshotToMemberSpawnStatuses` call sites
+
+Live projection, не historical badge:
+
+- `TeamProvisioningLiveLaunchSnapshotBoundaryFactory.ts:127`
+- `TeamProvisioningMemberSpawnSnapshots.ts:707`
+- `TeamProvisioningMemberSpawnStatusSnapshotPortsFactory.ts:168`
+- `TeamProvisioningMemberSpawnStatusesReadOnly.ts:89`
+- `TeamProvisioningMixedSecondaryLaneWiring.ts:303`
+- `TeamProvisioningOpenCodeAggregateLaunchPersistence.ts:439`
+- `TeamProvisioningOpenCodeRuntimeAdapterLaunch.ts:282`
+- `TeamProvisioningPersistedLaunchReconciliation.ts:388`
+- `TeamProvisioningStaleMixedSecondaryRecovery.ts:204`
+
+Цель: новый live status port; persisted `confirmed_alive` — только history/badges. Каждый call site получает тест exit/restart/recovery.
+
 ## 2. Process-owning API
 
 | API | Текущий владелец | Целевой владелец | Действие |
