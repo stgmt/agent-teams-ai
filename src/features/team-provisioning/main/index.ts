@@ -24,6 +24,7 @@ export type { NativeTaskActivityRepairDependencies } from './adapters/output/Nat
 export { NativeTaskActivityRepair } from './adapters/output/NativeTaskActivityRepair';
 export { NativeTeamClaudeLogs } from './adapters/output/NativeTeamClaudeLogs';
 export { NativeTeamDiagnostics } from './adapters/output/NativeTeamDiagnostics';
+export { NativeToolApprovalSettings } from './adapters/output/NativeToolApprovalSettings';
 export { NodeTeamDefinitionStore } from './adapters/output/NodeTeamDefinitionStore';
 export { createBoundHumanRequestSubmission } from './composition/createBoundHumanRequestSubmission';
 export {

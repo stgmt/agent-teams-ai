@@ -1,6 +1,7 @@
 import type { TeamRunRegistryRead } from '../../../contracts';
 import type { MemberLifecycleCommands } from '../../../core/application/commands/MemberLifecycleCommands';
 import type { NativeClaudeToolApprovals } from '../output/NativeClaudeToolApprovals';
+import type { NativeToolApprovalSettings } from '../output/NativeToolApprovalSettings';
 import type { TeamToolApprovalApi } from '@main/services/team/contracts/TeamProvisioningApis';
 import type { ToolApprovalSettings } from '@shared/types';
 
@@ -8,6 +9,7 @@ interface Dependencies {
   runs: Pick<TeamRunRegistryRead, 'find'>;
   commands: Pick<MemberLifecycleCommands, 'answerLanePermission'>;
   claudeApprovals?: Pick<NativeClaudeToolApprovals, 'respond'>;
+  settings?: Pick<NativeToolApprovalSettings, 'update'>;
 }
 
 /**
@@ -45,7 +47,8 @@ export class NativeTeamToolApprovalApi implements TeamToolApprovalApi {
     throw new Error('Unknown permission request');
   }
 
-  updateToolApprovalSettings(_teamName: string, _settings: ToolApprovalSettings): void {
-    throw new Error('Tool approval settings are not migrated');
+  updateToolApprovalSettings(teamName: string, settings: ToolApprovalSettings): void {
+    if (!this.deps.settings) throw new Error('Tool approval settings are not migrated');
+    this.deps.settings.update(teamName, settings);
   }
 }

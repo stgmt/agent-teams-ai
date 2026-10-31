@@ -15,6 +15,7 @@ import {
 import { NativeConfiguredProvider } from '../adapters/output/NativeConfiguredProvider';
 import { NativeTeamLogStore } from '../adapters/output/NativeTeamLogStore';
 import { NativeTeamTaskLedgerReader } from '../adapters/output/NativeTeamTaskLedgerReader';
+import { NativeToolApprovalSettings } from '../adapters/output/NativeToolApprovalSettings';
 import { NodeMemberRuntime } from '../adapters/output/NodeMemberRuntime';
 import { NodeNativeLaunchArtifacts } from '../adapters/output/NodeNativeLaunchArtifacts';
 import { NodeNativeMemberRegistration } from '../adapters/output/NodeNativeMemberRegistration';
@@ -65,6 +66,7 @@ export interface NativeTeamLifecycle {
   queries: LifecycleQueries;
   logs: Pick<NativeTeamLogStore, 'read'>;
   approvals: Pick<NativeClaudeToolApprovals, 'list' | 'respond'>;
+  toolApprovalSettings: Pick<NativeToolApprovalSettings, 'get' | 'update'>;
   taskChanges: Pick<NativeTeamTaskLedgerReader, 'read'>;
   leadStart: Pick<MemberLifecycle['leadStart'], 'execute'>;
   resolveLeadCredential(credential: string): Readonly<TeamRunIdentity>;
@@ -111,6 +113,7 @@ export function createNativeTeamLifecycle(
     prepareArtifacts: (launch, token, signal) => artifacts.prepare(launch, token, signal),
   });
   const logs = new NativeTeamLogStore();
+  const toolApprovalSettings = new NativeToolApprovalSettings();
   let writeApprovalLine: (
     token: Readonly<MemberProcessToken>,
     line: string
@@ -163,12 +166,16 @@ export function createNativeTeamLifecycle(
       prepare: async (run, signal) => {
         await settings.prepareWorkspace(run, workspace, signal);
         await config.prepare(run, signal);
+        const configured = await settings.runtimeConfiguration(run);
+        const lead = configured.members.find(({ launch }) => launch.role === 'lead');
+        toolApprovalSettings.initializeForLaunch(run.teamName, lead?.launch.skipPermissions);
       },
       release: async (run) => {
         await config.release(run);
         settings.release(run);
         logs.clear(run.runId);
         approvals.clearRun(run.runId);
+        toolApprovalSettings.clear(run.teamName);
       },
     },
   });
@@ -230,6 +237,7 @@ export function createNativeTeamLifecycle(
     runs,
     logs,
     approvals,
+    toolApprovalSettings,
     taskChanges,
     commands: createBoundLifecycleCommands({
       owner: deps.owner,

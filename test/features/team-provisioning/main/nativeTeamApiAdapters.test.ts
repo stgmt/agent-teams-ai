@@ -148,4 +148,16 @@ describe('native team API adapters', () => {
     await api.respondToToolApproval('test-team', run.runId, 'TEST-request', false, 'TEST deny');
     expect(respond).toHaveBeenCalledWith(run.runId, 'TEST-request', false, 'TEST deny');
   });
+
+  it('delegates tool approval settings when a store is supplied', () => {
+    const update = vi.fn();
+    const api = new NativeTeamToolApprovalApi({
+      runs: { find: () => null },
+      commands: { answerLanePermission: vi.fn() },
+      settings: { update },
+    });
+    const settings = { autoAllowAll: true } as never;
+    api.updateToolApprovalSettings('test-team', settings);
+    expect(update).toHaveBeenCalledWith('test-team', settings);
+  });
 });

@@ -36,7 +36,7 @@ work before cutover. No row may be silently omitted from the cutover commit.
 | `getLeadActivityState` / `getLeadContextUsage` | blocked                     | legacy run payloads; fail-closed                                            |
 | `respondToToolApproval` (OpenCode lane)        | native                      | `NativeTeamToolApprovalApi`                                                 |
 | `respondToToolApproval` (Claude process)       | native                      | `NativeClaudeToolApprovals` ingests `control_request` and answers via stdin |
-| `updateToolApprovalSettings`                   | blocked                     | legacy settings store not ported                                            |
+| `updateToolApprovalSettings`                   | native (in-memory)          | `NativeToolApprovalSettings`                                                |
 
 ## Messaging/relay/cross-team
 
