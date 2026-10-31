@@ -15,14 +15,10 @@ import type { InboxMessage, OpenCodeRuntimeDeliveryStatus, TeamProviderId } from
  * watchdogs. It owns no runs or processes, so it is injected instead of rebuilt
  * here; the composition supplies the production ledger.
  */
-export interface NativeOpenCodeMemberDeliveryPort {
-  relay(
-    teamName: string,
-    memberName: string,
-    options?: TeamOpenCodeMemberInboxRelayOptions
-  ): Promise<TeamOpenCodeMemberInboxRelayResult>;
-  status(teamName: string, messageId: string): Promise<OpenCodeRuntimeDeliveryStatus | null>;
-}
+export type NativeOpenCodeMemberDeliveryPort = Pick<
+  TeamMessagingApi,
+  'relayOpenCodeMemberInboxMessages' | 'getOpenCodeRuntimeDeliveryStatus'
+>;
 
 interface Dependencies {
   runs: Pick<TeamRunRegistryRead, 'find'>;
@@ -86,7 +82,7 @@ export class NativeTeamMessagingApi implements TeamMessagingApi {
     this.requireRun(teamName);
     const delivery = this.deps.openCodeMemberDelivery;
     if (!delivery) throw new Error('OpenCode member delivery ledger is not configured');
-    return delivery.relay(teamName, memberName, options);
+    return delivery.relayOpenCodeMemberInboxMessages(teamName, memberName, options);
   }
 
   async getOpenCodeRuntimeDeliveryStatus(
@@ -95,7 +91,7 @@ export class NativeTeamMessagingApi implements TeamMessagingApi {
   ): Promise<OpenCodeRuntimeDeliveryStatus | null> {
     const delivery = this.deps.openCodeMemberDelivery;
     if (!delivery) throw new Error('OpenCode member delivery ledger is not configured');
-    return delivery.status(teamName, messageId);
+    return delivery.getOpenCodeRuntimeDeliveryStatus(teamName, messageId);
   }
 
   async relayLeadInboxMessages(teamName: string): Promise<number> {

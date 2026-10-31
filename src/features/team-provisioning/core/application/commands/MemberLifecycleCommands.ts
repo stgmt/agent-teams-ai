@@ -12,6 +12,7 @@ import type {
 import type { MemberLifecycleRegistry } from '../../domain/MemberLifecycleRegistry';
 import type {
   ConfiguredMemberLaunch,
+  MemberAttachReason,
   MemberLanePermission,
   MemberLaunchSettingsPort,
   MemberRuntimePort,
@@ -536,21 +537,43 @@ export class MemberLifecycleCommands {
   }
 
   /** Attaches one already-configured teammate and starts its owned runtime. */
-  async attach(team: TeamRunIdentity, memberName: string): Promise<void> {
+  async attach(
+    team: TeamRunIdentity,
+    memberName: string,
+    reason: MemberAttachReason = 'member_added'
+  ): Promise<void> {
     const admit = this.ports.settings.admitConfiguredMember;
     if (!admit || !this.ports.registerConfiguredMember)
-      throw new Error('Configured member attach is not available');
+      throw new Error('Configured member attach is not configured');
+    const current = this.ports.registry.snapshot(team.teamName).members[memberName];
+    if (current?.membership === 'removed' && reason !== 'member_restored')
+      throw new Error('Member was removed');
     await admit.call(this.ports.settings, team, memberName);
     const launch = await this.ports.settings.findConfiguredMember(team, memberName);
     if (!launch || launch.memberName !== memberName || key(launch.team, '') !== key(team, ''))
-      throw new Error('Configured member attach is not available');
+      throw new Error('Configured member settings changed before attach');
+    if (launch.role === 'lead')
+      throw new Error('Lead attach is not supported from member controls');
     await this.ports.registerConfiguredMember(team, launch);
-    await this.ports.gate.run(team.teamName, async () => {
+    const replaceRuntime = await this.ports.gate.run(team.teamName, async () => {
       this.ports.registry.assertRun(team);
-      const member = this.ports.registry.snapshot(team.teamName).members[memberName];
-      if (member?.membership === 'removed') throw new Error('Member was removed');
-      if (!member) this.ports.registry.addMember(team, { memberName, role: 'member' });
-      if (member?.process || member?.lane || member?.desired === 'running') return;
+      let member = this.ports.registry.snapshot(team.teamName).members[memberName];
+      if (member?.membership === 'removed') {
+        if (reason !== 'member_restored') throw new Error('Member was removed');
+        this.ports.registry.restoreMember(team, { memberName, role: 'member' });
+      } else if (!member) {
+        this.ports.registry.addMember(team, { memberName, role: 'member' });
+      }
+      member = this.ports.registry.snapshot(team.teamName).members[memberName]!;
+      if (
+        this.restarts.has(key(team, memberName)) ||
+        this.executions.get(key(team, memberName))?.stop
+      )
+        throw new MemberRestartConflictError('Member restart is still settling');
+      if (member.process || member.lane) {
+        // Only an explicit member update replaces a live runtime; a plain attach is a no-op.
+        return reason === 'member_updated' ? member.generation : null;
+      }
       const admission = this.ports.registry.beginStart(
         team,
         memberName,
@@ -558,7 +581,10 @@ export class MemberLifecycleCommands {
       );
       if (admission.kind !== 'launch') throw new Error('Member attach was not admitted');
       this.launch(admission.token);
+      return null;
     });
+    if (replaceRuntime !== null)
+      await this.restart({ ...team, memberName, generation: replaceRuntime });
   }
 
   cancelAdmitted(team: TeamRunIdentity, memberNames: readonly string[]): readonly Promise<void>[] {

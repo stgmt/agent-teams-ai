@@ -36,6 +36,7 @@ const settingsFor = async (
 ): Promise<ConfiguredMemberLaunch> => ({
   team,
   memberName,
+  role: memberName === 'team-lead' ? 'lead' : 'member',
   configurationRevision: 'TEST-revision',
   providerId: 'opencode',
   model: null,
@@ -511,6 +512,56 @@ describe('team lane-group launch', () => {
     const member = shared.lifecycle.snapshot(run.teamName).members.tester;
     expect(member).toMatchObject({ membership: 'configured', phase: 'ready' });
     expect(shared.groups.map((group) => group.laneId)).toContain('secondary:opencode:tester');
+  });
+
+  it('rejects attaching the lead and a plain re-attach of a live member', async () => {
+    const shared = setup();
+    await shared.lifecycle.teams.launchConfigured(run, async () => roster);
+    await shared.lifecycle.commands.settled(run, 'builder');
+    await expect(shared.lifecycle.commands.attach(run, 'team-lead')).rejects.toThrow(
+      'Lead attach is not supported'
+    );
+    const lanes = shared.groups.length;
+    await shared.lifecycle.commands.attach(run, 'builder');
+    expect(shared.groups.length).toBe(lanes);
+  });
+
+  it('replaces a live runtime only for an explicit member update', async () => {
+    const shared = setup();
+    await shared.lifecycle.teams.launchConfigured(run, async () => roster);
+    await shared.lifecycle.commands.settled(run, 'tester');
+    const before = shared.lifecycle.snapshot(run.teamName).members.tester;
+    const lanes = shared.groups.length;
+    await shared.lifecycle.commands.attach(run, 'tester', 'member_updated');
+    await shared.lifecycle.commands.settled(run, 'tester');
+    const after = shared.lifecycle.snapshot(run.teamName).members.tester;
+    expect(after).toMatchObject({ membership: 'configured', phase: 'ready' });
+    expect(after?.generation).toBe((before?.generation ?? 0) + 1);
+    expect(shared.groups.length).toBeGreaterThan(lanes);
+  });
+
+  it('restores a previously detached member through a fresh registry generation', async () => {
+    const shared = setup();
+    await shared.lifecycle.teams.launchConfigured(run, async () => roster);
+    await shared.lifecycle.commands.attach(run, 'tester');
+    await shared.lifecycle.commands.settled(run, 'tester');
+    const generation = shared.lifecycle.snapshot(run.teamName).members.tester?.generation ?? 0;
+    await shared.lifecycle.commands.detach(run, 'tester');
+    expect(shared.lifecycle.snapshot(run.teamName).members.tester).toMatchObject({
+      membership: 'removed',
+    });
+    await expect(shared.lifecycle.commands.attach(run, 'tester')).rejects.toThrow(
+      'Member was removed'
+    );
+    await shared.lifecycle.commands.attach(run, 'tester', 'member_restored');
+    await shared.lifecycle.commands.settled(run, 'tester');
+    expect(shared.lifecycle.snapshot(run.teamName).members.tester).toMatchObject({
+      membership: 'configured',
+      phase: 'ready',
+    });
+    expect(shared.lifecycle.snapshot(run.teamName).members.tester?.generation ?? 0).toBeGreaterThan(
+      generation
+    );
   });
 
   it('rejects a lane group that names an unconfigured or duplicated member', async () => {

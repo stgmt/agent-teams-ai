@@ -134,6 +134,45 @@ describe('app-owned native team runtime configuration', () => {
     });
   });
 
+  it('updates an existing row without dropping its live runtime projection', async () => {
+    const { config, configPath, membersMeta, settings } = await setup();
+    await config.prepare(run, new AbortController().signal);
+    membersMeta.members.push({ name: 'tester', color: 'green', joinedAt: 40 } as never);
+    await settings.admitConfiguredMember(run, 'tester');
+    await config.addMember(run, (await settings.findConfiguredMember(run, 'tester'))!);
+    const written = await readConfig(configPath);
+    const tester = written.members.find((member: { name: string }) => member.name === 'tester');
+    tester.runtimePid = 4242;
+    tester.sessionId = 'TEST-session';
+    await writeFile(configPath, JSON.stringify(written));
+    const changed = membersMeta.members.find((member) => member.name === 'tester') as {
+      role?: string;
+    };
+    changed.role = 'TEST updated role';
+    await settings.admitConfiguredMember(run, 'tester');
+    await config.addMember(run, (await settings.findConfiguredMember(run, 'tester'))!);
+    const saved = await readConfig(configPath);
+    const updated = saved.members.find((member: { name: string }) => member.name === 'tester');
+    expect(updated).toMatchObject({
+      runtimePid: 4242,
+      sessionId: 'TEST-session',
+    });
+    expect(updated.prompt).toContain('TEST updated role');
+    expect(saved.members).toHaveLength(3);
+  });
+
+  it('rejects attaching the lead or a member from another run', async () => {
+    const { config, settings } = await setup();
+    await config.prepare(run, new AbortController().signal);
+    const member = (await settings.findConfiguredMember(run, 'builder'))!;
+    await expect(config.addMember(run, { ...member, role: 'lead' })).rejects.toThrow(
+      'Lead attach is not supported'
+    );
+    await expect(
+      config.addMember(run, { ...member, team: { ...member.team, runId: 'OTHER-run' } })
+    ).rejects.toThrow('does not belong to this run');
+  });
+
   it('materializes a configured Gemini lead and member without rewriting their provider selection', async () => {
     const root = await mkdtemp(join(tmpdir(), 'TEST-native-gemini-config-'));
     directories.push(root);

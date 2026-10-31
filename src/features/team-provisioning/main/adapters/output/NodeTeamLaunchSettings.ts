@@ -32,6 +32,10 @@ interface CapturedTeam {
   runKey: string;
   configurationRevision: string;
   members: readonly Readonly<ConfiguredMemberIdentity>[];
+  /** Team metadata fingerprint at admission; attach must not launder unrelated drift. */
+  metaFingerprint: string;
+  /** Per-member saved-settings fingerprints; only the attached member may differ. */
+  memberFingerprints: Readonly<Record<string, string>>;
 }
 
 export interface ConfiguredNativeTeam {
@@ -64,6 +68,35 @@ function frozenMcpPolicy(policy: TeamMemberMcpPolicy | undefined): TeamMemberMcp
     scopes: policy.scopes ? Object.freeze({ ...policy.scopes }) : undefined,
     serverNames,
   });
+}
+
+function memberFingerprint(member: TeamMember): string {
+  return JSON.stringify([
+    member.name,
+    member.role,
+    member.agentType,
+    member.workflow,
+    member.isolation,
+    member.cwd,
+    member.providerId,
+    member.providerBackendId,
+    member.model,
+    member.effort,
+    member.fastMode,
+    member.mcpPolicy && [
+      member.mcpPolicy.mode,
+      member.mcpPolicy.serverNames,
+      member.mcpPolicy.scopes &&
+        Object.entries(member.mcpPolicy.scopes).sort(([a], [b]) => a.localeCompare(b)),
+    ],
+  ]);
+}
+
+function fingerprints(members: readonly TeamMember[]): Readonly<Record<string, string>> {
+  const result: Record<string, string> = {};
+  for (const member of members)
+    if (!member.removedAt) result[member.name] = memberFingerprint(member);
+  return Object.freeze(result);
 }
 
 function revision(meta: TeamMetaFile, members: readonly TeamMember[]): string {
@@ -121,17 +154,7 @@ export class NodeTeamLaunchSettings implements MemberLaunchSettingsPort {
         throw new Error('Canonical team launch settings changed after admission');
       return previous;
     }
-    const active = this.withConfiguredLead(members);
-    if (active.filter(isCanonicalSettingsLeadMember).length !== 1) {
-      throw new Error('Canonical team roster must contain exactly one lead');
-    }
-    const names = new Set<string>();
-    for (const member of active) {
-      if (!member.name.trim() || member.name !== member.name.trim() || names.has(member.name)) {
-        throw new Error('Canonical team roster contains an invalid or duplicate member');
-      }
-      names.add(member.name);
-    }
+    const active = this.validatedRoster(members);
     const captured = Object.freeze({
       runKey: runKey(run),
       configurationRevision: revision(meta, members),
@@ -143,6 +166,8 @@ export class NodeTeamLaunchSettings implements MemberLaunchSettingsPort {
           })
         )
       ),
+      metaFingerprint: fingerprintSavedLaunchSettings(meta),
+      memberFingerprints: fingerprints(active),
     });
     this.captured.set(run.teamName, captured);
     const cancel = (): void => this.release(run);
@@ -200,23 +225,43 @@ export class NodeTeamLaunchSettings implements MemberLaunchSettingsPort {
     const captured = this.captured.get(run.teamName);
     if (captured?.runKey !== runKey(run)) throw new Error('Team run settings were not captured');
     const { meta, members } = await this.read(run.teamName);
+    // A concurrent stop must not be resurrected by a write that started before it.
+    if (this.captured.get(run.teamName) !== captured)
+      throw new Error('Team run settings were not captured');
     const member = members.find((entry) => !entry.removedAt && entry.name === memberName);
     if (!member) throw new Error(`Member "${memberName}" is not configured`);
-    this.captured.set(
-      run.teamName,
-      Object.freeze({
-        runKey: captured.runKey,
-        configurationRevision: revision(meta, members),
-        members: Object.freeze(
-          this.withConfiguredLead(members).map((entry) =>
-            Object.freeze({
-              memberName: entry.name,
-              role: isCanonicalSettingsLeadMember(entry) ? ('lead' as const) : ('member' as const),
-            })
-          )
-        ),
-      })
-    );
+    const active = this.validatedRoster(members);
+    if (fingerprintSavedLaunchSettings(meta) !== captured.metaFingerprint)
+      throw new Error('Canonical team launch settings changed after admission');
+    const current = fingerprints(active);
+    // Only the attached member may drift; every other member stays as admitted.
+    for (const [name, fingerprint] of Object.entries(captured.memberFingerprints)) {
+      if (name !== memberName && current[name] !== fingerprint)
+        throw new Error('Canonical team launch settings changed after admission');
+    }
+    const next = Object.freeze({
+      runKey: captured.runKey,
+      configurationRevision: revision(meta, members),
+      members: Object.freeze(
+        active.map((entry) =>
+          Object.freeze({
+            memberName: entry.name,
+            role: isCanonicalSettingsLeadMember(entry) ? ('lead' as const) : ('member' as const),
+          })
+        )
+      ),
+      metaFingerprint: fingerprintSavedLaunchSettings(meta),
+      memberFingerprints: current,
+    });
+    if (this.captured.get(run.teamName) !== captured)
+      throw new Error('Team run settings were not captured');
+    // The prepared workspace is keyed by the capture object; carry it to the rebased capture.
+    const workspace = this.workspaces.get(captured);
+    this.captured.set(run.teamName, next);
+    if (workspace) {
+      this.workspaces.delete(captured);
+      this.workspaces.set(next, workspace);
+    }
   }
 
   async findConfiguredMember(
@@ -320,6 +365,21 @@ export class NodeTeamLaunchSettings implements MemberLaunchSettingsPort {
       if (captured) this.workspaces.delete(captured);
       this.captured.delete(run.teamName);
     }
+  }
+
+  private validatedRoster(members: readonly TeamMember[]): TeamMember[] {
+    const active = this.withConfiguredLead(members);
+    if (active.filter(isCanonicalSettingsLeadMember).length !== 1) {
+      throw new Error('Canonical team roster must contain exactly one lead');
+    }
+    const names = new Set<string>();
+    for (const member of active) {
+      if (!member.name.trim() || member.name !== member.name.trim() || names.has(member.name)) {
+        throw new Error('Canonical team roster contains an invalid or duplicate member');
+      }
+      names.add(member.name);
+    }
+    return active;
   }
 
   private withConfiguredLead(members: readonly TeamMember[]): TeamMember[] {

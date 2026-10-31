@@ -24,7 +24,10 @@ const snapshot = {
   },
 } as unknown as TeamLifecycleSnapshot;
 
-function setup(delivery?: { relay: ReturnType<typeof vi.fn>; status: ReturnType<typeof vi.fn> }) {
+function setup(delivery?: {
+  relayOpenCodeMemberInboxMessages: ReturnType<typeof vi.fn>;
+  getOpenCodeRuntimeDeliveryStatus: ReturnType<typeof vi.fn>;
+}) {
   const sendLeadMessage = vi.fn(async () => undefined);
   const relayLeadInboxMessages = vi.fn(async () => 0);
   const findConfiguredMember = vi.fn(async () => ({
@@ -76,17 +79,24 @@ describe('native team messaging', () => {
   });
 
   it('delegates OpenCode member delivery to the configured ledger', async () => {
-    const relay = vi.fn(async () => ({ attempted: ['builder'] }) as never);
-    const status = vi.fn(async () => ({ responsePending: true }) as never);
-    const { api } = setup({ relay, status });
+    const relayOpenCodeMemberInboxMessages = vi.fn(async () => ({ attempted: [] }) as never);
+    const getOpenCodeRuntimeDeliveryStatus = vi.fn(
+      async () => ({ responsePending: true }) as never
+    );
+    const { api } = setup({
+      relayOpenCodeMemberInboxMessages,
+      getOpenCodeRuntimeDeliveryStatus,
+    });
     await expect(
       api.relayOpenCodeMemberInboxMessages('test-team', 'builder', { onlyMessageId: 'message' })
-    ).resolves.toMatchObject({ attempted: ['builder'] });
-    expect(relay).toHaveBeenCalledWith('test-team', 'builder', { onlyMessageId: 'message' });
+    ).resolves.toMatchObject({ attempted: [] });
+    expect(relayOpenCodeMemberInboxMessages).toHaveBeenCalledWith('test-team', 'builder', {
+      onlyMessageId: 'message',
+    });
     await expect(
       api.getOpenCodeRuntimeDeliveryStatus('test-team', 'message')
     ).resolves.toMatchObject({ responsePending: true });
-    expect(status).toHaveBeenCalledWith('test-team', 'message');
+    expect(getOpenCodeRuntimeDeliveryStatus).toHaveBeenCalledWith('test-team', 'message');
     await expect(api.relayOpenCodeMemberInboxMessages('absent', 'builder')).rejects.toThrow(
       'Unknown team'
     );

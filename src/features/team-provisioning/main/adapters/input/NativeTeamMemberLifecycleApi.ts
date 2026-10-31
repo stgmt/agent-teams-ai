@@ -1,5 +1,6 @@
 import type { TeamRunIdentity, TeamRunRegistryRead } from '../../../contracts';
 import type { LifecycleCommands } from '../../../core/application/ports/LifecycleCommands';
+import type { MemberAttachReason } from '../../../core/application/ports/MemberRuntimePorts';
 import type { TeamLiveStatusQueries } from '../../composition/createBoundTeamLiveStatusQueries';
 import type { AppConnectionContext } from '@features/external-agent-connection/contracts';
 import type { TeamMemberLifecycleApi } from '@main/services/team/contracts/TeamProvisioningApis';
@@ -13,7 +14,11 @@ interface Dependencies {
   runs: Pick<TeamRunRegistryRead, 'find'>;
   commands: Pick<LifecycleCommands, 'restartMember' | 'skipMember'> & {
     detachMember(team: TeamRunIdentity, memberName: string): Promise<void>;
-    attachMember(team: TeamRunIdentity, memberName: string): Promise<void>;
+    attachMember(
+      team: TeamRunIdentity,
+      memberName: string,
+      reason?: MemberAttachReason
+    ): Promise<void>;
     retryFailedLanes(run: TeamRunIdentity): Promise<RetryFailedOpenCodeSecondaryLanesResult>;
   };
   statuses: Pick<TeamLiveStatusQueries, 'memberSpawnStatuses'>;
@@ -46,13 +51,15 @@ export class NativeTeamMemberLifecycleApi implements TeamMemberLifecycleApi {
   async attachLiveRosterMember(
     teamName: string,
     memberName: string,
-    _options?: { reason?: 'member_added' | 'member_restored' | 'member_updated' }
+    options?: { reason?: 'member_added' | 'member_restored' | 'member_updated' }
   ): Promise<void> {
     const snapshot = this.deps.runs.find(teamName);
     if (!snapshot) throw new Error(`Unknown team: ${teamName}`);
-    if (snapshot.members[memberName]?.membership === 'removed')
-      throw new Error(`Member "${memberName}" was removed`);
-    await this.deps.commands.attachMember(snapshot.identity, memberName);
+    await this.deps.commands.attachMember(
+      snapshot.identity,
+      memberName,
+      options?.reason ?? 'member_added'
+    );
   }
 
   async detachLiveRosterMember(teamName: string, memberName: string): Promise<void> {

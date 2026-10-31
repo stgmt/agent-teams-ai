@@ -151,6 +151,75 @@ describe('canonical configured team launch settings', () => {
     ).rejects.toThrow('workspace was not prepared');
   });
 
+  it('re-admits a new member against a prepared worktree workspace', async () => {
+    const { settings, saved } = setup();
+    Object.assign(saved.meta, { worktree: 'TEST-team-worktree' });
+    await settings.capture(run);
+    await settings.prepareWorkspace(
+      run,
+      {
+        prepareTeam: async () => ({
+          workingDirectory: process.cwd() + '/TEST-resolved',
+          worktree: { baseRepoPath: process.cwd(), branchName: 'TEST-team-branch' },
+        }),
+      },
+      signal()
+    );
+    saved.members.push({ name: 'tester', role: 'Tester' });
+    await settings.admitConfiguredMember(run, 'tester');
+    expect(await settings.findConfiguredMember(run, 'tester')).toMatchObject({
+      memberName: 'tester',
+      workingDirectory: process.cwd() + '/TEST-resolved',
+      worktree: { branchName: 'TEST-team-branch' },
+    });
+    // The rebased capture must still own the prepared workspace on release.
+    settings.release(run);
+    await settings.capture({ ...run, runId: 'TEST-next' });
+  });
+
+  it('rejects admitting a member when an already-admitted member drifted', async () => {
+    const { settings, saved } = setup();
+    await settings.capture(run);
+    saved.members.push({ name: 'tester' });
+    Object.assign(saved.members[0], { model: 'TEST-other-model' });
+    await expect(settings.admitConfiguredMember(run, 'tester')).rejects.toThrow(
+      'changed after admission'
+    );
+  });
+
+  it('does not resurrect a released capture when the reread finishes after release', async () => {
+    const saved = documents();
+    let releaseRead!: () => void;
+    const readGate = new Promise<void>((resolve) => {
+      releaseRead = resolve;
+    });
+    let gated = false;
+    const settings = new NodeTeamLaunchSettings({
+      teamsRoot: process.cwd(),
+      metadata: { getMeta: () => Promise.resolve(saved.meta) },
+      members: {
+        getMeta: async () => {
+          if (gated) {
+            gated = false;
+            await readGate;
+          }
+          return { version: 1 as const, members: saved.members };
+        },
+      },
+    });
+    await settings.capture(run);
+    gated = true;
+    saved.members.push({ name: 'tester' });
+    const admission = settings.admitConfiguredMember(run, 'tester');
+    settings.release(run);
+    releaseRead();
+    await expect(admission).rejects.toThrow('were not captured');
+    await settings.capture({ ...run, runId: 'TEST-next' });
+    expect(await settings.findConfiguredMember({ ...run, runId: 'TEST-next' }, 'builder')).not.toBe(
+      null
+    );
+  });
+
   it('drains workspace allocation after cancellation without retaining its late result or touching a successor capture', async () => {
     const { settings, saved } = setup();
     Object.assign(saved.meta, { worktree: 'TEST-team-worktree' });

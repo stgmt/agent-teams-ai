@@ -521,6 +521,35 @@ export class MemberLifecycleRegistry {
     this.changed(team);
   }
 
+  /**
+   * Re-admits a removed (tombstoned) member after the saved roster restored it.
+   * The generation bump keeps tokens minted before removal from matching again.
+   */
+  restoreMember(identity: TeamRunIdentity, member: ConfiguredMemberIdentity): void {
+    const team = this.requireRun(identity);
+    if (team.desired !== 'running') throw new Error('Team run is intentionally stopped');
+    if (member.role === 'lead') throw new Error('Cannot restore a lead through member lifecycle');
+    const current = this.requireMember(team, member.memberName);
+    if (current.membership !== 'removed') throw new Error('Member is not removed');
+    team.members.set(member.memberName, {
+      ...member,
+      membership: 'configured',
+      desired: 'stopped',
+      phase: 'stopped',
+      resources: 'released',
+      generation: current.generation + 1,
+      operationId: null,
+      process: null,
+      lane: null,
+      everConnected: false,
+      connectedGeneration: null,
+      skippedForLaunch: false,
+      error: null,
+      exit: null,
+    });
+    this.changed(team);
+  }
+
   removeMember(identity: TeamRunIdentity, memberName: string): void {
     const team = this.requireRun(identity);
     const member = this.requireMember(team, memberName);

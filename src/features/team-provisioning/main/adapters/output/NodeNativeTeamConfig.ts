@@ -75,6 +75,18 @@ function toNativeMember(
   };
 }
 
+function runtimeRow(member: NativeTeamConfig): NativeTeamConfig {
+  const row: NativeTeamConfig = {};
+  for (const [key, value] of Object.entries(member)) {
+    if (
+      /^(runtime|bootstrap|worktree)/.test(key) ||
+      ['sessionId', 'isActive', 'removedAt', 'mode', 'tmuxPaneId', 'backendType'].includes(key)
+    )
+      row[key] = value;
+  }
+  return row;
+}
+
 function assertReleased(members: NativeTeamConfig[]): void {
   if (
     members.some(
@@ -150,6 +162,10 @@ export class NodeNativeTeamConfig {
     signal: AbortSignal = new AbortController().signal
   ): Promise<void> {
     signal.throwIfAborted();
+    if (!isNativeTeamRunOwner(launch.team, run) || launch.memberName.trim() !== launch.memberName)
+      throw new Error('Configured member does not belong to this run');
+    if (launch.role === 'lead')
+      throw new Error('Lead attach is not supported from member controls');
     const configured = await this.ports.settings.runtimeConfiguration(run);
     signal.throwIfAborted();
     const entry = configured.members.find(
@@ -163,10 +179,16 @@ export class NodeNativeTeamConfig {
       if (!claim || !isNativeTeamRunOwner(claim.identity, run))
         throw new Error('Native team config has another run owner');
       const previous = rows(current);
-      if (previous.some((member) => member.name === launch.memberName)) return null;
+      const saved = toNativeMember(run, entry.launch, entry.color, entry.joinedAt, previous);
+      // A member update keeps the live attempt's runtime projection; the restart rewrites it.
+      const existing = previous.find((member) => member.name === launch.memberName);
       return {
         ...current,
-        members: [...previous, toNativeMember(run, launch, entry.color, entry.joinedAt, previous)],
+        members: existing
+          ? previous.map((member) =>
+              member.name === launch.memberName ? { ...saved, ...runtimeRow(existing) } : member
+            )
+          : [...previous, saved],
         appManagedRun: {
           ...claim,
           configurationRevision: launch.configurationRevision,

@@ -37,7 +37,10 @@ import type { MemberProcessToken, TeamRunIdentity, TeamRunRegistryRead } from '.
 import type { MemberLifecycleCommands } from '../../core/application/commands/MemberLifecycleCommands';
 import type { LifecycleCommands } from '../../core/application/ports/LifecycleCommands';
 import type { LifecycleQueries } from '../../core/application/ports/LifecycleQueries';
-import type { ConfiguredMemberLaunch } from '../../core/application/ports/MemberRuntimePorts';
+import type {
+  ConfiguredMemberLaunch,
+  MemberAttachReason,
+} from '../../core/application/ports/MemberRuntimePorts';
 import type { NativeConfiguredProviderPorts } from '../adapters/output/NativeConfiguredProvider';
 import type { MemberLifecycle } from './createMemberLifecycle';
 import type { AppConnectionContext } from '@features/external-agent-connection/contracts';
@@ -87,7 +90,11 @@ export interface NativeTeamLifecycle {
     restartMember: LifecycleCommands['restartMember'];
     skipMember: LifecycleCommands['skipMember'];
     detachMember(team: TeamRunIdentity, memberName: string): Promise<void>;
-    attachMember(team: TeamRunIdentity, memberName: string): Promise<void>;
+    attachMember(
+      team: TeamRunIdentity,
+      memberName: string,
+      reason?: MemberAttachReason
+    ): Promise<void>;
     retryFailedLanes(run: TeamRunIdentity): Promise<RetryFailedOpenCodeSecondaryLanesResult>;
     answerLanePermission: MemberLifecycleCommands['answerLanePermission'];
   };
@@ -323,8 +330,8 @@ export function createNativeTeamLifecycle(
     skipMember: commands.skipMember,
     detachMember: (team, memberName) =>
       deps.withExpectedContext(team, () => lifecycle.commands.detach(team, memberName)),
-    attachMember: (team, memberName) =>
-      deps.withExpectedContext(team, () => lifecycle.commands.attach(team, memberName)),
+    attachMember: (team, memberName, reason) =>
+      deps.withExpectedContext(team, () => lifecycle.commands.attach(team, memberName, reason)),
     retryFailedLanes: (run) =>
       deps.withExpectedContext(run, () => lifecycle.commands.retryFailedLanes(run)),
     answerLanePermission: (input) =>

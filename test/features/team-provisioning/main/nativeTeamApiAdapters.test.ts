@@ -150,7 +150,7 @@ describe('native team API adapters', () => {
     } as unknown as TeamLifecycleSnapshot;
     const { api, attachMember } = memberApi(configured);
     await api.attachLiveRosterMember('test-team', 'builder', { reason: 'member_restored' });
-    expect(attachMember).toHaveBeenCalledWith(run, 'builder');
+    expect(attachMember).toHaveBeenCalledWith(run, 'builder', 'member_restored');
   });
 
   it('fails closed for missing detach data', async () => {

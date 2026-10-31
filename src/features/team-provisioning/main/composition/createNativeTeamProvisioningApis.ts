@@ -28,9 +28,9 @@ export interface NativeTeamProvisioningApisDependencies {
 
 /**
  * Assembles the native `TeamIpcHandlerApis` surface over one runtime owner.
- * Blocked rows (OpenCode member delivery, lead activity/context, attach/detach)
- * stay explicit fail-closed methods in their adapters; transport wiring and the
- * production switch remain phase 8.
+ * Unmigrated rows (live lead process messages, OpenCode lane lead delivery)
+ * stay explicit fail-closed methods in their adapters; always-on composition
+ * and the production switch remain phase 8.
  */
 export function createNativeTeamProvisioningApis(
   deps: NativeTeamProvisioningApisDependencies

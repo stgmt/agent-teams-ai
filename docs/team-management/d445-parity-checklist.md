@@ -17,15 +17,15 @@ work before cutover. No row may be silently omitted from the cutover commit.
 
 ## Runtime/member
 
-| API                                                                                  | Status                     | Evidence                                                                                                  |
-| ------------------------------------------------------------------------------------ | -------------------------- | --------------------------------------------------------------------------------------------------------- |
-| `getRuntimeState` / `stopTeam` / `isTeamAlive` / `getAliveTeams` / `getCurrentRunId` | native                     | `DesktopTeamRuntime`                                                                                      |
-| `getMemberSpawnStatuses`                                                             | native                     | `createBoundTeamLiveStatusQueries`                                                                        |
-| `restartMember` / `skipMemberForLaunch`                                              | native (exact generation)  | `NativeTeamMemberLifecycleApi`                                                                            |
-| `attachLiveRosterMember`                                                             | native (configured member) | re-admits saved settings, adds a live registry member and config projection, starts its own runtime/lane  |
-| `detachLiveRosterMember`                                                             | native (data port)         | stops the member, removes the registry entry and calls `detachMemberData`; shared lanes and lead rejected |
-| `retryFailedOpenCodeSecondaryLanes`                                                  | native (secondary lanes)   | failed groups restart via `restartLane`; lead lane needs relaunch                                         |
-| `runLiveRosterMutation` / `tryRunLiveRosterMutation`                                 | pass-through               | no live roster mutation exists in native                                                                  |
+| API                                                                                  | Status                     | Evidence                                                                                                                                                                        |
+| ------------------------------------------------------------------------------------ | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `getRuntimeState` / `stopTeam` / `isTeamAlive` / `getAliveTeams` / `getCurrentRunId` | native                     | `DesktopTeamRuntime`                                                                                                                                                            |
+| `getMemberSpawnStatuses`                                                             | native                     | `createBoundTeamLiveStatusQueries`                                                                                                                                              |
+| `restartMember` / `skipMemberForLaunch`                                              | native (exact generation)  | `NativeTeamMemberLifecycleApi`                                                                                                                                                  |
+| `attachLiveRosterMember`                                                             | native (configured member) | re-admits saved settings (only the target member may drift), adds/restores the registry member and config projection; lead rejected; `member_updated` restarts the live runtime |
+| `detachLiveRosterMember`                                                             | native (data port)         | stops the member, removes the registry entry and calls `detachMemberData`; shared lanes and lead rejected                                                                       |
+| `retryFailedOpenCodeSecondaryLanes`                                                  | native (secondary lanes)   | failed groups restart via `restartLane`; lead lane needs relaunch                                                                                                               |
+| `runLiveRosterMutation` / `tryRunLiveRosterMutation`                                 | pass-through               | serialized by the team operation gate; attach/detach/restart are the only live roster mutations                                                                                 |
 
 ## Diagnostics/logs/approvals
 

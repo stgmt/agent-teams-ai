@@ -32,6 +32,9 @@ export interface ConfiguredMemberLaunch {
   instructions: string;
 }
 
+/** Why the live roster asked to attach a saved member. */
+export type MemberAttachReason = 'member_added' | 'member_restored' | 'member_updated';
+
 export interface MemberLaunchSettingsPort {
   findConfiguredMember(
     team: TeamRunIdentity,

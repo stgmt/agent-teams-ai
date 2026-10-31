@@ -18,8 +18,12 @@ const progress = {
   status: 'running',
 } as unknown as TeamProvisioningProgress;
 
-function setup() {
+function setup(withDelivery = true) {
   const relay = vi.fn(async () => 2);
+  const openCodeMemberDelivery = {
+    relayOpenCodeMemberInboxMessages: vi.fn(async () => ({ attempted: 1 })),
+    getOpenCodeRuntimeDeliveryStatus: vi.fn(async () => null),
+  };
   const findByRunId = vi.fn(async () => progress);
   const memberCommands = {
     restartMember: vi.fn(),
@@ -72,9 +76,10 @@ function setup() {
       prepareForProvisioning: vi.fn(),
     },
     taskActivity: { repairStaleTaskActivityIntervalsBeforeSnapshot: vi.fn(async () => undefined) },
+    ...(withDelivery ? { openCodeMemberDelivery: openCodeMemberDelivery as never } : {}),
     now: () => '2026-10-31T00:00:00.000Z',
   });
-  return { apis, relay, findByRunId, memberCommands, toolApprovalSettings };
+  return { apis, relay, findByRunId, memberCommands, toolApprovalSettings, openCodeMemberDelivery };
 }
 
 describe('native team provisioning API composition', () => {
@@ -119,8 +124,25 @@ describe('native team provisioning API composition', () => {
     expect(toolApprovalSettings.update).toHaveBeenCalledWith('TEST-team', { mode: 'ask' });
   });
 
-  it('keeps blocked OpenCode delivery rows explicit', async () => {
-    const { apis } = setup();
+  it('injects the OpenCode member delivery ledger into messaging', async () => {
+    const { apis, openCodeMemberDelivery } = setup();
+    await apis.messaging.relayOpenCodeMemberInboxMessages('TEST-team', 'builder', {
+      onlyMessageId: 'message',
+    });
+    expect(openCodeMemberDelivery.relayOpenCodeMemberInboxMessages).toHaveBeenCalledWith(
+      'TEST-team',
+      'builder',
+      { onlyMessageId: 'message' }
+    );
+    await apis.messaging.getOpenCodeRuntimeDeliveryStatus('TEST-team', 'message');
+    expect(openCodeMemberDelivery.getOpenCodeRuntimeDeliveryStatus).toHaveBeenCalledWith(
+      'TEST-team',
+      'message'
+    );
+  });
+
+  it('fails closed without an OpenCode delivery ledger', async () => {
+    const { apis } = setup(false);
     await expect(
       apis.messaging.relayOpenCodeMemberInboxMessages('TEST-team', 'builder')
     ).rejects.toThrow('not configured');
