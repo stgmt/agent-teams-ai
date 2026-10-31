@@ -26,6 +26,7 @@ const snapshot = {
 
 function setup() {
   const sendLeadMessage = vi.fn(async () => undefined);
+  const relayLeadInboxMessages = vi.fn(async () => 0);
   const findConfiguredMember = vi.fn(async () => ({
     providerId: 'opencode',
   }));
@@ -33,8 +34,9 @@ function setup() {
     runs: { find: (teamName) => (teamName === run.teamName ? snapshot : null) },
     settings: { findConfiguredMember } as never,
     sendLeadMessage,
+    relayLeadInboxMessages,
   });
-  return { api, sendLeadMessage, findConfiguredMember };
+  return { api, sendLeadMessage, relayLeadInboxMessages, findConfiguredMember };
 }
 
 describe('native team messaging', () => {
@@ -63,6 +65,13 @@ describe('native team messaging', () => {
     expect(findConfiguredMember).toHaveBeenCalledWith(run, 'builder');
     expect(api.getCurrentLeadSessionId('test-team')).toBe('TEST-session');
     expect(api.getCurrentLeadSessionId('absent')).toBeNull();
+  });
+
+  it('relays the lead inbox through the native relay', async () => {
+    const { api, relayLeadInboxMessages } = setup();
+    await expect(api.relayLeadInboxMessages('test-team')).resolves.toBe(0);
+    expect(relayLeadInboxMessages).toHaveBeenCalledWith('test-team');
+    await expect(api.relayLeadInboxMessages('absent')).rejects.toThrow('Unknown team');
   });
 
   it('keeps unmigrated live lead message APIs explicit', () => {

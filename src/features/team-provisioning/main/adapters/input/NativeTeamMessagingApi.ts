@@ -12,12 +12,12 @@ interface Dependencies {
   runs: Pick<TeamRunRegistryRead, 'find'>;
   settings: Pick<MemberLaunchSettingsPort, 'findConfiguredMember'>;
   sendLeadMessage: NativeTeamLifecycle['sendLeadMessage'];
+  relayLeadInboxMessages(teamName: string): Promise<number>;
 }
 
 /**
  * System-path messaging over the native lifecycle. Human messages must use the
- * persisted human request ledger instead; live lead message caches and relay
- * are not migrated.
+ * persisted human request ledger instead; live lead message caches stay empty.
  */
 export class NativeTeamMessagingApi implements Pick<
   TeamMessagingApi,
@@ -26,6 +26,7 @@ export class NativeTeamMessagingApi implements Pick<
   | 'getCurrentLeadSessionId'
   | 'getLiveLeadProcessMessages'
   | 'pushLiveLeadProcessMessage'
+  | 'relayLeadInboxMessages'
 > {
   constructor(private readonly deps: Dependencies) {}
 
@@ -66,6 +67,11 @@ export class NativeTeamMessagingApi implements Pick<
 
   pushLiveLeadProcessMessage(): void {
     throw new Error('Live lead process messages are not migrated');
+  }
+
+  async relayLeadInboxMessages(teamName: string): Promise<number> {
+    this.requireRun(teamName);
+    return this.deps.relayLeadInboxMessages(teamName);
   }
 
   private requireRun(teamName: string) {

@@ -4,6 +4,7 @@ import {
 } from '@features/agent-attachments/main';
 import { buildLeadMessageStdinPayload } from '@main/services/team/provisioning/TeamProvisioningLeadAttachments';
 import { TaskChangeLedgerReader } from '@main/services/team/TaskChangeLedgerReader';
+import { TeamInboxReader } from '@main/services/team/TeamInboxReader';
 
 import { SendLeadMessage } from '../../core/application/commands/SendLeadMessage';
 import { LeadMemberStartAuthority } from '../../core/application/LeadMemberStartAuthority';
@@ -13,6 +14,7 @@ import {
   NativeClaudeToolApprovals,
 } from '../adapters/output/NativeClaudeToolApprovals';
 import { NativeConfiguredProvider } from '../adapters/output/NativeConfiguredProvider';
+import { NativeLeadInboxRelay } from '../adapters/output/NativeLeadInboxRelay';
 import { NativeTeamLogStore } from '../adapters/output/NativeTeamLogStore';
 import { NativeTeamTaskLedgerReader } from '../adapters/output/NativeTeamTaskLedgerReader';
 import { NativeToolApprovalSettings } from '../adapters/output/NativeToolApprovalSettings';
@@ -38,7 +40,7 @@ import type { NativeConfiguredProviderPorts } from '../adapters/output/NativeCon
 import type { MemberLifecycle } from './createMemberLifecycle';
 import type { AppConnectionContext } from '@features/external-agent-connection/contracts';
 import type { TeamRuntimeAdapterRegistry } from '@main/services/team/runtime';
-import type { AttachmentPayload } from '@shared/types';
+import type { AttachmentPayload, InboxMessage } from '@shared/types';
 
 export interface NativeTeamLifecycleDependencies {
   owner: AppConnectionContext;
@@ -55,6 +57,8 @@ export interface NativeTeamLifecycleDependencies {
   openCodeAdapter?: OpenCodeLaneAdapter;
   /** Production registry entry source; used when `openCodeAdapter` is omitted. */
   runtimeAdapterRegistry?: Pick<TeamRuntimeAdapterRegistry, 'has' | 'get'>;
+  /** Lead inbox reader; defaults to the shared file reader. */
+  inboxReader?: { getMessagesFor(teamName: string, member: string): Promise<InboxMessage[]> };
   invalidate(teamName: string): void;
   contextInvalidationSignal(expected: AppConnectionContext): AbortSignal;
   withExpectedContext<T>(expected: AppConnectionContext, operation: () => Promise<T>): Promise<T>;
@@ -73,6 +77,10 @@ export interface NativeTeamLifecycle {
   approvals: Pick<NativeClaudeToolApprovals, 'list' | 'respond' | 'onEvent'>;
   toolApprovalSettings: Pick<NativeToolApprovalSettings, 'get' | 'update'>;
   taskChanges: Pick<NativeTeamTaskLedgerReader, 'read'>;
+  relay: Pick<
+    NativeLeadInboxRelay,
+    'relay' | 'schedule' | 'cancel' | 'startPolling' | 'stopPolling' | 'dispose'
+  >;
   leadStart: Pick<MemberLifecycle['leadStart'], 'execute'>;
   resolveLeadCredential(credential: string): Readonly<TeamRunIdentity>;
   snapshot: MemberLifecycle['snapshot'];
@@ -161,6 +169,7 @@ export function createNativeTeamLifecycle(
     settings,
     invalidate: (teamName) => deps.invalidate(teamName),
   });
+  let relay: NativeLeadInboxRelay | null = null;
   const lifecycle = createMemberLifecycle({
     owner: deps.owner,
     settings,
@@ -176,6 +185,8 @@ export function createNativeTeamLifecycle(
         toolApprovalSettings.initializeForLaunch(run.teamName, lead?.launch.skipPermissions);
       },
       release: async (run) => {
+        relay?.cancel(run.teamName);
+        relay?.stopPolling(run.teamName);
         await config.release(run);
         settings.release(run);
         logs.retainLast(run.teamName, run.runId);
@@ -237,12 +248,22 @@ export function createNativeTeamLifecycle(
     aliveTeamNames: () => lifecycle.registry.aliveTeamNames(),
     aliveRunId: (teamName) => lifecycle.registry.aliveRunId(teamName),
   });
+  const leadRelay = new NativeLeadInboxRelay({
+    runs,
+    snapshot: (teamName) => lifecycle.snapshot(teamName),
+    inbox: deps.inboxReader ?? new TeamInboxReader(),
+    send: (run, text) => send.execute(run, text),
+    teamsRoot: deps.teamsRoot,
+    controlUrl: () => deps.controlUrl(),
+  });
+  relay = leadRelay;
   return {
     runs,
     logs,
     approvals,
     toolApprovalSettings,
     taskChanges,
+    relay: leadRelay,
     commands: createBoundLifecycleCommands({
       owner: deps.owner,
       source: {
@@ -289,7 +310,10 @@ export function createNativeTeamLifecycle(
     snapshot: (teamName) => lifecycle.snapshot(teamName),
     watch: (teamName) => lifecycle.watch(teamName),
     stopConfigured: (run) => lifecycle.teams.stop(run),
-    shutdown: () => lifecycle.teams.shutdown(),
+    shutdown: async () => {
+      leadRelay.dispose();
+      await lifecycle.teams.shutdown();
+    },
     launchConfigured: (run) =>
       deps.withExpectedContext(run, async () => {
         const receipt = await lifecycle.teams.launchConfigured(

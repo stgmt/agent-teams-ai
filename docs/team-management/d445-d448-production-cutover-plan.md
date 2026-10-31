@@ -304,8 +304,11 @@ lane-запросы по exact run; Claude process approvals теперь native
 (`NativeClaudeToolApprovals`: `control_request` ingestion + `control_response` в
 stdin); запись settings пока fail-closed. Task activity repair: `NativeTaskActivityRepair` уже
 связывает legacy repair с native registry (`aliveRunId`/`findByRunId`/`isLive`):
-живой run пропускает repair, остановленный — чинится один раз. Остальные пункты
-6b ещё не портированы.
+живой run пропускает repair, остановленный — чинится один раз. Lead relay:
+`NativeLeadInboxRelay` читает inbox лида, батчит actionable-строки, отправляет один
+prompt в stdin и коммитит read только после успешной записи при живом run; reply
+projection остаётся в lead reporting, live-activity push пока fail-closed.
+Остальные пункты 6b ещё не портированы.
 
 - approvals/tool settings;
 - attachments, action mode, slash/relay/cross-team correlation;
