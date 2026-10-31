@@ -21,25 +21,32 @@ const progress = {
 function setup() {
   const relay = vi.fn(async () => 2);
   const findByRunId = vi.fn(async () => progress);
+  const memberCommands = {
+    restartMember: vi.fn(),
+    skipMember: vi.fn(),
+    retryFailedLanes: vi.fn(),
+    answerLanePermission: vi.fn(),
+  };
+  const toolApprovalSettings = { get: vi.fn(), update: vi.fn() };
   const lifecycle = {
     owner,
     runs: {
       find: vi.fn((teamName: string) =>
-        teamName === 'TEST-team' ? { identity: { teamName } } : null
+        teamName === 'TEST-team'
+          ? {
+              identity: { teamName, runId: 'TEST-run' },
+              members: { builder: { memberName: 'builder', generation: 1 } },
+            }
+          : null
       ),
     },
     queries: {},
     settings: { findConfiguredMember: vi.fn(async () => null) },
-    memberCommands: {
-      restartMember: vi.fn(),
-      skipMember: vi.fn(),
-      retryFailedLanes: vi.fn(),
-      answerLanePermission: vi.fn(),
-    },
+    memberCommands,
     relay: { relay },
     sendLeadMessage: vi.fn(),
     approvals: { list: vi.fn(() => []), respond: vi.fn(), onEvent: vi.fn() },
-    toolApprovalSettings: { get: vi.fn(), update: vi.fn() },
+    toolApprovalSettings,
   };
   const runtime = {
     createTeam: vi.fn(),
@@ -67,7 +74,7 @@ function setup() {
     taskActivity: { repairStaleTaskActivityIntervalsBeforeSnapshot: vi.fn(async () => undefined) },
     now: () => '2026-10-31T00:00:00.000Z',
   });
-  return { apis, relay, findByRunId };
+  return { apis, relay, findByRunId, memberCommands, toolApprovalSettings };
 }
 
 describe('native team provisioning API composition', () => {
@@ -95,6 +102,21 @@ describe('native team provisioning API composition', () => {
     await expect(apis.messaging.relayLeadInboxMessages('TEST-team')).resolves.toBe(2);
     expect(relay).toHaveBeenCalledWith('TEST-team');
     expect(apis.runtime.getAliveTeams()).toEqual(['TEST-team']);
+  });
+
+  it('delegates member lifecycle and approval settings to the native commands', async () => {
+    const { apis, memberCommands, toolApprovalSettings } = setup();
+    await apis.memberLifecycle.restartMember('TEST-team', 'builder');
+    expect(memberCommands.restartMember).toHaveBeenCalledWith(
+      expect.objectContaining({
+        teamName: 'TEST-team',
+        runId: 'TEST-run',
+        memberName: 'builder',
+        generation: 1,
+      })
+    );
+    apis.toolApproval.updateToolApprovalSettings('TEST-team', { mode: 'ask' } as never);
+    expect(toolApprovalSettings.update).toHaveBeenCalledWith('TEST-team', { mode: 'ask' });
   });
 
   it('keeps blocked OpenCode delivery rows explicit', async () => {
