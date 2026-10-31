@@ -281,8 +281,8 @@ production root не переключать.
 `MemberRuntimePort.kind`/`startLane`, команды стартуют/наблюдают/останавливают lane.
 6a.3: team-level lane groups (`laneGroups` planner → `startLaneGroup` один вызов на lane,
 валидация состава, input/stop через группу, single-member restart общего lane отклонён).
-Осталось: concrete `startLaneGroup` над `TeamLaunchRuntimeAdapter`, permission answer/list,
-lane restart, recovery после рестарта приложения.
+Сделано: concrete `startLaneGroup` над `TeamLaunchRuntimeAdapter`, permission answer/list,
+lane restart, recovery после рестарта приложения (`recoverOrphanedRuns`).
 
 ## Фаза 6b. Остальной parity
 
@@ -297,8 +297,9 @@ Native logs: `NativeTeamLogStore` (bounded 2000 lines, newest-first через
 `sliceClaudeLogs`) + захват planner output; `NativeTeamClaudeLogs` отдаёт
 `getClaudeLogs`. Diagnostics: `NativeTeamDiagnostics` отдаёт runtime snapshot;
 lead activity/context usage пока fail-closed. Member lifecycle:
-`NativeTeamMemberLifecycleApi` (statuses/restart/skip); attach/detach и OpenCode
-secondary retry fail-closed. Approvals: `NativeTeamToolApprovalApi` отвечает на
+`NativeTeamMemberLifecycleApi` (statuses/restart/skip); attach/detach fail-closed, OpenCode
+secondary retry native (`retryFailedLanes` → `restartLane` для групп с failed-членами,
+lead lane требует relaunch). Approvals: `NativeTeamToolApprovalApi` отвечает на
 lane-запросы по exact run; Claude process approvals теперь native
 (`NativeClaudeToolApprovals`: `control_request` ingestion + `control_response` в
 stdin); запись settings пока fail-closed. Task activity repair: `NativeTaskActivityRepair` уже

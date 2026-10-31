@@ -1,4 +1,4 @@
-import type { TeamRunRegistryRead } from '../../../contracts';
+import type { TeamRunIdentity, TeamRunRegistryRead } from '../../../contracts';
 import type { LifecycleCommands } from '../../../core/application/ports/LifecycleCommands';
 import type { TeamLiveStatusQueries } from '../../composition/createBoundTeamLiveStatusQueries';
 import type { AppConnectionContext } from '@features/external-agent-connection/contracts';
@@ -11,7 +11,9 @@ import type {
 interface Dependencies {
   owner: Readonly<AppConnectionContext>;
   runs: Pick<TeamRunRegistryRead, 'find'>;
-  commands: Pick<LifecycleCommands, 'restartMember' | 'skipMember'>;
+  commands: Pick<LifecycleCommands, 'restartMember' | 'skipMember'> & {
+    retryFailedLanes(run: TeamRunIdentity): Promise<RetryFailedOpenCodeSecondaryLanesResult>;
+  };
   statuses: Pick<TeamLiveStatusQueries, 'memberSpawnStatuses'>;
 }
 
@@ -60,9 +62,11 @@ export class NativeTeamMemberLifecycleApi implements TeamMemberLifecycleApi {
   }
 
   async retryFailedOpenCodeSecondaryLanes(
-    _teamName: string
+    teamName: string
   ): Promise<RetryFailedOpenCodeSecondaryLanesResult> {
-    throw new Error('OpenCode secondary lane retry is not migrated');
+    const snapshot = this.deps.runs.find(teamName);
+    if (!snapshot) throw new Error(`Unknown team: ${teamName}`);
+    return this.deps.commands.retryFailedLanes(snapshot.identity);
   }
 
   async skipMemberForLaunch(teamName: string, memberName: string): Promise<void> {

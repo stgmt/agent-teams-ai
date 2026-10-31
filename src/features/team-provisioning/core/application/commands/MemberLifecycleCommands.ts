@@ -20,6 +20,7 @@ import type {
   OwnedMemberRuntime,
   TeamOperationGate,
 } from '../ports/MemberRuntimePorts';
+import type { RetryFailedOpenCodeSecondaryLanesResult } from '@shared/types';
 
 interface Dependencies {
   registry: MemberLifecycleRegistry;
@@ -328,6 +329,48 @@ export class MemberLifecycleCommands {
         throw error;
       }
     });
+  }
+
+  async retryFailedLanes(run: TeamRunIdentity): Promise<RetryFailedOpenCodeSecondaryLanesResult> {
+    const snapshot = this.ports.registry.snapshot(run.teamName);
+    const groups = [...this.laneGroups.values()].filter(
+      (group) => key(group.tokens[0]!, '') === key(run, '')
+    );
+    const attempted: string[] = [];
+    const confirmed: string[] = [];
+    const pending: string[] = [];
+    const failed: { memberName: string; error: string }[] = [];
+    for (const group of groups) {
+      if (group.tokens.some((token) => snapshot.members[token.memberName]?.role === 'lead'))
+        continue;
+      const failedMembers = group.tokens.filter(
+        (token) => snapshot.members[token.memberName]?.phase === 'failed'
+      );
+      if (failedMembers.length === 0) continue;
+      for (const token of group.tokens) attempted.push(token.memberName);
+      try {
+        await this.restartLane({ run, laneId: group.laneId });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        for (const token of group.tokens)
+          failed.push({ memberName: token.memberName, error: message });
+      }
+    }
+    await Promise.all(
+      attempted
+        .filter((name) => !failed.some((entry) => entry.memberName === name))
+        .map((name) => this.settled(run, name))
+    );
+    const after = this.ports.registry.snapshot(run.teamName);
+    for (const name of attempted) {
+      if (failed.some((entry) => entry.memberName === name)) continue;
+      const member = after.members[name];
+      if (member?.phase === 'ready') confirmed.push(name);
+      else if (member?.phase === 'failed')
+        failed.push({ memberName: name, error: member.error ?? 'Lane member failed' });
+      else pending.push(name);
+    }
+    return { attempted, confirmed, pending, failed, skipped: [] };
   }
 
   async stop(team: TeamRunIdentity, memberName: string): Promise<void> {

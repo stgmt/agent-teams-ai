@@ -25,6 +25,13 @@ const snapshot = {
 function memberApi() {
   const restartMember = vi.fn(async () => ({ kind: 'already-running' as const }));
   const skipMember = vi.fn(async () => undefined);
+  const retryFailedLanes = vi.fn(async () => ({
+    attempted: [],
+    confirmed: [],
+    pending: [],
+    failed: [],
+    skipped: [],
+  }));
   const memberSpawnStatuses = vi.fn(async () => ({
     statuses: {},
     runId: run.runId,
@@ -34,10 +41,10 @@ function memberApi() {
   const api = new NativeTeamMemberLifecycleApi({
     owner,
     runs: { find: (teamName) => (teamName === run.teamName ? snapshot : null) },
-    commands: { restartMember, skipMember },
+    commands: { restartMember, skipMember, retryFailedLanes },
     statuses: { memberSpawnStatuses },
   });
-  return { api, restartMember, skipMember, memberSpawnStatuses };
+  return { api, restartMember, skipMember, retryFailedLanes, memberSpawnStatuses };
 }
 
 describe('native team API adapters', () => {
@@ -89,17 +96,18 @@ describe('native team API adapters', () => {
     expect(restartMember).not.toHaveBeenCalled();
   });
 
-  it('fails closed for live roster and secondary lane operations', async () => {
-    const { api } = memberApi();
+  it('fails closed for live roster operations and retries failed secondary lanes', async () => {
+    const { api, retryFailedLanes } = memberApi();
     await expect(api.attachLiveRosterMember('test-team', 'builder')).rejects.toThrow(
       'not migrated'
     );
     await expect(api.detachLiveRosterMember('test-team', 'builder')).rejects.toThrow(
       'not migrated'
     );
-    await expect(api.retryFailedOpenCodeSecondaryLanes('test-team')).rejects.toThrow(
-      'not migrated'
-    );
+    await expect(api.retryFailedOpenCodeSecondaryLanes('test-team')).resolves.toMatchObject({
+      attempted: [],
+    });
+    expect(retryFailedLanes).toHaveBeenCalledWith(snapshot.identity);
     await expect(api.restartMember('test-team', 'builder', true)).rejects.toThrow('not migrated');
     const mutation = vi.fn(async () => undefined);
     await api.runLiveRosterMutation('test-team', mutation);
