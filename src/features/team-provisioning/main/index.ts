@@ -14,6 +14,10 @@ export {
   createNodeLegacyMemberSettingsRepositoryDependencies,
   type NodeLegacyMemberSettingsRepositoryOptions,
 } from './adapters/output/LegacyMemberSettingsRepositoryAdapter';
+export {
+  NativeClaudeApprovalStore,
+  NativeClaudeToolApprovals,
+} from './adapters/output/NativeClaudeToolApprovals';
 export type { NativeOpenCodeLaneRuntimeDependencies } from './adapters/output/NativeOpenCodeLaneRuntime';
 export { NativeOpenCodeLaneRuntime } from './adapters/output/NativeOpenCodeLaneRuntime';
 export type { NativeTaskActivityRepairDependencies } from './adapters/output/NativeTaskActivityRepair';

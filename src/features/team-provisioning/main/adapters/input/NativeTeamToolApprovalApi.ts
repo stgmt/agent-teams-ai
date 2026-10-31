@@ -1,11 +1,13 @@
 import type { TeamRunRegistryRead } from '../../../contracts';
 import type { MemberLifecycleCommands } from '../../../core/application/commands/MemberLifecycleCommands';
+import type { NativeClaudeToolApprovals } from '../output/NativeClaudeToolApprovals';
 import type { TeamToolApprovalApi } from '@main/services/team/contracts/TeamProvisioningApis';
 import type { ToolApprovalSettings } from '@shared/types';
 
 interface Dependencies {
   runs: Pick<TeamRunRegistryRead, 'find'>;
   commands: Pick<MemberLifecycleCommands, 'answerLanePermission'>;
+  claudeApprovals?: Pick<NativeClaudeToolApprovals, 'respond'>;
 }
 
 /**
@@ -24,12 +26,23 @@ export class NativeTeamToolApprovalApi implements TeamToolApprovalApi {
   ): Promise<void> {
     const snapshot = this.deps.runs.find(teamName);
     if (!snapshot || snapshot.identity.runId !== runId) throw new Error('Unknown runId');
-    await this.deps.commands.answerLanePermission({
-      run: snapshot.identity,
-      requestId,
-      allow,
-      ...(message ? { message } : {}),
-    });
+    try {
+      await this.deps.commands.answerLanePermission({
+        run: snapshot.identity,
+        requestId,
+        allow,
+        ...(message ? { message } : {}),
+      });
+      return;
+    } catch (error) {
+      if (!(error instanceof Error) || error.message !== 'Unknown permission request') throw error;
+    }
+    if (
+      this.deps.claudeApprovals &&
+      (await this.deps.claudeApprovals.respond(runId, requestId, allow, message))
+    )
+      return;
+    throw new Error('Unknown permission request');
   }
 
   updateToolApprovalSettings(_teamName: string, _settings: ToolApprovalSettings): void {

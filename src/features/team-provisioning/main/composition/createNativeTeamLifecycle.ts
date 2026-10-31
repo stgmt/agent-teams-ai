@@ -8,6 +8,10 @@ import { TaskChangeLedgerReader } from '@main/services/team/TaskChangeLedgerRead
 import { SendLeadMessage } from '../../core/application/commands/SendLeadMessage';
 import { LeadMemberStartAuthority } from '../../core/application/LeadMemberStartAuthority';
 import { NativeClaudeLaunchPlanner } from '../adapters/output/NativeClaudeLaunchPlanner';
+import {
+  NativeClaudeApprovalStore,
+  NativeClaudeToolApprovals,
+} from '../adapters/output/NativeClaudeToolApprovals';
 import { NativeConfiguredProvider } from '../adapters/output/NativeConfiguredProvider';
 import { NativeTeamLogStore } from '../adapters/output/NativeTeamLogStore';
 import { NativeTeamTaskLedgerReader } from '../adapters/output/NativeTeamTaskLedgerReader';
@@ -25,7 +29,7 @@ import { createMemberLifecycle } from './createMemberLifecycle';
 import { createNativeMemberRuntimeRouting } from './createNativeMemberRuntimeRouting';
 import { type OpenCodeLaneAdapter, selectOpenCodeLaneAdapter } from './selectOpenCodeLaneAdapter';
 
-import type { TeamRunIdentity, TeamRunRegistryRead } from '../../contracts';
+import type { MemberProcessToken, TeamRunIdentity, TeamRunRegistryRead } from '../../contracts';
 import type { LifecycleCommands } from '../../core/application/ports/LifecycleCommands';
 import type { LifecycleQueries } from '../../core/application/ports/LifecycleQueries';
 import type { ConfiguredMemberLaunch } from '../../core/application/ports/MemberRuntimePorts';
@@ -60,6 +64,7 @@ export interface NativeTeamLifecycle {
   commands: LifecycleCommands;
   queries: LifecycleQueries;
   logs: Pick<NativeTeamLogStore, 'read'>;
+  approvals: Pick<NativeClaudeToolApprovals, 'list' | 'respond'>;
   taskChanges: Pick<NativeTeamTaskLedgerReader, 'read'>;
   leadStart: Pick<MemberLifecycle['leadStart'], 'execute'>;
   resolveLeadCredential(credential: string): Readonly<TeamRunIdentity>;
@@ -106,6 +111,16 @@ export function createNativeTeamLifecycle(
     prepareArtifacts: (launch, token, signal) => artifacts.prepare(launch, token, signal),
   });
   const logs = new NativeTeamLogStore();
+  let writeApprovalLine: (
+    token: Readonly<MemberProcessToken>,
+    line: string
+  ) => Promise<void> = async () => {
+    throw new Error('Native approval input is not wired');
+  };
+  const approvals = new NativeClaudeToolApprovals({
+    store: new NativeClaudeApprovalStore(),
+    write: (token, line) => writeApprovalLine(token, line),
+  });
   const plannerWithLogs = {
     prepare: async (
       launch: Parameters<typeof planner.prepare>[0],
@@ -116,6 +131,7 @@ export function createNativeTeamLifecycle(
       return {
         ...plan,
         observeOutput: (line: string, stream: 'stdout' | 'stderr') => {
+          if (stream === 'stdout') approvals.observeLine(token, line);
           logs.append(token.runId, token.teamName, stream === 'stderr' ? `[stderr] ${line}` : line);
           return plan.observeOutput?.(line, stream) ?? null;
         },
@@ -152,9 +168,11 @@ export function createNativeTeamLifecycle(
         await config.release(run);
         settings.release(run);
         logs.clear(run.runId);
+        approvals.clearRun(run.runId);
       },
     },
   });
+  writeApprovalLine = (token, line) => lifecycle.commands.writeInput(token, line);
   const send = new SendLeadMessage({
     snapshot: (teamName) => lifecycle.snapshot(teamName),
     write: (token, line) => lifecycle.commands.writeInput(token, line),
@@ -211,6 +229,7 @@ export function createNativeTeamLifecycle(
   return {
     runs,
     logs,
+    approvals,
     taskChanges,
     commands: createBoundLifecycleCommands({
       owner: deps.owner,

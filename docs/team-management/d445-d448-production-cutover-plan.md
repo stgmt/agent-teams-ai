@@ -299,8 +299,9 @@ Native logs: `NativeTeamLogStore` (bounded 2000 lines, newest-first через
 lead activity/context usage пока fail-closed. Member lifecycle:
 `NativeTeamMemberLifecycleApi` (statuses/restart/skip); attach/detach и OpenCode
 secondary retry fail-closed. Approvals: `NativeTeamToolApprovalApi` отвечает на
-lane-запросы по exact run; Claude process approvals и запись settings пока
-fail-closed. Task activity repair: `NativeTaskActivityRepair` уже
+lane-запросы по exact run; Claude process approvals теперь native
+(`NativeClaudeToolApprovals`: `control_request` ingestion + `control_response` в
+stdin); запись settings пока fail-closed. Task activity repair: `NativeTaskActivityRepair` уже
 связывает legacy repair с native registry (`aliveRunId`/`findByRunId`/`isLive`):
 живой run пропускает repair, остановленный — чинится один раз. Остальные пункты
 6b ещё не портированы.

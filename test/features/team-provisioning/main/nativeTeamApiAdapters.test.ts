@@ -133,4 +133,19 @@ describe('native team API adapters', () => {
     ).rejects.toThrow('Unknown runId');
     expect(() => api.updateToolApprovalSettings('test-team', {} as never)).toThrow('not migrated');
   });
+
+  it('falls back to Claude approvals when the lane has no such request', async () => {
+    const respond = vi.fn(async () => true);
+    const api = new NativeTeamToolApprovalApi({
+      runs: { find: (teamName) => (teamName === run.teamName ? snapshot : null) },
+      commands: {
+        answerLanePermission: vi.fn(async () => {
+          throw new Error('Unknown permission request');
+        }),
+      },
+      claudeApprovals: { respond },
+    });
+    await api.respondToToolApproval('test-team', run.runId, 'TEST-request', false, 'TEST deny');
+    expect(respond).toHaveBeenCalledWith(run.runId, 'TEST-request', false, 'TEST deny');
+  });
 });
