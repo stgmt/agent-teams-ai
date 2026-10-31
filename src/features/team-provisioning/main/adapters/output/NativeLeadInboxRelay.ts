@@ -32,6 +32,7 @@ const SAME_TEAM_RUN_START_SKEW_MS = 1_000;
 const SAME_TEAM_NATIVE_DELIVERY_GRACE_MS = 15_000;
 const RECENT_CROSS_TEAM_DELIVERY_TTL_MS = 10 * 60 * 1000;
 const RELAY_FOLLOW_UP_DELAY_MS = 50;
+const WORK_SYNC_RETRY_COOLDOWN_MS = 60_000;
 
 export interface NativeLeadInboxRelayCrossTeamState {
   pendingReplies: Map<string, Map<string, number>>;
@@ -77,6 +78,7 @@ export class NativeLeadInboxRelay {
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly polling = new Map<string, ReturnType<typeof setInterval>>();
   private readonly inFlight = new Map<string, Promise<number>>();
+  private readonly workSyncRetryAfter = new Map<string, number>();
 
   constructor(private readonly deps: NativeLeadInboxRelayDependencies) {
     this.pendingCrossTeamReplies = deps.crossTeamState?.pendingReplies ?? new Map();
@@ -147,6 +149,9 @@ export class NativeLeadInboxRelay {
     this.relayed.delete(teamName);
     this.pendingCrossTeamReplies.delete(teamName);
     this.recentCrossTeamDeliveries.delete(teamName);
+    for (const key of [...this.workSyncRetryAfter.keys()]) {
+      if (key.startsWith(`${teamName}\0`)) this.workSyncRetryAfter.delete(key);
+    }
   }
 
   private async run(teamName: string, options: NativeLeadInboxRelayOptions): Promise<number> {
@@ -157,7 +162,8 @@ export class NativeLeadInboxRelay {
     const lead = Object.values(snapshot.members).find(
       (member) => member.role === 'lead' && member.membership === 'configured'
     );
-    if (!lead?.process || lead.desired !== 'running' || lead.phase !== 'ready') return 0;
+    if (!lead || (!lead.process && !lead.lane)) return 0;
+    if (lead.desired !== 'running' || lead.phase !== 'ready') return 0;
     const leadName = lead.memberName;
     const isStale = (): boolean => {
       const current = this.deps.runs.find(teamName);
@@ -180,17 +186,18 @@ export class NativeLeadInboxRelay {
     }
     if (isStale()) return 0;
 
+    const now = (this.deps.now ?? Date.now)();
     const unread = messages
       .filter((message): message is RelayInboxMessage => {
         if (message.read) return false;
         if (typeof message.text !== 'string' || message.text.trim().length === 0) return false;
         if (!hasStableInboxMessageId(message)) return false;
-        return !relayedIds.has(message.messageId);
+        if (relayedIds.has(message.messageId)) return false;
+        return (this.workSyncRetryAfter.get(`${teamName}\0${message.messageId}`) ?? 0) <= now;
       })
       .sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp));
     if (unread.length === 0) return 0;
 
-    const now = (this.deps.now ?? Date.now)();
     const { silentIdleIds, passiveIdleIds, coarseNonIdleNoiseIds } =
       getLeadInboxRelayNoiseIds(unread);
     const suppression = createCrossTeamLeadSuppressionState({
@@ -307,7 +314,21 @@ export class NativeLeadInboxRelay {
     // The run may have stopped while stdin was accepting the prompt.
     if (isStale()) return 0;
 
-    for (const message of batch) relayedIds.add(message.messageId);
+    const readCommit: typeof batch = [];
+    let needsWorkSyncRetry = false;
+    for (const message of batch) {
+      const retryKey = `${teamName}\0${message.messageId}`;
+      if (message.messageKind === 'member_work_sync_nudge') {
+        if (!(await this.hasAcceptedLeadWorkSyncReport(teamName, leadName))) {
+          this.workSyncRetryAfter.set(retryKey, now + WORK_SYNC_RETRY_COOLDOWN_MS);
+          needsWorkSyncRetry = true;
+          continue;
+        }
+      }
+      this.workSyncRetryAfter.delete(retryKey);
+      relayedIds.add(message.messageId);
+      readCommit.push(message);
+    }
     this.relayed.set(teamName, trimRelayedMessageIdSet(relayedIds));
     rememberRecentCrossTeamLeadDeliveryMessageIds(
       this.recentCrossTeamDeliveries,
@@ -318,15 +339,9 @@ export class NativeLeadInboxRelay {
       now,
       RECENT_CROSS_TEAM_DELIVERY_TTL_MS
     );
-    const readCommit: typeof batch = [];
-    for (const message of batch) {
-      if (message.messageKind === 'member_work_sync_nudge') {
-        if (!(await this.hasAcceptedLeadWorkSyncReport(teamName, leadName))) continue;
-      }
-      readCommit.push(message);
-    }
     await this.commitRead(teamName, leadName, readCommit).catch(() => undefined);
-    if (deferredIds.size > 0) this.schedule(teamName, SAME_TEAM_NATIVE_DELIVERY_GRACE_MS);
+    if (needsWorkSyncRetry) this.schedule(teamName, WORK_SYNC_RETRY_COOLDOWN_MS);
+    else if (deferredIds.size > 0) this.schedule(teamName, SAME_TEAM_NATIVE_DELIVERY_GRACE_MS);
     else if (hasPendingFollowUpRelay) this.schedule(teamName, RELAY_FOLLOW_UP_DELAY_MS);
     return batch.length;
   }

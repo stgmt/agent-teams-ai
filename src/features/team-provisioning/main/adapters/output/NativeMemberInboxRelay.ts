@@ -17,6 +17,8 @@ import type {
 } from '../../../contracts';
 import type { InboxMessage } from '@shared/types';
 
+const WORK_SYNC_RETRY_COOLDOWN_MS = 60_000;
+
 export interface NativeMemberInboxRelayDependencies {
   runs: Pick<TeamRunRegistryRead, 'find' | 'isLive'>;
   snapshot(teamName: string): Readonly<TeamLifecycleSnapshot>;
@@ -29,6 +31,7 @@ export interface NativeMemberInboxRelayDependencies {
     teamName: string;
     memberName: string;
   }): Promise<boolean>;
+  now?(): number;
   logger?: { debug(message: string): void };
 }
 
@@ -42,6 +45,8 @@ export class NativeMemberInboxRelay {
   private readonly relayed = new Map<string, Set<string>>();
   private readonly inFlight = new Map<string, Promise<number>>();
   private readonly polling = new Map<string, ReturnType<typeof setInterval>>();
+  private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly workSyncRetryAfter = new Map<string, number>();
 
   constructor(private readonly deps: NativeMemberInboxRelayDependencies) {}
 
@@ -89,10 +94,22 @@ export class NativeMemberInboxRelay {
     for (const key of [...this.relayed.keys()]) {
       if (key.startsWith(`${teamName}\0`)) this.relayed.delete(key);
     }
+    for (const [key, handle] of this.timers.entries()) {
+      if (!key.startsWith(`${teamName}\0`)) continue;
+      clearTimeout(handle);
+      this.timers.delete(key);
+    }
+    for (const key of [...this.workSyncRetryAfter.keys()]) {
+      if (key.startsWith(`${teamName}\0`)) this.workSyncRetryAfter.delete(key);
+    }
   }
 
   dispose(): void {
     for (const teamName of [...this.polling.keys()]) this.stopPolling(teamName);
+    for (const [key, handle] of this.timers.entries()) {
+      clearTimeout(handle);
+      this.timers.delete(key);
+    }
   }
 
   private async run(teamName: string, memberName: string): Promise<number> {
@@ -110,7 +127,8 @@ export class NativeMemberInboxRelay {
     const lead = Object.values(snapshot.members).find(
       (candidate) => candidate.role === 'lead' && candidate.membership === 'configured'
     );
-    if (!lead?.process || lead.desired !== 'running' || lead.phase !== 'ready') return 0;
+    if (!lead || (!lead.process && !lead.lane)) return 0;
+    if (lead.desired !== 'running' || lead.phase !== 'ready') return 0;
     const isStale = (): boolean =>
       !this.deps.runs.isLive(snapshot.identity) ||
       this.deps.snapshot(teamName).identity.runId !== snapshot.identity.runId ||
@@ -128,24 +146,31 @@ export class NativeMemberInboxRelay {
     }
     if (isStale()) return 0;
 
+    const now = (this.deps.now ?? Date.now)();
     const unread = messages
       .filter((message): message is RelayInboxMessage => {
         if (message.read) return false;
         if (typeof message.text !== 'string' || message.text.trim().length === 0) return false;
         if (!hasStableInboxMessageId(message)) return false;
-        return !relayedIds.has(message.messageId);
+        if (relayedIds.has(message.messageId)) return false;
+        return (this.workSyncRetryAfter.get(relayKey(teamName, message.messageId)) ?? 0) <= now;
       })
       .sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp));
     if (unread.length === 0) return 0;
 
     const { passiveIdleUnread, actionableUnread, readOnlyIgnoredUnread } =
       splitMemberInboxRelayUnread(unread);
-    if (readOnlyIgnoredUnread.length > 0)
-      await this.commitRead(teamName, memberName, readOnlyIgnoredUnread).catch(() => undefined);
-    if (passiveIdleUnread.length > 0)
-      this.log(
-        `[${teamName}] member relay marked ${passiveIdleUnread.length} passive idle message(s) read for ${memberName}`
-      );
+    if (readOnlyIgnoredUnread.length > 0) {
+      try {
+        await this.commitRead(teamName, memberName, readOnlyIgnoredUnread);
+        if (passiveIdleUnread.length > 0)
+          this.log(
+            `[${teamName}] member relay marked ${passiveIdleUnread.length} passive idle message(s) read for ${memberName}`
+          );
+      } catch {
+        // Best-effort: ignored rows stay unread and are retried by the next pass.
+      }
+    }
     if (actionableUnread.length === 0) return 0;
 
     const batch = selectMemberInboxRelayBatch(actionableUnread, DEFAULT_INBOX_RELAY_BATCH_SIZE);
@@ -163,16 +188,36 @@ export class NativeMemberInboxRelay {
     if (isStale()) return 0;
 
     const readCommit: typeof batch = [];
+    let needsWorkSyncRetry = false;
     for (const message of batch) {
-      relayedIds.add(message.messageId);
+      const retryKey = relayKey(teamName, message.messageId);
       if (message.messageKind === 'member_work_sync_nudge') {
-        if (!(await this.hasAcceptedMemberWorkSyncReport(teamName, memberName))) continue;
+        if (!(await this.hasAcceptedMemberWorkSyncReport(teamName, memberName))) {
+          this.workSyncRetryAfter.set(retryKey, now + WORK_SYNC_RETRY_COOLDOWN_MS);
+          needsWorkSyncRetry = true;
+          continue;
+        }
       }
+      this.workSyncRetryAfter.delete(retryKey);
+      relayedIds.add(message.messageId);
       readCommit.push(message);
     }
     this.relayed.set(key, trimRelayedMessageIdSet(relayedIds));
     await this.commitRead(teamName, memberName, readCommit).catch(() => undefined);
+    if (needsWorkSyncRetry) this.scheduleRetry(teamName, memberName, WORK_SYNC_RETRY_COOLDOWN_MS);
     return batch.length;
+  }
+
+  private scheduleRetry(teamName: string, memberName: string, delayMs: number): void {
+    const key = relayKey(teamName, memberName);
+    const existing = this.timers.get(key);
+    if (existing) clearTimeout(existing);
+    const handle = setTimeout(() => {
+      this.timers.delete(key);
+      void this.relay(teamName, memberName).catch(() => undefined);
+    }, delayMs);
+    handle.unref?.();
+    this.timers.set(key, handle);
   }
 
   private async hasAcceptedMemberWorkSyncReport(

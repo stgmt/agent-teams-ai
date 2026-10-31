@@ -22,7 +22,7 @@ const snapshot = {
   },
 } as unknown as TeamLifecycleSnapshot;
 
-function memberApi() {
+function memberApi(snap: TeamLifecycleSnapshot = snapshot) {
   const restartMember = vi.fn(async () => ({ kind: 'already-running' as const }));
   const skipMember = vi.fn(async () => undefined);
   const retryFailedLanes = vi.fn(async () => ({
@@ -40,7 +40,7 @@ function memberApi() {
   }));
   const api = new NativeTeamMemberLifecycleApi({
     owner,
-    runs: { find: (teamName) => (teamName === run.teamName ? snapshot : null) },
+    runs: { find: (teamName) => (teamName === run.teamName ? snap : null) },
     commands: { restartMember, skipMember, retryFailedLanes },
     statuses: { memberSpawnStatuses },
   });
@@ -112,6 +112,26 @@ describe('native team API adapters', () => {
     const mutation = vi.fn(async () => undefined);
     await api.runLiveRosterMutation('test-team', mutation);
     expect(mutation).toHaveBeenCalledOnce();
+  });
+
+  it('rejects a lane retry while a member start is still in progress', async () => {
+    const starting = {
+      ...snapshot,
+      state: 'starting',
+      members: {
+        builder: {
+          memberName: 'builder',
+          role: 'member',
+          membership: 'configured',
+          phase: 'starting',
+        },
+      },
+    } as unknown as TeamLifecycleSnapshot;
+    const { api, retryFailedLanes } = memberApi(starting);
+    await expect(api.retryFailedOpenCodeSecondaryLanes('test-team')).rejects.toThrow(
+      'still in progress'
+    );
+    expect(retryFailedLanes).not.toHaveBeenCalled();
   });
 
   it('projects live member spawn statuses', async () => {

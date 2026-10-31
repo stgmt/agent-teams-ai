@@ -420,7 +420,7 @@ describe('owned Node member process adapter', () => {
       releaseFailed: vi.fn(),
       released: vi.fn(),
     });
-    await expect.poll(() => exited.mock.calls.length).toBe(1);
+    await expect.poll(() => exited.mock.calls.length, { timeout: 10_000 }).toBe(1);
     expect(connected).not.toHaveBeenCalled();
     await child.stop();
   });

@@ -5,6 +5,8 @@ import { join } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { NativeLeadInboxRelay } from '../../../../src/features/team-provisioning/main/adapters/output/NativeLeadInboxRelay';
+import { NativeMemberInboxRelay } from '../../../../src/features/team-provisioning/main/adapters/output/NativeMemberInboxRelay';
 import { createNativeDesktopTeamRuntime } from '../../../../src/features/team-provisioning/main/composition/createNativeDesktopTeamRuntime';
 import { NativeTeamConfigStore } from '../../../../src/features/team-provisioning/main/infrastructure/NativeTeamConfigStore';
 
@@ -63,6 +65,21 @@ function setup(
 }
 
 describe('native desktop team runtime composition', () => {
+  it('starts and stops both relay pollers through the composition', () => {
+    const { lifecycle } = setup();
+    const leadStart = vi.spyOn(NativeLeadInboxRelay.prototype, 'startPolling');
+    const memberStart = vi.spyOn(NativeMemberInboxRelay.prototype, 'startPolling');
+    const leadStop = vi.spyOn(NativeLeadInboxRelay.prototype, 'stopPolling');
+    const memberStop = vi.spyOn(NativeMemberInboxRelay.prototype, 'stopPolling');
+    lifecycle.startRelays('TEST-team', 250);
+    expect(leadStart).toHaveBeenCalledWith('TEST-team', 250);
+    expect(memberStart).toHaveBeenCalledWith('TEST-team', 250);
+    lifecycle.stopRelays('TEST-team');
+    expect(leadStop).toHaveBeenCalledWith('TEST-team');
+    expect(memberStop).toHaveBeenCalledWith('TEST-team');
+    vi.restoreAllMocks();
+  });
+
   it('assembles lifecycle and runtime reads without a production owner switch', async () => {
     const { lifecycle, runtime, logs } = setup();
     expect(lifecycle.runs.aliveTeamNames()).toEqual([]);

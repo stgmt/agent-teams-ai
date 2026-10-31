@@ -261,6 +261,10 @@ export class MemberLifecycleCommands {
     };
     this.laneGroups.set(laneGroupKey(first, laneId), execution);
     this.failedLaneGroups.delete(laneGroupKey(first, laneId));
+    for (const [failedKey, descriptor] of this.failedLaneGroups.entries()) {
+      if (descriptor.run.teamName === first.teamName && failedKey !== laneGroupKey(first, laneId))
+        this.failedLaneGroups.delete(failedKey);
+    }
     execution.completion = this.startLaneGroup(execution);
   }
 
@@ -359,6 +363,15 @@ export class MemberLifecycleCommands {
     run: TeamRunIdentity
   ): Promise<RetryFailedOpenCodeSecondaryLanesResult> {
     const snapshot = this.ports.registry.snapshot(run.teamName);
+    const starting = Object.values(snapshot.members).some(
+      (member) =>
+        member.membership === 'configured' &&
+        (member.phase === 'starting' || member.phase === 'connecting')
+    );
+    // A partially failed launch still reports degraded/failed state, so member
+    // phases are the only reliable launch-in-progress signal.
+    if (snapshot.state === 'preparing' || starting)
+      throw new Error('A member start is still in progress');
     const candidates = new Map<
       string,
       { laneId: string; memberNames: readonly string[]; failedNames: readonly string[] }
@@ -406,11 +419,11 @@ export class MemberLifecycleCommands {
           skipped.push({ memberName: name, reason: 'Team stopped during retry' });
         continue;
       }
-      attempted.push(...candidate.failedNames);
       try {
         if (this.laneGroups.has(laneGroupKey(run, candidate.laneId)))
           await this.restartLane({ run, laneId: candidate.laneId });
         else await this.relaunchLane(run, candidate.laneId, candidate.memberNames);
+        attempted.push(...candidate.failedNames);
         this.failedLaneGroups.delete(laneGroupKey(run, candidate.laneId));
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);

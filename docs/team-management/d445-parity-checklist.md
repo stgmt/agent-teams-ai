@@ -40,16 +40,16 @@ work before cutover. No row may be silently omitted from the cutover commit.
 
 ## Messaging/relay/cross-team
 
-| API                                                   | Status                   | Evidence                                                                                                           |
-| ----------------------------------------------------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------ |
-| `sendMessageToTeam`                                   | native (system path)     | `NativeTeamMessagingApi`; attachments fail-closed; human path uses the ledger                                      |
-| `relayLeadInboxMessages`                              | native (transport proof) | `NativeLeadInboxRelay`: batched prompt to lead stdin, read commit after write; reply projection stays in reporting |
-| `relayOpenCodeMemberInboxMessages`                    | blocked                  | legacy OpenCode relay owns the delivery ledger                                                                     |
-| member inbox relay (internal)                         | native                   | `NativeMemberInboxRelay` batches unread rows into a lead forward prompt                                            |
-| `getOpenCodeRuntimeDeliveryStatus`                    | blocked                  | OpenCode delivery ledger                                                                                           |
-| `resolveRuntimeRecipientProviderId` / lead session id | native                   | `NativeTeamMessagingApi` (lane session only)                                                                       |
-| live lead messages / push                             | blocked                  | legacy run payloads                                                                                                |
-| cross-team reply metadata / expectations              | blocked                  | legacy conversation correlation                                                                                    |
+| API                                                   | Status                       | Evidence                                                                                                           |
+| ----------------------------------------------------- | ---------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `sendMessageToTeam`                                   | native (process + lane lead) | `NativeTeamMessagingApi`; process or adapter-lane lead; attachments fail-closed; human path uses the ledger        |
+| `relayLeadInboxMessages`                              | native (transport proof)     | `NativeLeadInboxRelay`: batched prompt to lead stdin, read commit after write; reply projection stays in reporting |
+| `relayOpenCodeMemberInboxMessages`                    | blocked                      | legacy OpenCode relay owns the delivery ledger                                                                     |
+| member inbox relay (internal)                         | native                       | `NativeMemberInboxRelay` batches unread rows into a lead forward prompt; `startRelays` polls both relays           |
+| `getOpenCodeRuntimeDeliveryStatus`                    | blocked                      | OpenCode delivery ledger                                                                                           |
+| `resolveRuntimeRecipientProviderId` / lead session id | native                       | `NativeTeamMessagingApi` (lane session only)                                                                       |
+| live lead messages / push                             | blocked                      | legacy run payloads                                                                                                |
+| cross-team reply metadata / expectations              | blocked                      | legacy conversation correlation                                                                                    |
 
 ## Data/settings
 

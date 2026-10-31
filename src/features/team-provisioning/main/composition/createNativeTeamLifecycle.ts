@@ -60,6 +60,8 @@ export interface NativeTeamLifecycleDependencies {
   runtimeAdapterRegistry?: Pick<TeamRuntimeAdapterRegistry, 'has' | 'get'>;
   /** Lead inbox reader; defaults to the shared file reader. */
   inboxReader?: { getMessagesFor(teamName: string, member: string): Promise<InboxMessage[]> };
+  /** Enables inbox relay polling after a successful launch. Omitted keeps relays on-demand. */
+  relayIntervalMs?: number;
   invalidate(teamName: string): void;
   contextInvalidationSignal(expected: AppConnectionContext): AbortSignal;
   withExpectedContext<T>(expected: AppConnectionContext, operation: () => Promise<T>): Promise<T>;
@@ -257,10 +259,11 @@ export function createNativeTeamLifecycle(
     aliveTeamNames: () => lifecycle.registry.aliveTeamNames(),
     aliveRunId: (teamName) => lifecycle.registry.aliveRunId(teamName),
   });
+  const inboxReader = deps.inboxReader ?? new TeamInboxReader();
   const leadRelay = new NativeLeadInboxRelay({
     runs,
     snapshot: (teamName) => lifecycle.snapshot(teamName),
-    inbox: deps.inboxReader ?? new TeamInboxReader(),
+    inbox: inboxReader,
     send: (run, text) => deps.withExpectedContext(run, () => send.execute(run, text)),
     teamsRoot: deps.teamsRoot,
     controlUrl: () => deps.controlUrl(),
@@ -268,12 +271,20 @@ export function createNativeTeamLifecycle(
   const memberRelay = new NativeMemberInboxRelay({
     runs,
     snapshot: (teamName) => lifecycle.snapshot(teamName),
-    inbox: deps.inboxReader ?? new TeamInboxReader(),
+    inbox: inboxReader,
     send: (run, text) => deps.withExpectedContext(run, () => send.execute(run, text)),
     teamsRoot: deps.teamsRoot,
   });
   memberRelayRef = memberRelay;
   relay = leadRelay;
+  const startRelays = (teamName: string, intervalMs: number): void => {
+    leadRelay.startPolling(teamName, intervalMs);
+    memberRelay.startPolling(teamName, intervalMs);
+  };
+  const stopRelays = (teamName: string): void => {
+    leadRelay.stopPolling(teamName);
+    memberRelay.stopPolling(teamName);
+  };
   return {
     runs,
     logs,
@@ -282,14 +293,8 @@ export function createNativeTeamLifecycle(
     taskChanges,
     relay: leadRelay,
     memberRelay,
-    startRelays: (teamName, intervalMs) => {
-      leadRelay.startPolling(teamName, intervalMs);
-      memberRelay.startPolling(teamName, intervalMs);
-    },
-    stopRelays: (teamName) => {
-      leadRelay.stopPolling(teamName);
-      memberRelay.stopPolling(teamName);
-    },
+    startRelays,
+    stopRelays,
     commands: createBoundLifecycleCommands({
       owner: deps.owner,
       source: {
@@ -347,6 +352,7 @@ export function createNativeTeamLifecycle(
           run,
           async (signal) => (await settings.capture(run, signal)).members
         );
+        if (deps.relayIntervalMs) startRelays(run.teamName, deps.relayIntervalMs);
         return Object.freeze({ run: receipt.run });
       }),
   };

@@ -78,6 +78,7 @@ function setup(
     live?: boolean;
     current?: TeamLifecycleSnapshot;
     hasAcceptedMemberWorkSyncReport?: () => Promise<boolean>;
+    now?: () => number;
   } = {}
 ) {
   const current = options.current ?? snapshot();
@@ -99,6 +100,7 @@ function setup(
     ...(options.hasAcceptedMemberWorkSyncReport
       ? { hasAcceptedMemberWorkSyncReport: options.hasAcceptedMemberWorkSyncReport }
       : {}),
+    ...(options.now ? { now: options.now } : {}),
   });
   return { relay, send, markRead, getMessagesFor };
 }
@@ -168,6 +170,18 @@ describe('native member inbox relay', () => {
     });
     await expect(accepted.relay.relay(run.teamName, 'builder')).resolves.toBe(1);
     expect(accepted.markRead).toHaveBeenCalledWith(run.teamName, 'builder', ['TEST-nudge']);
+  });
+
+  it('re-relays an unaccepted work-sync nudge after the cooldown', async () => {
+    let clock = Date.parse(startedAt) + 60_000;
+    const nudge = message({ messageId: 'TEST-nudge', messageKind: 'member_work_sync_nudge' });
+    const { relay, send } = setup({ messages: [nudge], now: () => clock });
+    await expect(relay.relay(run.teamName, 'builder')).resolves.toBe(1);
+    await expect(relay.relay(run.teamName, 'builder')).resolves.toBe(0);
+    clock += 60_001;
+    await expect(relay.relay(run.teamName, 'builder')).resolves.toBe(1);
+    expect(send).toHaveBeenCalledTimes(2);
+    relay.dispose();
   });
 
   it('polls every configured member on an interval', async () => {

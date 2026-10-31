@@ -66,6 +66,25 @@ function snapshot(overrides: Partial<TeamLifecycleSnapshot> = {}): TeamLifecycle
   };
 }
 
+function member(memberName: string, role: 'lead' | 'member') {
+  return {
+    memberName,
+    role,
+    membership: 'configured' as const,
+    desired: 'running' as const,
+    phase: 'ready' as const,
+    resources: 'held' as const,
+    generation: 1,
+    operationId: `TEST-op-${memberName}`,
+    process: { pid: role === 'lead' ? 100 : 101, birthId: `TEST-birth-${memberName}` },
+    lane: null,
+    everConnected: true,
+    skippedForLaunch: false,
+    error: null,
+    exit: null,
+  };
+}
+
 function message(overrides: Partial<InboxMessage> = {}): InboxMessage {
   return {
     from: 'builder',
@@ -137,7 +156,7 @@ describe('native lead inbox relay', () => {
     expect(markRead).toHaveBeenCalledWith(run.teamName, 'team-lead', ['TEST-1', 'TEST-2']);
   });
 
-  it('skips read messages, relayed ids and group chat envelopes', async () => {
+  it('skips read messages and group chat envelopes', async () => {
     const messages = [
       message({ messageId: 'TEST-read', read: true }),
       { ...message({ messageId: 'TEST-group' }), groupChatProtocolVersion: 1 } as InboxMessage,
@@ -236,6 +255,43 @@ describe('native lead inbox relay', () => {
     relay.reset(run.teamName);
     await expect(relay.relay(run.teamName)).resolves.toBe(1);
     expect(send).toHaveBeenCalledTimes(2);
+  });
+
+  it('relays when the lead runs in an adapter lane without a process handle', async () => {
+    const laneLead = {
+      ...member('team-lead', 'lead'),
+      process: null,
+      lane: {
+        laneId: 'primary',
+        sessionId: 'TEST-session',
+        hostPid: 100,
+        runtimeAlive: true,
+        bootstrapConfirmed: true,
+        permissionBlocked: false,
+      },
+    };
+    const { relay, send } = setup({
+      current: snapshot({
+        members: {
+          'team-lead': laneLead,
+          builder: member('builder', 'member'),
+        },
+      }),
+    });
+    await expect(relay.relay(run.teamName)).resolves.toBe(1);
+    expect(send).toHaveBeenCalledOnce();
+  });
+
+  it('re-relays an unaccepted work-sync nudge after the cooldown', async () => {
+    let clock = Date.parse(startedAt) + 60_000;
+    const nudge = message({ messageId: 'TEST-nudge', messageKind: 'member_work_sync_nudge' });
+    const { relay, send } = setup({ messages: [nudge], now: () => clock });
+    await expect(relay.relay(run.teamName)).resolves.toBe(1);
+    await expect(relay.relay(run.teamName)).resolves.toBe(0);
+    clock += 60_001;
+    await expect(relay.relay(run.teamName)).resolves.toBe(1);
+    expect(send).toHaveBeenCalledTimes(2);
+    relay.dispose();
   });
 
   it('marks permanently ignored cross-team echo rows read without sending', async () => {

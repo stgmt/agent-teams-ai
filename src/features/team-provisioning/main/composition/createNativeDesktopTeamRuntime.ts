@@ -36,6 +36,8 @@ export interface NativeDesktopTeamRuntimeDependencies {
   bootstrapRuntime?: DesktopTeamRuntimeDependencies['bootstrapRuntime'];
   /** Teams to scan for orphaned native run claims at startup. */
   listTeamNames(): Promise<readonly string[]>;
+  /** Enables inbox relay polling after launch; omitted keeps relays on-demand. */
+  relayIntervalMs?: number;
   now?(): string;
 }
 
@@ -70,6 +72,7 @@ export function createNativeDesktopTeamRuntime(
     contextInvalidationSignal: deps.contextInvalidationSignal,
     withExpectedContext: deps.withExpectedContext,
     ...(deps.runtimeAdapterRegistry ? { runtimeAdapterRegistry: deps.runtimeAdapterRegistry } : {}),
+    ...(deps.relayIntervalMs ? { relayIntervalMs: deps.relayIntervalMs } : {}),
   });
   const runtime = createDesktopTeamRuntime({
     currentContext: deps.currentContext,

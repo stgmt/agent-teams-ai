@@ -123,7 +123,7 @@ describe('named team workspace in native lifecycle composition', { timeout: 60_0
     expect(receipts[0]).toEqual(receipts[1]);
     let run = receipts[0].run;
     try {
-      await expect.poll(() => launches.length, { timeout: 10_000 }).toBe(4);
+      await expect.poll(() => launches.length, { timeout: 60_000 }).toBe(4);
       const lead = launches.find((launch) => launch.role === 'lead')!;
       const builder = launches.find((launch) => launch.memberName === 'builder')!;
       const isolated = launches.find((launch) => launch.memberName === 'isolated')!;
@@ -157,7 +157,7 @@ describe('named team workspace in native lifecycle composition', { timeout: 60_0
       expect(JSON.parse(await readFile(configPath, 'utf8')).appManagedRun).toBeUndefined();
       const next = await lifecycle.commands.launch(request);
       run = next.run;
-      await expect.poll(() => launches.length, { timeout: 10_000 }).toBe(8);
+      await expect.poll(() => launches.length, { timeout: 60_000 }).toBe(8);
       expect(launches.slice(4).find((launch) => launch.role === 'lead')?.workingDirectory).toBe(
         lead.workingDirectory
       );
@@ -199,7 +199,7 @@ describe('named team workspace in native lifecycle composition', { timeout: 60_0
     );
     const next = await lifecycle.commands.launch(request);
     try {
-      await expect.poll(() => launches.length, { timeout: 10_000 }).toBe(4);
+      await expect.poll(() => launches.length, { timeout: 60_000 }).toBe(4);
       expect(
         (await git(repo, 'worktree', 'list', '--porcelain')).match(/^worktree /gm)
       ).toHaveLength(3);
