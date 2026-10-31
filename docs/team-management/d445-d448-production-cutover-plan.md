@@ -300,8 +300,9 @@ Native logs: `NativeTeamLogStore` (bounded 2000 lines, newest-first через
 lead activity вычисляется по последнему stream-json событию в хвосте логов
 (active/idle/offline), context usage парсится из последнего `usage`-события
 (unknown model → null-токены). Member lifecycle:
-`NativeTeamMemberLifecycleApi` (statuses/restart/skip); attach fail-closed,
-detach native (stop + registry remove + `detachMemberData`; shared lanes/lead rejected), OpenCode
+`NativeTeamMemberLifecycleApi` (statuses/restart/skip); attach native для уже сохранённого
+члена (settings re-admit + config add + registry add + start), detach native
+(stop + registry remove + `detachMemberData`; shared lanes/lead rejected), OpenCode
 secondary retry native (`retryFailedLanes` → `restartLane` для групп с failed-членами,
 lead lane требует relaunch; retry отклоняется, пока native launch не завершён). Approvals: `NativeTeamToolApprovalApi` отвечает на
 lane-запросы по exact run; Claude process approvals теперь native

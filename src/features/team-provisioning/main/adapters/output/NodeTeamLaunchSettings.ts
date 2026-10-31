@@ -196,6 +196,29 @@ export class NodeTeamLaunchSettings implements MemberLaunchSettingsPort {
     );
   }
 
+  async admitConfiguredMember(run: TeamRunIdentity, memberName: string): Promise<void> {
+    const captured = this.captured.get(run.teamName);
+    if (captured?.runKey !== runKey(run)) throw new Error('Team run settings were not captured');
+    const { meta, members } = await this.read(run.teamName);
+    const member = members.find((entry) => !entry.removedAt && entry.name === memberName);
+    if (!member) throw new Error(`Member "${memberName}" is not configured`);
+    this.captured.set(
+      run.teamName,
+      Object.freeze({
+        runKey: captured.runKey,
+        configurationRevision: revision(meta, members),
+        members: Object.freeze(
+          this.withConfiguredLead(members).map((entry) =>
+            Object.freeze({
+              memberName: entry.name,
+              role: isCanonicalSettingsLeadMember(entry) ? ('lead' as const) : ('member' as const),
+            })
+          )
+        ),
+      })
+    );
+  }
+
   async findConfiguredMember(
     run: TeamRunIdentity,
     memberName: string

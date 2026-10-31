@@ -29,6 +29,7 @@ function memberApi(
   const restartMember = vi.fn(async () => ({ kind: 'already-running' as const }));
   const skipMember = vi.fn(async () => undefined);
   const detachMember = vi.fn(async () => undefined);
+  const attachMember = vi.fn(async () => undefined);
   const retryFailedLanes = vi.fn(async () => ({
     attempted: [],
     confirmed: [],
@@ -45,11 +46,19 @@ function memberApi(
   const api = new NativeTeamMemberLifecycleApi({
     owner,
     runs: { find: (teamName) => (teamName === run.teamName ? snap : null) },
-    commands: { restartMember, skipMember, detachMember, retryFailedLanes },
+    commands: { restartMember, skipMember, detachMember, attachMember, retryFailedLanes },
     statuses: { memberSpawnStatuses },
     ...(options.detachMemberData ? { detachMemberData: options.detachMemberData } : {}),
   });
-  return { api, restartMember, skipMember, detachMember, retryFailedLanes, memberSpawnStatuses };
+  return {
+    api,
+    restartMember,
+    skipMember,
+    detachMember,
+    attachMember,
+    retryFailedLanes,
+    memberSpawnStatuses,
+  };
 }
 
 describe('native team API adapters', () => {
@@ -127,11 +136,25 @@ describe('native team API adapters', () => {
     expect(detachMemberData).toHaveBeenCalledWith('test-team', 'builder');
   });
 
-  it('fails closed for live roster attach and missing detach data', async () => {
+  it('attaches a configured member through the native command', async () => {
+    const configured = {
+      identity: run,
+      members: {
+        builder: {
+          memberName: 'builder',
+          role: 'member',
+          membership: 'configured',
+          generation: 3,
+        },
+      },
+    } as unknown as TeamLifecycleSnapshot;
+    const { api, attachMember } = memberApi(configured);
+    await api.attachLiveRosterMember('test-team', 'builder', { reason: 'member_restored' });
+    expect(attachMember).toHaveBeenCalledWith(run, 'builder');
+  });
+
+  it('fails closed for missing detach data', async () => {
     const { api, retryFailedLanes } = memberApi();
-    await expect(api.attachLiveRosterMember('test-team', 'builder')).rejects.toThrow(
-      'not migrated'
-    );
     await expect(api.detachLiveRosterMember('test-team', 'builder')).rejects.toThrow(
       'data port is not configured'
     );

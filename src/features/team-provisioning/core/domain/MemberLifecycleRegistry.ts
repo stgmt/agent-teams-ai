@@ -495,6 +495,32 @@ export class MemberLifecycleRegistry {
     for (const name of team.members.keys()) this.requestStop(identity, name);
   }
 
+  addMember(identity: TeamRunIdentity, member: ConfiguredMemberIdentity): void {
+    const team = this.requireRun(identity);
+    if (team.desired !== 'running') throw new Error('Team run is intentionally stopped');
+    if (member.role === 'lead')
+      throw new Error('Cannot add a second lead through member lifecycle');
+    if (!member.memberName.trim() || team.members.has(member.memberName))
+      throw new Error('Member is already configured or invalid');
+    team.members.set(member.memberName, {
+      ...member,
+      membership: 'configured',
+      desired: 'stopped',
+      phase: 'stopped',
+      resources: 'released',
+      generation: 0,
+      operationId: null,
+      process: null,
+      lane: null,
+      everConnected: false,
+      connectedGeneration: null,
+      skippedForLaunch: false,
+      error: null,
+      exit: null,
+    });
+    this.changed(team);
+  }
+
   removeMember(identity: TeamRunIdentity, memberName: string): void {
     const team = this.requireRun(identity);
     const member = this.requireMember(team, memberName);

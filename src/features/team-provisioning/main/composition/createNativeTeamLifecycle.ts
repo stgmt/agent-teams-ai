@@ -87,6 +87,7 @@ export interface NativeTeamLifecycle {
     restartMember: LifecycleCommands['restartMember'];
     skipMember: LifecycleCommands['skipMember'];
     detachMember(team: TeamRunIdentity, memberName: string): Promise<void>;
+    attachMember(team: TeamRunIdentity, memberName: string): Promise<void>;
     retryFailedLanes(run: TeamRunIdentity): Promise<RetryFailedOpenCodeSecondaryLanesResult>;
     answerLanePermission: MemberLifecycleCommands['answerLanePermission'];
   };
@@ -206,6 +207,7 @@ export function createNativeTeamLifecycle(
     authority,
     runtime: routing.runtime,
     laneGroups: routing.laneGroups,
+    registerConfiguredMember: (run, launch) => config.addMember(run, launch),
     teamResources: {
       prepare: async (run, signal) => {
         await settings.prepareWorkspace(run, workspace, signal);
@@ -321,6 +323,8 @@ export function createNativeTeamLifecycle(
     skipMember: commands.skipMember,
     detachMember: (team, memberName) =>
       deps.withExpectedContext(team, () => lifecycle.commands.detach(team, memberName)),
+    attachMember: (team, memberName) =>
+      deps.withExpectedContext(team, () => lifecycle.commands.attach(team, memberName)),
     retryFailedLanes: (run) =>
       deps.withExpectedContext(run, () => lifecycle.commands.retryFailedLanes(run)),
     answerLanePermission: (input) =>

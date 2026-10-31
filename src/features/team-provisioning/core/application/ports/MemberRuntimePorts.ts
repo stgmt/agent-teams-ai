@@ -37,6 +37,8 @@ export interface MemberLaunchSettingsPort {
     team: TeamRunIdentity,
     memberName: string
   ): Promise<ConfiguredMemberLaunch | null>;
+  /** Re-admits a member added after the original capture; attach uses this before resolving it. */
+  admitConfiguredMember?(team: TeamRunIdentity, memberName: string): Promise<void>;
 }
 
 export interface OwnedMemberProcess extends OwnedMemberRuntime {

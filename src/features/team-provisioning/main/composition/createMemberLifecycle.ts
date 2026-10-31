@@ -15,6 +15,7 @@ import type {
   TeamRunIdentity,
 } from '../../contracts';
 import type {
+  ConfiguredMemberLaunch,
   MemberLaunchSettingsPort,
   MemberRuntimePort,
   TeamRunResourcesPort,
@@ -31,6 +32,10 @@ export interface MemberLifecycleDependencies {
     run: Readonly<TeamRunIdentity>,
     members: readonly ConfiguredMemberIdentity[]
   ): readonly TeamLaneGroup[] | Promise<readonly TeamLaneGroup[]>;
+  registerConfiguredMember?(
+    team: TeamRunIdentity,
+    launch: Readonly<ConfiguredMemberLaunch>
+  ): Promise<void>;
 }
 
 export interface MemberLifecycle {
@@ -54,6 +59,9 @@ export function createMemberLifecycle(dependencies: MemberLifecycleDependencies)
     settings: dependencies.settings,
     runtime: dependencies.runtime,
     nextOperationId: randomUUID,
+    ...(dependencies.registerConfiguredMember
+      ? { registerConfiguredMember: dependencies.registerConfiguredMember }
+      : {}),
   });
   return {
     registry,

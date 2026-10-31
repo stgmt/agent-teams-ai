@@ -41,6 +41,13 @@ async function setup() {
     description: 'TEST description',
     createdAt: 10,
   };
+  const membersMeta = {
+    version: 1 as const,
+    members: [
+      { name: 'builder', role: 'TEST builder', color: 'blue', joinedAt: 20 },
+      { name: 'removed', removedAt: 30 },
+    ],
+  };
   const settings = new NodeTeamLaunchSettings({
     teamsRoot: root,
     metadata: {
@@ -50,20 +57,14 @@ async function setup() {
     },
     members: {
       async getMeta() {
-        return {
-          version: 1,
-          members: [
-            { name: 'builder', role: 'TEST builder', color: 'blue', joinedAt: 20 },
-            { name: 'removed', removedAt: 30 },
-          ],
-        };
+        return membersMeta;
       },
     },
   });
   await settings.capture(run);
   const config = new NodeNativeTeamConfig({ teamsRoot: root, settings, invalidate() {} });
   const configPath = join(teamDirectory, 'config.json');
-  return { root, meta, settings, config, configPath, teamDirectory };
+  return { root, meta, membersMeta, settings, config, configPath, teamDirectory };
 }
 
 async function readConfig(path: string) {
@@ -106,6 +107,31 @@ describe('app-owned native team runtime configuration', () => {
       saved.members.every((member: object) => !('runtimePid' in member) && !('isActive' in member))
     ).toBe(true);
     expect(saved.leadSessionId).toBeUndefined();
+  });
+
+  it('adds one configured member to a live projection without rewriting the roster', async () => {
+    const { config, configPath, membersMeta, settings } = await setup();
+    await config.prepare(run, new AbortController().signal);
+    membersMeta.members.push({ name: 'tester', color: 'green', joinedAt: 40 } as never);
+    await settings.admitConfiguredMember(run, 'tester');
+    const launch = await settings.findConfiguredMember(run, 'tester');
+    expect(launch).not.toBeNull();
+    await config.addMember(run, launch!);
+    const saved = await readConfig(configPath);
+    expect(saved.members.map((member: { name: string }) => member.name)).toEqual([
+      'team-lead',
+      'builder',
+      'tester',
+    ]);
+    expect(saved.leadAgentId).toBe(`team-lead@${run.teamName}`);
+    expect(saved.appManagedRun.configurationRevision).toBe(launch!.configurationRevision);
+    expect(
+      saved.members.find((member: { name: string }) => member.name === 'tester')
+    ).toMatchObject({
+      agentId: `tester@${run.teamName}`,
+      color: 'green',
+      joinedAt: 40,
+    });
   });
 
   it('materializes a configured Gemini lead and member without rewriting their provider selection', async () => {

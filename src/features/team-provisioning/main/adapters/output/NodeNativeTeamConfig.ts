@@ -5,6 +5,7 @@ import { NativeTeamConfigStore } from '../../infrastructure/NativeTeamConfigStor
 import { isNativeTeamRunOwner } from '../../infrastructure/nativeTeamRunOwnership';
 
 import type { TeamRunIdentity } from '../../../contracts';
+import type { ConfiguredMemberLaunch } from '../../../core/application/ports/MemberRuntimePorts';
 import type { NativeTeamConfig } from '../../infrastructure/NativeTeamConfigStore';
 import type { NodeTeamLaunchSettings } from './NodeTeamLaunchSettings';
 
@@ -31,6 +32,47 @@ function rows(config: NativeTeamConfig | null): NativeTeamConfig[] {
     names.add(member.name);
     return member;
   });
+}
+
+function toNativeMember(
+  run: Readonly<TeamRunIdentity>,
+  launch: Readonly<ConfiguredMemberLaunch>,
+  color: string | undefined,
+  joinedAt: number | undefined,
+  previous: readonly NativeTeamConfig[]
+): NativeTeamConfig {
+  if (
+    validateMemberName(launch.memberName).value !== launch.memberName ||
+    !isNativeRuntimeProvider(launch.providerId)
+  )
+    throw new Error('Invalid native configured member');
+  const member: NativeTeamConfig = {
+    ...previous.find((row) => row.name === launch.memberName),
+  };
+  // Process/session/bootstrap fields belong only to the current attempt, never to saved membership.
+  for (const key of Object.keys(member)) {
+    if (
+      /^(runtime|bootstrap|worktree)/.test(key) ||
+      ['sessionId', 'isActive', 'removedAt', 'mode', 'tmuxPaneId', 'backendType'].includes(key)
+    )
+      delete member[key];
+  }
+  return {
+    ...member,
+    agentId: `${launch.memberName}@${run.teamName}`,
+    name: launch.memberName,
+    agentType: launch.role === 'lead' ? 'team-lead' : (launch.agentType ?? 'general-purpose'),
+    provider: launch.providerId,
+    providerId: launch.providerId,
+    model: launch.model ?? undefined,
+    effort: launch.effort,
+    cwd: launch.workingDirectory,
+    prompt: launch.instructions,
+    color,
+    joinedAt,
+    tmuxPaneId: '',
+    subscriptions: Array.isArray(member.subscriptions) ? member.subscriptions : [],
+  };
 }
 
 function assertReleased(members: NativeTeamConfig[]): void {
@@ -77,42 +119,9 @@ export class NodeNativeTeamConfig {
       assertReleased(previous);
       const leads = configured.members.filter(({ launch }) => launch.role === 'lead');
       if (leads.length !== 1) throw new Error('Native team config requires one configured lead');
-      const members = configured.members.map(({ launch, color, joinedAt }) => {
-        if (
-          validateMemberName(launch.memberName).value !== launch.memberName ||
-          !isNativeRuntimeProvider(launch.providerId)
-        )
-          throw new Error('Invalid native configured member');
-        const member: NativeTeamConfig = {
-          ...previous.find((row) => row.name === launch.memberName),
-        };
-        // Process/session/bootstrap fields belong only to the current attempt, never to saved membership.
-        for (const key of Object.keys(member)) {
-          if (
-            /^(runtime|bootstrap|worktree)/.test(key) ||
-            ['sessionId', 'isActive', 'removedAt', 'mode', 'tmuxPaneId', 'backendType'].includes(
-              key
-            )
-          )
-            delete member[key];
-        }
-        return {
-          ...member,
-          agentId: `${launch.memberName}@${run.teamName}`,
-          name: launch.memberName,
-          agentType: launch.role === 'lead' ? 'team-lead' : (launch.agentType ?? 'general-purpose'),
-          provider: launch.providerId,
-          providerId: launch.providerId,
-          model: launch.model ?? undefined,
-          effort: launch.effort,
-          cwd: launch.workingDirectory,
-          prompt: launch.instructions,
-          color,
-          joinedAt,
-          tmuxPaneId: '',
-          subscriptions: Array.isArray(member.subscriptions) ? member.subscriptions : [],
-        };
-      });
+      const members = configured.members.map(({ launch, color, joinedAt }) =>
+        toNativeMember(run, launch, color, joinedAt, previous)
+      );
       const config: NativeTeamConfig = {
         ...current,
         name: run.teamName,
@@ -127,6 +136,42 @@ export class NodeNativeTeamConfig {
       };
       delete config.leadSessionId;
       return config;
+    });
+    this.ports.invalidate(run.teamName);
+  }
+
+  /**
+   * Adds one already-configured member to the live projection without touching
+   * the other members' runtime rows. Used by live roster attach.
+   */
+  async addMember(
+    run: TeamRunIdentity,
+    launch: Readonly<ConfiguredMemberLaunch>,
+    signal: AbortSignal = new AbortController().signal
+  ): Promise<void> {
+    signal.throwIfAborted();
+    const configured = await this.ports.settings.runtimeConfiguration(run);
+    signal.throwIfAborted();
+    const entry = configured.members.find(
+      (member) => member.launch.memberName === launch.memberName
+    );
+    if (!entry) throw new Error('Configured member settings are unavailable');
+    await this.store.mutate(run.teamName, signal, async (current) => {
+      if (!current || current.name !== run.teamName || current.deletedAt)
+        throw new Error('Native team config is unavailable');
+      const claim = record(current.appManagedRun);
+      if (!claim || !isNativeTeamRunOwner(claim.identity, run))
+        throw new Error('Native team config has another run owner');
+      const previous = rows(current);
+      if (previous.some((member) => member.name === launch.memberName)) return null;
+      return {
+        ...current,
+        members: [...previous, toNativeMember(run, launch, entry.color, entry.joinedAt, previous)],
+        appManagedRun: {
+          ...claim,
+          configurationRevision: launch.configurationRevision,
+        },
+      };
     });
     this.ports.invalidate(run.teamName);
   }

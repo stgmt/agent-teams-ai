@@ -148,10 +148,14 @@ function setup(
   };
   const lifecycle = createMemberLifecycle({
     owner,
-    settings: { findConfiguredMember: settingsFor },
+    settings: {
+      findConfiguredMember: settingsFor,
+      admitConfiguredMember: async () => undefined,
+    },
     runtime,
     laneGroups: () =>
       options.lanePlan ?? [{ laneId: 'primary', memberNames: ['team-lead', 'builder'] }],
+    registerConfiguredMember: async () => undefined,
   });
   return { lifecycle, stops, inputs, answers, groups, roster: options.roster ?? roster };
 }
@@ -497,6 +501,16 @@ describe('team lane-group launch', () => {
     await expect(shared.lifecycle.commands.detach(run, 'team-lead')).rejects.toThrow(
       'Cannot detach the team lead'
     );
+  });
+
+  it('attaches a configured member into its own lane', async () => {
+    const shared = setup();
+    await shared.lifecycle.teams.launchConfigured(run, async () => roster);
+    await shared.lifecycle.commands.attach(run, 'tester');
+    await shared.lifecycle.commands.settled(run, 'tester');
+    const member = shared.lifecycle.snapshot(run.teamName).members.tester;
+    expect(member).toMatchObject({ membership: 'configured', phase: 'ready' });
+    expect(shared.groups.map((group) => group.laneId)).toContain('secondary:opencode:tester');
   });
 
   it('rejects a lane group that names an unconfigured or duplicated member', async () => {

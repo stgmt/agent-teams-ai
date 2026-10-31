@@ -28,6 +28,10 @@ interface Dependencies {
   runtime: MemberRuntimePort;
   gate: TeamOperationGate;
   nextOperationId(): string;
+  registerConfiguredMember?(
+    team: TeamRunIdentity,
+    launch: Readonly<ConfiguredMemberLaunch>
+  ): Promise<void>;
 }
 
 interface PendingRestart {
@@ -528,6 +532,32 @@ export class MemberLifecycleCommands {
     await this.ports.gate.run(team.teamName, async () => {
       this.ports.registry.assertRun(team);
       this.ports.registry.removeMember(team, memberName);
+    });
+  }
+
+  /** Attaches one already-configured teammate and starts its owned runtime. */
+  async attach(team: TeamRunIdentity, memberName: string): Promise<void> {
+    const admit = this.ports.settings.admitConfiguredMember;
+    if (!admit || !this.ports.registerConfiguredMember)
+      throw new Error('Configured member attach is not available');
+    await admit.call(this.ports.settings, team, memberName);
+    const launch = await this.ports.settings.findConfiguredMember(team, memberName);
+    if (!launch || launch.memberName !== memberName || key(launch.team, '') !== key(team, ''))
+      throw new Error('Configured member attach is not available');
+    await this.ports.registerConfiguredMember(team, launch);
+    await this.ports.gate.run(team.teamName, async () => {
+      this.ports.registry.assertRun(team);
+      const member = this.ports.registry.snapshot(team.teamName).members[memberName];
+      if (member?.membership === 'removed') throw new Error('Member was removed');
+      if (!member) this.ports.registry.addMember(team, { memberName, role: 'member' });
+      if (member?.process || member?.lane || member?.desired === 'running') return;
+      const admission = this.ports.registry.beginStart(
+        team,
+        memberName,
+        this.ports.nextOperationId()
+      );
+      if (admission.kind !== 'launch') throw new Error('Member attach was not admitted');
+      this.launch(admission.token);
     });
   }
 

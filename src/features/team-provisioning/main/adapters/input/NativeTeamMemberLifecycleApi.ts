@@ -13,6 +13,7 @@ interface Dependencies {
   runs: Pick<TeamRunRegistryRead, 'find'>;
   commands: Pick<LifecycleCommands, 'restartMember' | 'skipMember'> & {
     detachMember(team: TeamRunIdentity, memberName: string): Promise<void>;
+    attachMember(team: TeamRunIdentity, memberName: string): Promise<void>;
     retryFailedLanes(run: TeamRunIdentity): Promise<RetryFailedOpenCodeSecondaryLanesResult>;
   };
   statuses: Pick<TeamLiveStatusQueries, 'memberSpawnStatuses'>;
@@ -20,8 +21,8 @@ interface Dependencies {
 }
 
 /**
- * Member lifecycle surface over native commands. Attach and OpenCode secondary
- * lane retry still fail closed; detach requires a data-removal port.
+ * Member lifecycle surface over native commands. OpenCode secondary lane retry
+ * still fails closed; attach/detach use the native registry and data ports.
  */
 export class NativeTeamMemberLifecycleApi implements TeamMemberLifecycleApi {
   constructor(private readonly deps: Dependencies) {}
@@ -43,11 +44,15 @@ export class NativeTeamMemberLifecycleApi implements TeamMemberLifecycleApi {
   }
 
   async attachLiveRosterMember(
-    _teamName: string,
-    _memberName: string,
+    teamName: string,
+    memberName: string,
     _options?: { reason?: 'member_added' | 'member_restored' | 'member_updated' }
   ): Promise<void> {
-    throw new Error('Live roster attach is not migrated');
+    const snapshot = this.deps.runs.find(teamName);
+    if (!snapshot) throw new Error(`Unknown team: ${teamName}`);
+    if (snapshot.members[memberName]?.membership === 'removed')
+      throw new Error(`Member "${memberName}" was removed`);
+    await this.deps.commands.attachMember(snapshot.identity, memberName);
   }
 
   async detachLiveRosterMember(teamName: string, memberName: string): Promise<void> {
