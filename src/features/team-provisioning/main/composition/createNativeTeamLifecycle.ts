@@ -349,8 +349,11 @@ export function createNativeTeamLifecycle(
     shutdown: async () => {
       leadRelay.dispose();
       memberRelay.dispose();
-      await lifecycle.teams.shutdown();
-      logs.dispose();
+      try {
+        await lifecycle.teams.shutdown();
+      } finally {
+        logs.dispose();
+      }
     },
     launchConfigured: (run) =>
       deps.withExpectedContext(run, async () => {

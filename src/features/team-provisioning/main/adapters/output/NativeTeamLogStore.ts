@@ -10,6 +10,10 @@ import type { TeamClaudeLogsQuery } from '@shared/types';
 const MAX_LINES = 2_000;
 const FLUSH_DELAY_MS = 250;
 
+function safeRunId(runId: string): string {
+  return runId.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
+}
+
 interface RunLogs {
   teamName: string;
   lines: string[];
@@ -29,6 +33,7 @@ interface PersistedRunLogs extends RunLogs {
 export class NativeTeamLogStore {
   private readonly runs = new Map<string, RunLogs>();
   private readonly flushTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private closed = false;
 
   constructor(private readonly options: { teamsRoot?: string } = {}) {}
 
@@ -72,13 +77,12 @@ export class NativeTeamLogStore {
     this.scheduleFlush(runId, 0);
   }
 
-  /** Flushes pending writes; call before process shutdown. */
+  /** Flushes all runs synchronously; call after the lifecycle stops emitting logs. */
   dispose(): void {
-    for (const [runId, timer] of this.flushTimers) {
-      clearTimeout(timer);
-      this.flushSync(runId);
-    }
+    this.closed = true;
+    for (const timer of this.flushTimers.values()) clearTimeout(timer);
     this.flushTimers.clear();
+    for (const runId of [...this.runs.keys()]) this.flushSync(runId);
   }
 
   private currentEntry(teamName: string): RunLogs | undefined {
@@ -101,6 +105,7 @@ export class NativeTeamLogStore {
       )
         return undefined;
       const persisted = parsed as PersistedRunLogs;
+      if (typeof persisted.runId !== 'string' || !persisted.runId.trim()) return undefined;
       const lines = persisted.lines.filter((line): line is string => typeof line === 'string');
       const entry = { teamName, lines, updatedAt: persisted.updatedAt };
       this.runs.set(persisted.runId, entry);
@@ -111,7 +116,7 @@ export class NativeTeamLogStore {
   }
 
   private scheduleFlush(runId: string, delayMs = FLUSH_DELAY_MS): void {
-    if (!this.options.teamsRoot) return;
+    if (!this.options.teamsRoot || this.closed) return;
     this.cancelFlush(runId);
     const timer = setTimeout(() => {
       this.flushTimers.delete(runId);
@@ -132,7 +137,7 @@ export class NativeTeamLogStore {
     const entry = this.runs.get(runId);
     if (!entry || !this.options.teamsRoot) return;
     const path = this.logPath(entry.teamName);
-    const temp = `${path}.tmp-${process.pid}`;
+    const temp = `${path}.tmp-${process.pid}-${safeRunId(runId)}`;
     try {
       await mkdir(join(this.options.teamsRoot, entry.teamName), { recursive: true });
       await writeFile(
@@ -145,6 +150,8 @@ export class NativeTeamLogStore {
           lines: entry.lines,
         } satisfies PersistedRunLogs)
       );
+      // A clear, retain or shutdown that happened during the write wins.
+      if (this.closed || !this.runs.has(runId)) return;
       await rename(temp, path);
     } catch {
       // Log persistence is best-effort; the in-memory tail stays readable.
@@ -155,7 +162,7 @@ export class NativeTeamLogStore {
     const entry = this.runs.get(runId);
     if (!entry || !this.options.teamsRoot) return;
     const path = this.logPath(entry.teamName);
-    const temp = `${path}.tmp-${process.pid}`;
+    const temp = `${path}.tmp-${process.pid}-${safeRunId(runId)}`;
     try {
       mkdirSync(join(this.options.teamsRoot, entry.teamName), { recursive: true });
       writeFileSync(
