@@ -111,6 +111,11 @@ export interface NativeTeamLifecycle {
 export function createNativeTeamLifecycle(
   deps: NativeTeamLifecycleDependencies
 ): NativeTeamLifecycle {
+  if (
+    deps.relayIntervalMs !== undefined &&
+    (!Number.isSafeInteger(deps.relayIntervalMs) || deps.relayIntervalMs < 1)
+  )
+    throw new Error('Relay polling interval must be a positive integer');
   const authority = new LeadMemberStartAuthority();
   const settings = new NodeTeamLaunchSettings({ ...deps.settings, teamsRoot: deps.teamsRoot });
   const provider = new NativeConfiguredProvider(deps.provider);

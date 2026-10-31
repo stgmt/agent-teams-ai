@@ -262,7 +262,8 @@ export class MemberLifecycleCommands {
     this.laneGroups.set(laneGroupKey(first, laneId), execution);
     this.failedLaneGroups.delete(laneGroupKey(first, laneId));
     for (const [failedKey, descriptor] of this.failedLaneGroups.entries()) {
-      if (descriptor.run.teamName === first.teamName && failedKey !== laneGroupKey(first, laneId))
+      // Only descriptors from older runs are stale; same-run lanes stay retryable.
+      if (descriptor.run.teamName === first.teamName && descriptor.run.runId !== first.runId)
         this.failedLaneGroups.delete(failedKey);
     }
     execution.completion = this.startLaneGroup(execution);

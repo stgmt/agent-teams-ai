@@ -33,6 +33,7 @@ function setup(
   options: {
     teamsRoot?: string;
     listTeamNames?: () => Promise<readonly string[]>;
+    relayIntervalMs?: number;
   } = {}
 ) {
   const deps: NativeDesktopTeamRuntimeDependencies = {
@@ -60,6 +61,7 @@ function setup(
     },
     progressHistory: { findByRunId: async () => undefined },
     listTeamNames: options.listTeamNames ?? (async () => []),
+    ...(options.relayIntervalMs !== undefined ? { relayIntervalMs: options.relayIntervalMs } : {}),
   };
   return createNativeDesktopTeamRuntime(deps);
 }
@@ -78,6 +80,11 @@ describe('native desktop team runtime composition', () => {
     expect(leadStop).toHaveBeenCalledWith('TEST-team');
     expect(memberStop).toHaveBeenCalledWith('TEST-team');
     vi.restoreAllMocks();
+  });
+
+  it('rejects an invalid relay polling interval before composing', () => {
+    expect(() => setup(undefined, { relayIntervalMs: -1 })).toThrow('positive integer');
+    expect(() => setup(undefined, { relayIntervalMs: 1.5 })).toThrow('positive integer');
   });
 
   it('assembles lifecycle and runtime reads without a production owner switch', async () => {

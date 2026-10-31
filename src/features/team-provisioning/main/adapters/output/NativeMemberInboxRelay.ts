@@ -127,8 +127,7 @@ export class NativeMemberInboxRelay {
     const lead = Object.values(snapshot.members).find(
       (candidate) => candidate.role === 'lead' && candidate.membership === 'configured'
     );
-    if (!lead || (!lead.process && !lead.lane)) return 0;
-    if (lead.desired !== 'running' || lead.phase !== 'ready') return 0;
+    if (!lead?.process || lead.desired !== 'running' || lead.phase !== 'ready') return 0;
     const isStale = (): boolean =>
       !this.deps.runs.isLive(snapshot.identity) ||
       this.deps.snapshot(teamName).identity.runId !== snapshot.identity.runId ||
@@ -147,6 +146,9 @@ export class NativeMemberInboxRelay {
     if (isStale()) return 0;
 
     const now = (this.deps.now ?? Date.now)();
+    for (const [key, retryAt] of this.workSyncRetryAfter.entries()) {
+      if (retryAt <= now) this.workSyncRetryAfter.delete(key);
+    }
     const unread = messages
       .filter((message): message is RelayInboxMessage => {
         if (message.read) return false;

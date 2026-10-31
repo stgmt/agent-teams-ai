@@ -3,7 +3,6 @@ import { describe, expect, it, vi } from 'vitest';
 import { SendLeadMessage } from '../../../../src/features/team-provisioning/core/application/commands/SendLeadMessage';
 import { createMemberLifecycle } from '../../../../src/features/team-provisioning/main/composition/createMemberLifecycle';
 
-import type { TeamLifecycleSnapshot } from '../../../../src/features/team-provisioning/contracts';
 import type { MemberRuntimeEvents } from '../../../../src/features/team-provisioning/core/application/ports/MemberRuntimePorts';
 
 const owner = {
@@ -157,43 +156,5 @@ describe('generation-bound lead message delivery', () => {
     await lifecycle.commands.stop(run, 'team-lead');
     await expect(send.execute(run, 'TEST')).rejects.toThrow('lead');
     expect(encode).not.toHaveBeenCalled();
-  });
-
-  it('writes to a lane-backed lead without a process handle', async () => {
-    const write = vi.fn(async () => undefined);
-    const laneSnapshot = {
-      identity: run,
-      desired: 'running',
-      members: {
-        'team-lead': {
-          memberName: 'team-lead',
-          role: 'lead',
-          membership: 'configured',
-          desired: 'running',
-          phase: 'ready',
-          generation: 2,
-          operationId: 'TEST-op',
-          process: null,
-          lane: {
-            laneId: 'primary',
-            sessionId: 'TEST-session',
-            hostPid: 100,
-            runtimeAlive: true,
-            bootstrapConfirmed: true,
-            permissionBlocked: false,
-          },
-        },
-      },
-    } as unknown as TeamLifecycleSnapshot;
-    const send = new SendLeadMessage({
-      snapshot: () => laneSnapshot,
-      write,
-      encode: async () => 'TEST-lane-frame',
-    });
-    await send.execute(run, 'TEST lane message');
-    expect(write).toHaveBeenCalledWith(
-      { ...run, memberName: 'team-lead', generation: 2, operationId: 'TEST-op' },
-      'TEST-lane-frame'
-    );
   });
 });

@@ -66,25 +66,6 @@ function snapshot(overrides: Partial<TeamLifecycleSnapshot> = {}): TeamLifecycle
   };
 }
 
-function member(memberName: string, role: 'lead' | 'member') {
-  return {
-    memberName,
-    role,
-    membership: 'configured' as const,
-    desired: 'running' as const,
-    phase: 'ready' as const,
-    resources: 'held' as const,
-    generation: 1,
-    operationId: `TEST-op-${memberName}`,
-    process: { pid: role === 'lead' ? 100 : 101, birthId: `TEST-birth-${memberName}` },
-    lane: null,
-    everConnected: true,
-    skippedForLaunch: false,
-    error: null,
-    exit: null,
-  };
-}
-
 function message(overrides: Partial<InboxMessage> = {}): InboxMessage {
   return {
     from: 'builder',
@@ -255,31 +236,6 @@ describe('native lead inbox relay', () => {
     relay.reset(run.teamName);
     await expect(relay.relay(run.teamName)).resolves.toBe(1);
     expect(send).toHaveBeenCalledTimes(2);
-  });
-
-  it('relays when the lead runs in an adapter lane without a process handle', async () => {
-    const laneLead = {
-      ...member('team-lead', 'lead'),
-      process: null,
-      lane: {
-        laneId: 'primary',
-        sessionId: 'TEST-session',
-        hostPid: 100,
-        runtimeAlive: true,
-        bootstrapConfirmed: true,
-        permissionBlocked: false,
-      },
-    };
-    const { relay, send } = setup({
-      current: snapshot({
-        members: {
-          'team-lead': laneLead,
-          builder: member('builder', 'member'),
-        },
-      }),
-    });
-    await expect(relay.relay(run.teamName)).resolves.toBe(1);
-    expect(send).toHaveBeenCalledOnce();
   });
 
   it('re-relays an unaccepted work-sync nudge after the cooldown', async () => {

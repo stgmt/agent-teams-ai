@@ -76,6 +76,7 @@ export class NativeLeadInboxRelay {
   private readonly pendingCrossTeamReplies: Map<string, Map<string, number>>;
   private readonly recentCrossTeamDeliveries: Map<string, Map<string, number>>;
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly workSyncTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly polling = new Map<string, ReturnType<typeof setInterval>>();
   private readonly inFlight = new Map<string, Promise<number>>();
   private readonly workSyncRetryAfter = new Map<string, number>();
@@ -118,6 +119,17 @@ export class NativeLeadInboxRelay {
     this.timers.delete(teamName);
   }
 
+  private scheduleWorkSyncRetry(teamName: string, delayMs: number): void {
+    const existing = this.workSyncTimers.get(teamName);
+    if (existing) clearTimeout(existing);
+    const handle = setTimeout(() => {
+      this.workSyncTimers.delete(teamName);
+      void this.relay(teamName).catch(() => undefined);
+    }, delayMs);
+    handle.unref?.();
+    this.workSyncTimers.set(teamName, handle);
+  }
+
   /** Polls the lead inbox while the caller keeps the run live; safe to call twice. */
   startPolling(teamName: string, intervalMs: number): void {
     if (!Number.isSafeInteger(intervalMs) || intervalMs < 1)
@@ -139,12 +151,21 @@ export class NativeLeadInboxRelay {
 
   dispose(): void {
     for (const teamName of [...this.timers.keys()]) this.cancel(teamName);
+    for (const [teamName, handle] of this.workSyncTimers.entries()) {
+      clearTimeout(handle);
+      this.workSyncTimers.delete(teamName);
+    }
     for (const teamName of [...this.polling.keys()]) this.stopPolling(teamName);
   }
 
   /** Clears per-run relay state after a release; in-flight work still exits through isStale. */
   reset(teamName: string): void {
     this.cancel(teamName);
+    const workSyncHandle = this.workSyncTimers.get(teamName);
+    if (workSyncHandle) {
+      clearTimeout(workSyncHandle);
+      this.workSyncTimers.delete(teamName);
+    }
     this.stopPolling(teamName);
     this.relayed.delete(teamName);
     this.pendingCrossTeamReplies.delete(teamName);
@@ -162,8 +183,7 @@ export class NativeLeadInboxRelay {
     const lead = Object.values(snapshot.members).find(
       (member) => member.role === 'lead' && member.membership === 'configured'
     );
-    if (!lead || (!lead.process && !lead.lane)) return 0;
-    if (lead.desired !== 'running' || lead.phase !== 'ready') return 0;
+    if (!lead?.process || lead.desired !== 'running' || lead.phase !== 'ready') return 0;
     const leadName = lead.memberName;
     const isStale = (): boolean => {
       const current = this.deps.runs.find(teamName);
@@ -187,6 +207,9 @@ export class NativeLeadInboxRelay {
     if (isStale()) return 0;
 
     const now = (this.deps.now ?? Date.now)();
+    for (const [key, retryAt] of this.workSyncRetryAfter.entries()) {
+      if (retryAt <= now) this.workSyncRetryAfter.delete(key);
+    }
     const unread = messages
       .filter((message): message is RelayInboxMessage => {
         if (message.read) return false;
@@ -340,9 +363,9 @@ export class NativeLeadInboxRelay {
       RECENT_CROSS_TEAM_DELIVERY_TTL_MS
     );
     await this.commitRead(teamName, leadName, readCommit).catch(() => undefined);
-    if (needsWorkSyncRetry) this.schedule(teamName, WORK_SYNC_RETRY_COOLDOWN_MS);
-    else if (deferredIds.size > 0) this.schedule(teamName, SAME_TEAM_NATIVE_DELIVERY_GRACE_MS);
+    if (deferredIds.size > 0) this.schedule(teamName, SAME_TEAM_NATIVE_DELIVERY_GRACE_MS);
     else if (hasPendingFollowUpRelay) this.schedule(teamName, RELAY_FOLLOW_UP_DELAY_MS);
+    if (needsWorkSyncRetry) this.scheduleWorkSyncRetry(teamName, WORK_SYNC_RETRY_COOLDOWN_MS);
     return batch.length;
   }
 

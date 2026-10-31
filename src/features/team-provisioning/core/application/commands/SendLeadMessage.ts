@@ -44,7 +44,7 @@ export class SendLeadMessage {
       snapshot.desired !== 'running' ||
       lead?.membership !== 'configured' ||
       lead.desired !== 'running' ||
-      (!lead.process && !lead.lane) ||
+      !lead.process ||
       !lead.operationId
     )
       throw new Error('Configured lead is not running');
