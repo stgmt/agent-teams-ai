@@ -46,7 +46,7 @@ work before cutover. No row may be silently omitted from the cutover commit.
 | ----------------------------------------------------- | ------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
 | `sendMessageToTeam`                                   | native (process lead)     | `NativeTeamMessagingApi`; process lead only; lane-lead delivery blocked; attachments fail-closed                         |
 | `relayLeadInboxMessages`                              | native (transport proof)  | `NativeLeadInboxRelay`: process lead, batched prompt to stdin, read commit after write                                   |
-| lane/OpenCode lead delivery                           | blocked                   | `NativeOpenCodeLaneRuntime.writeInput` delegates to the inbox relay; native lane delivery not implemented                |
+| lane/OpenCode lead delivery                           | native (lead inbox, text) | system text becomes a lead inbox row delivered by the member relay; attachments and direct prompt delivery stay blocked  |
 | `relayOpenCodeMemberInboxMessages`                    | native (delegated ledger) | `NativeTeamMessagingApi` injects the retained OpenCode delivery ledger as a non-owning port; unconfigured => fail closed |
 | member inbox relay (internal)                         | native                    | `NativeMemberInboxRelay` batches unread rows into a lead forward prompt; `startRelays` polls both relays                 |
 | `getOpenCodeRuntimeDeliveryStatus`                    | native (delegated ledger) | read through the same injected delivery ledger port; fail closed when unconfigured                                       |

@@ -8,6 +8,7 @@ import { TeamInboxReader } from '@main/services/team/TeamInboxReader';
 
 import { SendLeadMessage } from '../../core/application/commands/SendLeadMessage';
 import { LeadMemberStartAuthority } from '../../core/application/LeadMemberStartAuthority';
+import { LeadLaneInboxDelivery } from '../adapters/output/LeadLaneInboxDelivery';
 import { NativeClaudeLaunchPlanner } from '../adapters/output/NativeClaudeLaunchPlanner';
 import {
   NativeClaudeApprovalStore,
@@ -259,6 +260,19 @@ export function createNativeTeamLifecycle(
       });
     },
   });
+  const laneLead = new LeadLaneInboxDelivery({
+    snapshot: (teamName) => lifecycle.snapshot(teamName),
+    inbox: deps.inbox,
+    relay: async (teamName, memberName) => (await memberRelayRef?.relay(teamName, memberName)) ?? 0,
+  });
+  const sendLead = async (
+    run: TeamRunIdentity,
+    text: string,
+    attachments?: readonly Readonly<AttachmentPayload>[]
+  ): Promise<void> => {
+    if (await laneLead.tryDeliver(run, text, attachments)) return;
+    await send.execute(run, text, attachments);
+  };
   const queries = createBoundLifecycleQueries({
     owner: deps.owner,
     source: lifecycle.registry,
@@ -360,7 +374,7 @@ export function createNativeTeamLifecycle(
       },
     },
     sendLeadMessage: (run, text, attachments) =>
-      deps.withExpectedContext(run, () => send.execute(run, text, attachments)),
+      deps.withExpectedContext(run, () => sendLead(run, text, attachments)),
     recoverOrphanedRuns: async (teamNames) => {
       const recovered: string[] = [];
       const failed: { teamName: string; error: string }[] = [];
