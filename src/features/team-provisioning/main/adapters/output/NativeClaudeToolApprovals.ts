@@ -127,7 +127,18 @@ export class NativeClaudeToolApprovals {
     const payload = allow
       ? buildAllowControlResponsePayload(requestId)
       : buildDenyControlResponsePayload(requestId, message ?? 'User denied');
-    await this.deps.write(approval.token, JSON.stringify(payload));
+    try {
+      await this.deps.write(approval.token, JSON.stringify(payload));
+    } catch (error) {
+      // A failed stdin write must not erase the pending request.
+      this.deps.store.register(approval.token, {
+        kind: 'tool',
+        requestId: approval.requestId,
+        toolName: approval.toolName,
+        toolInput: approval.toolInput,
+      });
+      throw error;
+    }
     return true;
   }
 

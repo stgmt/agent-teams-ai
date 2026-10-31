@@ -84,6 +84,17 @@ describe('native Claude tool approvals', () => {
     expect(write).toHaveBeenCalledWith(token, expect.stringContaining('"request_id":"hook-1"'));
   });
 
+  it('keeps the request pending when the stdin write fails', async () => {
+    const store = new NativeClaudeApprovalStore();
+    const write = vi.fn(async () => {
+      throw new Error('stdin closed');
+    });
+    const approvals = new NativeClaudeToolApprovals({ store, write });
+    approvals.observeLine(token, toolRequest('r1'));
+    await expect(approvals.respond(token.runId, 'r1', true)).rejects.toThrow('stdin closed');
+    expect(approvals.list(token.runId)).toHaveLength(1);
+  });
+
   it('clears pending approvals for a released run', () => {
     const { approvals } = setup();
     approvals.observeLine(token, toolRequest('r1'));

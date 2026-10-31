@@ -64,8 +64,8 @@ describe('native team API adapters', () => {
     await expect(api.getTeamAgentRuntimeSnapshot('test-team')).resolves.toMatchObject({
       runId: run.runId,
     });
-    expect(() => api.getLeadActivityState()).toThrow('not migrated');
-    expect(() => api.getLeadContextUsage()).toThrow('not migrated');
+    expect(() => api.getLeadActivityState('test-team')).toThrow('not migrated');
+    expect(() => api.getLeadContextUsage('test-team')).toThrow('not migrated');
   });
 
   it('drives restart and skip from the exact observed member generation', async () => {

@@ -12,11 +12,11 @@ import type {
 export class NativeTeamDiagnostics {
   constructor(private readonly statuses: Pick<TeamLiveStatusQueries, 'runtimeSnapshot'>) {}
 
-  getLeadActivityState(): LeadActivitySnapshot {
+  getLeadActivityState(_teamName: string): LeadActivitySnapshot {
     throw new Error('Lead activity diagnostics are not migrated');
   }
 
-  getLeadContextUsage(): LeadContextUsageSnapshot {
+  getLeadContextUsage(_teamName: string): LeadContextUsageSnapshot {
     throw new Error('Lead context usage diagnostics are not migrated');
   }
 
