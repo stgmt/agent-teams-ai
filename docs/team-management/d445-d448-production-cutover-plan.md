@@ -388,6 +388,27 @@ lead-mediated forward prompt в stdin лида (как legacy flow), комми�
 
 Выход: один owner, один snapshot, старого process-owning пути нет.
 
+### Phase 8 inventory (найдено при подготовке cutover)
+
+`src/main/index.ts` вызывает у legacy-сервиса 27 разных методов. Разбивка по
+готовности native-пути:
+
+| Готово, замена механическая                                                                                                                                                                                                                                            | Нужен native-эквивалент                                                                                                                                                                                                                                                                                                                         |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `isTeamAlive`, `getAliveTeams`, `getAliveTeamNames`, `getRuntimeState`, `getTeamAgentRuntimeSnapshot`, `hasActiveTeamRuntimes`, `getMemberSpawnStatuses`, `stopAllTeams`, `relayInboxFileToLiveRecipient`, `setRuntimeAdapterRegistry`, `setControlApiBaseUrlResolver` | `assessLeadRuntimeRestart`/`restartLeadRuntime` (native lead restart через `LeadMemberStartAuthority`), `hasLiveOpenCodeMcpConsumers`, `scanOpenCodePromptDeliveryWatchdog`, `scheduleOpenCodeMemberInboxDeliveryWake`, `getOpenCodeMemberDeliveryBusyStatus`, `notifyLanguageChange`, `warmup`, `prepareForProvisioning`, `setCrossTeamSender` |
+
+Порядок инициализации: `externalAgentConnection` сейчас создаётся после сервиса,
+но native runtime требует его `withExpectedContext`/`contextInvalidationSignal`;
+`runtimeAdapterRegistry` регистрируется ещё позже (`index.ts:2091`). Cutover
+начинается с переноса этих двух блоков выше создания owner-а.
+
+App-shell состояние (`controlUrl`, turn-settled env, member gateway seams), которое
+сейчас живёт внутри legacy-сервиса, должно перейти в `createNativeProviderPorts`
+напрямую; иначе native launch не соберёт env.
+
+OpenCode ledger-операции (`scan`/`wake`/`busy`) расширяют
+`NativeOpenCodeMemberDeliveryPort`; порт остаётся невладеющим.
+
 ## Фаза 9. Приёмка
 
 1. Scoped tests по каждой фазе + полный `test/features/team-provisioning` и `test/features/lead-reporting`.
