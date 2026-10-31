@@ -307,15 +307,26 @@ export class MemberLifecycleCommands {
         if (member.process || member.lane || member.resources !== 'released')
           throw new Error('Lane restart resources were not released');
       }
-      const admissions = memberNames.map((name) =>
-        this.ports.registry.beginStart(run, name, this.ports.nextOperationId())
-      );
-      const tokens = admissions.flatMap((admission) =>
-        admission.kind === 'launch' ? [admission.token] : []
-      );
-      if (tokens.length !== memberNames.length) throw new Error('Lane restart was not admitted');
-      this.launchLane(tokens, input.laneId);
-      return admissions;
+      const admissions: MemberStartAdmission[] = [];
+      try {
+        for (const name of memberNames) {
+          admissions.push(this.ports.registry.beginStart(run, name, this.ports.nextOperationId()));
+        }
+        const tokens = admissions.flatMap((admission) =>
+          admission.kind === 'launch' ? [admission.token] : []
+        );
+        if (tokens.length !== memberNames.length) throw new Error('Lane restart was not admitted');
+        this.launchLane(tokens, input.laneId);
+        return admissions;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        for (const admission of admissions) {
+          if (admission.kind !== 'launch') continue;
+          this.ports.registry.observeStartFailed(admission.token, message);
+          this.ports.registry.observeMemberReleased(admission.token);
+        }
+        throw error;
+      }
     });
   }
 

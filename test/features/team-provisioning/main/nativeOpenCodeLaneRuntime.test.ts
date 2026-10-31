@@ -264,6 +264,25 @@ describe('native OpenCode lane runtime', () => {
     );
   });
 
+  it('maps a permission without a session to the member that owns the request', async () => {
+    const { runtime, listRuntimePermissions } = setup();
+    listRuntimePermissions.mockResolvedValueOnce({
+      permissions: [
+        { providerId: 'opencode' as const, requestId: 'TEST-permission', sessionId: null },
+      ],
+      diagnostics: [],
+    } as never);
+    const group = await runtime.startLaneGroup(
+      [settings('team-lead', 'lead'), settings('builder', 'member')],
+      [token('team-lead'), token('builder')],
+      'primary',
+      new AbortController().signal
+    );
+    await expect(group.listPermissions?.()).resolves.toEqual([
+      { memberName: 'builder', requestId: 'TEST-permission' },
+    ]);
+  });
+
   it('reports a lost member from reconcile polling', async () => {
     vi.useFakeTimers();
     const { runtime, reconcile } = setup();

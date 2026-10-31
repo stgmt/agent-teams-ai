@@ -36,6 +36,8 @@ export class NativeTeamMessagingApi implements Pick<
     _options?: TeamMessageSendOptions
   ): Promise<void> {
     const snapshot = this.requireRun(teamName);
+    if (typeof message !== 'string' || !message.trim() || message.length > 64_000)
+      throw new TypeError('A non-empty message of at most 64000 characters is required');
     if (attachments?.length)
       throw new Error('Native system messaging does not accept attachments yet');
     await this.deps.sendLeadMessage(snapshot.identity, message);

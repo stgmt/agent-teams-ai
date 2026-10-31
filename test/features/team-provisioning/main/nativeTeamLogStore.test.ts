@@ -34,6 +34,15 @@ describe('native team log store', () => {
     expect(store.read('test-team')).toMatchObject({ lines: [], total: 0, hasMore: false });
   });
 
+  it('retains only the last run for a team after release', () => {
+    const store = new NativeTeamLogStore();
+    store.append('run-old', 'test-team', 'old', '2026-10-31T00:00:00.000Z');
+    store.append('run-new', 'test-team', 'new', '2026-10-31T00:00:01.000Z');
+    store.retainLast('test-team', 'run-new');
+    expect(store.read('test-team').lines).toEqual(['new']);
+    expect(store.read('test-team').total).toBe(1);
+  });
+
   it('reads the newest run for the team', () => {
     const store = new NativeTeamLogStore();
     store.append('run-old', 'test-team', 'old', '2026-10-31T00:00:00.000Z');

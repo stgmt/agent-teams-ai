@@ -37,4 +37,11 @@ export class NativeTeamLogStore {
   clear(runId: string): void {
     this.runs.delete(runId);
   }
+
+  /** Keeps only the given run for the team, so the last logs survive a stop. */
+  retainLast(teamName: string, runId: string): void {
+    for (const [key, entry] of this.runs) {
+      if (key !== runId && entry.teamName === teamName) this.runs.delete(key);
+    }
+  }
 }

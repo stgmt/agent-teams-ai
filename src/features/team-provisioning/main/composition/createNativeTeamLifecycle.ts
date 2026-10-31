@@ -60,12 +60,17 @@ export interface NativeTeamLifecycleDependencies {
   withExpectedContext<T>(expected: AppConnectionContext, operation: () => Promise<T>): Promise<T>;
 }
 
+export interface OrphanedRunRecovery {
+  recovered: readonly string[];
+  failed: readonly { teamName: string; error: string }[];
+}
+
 export interface NativeTeamLifecycle {
   runs: TeamRunRegistryRead;
   commands: LifecycleCommands;
   queries: LifecycleQueries;
   logs: Pick<NativeTeamLogStore, 'read'>;
-  approvals: Pick<NativeClaudeToolApprovals, 'list' | 'respond'>;
+  approvals: Pick<NativeClaudeToolApprovals, 'list' | 'respond' | 'onEvent'>;
   toolApprovalSettings: Pick<NativeToolApprovalSettings, 'get' | 'update'>;
   taskChanges: Pick<NativeTeamTaskLedgerReader, 'read'>;
   leadStart: Pick<MemberLifecycle['leadStart'], 'execute'>;
@@ -81,7 +86,7 @@ export interface NativeTeamLifecycle {
     attachments?: readonly Readonly<AttachmentPayload>[]
   ): Promise<void>;
   /** Clears native run claims that are not alive in this process. */
-  recoverOrphanedRuns(teamNames: readonly string[]): Promise<readonly string[]>;
+  recoverOrphanedRuns(teamNames: readonly string[]): Promise<OrphanedRunRecovery>;
 }
 
 /** Composes native launch components without the former provisioning host or restart algorithm. */
@@ -173,9 +178,8 @@ export function createNativeTeamLifecycle(
       release: async (run) => {
         await config.release(run);
         settings.release(run);
-        logs.clear(run.runId);
+        logs.retainLast(run.teamName, run.runId);
         approvals.clearRun(run.runId);
-        toolApprovalSettings.clear(run.teamName);
       },
     },
   });
@@ -263,16 +267,24 @@ export function createNativeTeamLifecycle(
       deps.withExpectedContext(run, () => send.execute(run, text, attachments)),
     recoverOrphanedRuns: async (teamNames) => {
       const recovered: string[] = [];
+      const failed: { teamName: string; error: string }[] = [];
       for (const teamName of teamNames) {
-        if (
-          await config.recoverOrphanedClaim(
-            teamName,
-            (run) => lifecycle.registry.hasRun(run) && lifecycle.registry.isLive(run)
+        try {
+          if (
+            await config.recoverOrphanedClaim(
+              teamName,
+              (run) => lifecycle.registry.hasRun(run) && lifecycle.registry.isLive(run)
+            )
           )
-        )
-          recovered.push(teamName);
+            recovered.push(teamName);
+        } catch (error) {
+          failed.push({
+            teamName,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
       }
-      return recovered;
+      return { recovered, failed };
     },
     snapshot: (teamName) => lifecycle.snapshot(teamName),
     watch: (teamName) => lifecycle.watch(teamName),

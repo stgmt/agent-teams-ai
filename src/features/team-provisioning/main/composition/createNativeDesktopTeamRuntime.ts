@@ -10,6 +10,7 @@ import type {
 import type {
   NativeTeamLifecycle,
   NativeTeamLifecycleDependencies,
+  OrphanedRunRecovery,
 } from './createNativeTeamLifecycle';
 import type { AppConnectionContext } from '@features/external-agent-connection/contracts';
 
@@ -44,7 +45,7 @@ export interface NativeDesktopTeamRuntime {
   /** Native in-memory logs; persistence across restart is a phase 7 concern. */
   logs: Pick<NativeTeamLifecycle['logs'], 'read'>;
   /** Clears claims whose runs are not alive in this process. */
-  recoverStartup(): Promise<readonly string[]>;
+  recoverStartup(): Promise<OrphanedRunRecovery>;
 }
 
 /**

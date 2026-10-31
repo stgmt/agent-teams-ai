@@ -14,6 +14,11 @@ export interface NativeClaudeApproval {
   receivedAt: string;
 }
 
+export type NativeToolApprovalEvent =
+  | { type: 'requested'; approval: NativeClaudeApproval }
+  | { type: 'resolved'; runId: string; requestId: string; allow: boolean }
+  | { type: 'error'; runId: string; message: string };
+
 export type ParsedClaudeControlRequest =
   | {
       kind: 'tool';
@@ -53,9 +58,12 @@ export function parseClaudeControlRequest(line: string): ParsedClaudeControlRequ
 export class NativeClaudeApprovalStore {
   private readonly pending = new Map<string, NativeClaudeApproval>();
 
-  register(token: Readonly<MemberProcessToken>, request: ParsedClaudeControlRequest): boolean {
-    if (request?.kind !== 'tool') return false;
-    this.pending.set(`${token.runId}:${request.requestId}`, {
+  register(
+    token: Readonly<MemberProcessToken>,
+    request: ParsedClaudeControlRequest
+  ): NativeClaudeApproval | null {
+    if (request?.kind !== 'tool') return null;
+    const approval: NativeClaudeApproval = {
       run: Object.freeze({
         appInstanceId: token.appInstanceId,
         dataRootFingerprint: token.dataRootFingerprint,
@@ -68,8 +76,9 @@ export class NativeClaudeApprovalStore {
       toolName: request.toolName,
       toolInput: request.toolInput,
       receivedAt: new Date().toISOString(),
-    });
-    return true;
+    };
+    this.pending.set(`${token.runId}:${request.requestId}`, approval);
+    return approval;
   }
 
   list(runId: string): readonly NativeClaudeApproval[] {
@@ -97,19 +106,33 @@ interface NativeClaudeToolApprovalsDependencies {
 
 /** Ingests control requests and answers them through the owned member stdin. */
 export class NativeClaudeToolApprovals {
+  private readonly listeners = new Set<(event: NativeToolApprovalEvent) => void>();
+
   constructor(private readonly deps: NativeClaudeToolApprovalsDependencies) {}
+
+  onEvent(listener: (event: NativeToolApprovalEvent) => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
 
   observeLine(token: Readonly<MemberProcessToken>, line: string): void {
     const request = parseClaudeControlRequest(line);
     if (!request) return;
     if (request.kind === 'tool') {
-      this.deps.store.register(token, request);
+      const approval = this.deps.store.register(token, request);
+      if (approval) this.emit({ type: 'requested', approval });
       return;
     }
     // Non-tool subtypes (hooks) must not deadlock the CLI.
     void this.deps
       .write(token, JSON.stringify(buildAllowControlResponsePayload(request.requestId)))
-      .catch(() => undefined);
+      .catch((error: unknown) =>
+        this.emit({
+          type: 'error',
+          runId: token.runId,
+          message: error instanceof Error ? error.message : String(error),
+        })
+      );
   }
 
   list(runId: string): readonly NativeClaudeApproval[] {
@@ -139,10 +162,15 @@ export class NativeClaudeToolApprovals {
       });
       throw error;
     }
+    this.emit({ type: 'resolved', runId, requestId, allow });
     return true;
   }
 
   clearRun(runId: string): void {
     this.deps.store.clearRun(runId);
+  }
+
+  private emit(event: NativeToolApprovalEvent): void {
+    for (const listener of this.listeners) listener(event);
   }
 }

@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { createMemberLifecycle } from '../../../../src/features/team-provisioning/main/composition/createMemberLifecycle';
 
@@ -297,6 +297,35 @@ describe('team lane-group launch', () => {
     await expect(
       primary.lifecycle.commands.restartLane({ run, laneId: 'primary' })
     ).rejects.toThrow('lead lane requires a team relaunch');
+  });
+
+  it('rolls back a partially admitted lane restart', async () => {
+    const sharedRoster = [
+      { memberName: 'team-lead', role: 'lead' as const },
+      { memberName: 'builder', role: 'member' as const },
+      { memberName: 'tester', role: 'member' as const },
+    ];
+    const shared = setup({
+      roster: sharedRoster,
+      lanePlan: [{ laneId: 'secondary:shared', memberNames: ['builder', 'tester'] }],
+    });
+    await shared.lifecycle.teams.launchConfigured(run, async () => sharedRoster);
+    await shared.lifecycle.commands.settled(run, 'builder');
+    await shared.lifecycle.commands.settled(run, 'tester');
+    const original = shared.lifecycle.registry.beginStart.bind(shared.lifecycle.registry);
+    let calls = 0;
+    const spy = vi.spyOn(shared.lifecycle.registry, 'beginStart').mockImplementation((...args) => {
+      calls += 1;
+      if (calls === 2) throw new Error('TEST admission failed');
+      return original(...args);
+    });
+    await expect(
+      shared.lifecycle.commands.restartLane({ run, laneId: 'secondary:shared' })
+    ).rejects.toThrow('TEST admission failed');
+    spy.mockRestore();
+    const builder = shared.lifecycle.snapshot(run.teamName).members.builder;
+    expect(builder.phase).not.toBe('starting');
+    expect(builder.resources).toBe('released');
   });
 
   it('rejects a lane group that names an unconfigured or duplicated member', async () => {

@@ -42,6 +42,7 @@ describe('native team messaging', () => {
     const { api, sendLeadMessage } = setup();
     await api.sendMessageToTeam('test-team', 'TEST message');
     expect(sendLeadMessage).toHaveBeenCalledWith(snapshot.identity, 'TEST message');
+    await expect(api.sendMessageToTeam('test-team', '   ')).rejects.toThrow('non-empty message');
     await expect(
       api.sendMessageToTeam('test-team', 'TEST message', [
         { data: 'TEST', mimeType: 'text/plain' as never },

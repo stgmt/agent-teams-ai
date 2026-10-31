@@ -84,6 +84,7 @@ class OpenCodeLaneGroup implements OwnedMemberLaneGroup {
   }
 
   subscribe(events: MemberLaneGroupEvents): () => void {
+    if (this.timer) clearInterval(this.timer);
     this.events = events;
     this.timer = setInterval(
       () => void this.reconcile(),
@@ -121,10 +122,14 @@ class OpenCodeLaneGroup implements OwnedMemberLaneGroup {
     });
     const permissions: MemberLanePermission[] = [];
     for (const permission of result.permissions) {
-      const member = Object.entries(this.observations).find(
-        ([, observation]) =>
-          permission.sessionId != null && observation.sessionId === permission.sessionId
-      );
+      const member =
+        Object.entries(this.observations).find(
+          ([, observation]) =>
+            permission.sessionId != null && observation.sessionId === permission.sessionId
+        ) ??
+        Object.entries(this.observations).find(([, observation]) =>
+          observation.pendingPermissionRequestIds?.includes(permission.requestId)
+        );
       if (member) permissions.push({ memberName: member[0], requestId: permission.requestId });
     }
     return permissions;
@@ -175,6 +180,8 @@ class OpenCodeLaneGroup implements OwnedMemberLaneGroup {
       };
       const result = await this.deps.adapter.reconcile(input);
       if (result.observationUnavailable) return;
+      // A detached or replaced subscription must not receive late evidence.
+      if (this.events !== events) return;
       const next: Record<string, MemberLaneObservation> = {};
       for (const [memberName, evidence] of Object.entries(result.members)) {
         const previous = this.observations[memberName];

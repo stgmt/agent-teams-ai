@@ -7,6 +7,8 @@ import {
   parseClaudeControlRequest,
 } from '../../../../src/features/team-provisioning/main/adapters/output/NativeClaudeToolApprovals';
 
+import type { NativeToolApprovalEvent } from '../../../../src/features/team-provisioning/main/adapters/output/NativeClaudeToolApprovals';
+
 const token = {
   appInstanceId: 'TEST-app',
   dataRootFingerprint: 'TEST-root',
@@ -93,6 +95,21 @@ describe('native Claude tool approvals', () => {
     approvals.observeLine(token, toolRequest('r1'));
     await expect(approvals.respond(token.runId, 'r1', true)).rejects.toThrow('stdin closed');
     expect(approvals.list(token.runId)).toHaveLength(1);
+  });
+
+  it('emits requested and resolved approval events', async () => {
+    const { approvals } = setup();
+    const events: NativeToolApprovalEvent[] = [];
+    approvals.onEvent((event) => events.push(event));
+    approvals.observeLine(token, toolRequest('r1'));
+    expect(events[0]).toMatchObject({ type: 'requested', approval: { requestId: 'r1' } });
+    await approvals.respond(token.runId, 'r1', false, 'TEST deny');
+    expect(events[1]).toEqual({
+      type: 'resolved',
+      runId: token.runId,
+      requestId: 'r1',
+      allow: false,
+    });
   });
 
   it('clears pending approvals for a released run', () => {

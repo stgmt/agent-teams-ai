@@ -75,7 +75,7 @@ describe('native desktop team runtime composition', () => {
     });
     expect(runtime.hasProvisioningRun('TEST-team')).toBe(false);
     expect(runtime.getAliveTeams()).toEqual([]);
-    await expect(lifecycle.recoverOrphanedRuns([])).resolves.toEqual([]);
+    await expect(lifecycle.recoverOrphanedRuns([])).resolves.toEqual({ recovered: [], failed: [] });
     expect(logs.read('TEST-team')).toMatchObject({ lines: [], total: 0, hasMore: false });
   });
 
@@ -122,7 +122,7 @@ describe('native desktop team runtime composition', () => {
       teamsRoot,
       listTeamNames: async () => ['test-team'],
     });
-    await expect(recoverStartup()).resolves.toEqual(['test-team']);
+    await expect(recoverStartup()).resolves.toEqual({ recovered: ['test-team'], failed: [] });
     const config = JSON.parse(
       await readFile(join(teamsRoot, 'test-team', 'config.json'), 'utf8')
     ) as Record<string, unknown>;
