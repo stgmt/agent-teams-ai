@@ -1,13 +1,18 @@
-import { GetProvisioningStatusUseCase } from '../../core/application/use-cases/GetProvisioningStatusUseCase';
+import {
+  toMemberSpawnStatuses,
+  toTeamAgentRuntimeSnapshot,
+} from '@main/team-runtime/nativeTeamRuntimeProjection';
 
-import { createBoundTeamLiveStatusQueries } from './createBoundTeamLiveStatusQueries';
+import { createNativeRuntimeSurface } from './createNativeRuntimeSurface';
 
+import type { TeamLifecycleSnapshot } from '../../contracts';
 import type { NativeDesktopTeamRuntime } from './createNativeDesktopTeamRuntime';
 import type {
   TeamHttpHandlerApis,
   TeamRuntimeControlCompatibilityApi,
   TeamTaskActivityRepairApi,
 } from '@main/services/team/contracts/TeamProvisioningApis';
+import type { MemberSpawnStatusesSnapshot } from '@shared/types';
 
 export interface NativeTeamHttpApisDependencies {
   runtime: NativeDesktopTeamRuntime;
@@ -16,39 +21,57 @@ export interface NativeTeamHttpApisDependencies {
   now(): string;
 }
 
+const EMPTY_STATUSES = (now: string): MemberSpawnStatusesSnapshot => ({
+  statuses: {},
+  runId: null,
+  expectedMembers: [],
+  updatedAt: now,
+  source: 'live',
+});
+
 /**
- * HTTP half of the native team surface. Read-only member diagnostics share the
- * same context-fenced live projection as IPC; runtime control stays a pure
+ * HTTP half of the native team surface. Read-only member diagnostics reuse the
+ * exact snapshot that produced the statuses, so both halves of the response
+ * describe one run even during a relaunch. Runtime control stays a pure
  * OpenCode bridge service.
  */
 export function createNativeTeamHttpApis(
   deps: NativeTeamHttpApisDependencies
 ): TeamHttpHandlerApis {
   const lifecycle = deps.runtime.lifecycle;
-  const statuses = createBoundTeamLiveStatusQueries({
-    owner: lifecycle.owner,
-    queries: lifecycle.queries,
-    now: deps.now,
-  });
-  const status = new GetProvisioningStatusUseCase(deps.runtime.runtime);
+  const surface = createNativeRuntimeSurface(deps.runtime.runtime);
+  const snapshots = new Map<string, Readonly<TeamLifecycleSnapshot>>();
+  const snapshotKey = (teamName: string, runId: string): string => `${teamName}\0${runId}`;
+  const readSnapshot = (teamName: string): Promise<Readonly<TeamLifecycleSnapshot> | null> =>
+    lifecycle.queries.snapshot({ expectedContext: lifecycle.owner, teamName });
+
   return {
-    provisioningStart: {
-      createTeam: (request, onProgress) => deps.runtime.runtime.createTeam(request, onProgress),
-      launchTeam: (request, onProgress) => deps.runtime.runtime.launchTeam(request, onProgress),
-    },
-    provisioningStatus: {
-      getProvisioningStatus: (runId) => status.execute({ runId }),
-    },
+    provisioningStart: surface.provisioningStart,
+    provisioningStatus: surface.provisioningStatus,
     taskActivity: deps.taskActivity,
     runtime: {
-      getRuntimeState: (teamName) => deps.runtime.runtime.getRuntimeState(teamName),
-      stopTeam: (teamName) => deps.runtime.runtime.stopTeam(teamName),
-      getAliveTeams: () => deps.runtime.runtime.getAliveTeams(),
+      getRuntimeState: surface.runtime.getRuntimeState,
+      stopTeam: surface.runtime.stopTeam,
+      getAliveTeams: surface.runtime.getAliveTeams,
     },
     runtimeControl: deps.runtimeControl,
     memberDiagnostics: {
-      getMemberSpawnStatusesReadOnly: (teamName) => statuses.memberSpawnStatuses({ teamName }),
-      getTeamAgentRuntimeSnapshotReadOnly: (teamName) => statuses.runtimeSnapshot({ teamName }),
+      getMemberSpawnStatusesReadOnly: async (teamName) => {
+        const snapshot = await readSnapshot(teamName);
+        if (!snapshot) return EMPTY_STATUSES(deps.now());
+        for (const key of [...snapshots.keys()]) {
+          if (key.startsWith(`${teamName}\0`)) snapshots.delete(key);
+        }
+        snapshots.set(snapshotKey(teamName, snapshot.identity.runId), snapshot);
+        return toMemberSpawnStatuses(snapshot, deps.now());
+      },
+      getTeamAgentRuntimeSnapshotReadOnly: async (teamName, options) => {
+        const runId = options?.memberSpawnStatuses?.runId;
+        const cached = runId ? snapshots.get(snapshotKey(teamName, runId)) : undefined;
+        const snapshot = cached ?? (await readSnapshot(teamName));
+        if (!snapshot) return { teamName, updatedAt: deps.now(), runId: null, members: {} };
+        return toTeamAgentRuntimeSnapshot(snapshot, deps.now());
+      },
     },
   };
 }

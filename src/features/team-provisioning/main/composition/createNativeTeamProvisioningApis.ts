@@ -1,4 +1,3 @@
-import { GetProvisioningStatusUseCase } from '../../core/application/use-cases/GetProvisioningStatusUseCase';
 import { NativeTeamMemberLifecycleApi } from '../adapters/input/NativeTeamMemberLifecycleApi';
 import { NativeTeamMessagingApi } from '../adapters/input/NativeTeamMessagingApi';
 import { NativeTeamToolApprovalApi } from '../adapters/input/NativeTeamToolApprovalApi';
@@ -6,6 +5,7 @@ import { NativeTeamClaudeLogs } from '../adapters/output/NativeTeamClaudeLogs';
 import { NativeTeamDiagnostics } from '../adapters/output/NativeTeamDiagnostics';
 
 import { createBoundTeamLiveStatusQueries } from './createBoundTeamLiveStatusQueries';
+import { createNativeRuntimeSurface } from './createNativeRuntimeSurface';
 
 import type { NativeDesktopTeamRuntime } from './createNativeDesktopTeamRuntime';
 import type {
@@ -37,28 +37,14 @@ export function createNativeTeamProvisioningApis(
     queries: lifecycle.queries,
     now: deps.now,
   });
-  const status = new GetProvisioningStatusUseCase(deps.runtime.runtime);
+  const surface = createNativeRuntimeSurface(deps.runtime.runtime);
   return {
-    provisioningStart: {
-      createTeam: (request, onProgress) => deps.runtime.runtime.createTeam(request, onProgress),
-      launchTeam: (request, onProgress) => deps.runtime.runtime.launchTeam(request, onProgress),
-    },
-    provisioningStatus: {
-      getProvisioningStatus: (runId) => status.execute({ runId }),
-    },
+    provisioningStart: surface.provisioningStart,
+    provisioningStatus: surface.provisioningStatus,
     preflight: deps.preflight,
-    provisioningRun: {
-      cancelProvisioning: (runId) => deps.runtime.runtime.cancelProvisioning(runId),
-      hasProvisioningRun: (teamName) => deps.runtime.runtime.hasProvisioningRun(teamName),
-    },
+    provisioningRun: surface.provisioningRun,
     taskActivity: deps.taskActivity,
-    runtime: {
-      getRuntimeState: (teamName) => deps.runtime.runtime.getRuntimeState(teamName),
-      stopTeam: (teamName) => deps.runtime.runtime.stopTeam(teamName),
-      isTeamAlive: (teamName) => deps.runtime.runtime.isTeamAlive(teamName),
-      getAliveTeams: () => deps.runtime.runtime.getAliveTeams(),
-      getCurrentRunId: (teamName) => deps.runtime.runtime.getCurrentRunId(teamName),
-    },
+    runtime: surface.runtime,
     memberLifecycle: new NativeTeamMemberLifecycleApi({
       owner,
       runs: lifecycle.runs,
