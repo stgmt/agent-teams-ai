@@ -66,13 +66,6 @@ export class NativeTeamMemberLifecycleApi implements TeamMemberLifecycleApi {
   ): Promise<RetryFailedOpenCodeSecondaryLanesResult> {
     const snapshot = this.deps.runs.find(teamName);
     if (!snapshot) throw new Error(`Unknown team: ${teamName}`);
-    const starting = Object.values(snapshot.members).some(
-      (member) =>
-        member.membership === 'configured' &&
-        (member.phase === 'starting' || member.phase === 'connecting')
-    );
-    if (snapshot.state === 'preparing' || starting)
-      throw new Error('A member start is still in progress');
     return this.deps.commands.retryFailedLanes(snapshot.identity);
   }
 

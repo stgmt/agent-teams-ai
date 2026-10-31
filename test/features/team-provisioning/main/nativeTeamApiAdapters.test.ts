@@ -114,26 +114,6 @@ describe('native team API adapters', () => {
     expect(mutation).toHaveBeenCalledOnce();
   });
 
-  it('rejects a lane retry while a member start is still in progress', async () => {
-    const starting = {
-      ...snapshot,
-      state: 'starting',
-      members: {
-        builder: {
-          memberName: 'builder',
-          role: 'member',
-          membership: 'configured',
-          phase: 'starting',
-        },
-      },
-    } as unknown as TeamLifecycleSnapshot;
-    const { api, retryFailedLanes } = memberApi(starting);
-    await expect(api.retryFailedOpenCodeSecondaryLanes('test-team')).rejects.toThrow(
-      'still in progress'
-    );
-    expect(retryFailedLanes).not.toHaveBeenCalled();
-  });
-
   it('projects live member spawn statuses', async () => {
     const { api, memberSpawnStatuses } = memberApi();
     await expect(api.getMemberSpawnStatuses('test-team')).resolves.toMatchObject({

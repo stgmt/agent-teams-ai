@@ -299,7 +299,7 @@ Native logs: `NativeTeamLogStore` (bounded 2000 lines, newest-first через
 lead activity/context usage пока fail-closed. Member lifecycle:
 `NativeTeamMemberLifecycleApi` (statuses/restart/skip); attach/detach fail-closed, OpenCode
 secondary retry native (`retryFailedLanes` → `restartLane` для групп с failed-членами,
-lead lane требует relaunch; retry отклоняется, пока любой член в starting/connecting). Approvals: `NativeTeamToolApprovalApi` отвечает на
+lead lane требует relaunch; retry отклоняется, пока native launch не завершён). Approvals: `NativeTeamToolApprovalApi` отвечает на
 lane-запросы по exact run; Claude process approvals теперь native
 (`NativeClaudeToolApprovals`: `control_request` ingestion + `control_response` в
 stdin); запись settings пока fail-closed. Task activity repair: `NativeTaskActivityRepair` уже

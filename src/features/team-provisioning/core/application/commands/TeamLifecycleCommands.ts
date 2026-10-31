@@ -333,20 +333,26 @@ export class TeamLifecycleCommands {
     this.ports.authority.bind(credential, run);
     const receipt = Object.freeze({ run: Object.freeze({ ...run }), leadCredential: credential });
     this.admissions.set(run.teamName, { receipt, roster, lanePlan });
-    const tokens = this.ports.registry.beginTeamStart(run, () => this.ports.nextOperationId());
-    const byName = new Map(tokens.map((token) => [token.memberName, token]));
-    const grouped = new Set<string>();
-    for (const group of laneGroups) {
-      const groupTokens = group.memberNames.map((name) => {
-        const token = byName.get(name);
-        if (!token) throw new Error('Lane group member was not admitted');
-        return token;
-      });
-      for (const name of group.memberNames) grouped.add(name);
-      this.ports.members.launchLane(groupTokens, group.laneId);
+    this.ports.members.beginTeamLaunch(run);
+    try {
+      const tokens = this.ports.registry.beginTeamStart(run, () => this.ports.nextOperationId());
+      const byName = new Map(tokens.map((token) => [token.memberName, token]));
+      const grouped = new Set<string>();
+      for (const group of laneGroups) {
+        const groupTokens = group.memberNames.map((name) => {
+          const token = byName.get(name);
+          if (!token) throw new Error('Lane group member was not admitted');
+          return token;
+        });
+        for (const name of group.memberNames) grouped.add(name);
+        this.ports.members.launchLane(groupTokens, group.laneId);
+      }
+      this.ports.members.launchAdmitted(tokens.filter((token) => !grouped.has(token.memberName)));
+      return receipt;
+    } catch (error) {
+      this.ports.members.abortTeamLaunch(run);
+      throw error;
     }
-    this.ports.members.launchAdmitted(tokens.filter((token) => !grouped.has(token.memberName)));
-    return receipt;
   }
 
   private assertLaneGroups(

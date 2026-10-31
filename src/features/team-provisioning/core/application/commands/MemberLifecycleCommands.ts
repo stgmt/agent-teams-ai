@@ -89,6 +89,7 @@ export class MemberLifecycleCommands {
     string,
     Promise<RetryFailedOpenCodeSecondaryLanesResult>
   >();
+  private readonly teamLaunches = new Set<string>();
   private readonly restarts = new Map<string, PendingRestart>();
 
   constructor(private readonly ports: Dependencies) {}
@@ -266,7 +267,9 @@ export class MemberLifecycleCommands {
       if (descriptor.run.teamName === first.teamName && descriptor.run.runId !== first.runId)
         this.failedLaneGroups.delete(failedKey);
     }
-    execution.completion = this.startLaneGroup(execution);
+    execution.completion = this.startLaneGroup(execution).finally(() =>
+      this.settleTeamLaunch(first)
+    );
   }
 
   async listLanePermissions(input: {
@@ -349,6 +352,15 @@ export class MemberLifecycleCommands {
     });
   }
 
+  /** Marks a full team launch; retry is refused until every admitted member settles. */
+  beginTeamLaunch(run: TeamRunIdentity): void {
+    this.teamLaunches.add(key(run, ''));
+  }
+
+  abortTeamLaunch(run: TeamRunIdentity): void {
+    this.teamLaunches.delete(key(run, ''));
+  }
+
   async retryFailedLanes(run: TeamRunIdentity): Promise<RetryFailedOpenCodeSecondaryLanesResult> {
     const retryKey = key(run, '');
     const existing = this.laneRetries.get(retryKey);
@@ -364,15 +376,8 @@ export class MemberLifecycleCommands {
     run: TeamRunIdentity
   ): Promise<RetryFailedOpenCodeSecondaryLanesResult> {
     const snapshot = this.ports.registry.snapshot(run.teamName);
-    const starting = Object.values(snapshot.members).some(
-      (member) =>
-        member.membership === 'configured' &&
-        (member.phase === 'starting' || member.phase === 'connecting')
-    );
-    // A partially failed launch still reports degraded/failed state, so member
-    // phases are the only reliable launch-in-progress signal.
-    if (snapshot.state === 'preparing' || starting)
-      throw new Error('A member start is still in progress');
+    if (this.teamLaunches.has(key(run, '')) || snapshot.state === 'preparing')
+      throw new Error('Team launch is still in progress');
     const candidates = new Map<
       string,
       { laneId: string; memberNames: readonly string[]; failedNames: readonly string[] }
@@ -585,7 +590,17 @@ export class MemberLifecycleCommands {
       stop: null,
     };
     this.executions.set(key(token, token.memberName), execution);
-    execution.completion = this.spawn(execution);
+    execution.completion = this.spawn(execution).finally(() => this.settleTeamLaunch(token));
+  }
+
+  private settleTeamLaunch(team: Readonly<TeamRunIdentity>): void {
+    const snapshot = this.ports.registry.snapshot(team.teamName);
+    const pending = Object.values(snapshot.members).some(
+      (member) =>
+        member.membership === 'configured' &&
+        (member.phase === 'starting' || member.phase === 'connecting')
+    );
+    if (!pending) this.teamLaunches.delete(key(team, ''));
   }
 
   private startLane(

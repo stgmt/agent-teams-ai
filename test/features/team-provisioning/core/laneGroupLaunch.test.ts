@@ -387,6 +387,19 @@ describe('team lane-group launch', () => {
     expect(shared.lifecycle.snapshot(run.teamName).members.builder.phase).toBe('ready');
   });
 
+  it('refuses lane retry while a team launch is still pending', async () => {
+    const shared = setup();
+    await shared.lifecycle.teams.launchConfigured(run, async () => roster);
+    await Promise.all(
+      roster.map(({ memberName }) => shared.lifecycle.commands.settled(run, memberName))
+    );
+    shared.lifecycle.commands.beginTeamLaunch(run);
+    await expect(shared.lifecycle.commands.retryFailedLanes(run)).rejects.toThrow(
+      'launch is still in progress'
+    );
+    shared.lifecycle.commands.abortTeamLaunch(run);
+  });
+
   it('keeps another failed lane retryable after a same-run lane restart', async () => {
     const sharedRoster = [
       { memberName: 'team-lead', role: 'lead' as const },
