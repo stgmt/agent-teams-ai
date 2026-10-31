@@ -51,6 +51,7 @@ function setup(
     roster?: readonly { memberName: string; role: 'lead' | 'member' }[];
     failLaneGroupOnce?: boolean;
     failLaneIdOnce?: string;
+    deferObservations?: boolean;
   } = {}
 ) {
   const stops: string[] = [];
@@ -114,7 +115,12 @@ function setup(
         observations: Object.fromEntries(
           tokens
             .filter((token) => token.memberName !== options.omitObservation)
-            .map((token) => [token.memberName, observation(laneId)])
+            .map((token) => [
+              token.memberName,
+              options.deferObservations
+                ? { ...observation(laneId), runtimeAlive: false }
+                : observation(laneId),
+            ])
         ),
         subscribe(events) {
           record.events = events;
@@ -398,6 +404,24 @@ describe('team lane-group launch', () => {
       'launch is still in progress'
     );
     shared.lifecycle.commands.abortTeamLaunch(run);
+  });
+
+  it('clears the launch gate when a deferred member finally connects', async () => {
+    const shared = setup({ deferObservations: true });
+    await shared.lifecycle.teams.launchConfigured(run, async () => roster);
+    await Promise.all(
+      roster.map(({ memberName }) => shared.lifecycle.commands.settled(run, memberName))
+    );
+    await expect(shared.lifecycle.commands.retryFailedLanes(run)).rejects.toThrow(
+      'launch is still in progress'
+    );
+    for (const group of shared.groups) {
+      for (const name of group.memberNames) group.events?.observed(name, observation(group.laneId));
+    }
+    await expect(shared.lifecycle.commands.retryFailedLanes(run)).resolves.toMatchObject({
+      attempted: [],
+      failed: [],
+    });
   });
 
   it('keeps another failed lane retryable after a same-run lane restart', async () => {

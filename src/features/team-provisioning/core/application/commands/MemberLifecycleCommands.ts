@@ -594,13 +594,15 @@ export class MemberLifecycleCommands {
   }
 
   private settleTeamLaunch(team: Readonly<TeamRunIdentity>): void {
+    const launchKey = key(team, '');
+    if (!this.teamLaunches.has(launchKey)) return;
     const snapshot = this.ports.registry.snapshot(team.teamName);
     const pending = Object.values(snapshot.members).some(
       (member) =>
         member.membership === 'configured' &&
         (member.phase === 'starting' || member.phase === 'connecting')
     );
-    if (!pending) this.teamLaunches.delete(key(team, ''));
+    if (!pending) this.teamLaunches.delete(launchKey);
   }
 
   private startLane(
@@ -647,29 +649,39 @@ export class MemberLifecycleCommands {
       const unsubscribe = runtime.subscribe({
         connected: () => {
           if (accepted) this.ports.registry.observeConnected(token);
+          this.settleTeamLaunch(token);
         },
         connectionLost: () => {
           if (accepted) this.ports.registry.observeConnectionLost(token);
+          this.settleTeamLaunch(token);
         },
         failed: (error) => {
           if (accepted) this.ports.registry.observeRuntimeFailed(token, error);
+          this.settleTeamLaunch(token);
         },
         releaseFailed: (error) => {
-          if (!accepted) return;
+          if (!accepted) {
+            this.settleTeamLaunch(token);
+            return;
+          }
           this.ports.registry.observeRuntimeFailed(token, error);
           this.ports.registry.observeMemberReleaseFailed(token);
+          this.settleTeamLaunch(token);
         },
         exited: (exit) => {
           terminated = true;
           if (accepted && 'identity' in runtime)
             this.ports.registry.observeExit(token, runtime.identity, exit);
+          this.settleTeamLaunch(token);
         },
         laneObserved: (observation) => {
           if (accepted) this.ports.registry.observeLane(token, observation);
+          this.settleTeamLaunch(token);
         },
         laneLost: (error) => {
           terminated = true;
           if (accepted) this.ports.registry.observeLaneLost(token, error);
+          this.settleTeamLaunch(token);
         },
         released: () => {
           // A lane release is authoritative: clear any lane that never reported a loss.
@@ -682,6 +694,7 @@ export class MemberLifecycleCommands {
           execution.released = true;
           execution.unsubscribe?.();
           execution.unsubscribe = null;
+          this.settleTeamLaunch(token);
         },
       });
       // Resource release may have been replayed synchronously by subscribe().
@@ -747,17 +760,24 @@ export class MemberLifecycleCommands {
       const unsubscribe = group.subscribe({
         observed: (memberName, observation) => {
           const token = byName.get(memberName);
-          if (token && accepted.get(memberName))
+          if (token && accepted.get(memberName)) {
             this.ports.registry.observeLane(token, observation);
+            this.settleTeamLaunch(token);
+          }
         },
         lost: (memberName, error) => {
           const token = byName.get(memberName);
-          if (token && accepted.get(memberName)) this.ports.registry.observeLaneLost(token, error);
+          if (token && accepted.get(memberName)) {
+            this.ports.registry.observeLaneLost(token, error);
+            this.settleTeamLaunch(token);
+          }
         },
         failed: (memberName, error) => {
           const token = byName.get(memberName);
-          if (token && accepted.get(memberName))
+          if (token && accepted.get(memberName)) {
             this.ports.registry.observeRuntimeFailed(token, error);
+            this.settleTeamLaunch(token);
+          }
         },
         released: () => this.releaseLaneGroup(execution),
       });
@@ -820,6 +840,7 @@ export class MemberLifecycleCommands {
     execution.unsubscribe?.();
     execution.unsubscribe = null;
     this.forgetLaneGroup(execution);
+    if (execution.tokens[0]) this.settleTeamLaunch(execution.tokens[0]);
   }
 
   private forgetLaneGroup(execution: LaneGroupExecution): void {
