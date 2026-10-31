@@ -86,6 +86,7 @@ export interface NativeTeamLifecycle {
   memberCommands: {
     restartMember: LifecycleCommands['restartMember'];
     skipMember: LifecycleCommands['skipMember'];
+    detachMember(team: TeamRunIdentity, memberName: string): Promise<void>;
     retryFailedLanes(run: TeamRunIdentity): Promise<RetryFailedOpenCodeSecondaryLanesResult>;
     answerLanePermission: MemberLifecycleCommands['answerLanePermission'];
   };
@@ -318,6 +319,8 @@ export function createNativeTeamLifecycle(
   const memberCommands: NativeTeamLifecycle['memberCommands'] = {
     restartMember: commands.restartMember,
     skipMember: commands.skipMember,
+    detachMember: (team, memberName) =>
+      deps.withExpectedContext(team, () => lifecycle.commands.detach(team, memberName)),
     retryFailedLanes: (run) =>
       deps.withExpectedContext(run, () => lifecycle.commands.retryFailedLanes(run)),
     answerLanePermission: (input) =>

@@ -22,9 +22,13 @@ const snapshot = {
   },
 } as unknown as TeamLifecycleSnapshot;
 
-function memberApi(snap: TeamLifecycleSnapshot = snapshot) {
+function memberApi(
+  snap: TeamLifecycleSnapshot = snapshot,
+  options: { detachMemberData?: (teamName: string, memberName: string) => Promise<void> } = {}
+) {
   const restartMember = vi.fn(async () => ({ kind: 'already-running' as const }));
   const skipMember = vi.fn(async () => undefined);
+  const detachMember = vi.fn(async () => undefined);
   const retryFailedLanes = vi.fn(async () => ({
     attempted: [],
     confirmed: [],
@@ -41,10 +45,11 @@ function memberApi(snap: TeamLifecycleSnapshot = snapshot) {
   const api = new NativeTeamMemberLifecycleApi({
     owner,
     runs: { find: (teamName) => (teamName === run.teamName ? snap : null) },
-    commands: { restartMember, skipMember, retryFailedLanes },
+    commands: { restartMember, skipMember, detachMember, retryFailedLanes },
     statuses: { memberSpawnStatuses },
+    ...(options.detachMemberData ? { detachMemberData: options.detachMemberData } : {}),
   });
-  return { api, restartMember, skipMember, retryFailedLanes, memberSpawnStatuses };
+  return { api, restartMember, skipMember, detachMember, retryFailedLanes, memberSpawnStatuses };
 }
 
 describe('native team API adapters', () => {
@@ -103,13 +108,32 @@ describe('native team API adapters', () => {
     expect(restartMember).not.toHaveBeenCalled();
   });
 
-  it('fails closed for live roster operations and retries failed secondary lanes', async () => {
+  it('detaches a configured member through the native command and data port', async () => {
+    const configured = {
+      identity: run,
+      members: {
+        builder: {
+          memberName: 'builder',
+          role: 'member',
+          membership: 'configured',
+          generation: 3,
+        },
+      },
+    } as unknown as TeamLifecycleSnapshot;
+    const detachMemberData = vi.fn(async () => undefined);
+    const { api, detachMember } = memberApi(configured, { detachMemberData });
+    await api.detachLiveRosterMember('test-team', 'builder');
+    expect(detachMember).toHaveBeenCalledWith(run, 'builder');
+    expect(detachMemberData).toHaveBeenCalledWith('test-team', 'builder');
+  });
+
+  it('fails closed for live roster attach and missing detach data', async () => {
     const { api, retryFailedLanes } = memberApi();
     await expect(api.attachLiveRosterMember('test-team', 'builder')).rejects.toThrow(
       'not migrated'
     );
     await expect(api.detachLiveRosterMember('test-team', 'builder')).rejects.toThrow(
-      'not migrated'
+      'data port is not configured'
     );
     await expect(api.retryFailedOpenCodeSecondaryLanes('test-team')).resolves.toMatchObject({
       attempted: [],

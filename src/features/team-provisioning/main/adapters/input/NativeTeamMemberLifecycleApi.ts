@@ -12,14 +12,16 @@ interface Dependencies {
   owner: Readonly<AppConnectionContext>;
   runs: Pick<TeamRunRegistryRead, 'find'>;
   commands: Pick<LifecycleCommands, 'restartMember' | 'skipMember'> & {
+    detachMember(team: TeamRunIdentity, memberName: string): Promise<void>;
     retryFailedLanes(run: TeamRunIdentity): Promise<RetryFailedOpenCodeSecondaryLanesResult>;
   };
   statuses: Pick<TeamLiveStatusQueries, 'memberSpawnStatuses'>;
+  detachMemberData?(teamName: string, memberName: string): Promise<void>;
 }
 
 /**
- * Member lifecycle surface over native commands. Attach/detach and OpenCode
- * secondary-lane retry have no native command yet and fail closed.
+ * Member lifecycle surface over native commands. Attach and OpenCode secondary
+ * lane retry still fail closed; detach requires a data-removal port.
  */
 export class NativeTeamMemberLifecycleApi implements TeamMemberLifecycleApi {
   constructor(private readonly deps: Dependencies) {}
@@ -48,8 +50,18 @@ export class NativeTeamMemberLifecycleApi implements TeamMemberLifecycleApi {
     throw new Error('Live roster attach is not migrated');
   }
 
-  async detachLiveRosterMember(_teamName: string, _memberName: string): Promise<void> {
-    throw new Error('Live roster detach is not migrated');
+  async detachLiveRosterMember(teamName: string, memberName: string): Promise<void> {
+    const snapshot = this.deps.runs.find(teamName);
+    if (!snapshot) throw new Error(`Unknown team: ${teamName}`);
+    const member = snapshot.members[memberName];
+    if (member?.membership === 'configured') {
+      if (!this.deps.detachMemberData)
+        throw new Error('Live roster detach data port is not configured');
+      await this.deps.commands.detachMember(snapshot.identity, memberName);
+    }
+    if (!this.deps.detachMemberData)
+      throw new Error('Live roster detach data port is not configured');
+    await this.deps.detachMemberData(teamName, memberName);
   }
 
   async restartMember(

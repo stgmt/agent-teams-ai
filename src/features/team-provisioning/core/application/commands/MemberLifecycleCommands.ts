@@ -512,6 +512,25 @@ export class MemberLifecycleCommands {
     await this.awaitStops(stops);
   }
 
+  /** Stops and removes a configured teammate; the lead and shared lanes are not detachable. */
+  async detach(team: TeamRunIdentity, memberName: string): Promise<void> {
+    const stops = await this.ports.gate.run(team.teamName, async () => {
+      this.ports.registry.assertRun(team);
+      const member = this.ports.registry.snapshot(team.teamName).members[memberName];
+      if (!member || member.membership !== 'configured') throw new Error('Unknown member');
+      if (member.role === 'lead') throw new Error('Cannot detach the team lead');
+      if (this.laneGroupsFor(team, memberName).some((group) => group.tokens.length > 1))
+        throw new Error('Detaching a member from a shared adapter lane is not supported');
+      this.ports.registry.requestStop(team, memberName);
+      return this.cancelAdmitted(team, [memberName]);
+    });
+    await this.awaitStops(stops);
+    await this.ports.gate.run(team.teamName, async () => {
+      this.ports.registry.assertRun(team);
+      this.ports.registry.removeMember(team, memberName);
+    });
+  }
+
   cancelAdmitted(team: TeamRunIdentity, memberNames: readonly string[]): readonly Promise<void>[] {
     const stops: Promise<void>[] = [];
     for (const name of memberNames) {

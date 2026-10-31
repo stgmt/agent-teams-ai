@@ -17,14 +17,15 @@ work before cutover. No row may be silently omitted from the cutover commit.
 
 ## Runtime/member
 
-| API                                                                                  | Status                    | Evidence                                                          |
-| ------------------------------------------------------------------------------------ | ------------------------- | ----------------------------------------------------------------- |
-| `getRuntimeState` / `stopTeam` / `isTeamAlive` / `getAliveTeams` / `getCurrentRunId` | native                    | `DesktopTeamRuntime`                                              |
-| `getMemberSpawnStatuses`                                                             | native                    | `createBoundTeamLiveStatusQueries`                                |
-| `restartMember` / `skipMemberForLaunch`                                              | native (exact generation) | `NativeTeamMemberLifecycleApi`                                    |
-| `attachLiveRosterMember` / `detachLiveRosterMember`                                  | blocked                   | no native command; explicit fail-closed                           |
-| `retryFailedOpenCodeSecondaryLanes`                                                  | native (secondary lanes)  | failed groups restart via `restartLane`; lead lane needs relaunch |
-| `runLiveRosterMutation` / `tryRunLiveRosterMutation`                                 | pass-through              | no live roster mutation exists in native                          |
+| API                                                                                  | Status                    | Evidence                                                                                                  |
+| ------------------------------------------------------------------------------------ | ------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `getRuntimeState` / `stopTeam` / `isTeamAlive` / `getAliveTeams` / `getCurrentRunId` | native                    | `DesktopTeamRuntime`                                                                                      |
+| `getMemberSpawnStatuses`                                                             | native                    | `createBoundTeamLiveStatusQueries`                                                                        |
+| `restartMember` / `skipMemberForLaunch`                                              | native (exact generation) | `NativeTeamMemberLifecycleApi`                                                                            |
+| `attachLiveRosterMember`                                                             | blocked                   | no native attach command; explicit fail-closed                                                            |
+| `detachLiveRosterMember`                                                             | native (data port)        | stops the member, removes the registry entry and calls `detachMemberData`; shared lanes and lead rejected |
+| `retryFailedOpenCodeSecondaryLanes`                                                  | native (secondary lanes)  | failed groups restart via `restartLane`; lead lane needs relaunch                                         |
+| `runLiveRosterMutation` / `tryRunLiveRosterMutation`                                 | pass-through              | no live roster mutation exists in native                                                                  |
 
 ## Diagnostics/logs/approvals
 

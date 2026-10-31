@@ -466,6 +466,39 @@ describe('team lane-group launch', () => {
     expect(shared.lifecycle.snapshot(run.teamName).members.tester.phase).toBe('ready');
   });
 
+  it('detaches a single-member lane and rejects shared lanes and the lead', async () => {
+    const sharedRoster = [
+      { memberName: 'team-lead', role: 'lead' as const },
+      { memberName: 'builder', role: 'member' as const },
+    ];
+    const single = setup({
+      roster: sharedRoster,
+      lanePlan: [{ laneId: 'secondary:builder', memberNames: ['builder'] }],
+    });
+    await single.lifecycle.teams.launchConfigured(run, async () => sharedRoster);
+    await single.lifecycle.commands.settled(run, 'builder');
+    await single.lifecycle.commands.detach(run, 'builder');
+    expect(single.lifecycle.snapshot(run.teamName).members.builder.membership).toBe('removed');
+
+    const sharedLaneRoster = [
+      { memberName: 'team-lead', role: 'lead' as const },
+      { memberName: 'builder', role: 'member' as const },
+      { memberName: 'tester', role: 'member' as const },
+    ];
+    const shared = setup({
+      roster: sharedLaneRoster,
+      lanePlan: [{ laneId: 'secondary:shared', memberNames: ['builder', 'tester'] }],
+    });
+    await shared.lifecycle.teams.launchConfigured(run, async () => sharedLaneRoster);
+    await shared.lifecycle.commands.settled(run, 'builder');
+    await expect(shared.lifecycle.commands.detach(run, 'builder')).rejects.toThrow(
+      'shared adapter lane'
+    );
+    await expect(shared.lifecycle.commands.detach(run, 'team-lead')).rejects.toThrow(
+      'Cannot detach the team lead'
+    );
+  });
+
   it('rejects a lane group that names an unconfigured or duplicated member', async () => {
     const unknown = createWithGroups(() => [
       { laneId: 'primary', memberNames: ['team-lead', 'ghost'] },

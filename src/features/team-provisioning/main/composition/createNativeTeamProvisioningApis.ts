@@ -18,6 +18,8 @@ export interface NativeTeamProvisioningApisDependencies {
   runtime: NativeDesktopTeamRuntime;
   preflight: TeamProvisioningPreflightApi;
   taskActivity: TeamTaskActivityRepairApi;
+  /** Removes the member from durable team data after native detach. */
+  detachMemberData?(teamName: string, memberName: string): Promise<void>;
   now(): string;
 }
 
@@ -50,6 +52,7 @@ export function createNativeTeamProvisioningApis(
       runs: lifecycle.runs,
       commands: lifecycle.memberCommands,
       statuses,
+      ...(deps.detachMemberData ? { detachMemberData: deps.detachMemberData } : {}),
     }),
     diagnostics: new NativeTeamDiagnostics({
       statuses,
