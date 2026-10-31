@@ -5,6 +5,7 @@ import { join } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { TeamLifecycleCommands } from '../../../../src/features/team-provisioning/core/application/commands/TeamLifecycleCommands';
 import { NativeLeadInboxRelay } from '../../../../src/features/team-provisioning/main/adapters/output/NativeLeadInboxRelay';
 import { NativeMemberInboxRelay } from '../../../../src/features/team-provisioning/main/adapters/output/NativeMemberInboxRelay';
 import { createNativeDesktopTeamRuntime } from '../../../../src/features/team-provisioning/main/composition/createNativeDesktopTeamRuntime';
@@ -79,6 +80,21 @@ describe('native desktop team runtime composition', () => {
     lifecycle.stopRelays('TEST-team');
     expect(leadStop).toHaveBeenCalledWith('TEST-team');
     expect(memberStop).toHaveBeenCalledWith('TEST-team');
+    vi.restoreAllMocks();
+  });
+
+  it('starts relays after a successful configured launch', async () => {
+    const { lifecycle } = setup(undefined, { relayIntervalMs: 250 });
+    const run = { ...owner, teamName: 'TEST-team', runId: 'TEST-run' };
+    const launch = vi
+      .spyOn(TeamLifecycleCommands.prototype, 'launchConfigured')
+      .mockResolvedValue({ run, leadCredential: 'TEST-credential' });
+    const leadStart = vi.spyOn(NativeLeadInboxRelay.prototype, 'startPolling');
+    const memberStart = vi.spyOn(NativeMemberInboxRelay.prototype, 'startPolling');
+    await lifecycle.launchConfigured(run);
+    expect(leadStart).toHaveBeenCalledWith(run.teamName, 250);
+    expect(memberStart).toHaveBeenCalledWith(run.teamName, 250);
+    launch.mockRestore();
     vi.restoreAllMocks();
   });
 

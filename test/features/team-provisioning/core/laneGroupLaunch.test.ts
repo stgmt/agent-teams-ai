@@ -424,6 +424,19 @@ describe('team lane-group launch', () => {
     });
   });
 
+  it('clears the launch gate when the team stops during launch', async () => {
+    const shared = setup({ deferObservations: true });
+    await shared.lifecycle.teams.launchConfigured(run, async () => roster);
+    await Promise.all(
+      roster.map(({ memberName }) => shared.lifecycle.commands.settled(run, memberName))
+    );
+    await shared.lifecycle.teams.stop(run);
+    await expect(shared.lifecycle.commands.retryFailedLanes(run)).resolves.toMatchObject({
+      attempted: [],
+      failed: [],
+    });
+  });
+
   it('keeps another failed lane retryable after a same-run lane restart', async () => {
     const sharedRoster = [
       { memberName: 'team-lead', role: 'lead' as const },

@@ -184,6 +184,17 @@ describe('native member inbox relay', () => {
     relay.dispose();
   });
 
+  it('clears a scheduled work-sync retry on release', async () => {
+    vi.useFakeTimers();
+    const nudge = message({ messageId: 'TEST-nudge', messageKind: 'member_work_sync_nudge' });
+    const { relay, send } = setup({ messages: [nudge] });
+    await expect(relay.relay(run.teamName, 'builder')).resolves.toBe(1);
+    relay.reset(run.teamName);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(send).toHaveBeenCalledTimes(1);
+    relay.dispose();
+  });
+
   it('polls every configured member on an interval', async () => {
     vi.useFakeTimers();
     const { relay, getMessagesFor } = setup();

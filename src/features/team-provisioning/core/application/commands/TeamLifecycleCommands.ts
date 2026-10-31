@@ -198,6 +198,7 @@ export class TeamLifecycleCommands {
       if (pending && pending.run.runId !== run.runId) throw new TeamRunMismatchError();
       pending?.abort.abort();
       this.ports.registry.requestTeamStop(run);
+      this.ports.members.abortTeamLaunch(run);
       this.ports.authority.revokeRun(run);
       const preparationSettled = (): void => {
         const snapshot = this.ports.registry.snapshot(run.teamName);
