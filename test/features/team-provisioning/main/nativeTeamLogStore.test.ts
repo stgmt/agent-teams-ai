@@ -1,4 +1,8 @@
 // @vitest-environment node
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import { describe, expect, it } from 'vitest';
 
 import { NativeTeamLogStore } from '../../../../src/features/team-provisioning/main/adapters/output/NativeTeamLogStore';
@@ -48,5 +52,31 @@ describe('native team log store', () => {
     store.append('run-old', 'test-team', 'old', '2026-10-31T00:00:00.000Z');
     store.append('run-new', 'test-team', 'new', '2026-10-31T00:00:01.000Z');
     expect(store.read('test-team').lines).toEqual(['new']);
+  });
+
+  it('persists the last run across a restart and clears it on release', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'TEST-native-logs-'));
+    try {
+      const store = new NativeTeamLogStore({ teamsRoot: root });
+      store.append('run-1', 'test-team', 'first', '2026-10-31T00:00:00.000Z');
+      store.append('run-1', 'test-team', 'second', '2026-10-31T00:00:01.000Z');
+      store.retainLast('test-team', 'run-1');
+      store.dispose();
+
+      const reopened = new NativeTeamLogStore({ teamsRoot: root });
+      expect(reopened.read('test-team')).toMatchObject({
+        lines: ['second', 'first'],
+        total: 2,
+        hasMore: false,
+      });
+
+      reopened.clear('run-1');
+      expect(new NativeTeamLogStore({ teamsRoot: root }).read('test-team')).toMatchObject({
+        lines: [],
+        total: 0,
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
+    }
   });
 });

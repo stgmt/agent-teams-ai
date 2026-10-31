@@ -28,15 +28,15 @@ work before cutover. No row may be silently omitted from the cutover commit.
 
 ## Diagnostics/logs/approvals
 
-| API                                            | Status                      | Evidence                                                                    |
-| ---------------------------------------------- | --------------------------- | --------------------------------------------------------------------------- |
-| `getTeamAgentRuntimeSnapshot`                  | native                      | `NativeTeamDiagnostics` + live status port                                  |
-| `getClaudeLogs`                                | native (in-memory, bounded) | `NativeTeamClaudeLogs` + `NativeTeamLogStore`                               |
-| logs across app restart                        | blocked                     | native log persistence is not implemented                                   |
-| `getLeadActivityState` / `getLeadContextUsage` | blocked                     | legacy run payloads; fail-closed                                            |
-| `respondToToolApproval` (OpenCode lane)        | native                      | `NativeTeamToolApprovalApi`                                                 |
-| `respondToToolApproval` (Claude process)       | native                      | `NativeClaudeToolApprovals` ingests `control_request` and answers via stdin |
-| `updateToolApprovalSettings`                   | native (in-memory)          | `NativeToolApprovalSettings`                                                |
+| API                                            | Status                      | Evidence                                                                                |
+| ---------------------------------------------- | --------------------------- | --------------------------------------------------------------------------------------- |
+| `getTeamAgentRuntimeSnapshot`                  | native                      | `NativeTeamDiagnostics` + live status port                                              |
+| `getClaudeLogs`                                | native (in-memory, bounded) | `NativeTeamClaudeLogs` + `NativeTeamLogStore`                                           |
+| logs across app restart                        | native (last run)           | `NativeTeamLogStore` persists the last run to `native-logs.json` and reloads it on read |
+| `getLeadActivityState` / `getLeadContextUsage` | blocked                     | legacy run payloads; fail-closed                                                        |
+| `respondToToolApproval` (OpenCode lane)        | native                      | `NativeTeamToolApprovalApi`                                                             |
+| `respondToToolApproval` (Claude process)       | native                      | `NativeClaudeToolApprovals` ingests `control_request` and answers via stdin             |
+| `updateToolApprovalSettings`                   | native (in-memory)          | `NativeToolApprovalSettings`                                                            |
 
 ## Messaging/relay/cross-team
 

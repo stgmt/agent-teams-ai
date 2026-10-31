@@ -140,7 +140,7 @@ export function createNativeTeamLifecycle(
     prepareProvider: (launch, signal) => provider.prepare(launch, signal),
     prepareArtifacts: (launch, token, signal) => artifacts.prepare(launch, token, signal),
   });
-  const logs = new NativeTeamLogStore();
+  const logs = new NativeTeamLogStore({ teamsRoot: deps.teamsRoot });
   const toolApprovalSettings = new NativeToolApprovalSettings();
   let writeApprovalLine: (
     token: Readonly<MemberProcessToken>,
@@ -350,6 +350,7 @@ export function createNativeTeamLifecycle(
       leadRelay.dispose();
       memberRelay.dispose();
       await lifecycle.teams.shutdown();
+      logs.dispose();
     },
     launchConfigured: (run) =>
       deps.withExpectedContext(run, async () => {
