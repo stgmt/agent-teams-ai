@@ -286,6 +286,8 @@ lane restart, recovery после рестарта приложения.
 
 ## Фаза 6b. Остальной parity
 
+Полный статус по каждому API: `docs/team-management/d445-parity-checklist.md`.
+
 Каждый пункт — строка checklist с тестом:
 
 - settings/update состава, member settings, model preflight;

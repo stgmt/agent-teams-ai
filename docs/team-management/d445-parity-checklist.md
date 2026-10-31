@@ -1,0 +1,72 @@
+# D-445 parity checklist (phase 6b/8 gate)
+
+Status: living checklist. `native` = implemented and tested in the feature;
+`legacy` = still owned by the old service; `blocked` = needs protocol or product
+work before cutover. No row may be silently omitted from the cutover commit.
+
+## Provisioning start/status/run
+
+| API                                                        | Status                           | Evidence                                                                                |
+| ---------------------------------------------------------- | -------------------------------- | --------------------------------------------------------------------------------------- |
+| `createTeam` / `launchTeam`                                | native                           | `createDesktopTeamRuntime`, `NativeTeamLifecycle`                                       |
+| progress stream                                            | native                           | `nativeTeamProgressProjection`                                                          |
+| `getProvisioningStatus`                                    | native first + persisted history | `toTeamProvisioningProgress`, `progressHistory`                                         |
+| `cancelProvisioning` / `hasProvisioningRun`                | native                           | `DesktopTeamRuntime`, provisioning states                                               |
+| `preflight` (`getCliHelpOutput`, `prepareForProvisioning`) | legacy                           | CLI install/prepare path is independent of run ownership; keep as a pure service        |
+| `taskActivity.repair...`                                   | adapter ready                    | `NativeTaskActivityRepair`; needs the legacy `repairOnce`/snapshot ports at composition |
+
+## Runtime/member
+
+| API                                                                                  | Status                    | Evidence                                 |
+| ------------------------------------------------------------------------------------ | ------------------------- | ---------------------------------------- |
+| `getRuntimeState` / `stopTeam` / `isTeamAlive` / `getAliveTeams` / `getCurrentRunId` | native                    | `DesktopTeamRuntime`                     |
+| `getMemberSpawnStatuses`                                                             | native                    | `createBoundTeamLiveStatusQueries`       |
+| `restartMember` / `skipMemberForLaunch`                                              | native (exact generation) | `NativeTeamMemberLifecycleApi`           |
+| `attachLiveRosterMember` / `detachLiveRosterMember`                                  | blocked                   | no native command; explicit fail-closed  |
+| `retryFailedOpenCodeSecondaryLanes`                                                  | blocked                   | no native command; explicit fail-closed  |
+| `runLiveRosterMutation` / `tryRunLiveRosterMutation`                                 | pass-through              | no live roster mutation exists in native |
+
+## Diagnostics/logs/approvals
+
+| API                                            | Status                      | Evidence                                               |
+| ---------------------------------------------- | --------------------------- | ------------------------------------------------------ |
+| `getTeamAgentRuntimeSnapshot`                  | native                      | `NativeTeamDiagnostics` + live status port             |
+| `getClaudeLogs`                                | native (in-memory, bounded) | `NativeTeamClaudeLogs` + `NativeTeamLogStore`          |
+| logs across app restart                        | blocked                     | native log persistence is not implemented              |
+| `getLeadActivityState` / `getLeadContextUsage` | blocked                     | legacy run payloads; fail-closed                       |
+| `respondToToolApproval` (OpenCode lane)        | native                      | `NativeTeamToolApprovalApi`                            |
+| `respondToToolApproval` (Claude process)       | blocked                     | needs control-request ingestion in `NodeMemberRuntime` |
+| `updateToolApprovalSettings`                   | blocked                     | legacy settings store not ported                       |
+
+## Messaging/relay/cross-team
+
+| API                                                                        | Status         | Evidence                                                                                      |
+| -------------------------------------------------------------------------- | -------------- | --------------------------------------------------------------------------------------------- |
+| `sendMessageToTeam`                                                        | split required | human path must use the persisted human request ledger; system path can use `sendLeadMessage` |
+| `relayLeadInboxMessages`                                                   | blocked        | needs inbox read + delivery ledger parity                                                     |
+| `relayOpenCodeMemberInboxMessages`                                         | blocked        | legacy OpenCode relay owns the delivery ledger                                                |
+| `getOpenCodeRuntimeDeliveryStatus`                                         | blocked        | OpenCode delivery ledger                                                                      |
+| `resolveRuntimeRecipientProviderId` / live lead messages / lead session id | blocked        | legacy run payloads                                                                           |
+| cross-team reply metadata / expectations                                   | blocked        | legacy conversation correlation                                                               |
+
+## Data/settings
+
+| API                                                                 | Status               | Evidence                                                      |
+| ------------------------------------------------------------------- | -------------------- | ------------------------------------------------------------- |
+| team data (`listTeams`, `getTeamData`, saved request, draft rename) | legacy, independent  | `TeamDataService`; no run ownership                           |
+| member settings update/relaunch                                     | feature slice exists | `createTeamMemberSettingsFeature` + native run identity fence |
+| tool approval settings                                              | blocked              | see above                                                     |
+
+## Cutover sequence (phase 8)
+
+1. Port the blocked messaging/approval/lead-payload rows or explicitly keep them
+   behind a retained service **without** run ownership. A retained service that
+   still owns runs recreates the split-brain D-445 forbids.
+2. Compose `createNativeDesktopTeamRuntime` in `src/main/index.ts` with the real
+   settings/provider/workspace/inbox/control/briefing/registry deps and startup
+   recovery.
+3. Switch IPC/HTTP/preload/renderer to the native snapshot and human request
+   ledger; remove `sendDirectToLead` from the human path.
+4. Delete the legacy process-owning launch/stop/recovery code and the legacy
+   OpenCode route; keep pure data/settings/preflight helpers per the ownership map.
+5. Run the phase 9 acceptance matrix per provider in a sandbox project.
