@@ -224,7 +224,24 @@ export class MemberLifecycleRegistry {
     return this.admitStart(team, member, operationId);
   }
 
-  assertRestartTarget(target: MemberGenerationTarget): void {
+  /**
+   * Admits a lead restart after its exact attempt stopped and released. The
+   * team claim stays; the generation advance fences the previous attempt.
+   */
+  beginLeadRestart(
+    identity: TeamRunIdentity,
+    memberName: string,
+    operationId: string
+  ): MemberStartAdmission {
+    this.assertStartsOpen();
+    const team = this.requireRun(identity);
+    const member = this.requireMember(team, memberName);
+    if (member.role !== 'lead') throw new Error('Lead restart must target the configured lead');
+    if (member.membership !== 'configured') throw new Error('Lead was removed');
+    return this.admitStart(team, member, operationId);
+  }
+
+  assertRestartTarget(target: MemberGenerationTarget, allowLead = false): void {
     this.assertStartsOpen();
     const team = this.teams.get(target.teamName);
     if (!team || !sameOwner(this.owner, target) || team.identity.runId !== target.runId)
@@ -235,7 +252,8 @@ export class MemberLifecycleRegistry {
       throw new MemberRestartConflictError('Team run is intentionally stopped');
     if (member.membership !== 'configured')
       throw new MemberRestartConflictError('Member was removed');
-    if (member.role === 'lead') throw new TypeError('Member restart cannot target the lead');
+    if (member.role === 'lead' && !allowLead)
+      throw new TypeError('Member restart cannot target the lead');
     if (
       !Number.isSafeInteger(target.generation) ||
       target.generation < 0 ||

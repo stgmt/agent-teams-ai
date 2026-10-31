@@ -38,6 +38,7 @@ interface Dependencies {
 interface PendingRestart {
   target: Readonly<MemberGenerationTarget>;
   abort: AbortController;
+  allowLead: boolean;
   result: Promise<MemberStartAdmission>;
 }
 
@@ -129,7 +130,8 @@ export class MemberLifecycleCommands {
 
   async restart(
     input: Readonly<MemberGenerationTarget>,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    options: { allowLead?: boolean } = {}
   ): Promise<MemberStartAdmission> {
     const target = Object.freeze({ ...input });
     let detach = (): void => undefined;
@@ -143,7 +145,7 @@ export class MemberLifecycleCommands {
           throw new MemberRestartConflictError(
             'Restarting a member of a shared adapter lane is not supported yet'
           );
-        this.ports.registry.assertRestartTarget(target);
+        this.ports.registry.assertRestartTarget(target, options.allowLead === true);
         const identity = key(target, target.memberName);
         let restart = this.restarts.get(identity);
         if (restart && restart.target.generation !== target.generation)
@@ -156,6 +158,7 @@ export class MemberLifecycleCommands {
           const pending: PendingRestart = {
             target,
             abort: new AbortController(),
+            allowLead: options.allowLead === true,
             result: Promise.resolve().then(() => this.completeRestart(pending, stops)),
           };
           this.restarts.set(identity, pending);
@@ -173,6 +176,15 @@ export class MemberLifecycleCommands {
     }
   }
 
+  /** Restarts the lead runtime in place; the team run and its other members stay. */
+  restartLead(
+    team: TeamRunIdentity,
+    memberName: string,
+    generation: number
+  ): Promise<MemberStartAdmission> {
+    return this.restart({ ...team, memberName, generation }, undefined, { allowLead: true });
+  }
+
   private async completeRestart(
     restart: PendingRestart,
     stops: readonly Promise<void>[]
@@ -182,15 +194,22 @@ export class MemberLifecycleCommands {
       await this.awaitStops(stops);
       return await this.ports.gate.run(target.teamName, async () => {
         if (restart.abort.signal.aborted) throw new Error('Member restart was cancelled');
-        this.ports.registry.assertRestartTarget(target);
+        this.ports.registry.assertRestartTarget(target, restart.allowLead);
         const member = this.ports.registry.snapshot(target.teamName).members[target.memberName];
         if (member.process || member.lane || member.resources !== 'released')
           throw new Error('Member restart resources were not released');
-        const admission = this.ports.registry.beginStart(
-          target,
-          target.memberName,
-          this.ports.nextOperationId()
-        );
+        const admission =
+          member.role === 'lead'
+            ? this.ports.registry.beginLeadRestart(
+                target,
+                target.memberName,
+                this.ports.nextOperationId()
+              )
+            : this.ports.registry.beginStart(
+                target,
+                target.memberName,
+                this.ports.nextOperationId()
+              );
         if (admission.kind !== 'launch') throw new Error('Member restart was not admitted');
         this.launch(admission.token);
         return admission;

@@ -88,6 +88,25 @@ async function setup(beforeSpawn?: (memberName: string, signal: AbortSignal) => 
 }
 
 describe('exact observed member restart', () => {
+  it('restarts the lead in place and fences the previous generation', async () => {
+    const { lifecycle, starts, stops } = await setup();
+    const lead = lifecycle.snapshot(run.teamName).members['team-lead'];
+    expect(lead?.generation).toBe(1);
+    await expect(
+      lifecycle.commands.restart({ ...run, memberName: 'team-lead', generation: 1 })
+    ).rejects.toThrow('cannot target the lead');
+    const admission = await lifecycle.commands.restartLead(run, 'team-lead', 1);
+    expect(admission.kind).toBe('launch');
+    await lifecycle.commands.settled(run, 'team-lead');
+    expect(lifecycle.snapshot(run.teamName).members['team-lead']).toMatchObject({
+      phase: 'ready',
+      generation: 2,
+    });
+    expect(starts.filter((name) => name === 'team-lead')).toHaveLength(2);
+    expect(stops).toHaveLength(1);
+    await expect(lifecycle.commands.restartLead(run, 'team-lead', 1)).rejects.toThrow('stale');
+  });
+
   it('coalesces concurrent restarts, waits for release and leaves the lead unchanged', async () => {
     const { lifecycle, target, starts, stops, setTerminate } = await setup();
     const released = deferred();
