@@ -24,7 +24,7 @@ const snapshot = {
   },
 } as unknown as TeamLifecycleSnapshot;
 
-function setup() {
+function setup(delivery?: { relay: ReturnType<typeof vi.fn>; status: ReturnType<typeof vi.fn> }) {
   const sendLeadMessage = vi.fn(async () => undefined);
   const relayLeadInboxMessages = vi.fn(async () => 0);
   const findConfiguredMember = vi.fn(async () => ({
@@ -35,6 +35,7 @@ function setup() {
     settings: { findConfiguredMember } as never,
     sendLeadMessage,
     relayLeadInboxMessages,
+    ...(delivery ? { openCodeMemberDelivery: delivery as never } : {}),
   });
   return { api, sendLeadMessage, relayLeadInboxMessages, findConfiguredMember };
 }
@@ -72,6 +73,33 @@ describe('native team messaging', () => {
     await expect(api.relayLeadInboxMessages('test-team')).resolves.toBe(0);
     expect(relayLeadInboxMessages).toHaveBeenCalledWith('test-team');
     await expect(api.relayLeadInboxMessages('absent')).rejects.toThrow('Unknown team');
+  });
+
+  it('delegates OpenCode member delivery to the configured ledger', async () => {
+    const relay = vi.fn(async () => ({ attempted: ['builder'] }) as never);
+    const status = vi.fn(async () => ({ responsePending: true }) as never);
+    const { api } = setup({ relay, status });
+    await expect(
+      api.relayOpenCodeMemberInboxMessages('test-team', 'builder', { onlyMessageId: 'message' })
+    ).resolves.toMatchObject({ attempted: ['builder'] });
+    expect(relay).toHaveBeenCalledWith('test-team', 'builder', { onlyMessageId: 'message' });
+    await expect(
+      api.getOpenCodeRuntimeDeliveryStatus('test-team', 'message')
+    ).resolves.toMatchObject({ responsePending: true });
+    expect(status).toHaveBeenCalledWith('test-team', 'message');
+    await expect(api.relayOpenCodeMemberInboxMessages('absent', 'builder')).rejects.toThrow(
+      'Unknown team'
+    );
+  });
+
+  it('fails closed when no OpenCode member delivery ledger is configured', async () => {
+    const { api } = setup();
+    await expect(api.relayOpenCodeMemberInboxMessages('test-team', 'builder')).rejects.toThrow(
+      'not configured'
+    );
+    await expect(api.getOpenCodeRuntimeDeliveryStatus('test-team', 'message')).rejects.toThrow(
+      'not configured'
+    );
   });
 
   it('keeps unmigrated live lead message APIs explicit', () => {

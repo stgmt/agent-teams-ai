@@ -123,9 +123,9 @@ describe('native team provisioning API composition', () => {
     const { apis } = setup();
     await expect(
       apis.messaging.relayOpenCodeMemberInboxMessages('TEST-team', 'builder')
-    ).rejects.toThrow('not migrated');
+    ).rejects.toThrow('not configured');
     await expect(
       apis.messaging.getOpenCodeRuntimeDeliveryStatus('TEST-team', 'message')
-    ).rejects.toThrow('not migrated');
+    ).rejects.toThrow('not configured');
   });
 });

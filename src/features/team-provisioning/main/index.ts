@@ -1,4 +1,5 @@
 export { NativeTeamMemberLifecycleApi } from './adapters/input/NativeTeamMemberLifecycleApi';
+export type { NativeOpenCodeMemberDeliveryPort } from './adapters/input/NativeTeamMessagingApi';
 export { NativeTeamMessagingApi } from './adapters/input/NativeTeamMessagingApi';
 export { NativeTeamToolApprovalApi } from './adapters/input/NativeTeamToolApprovalApi';
 export { registerHumanRequestSubmissionIpc } from './adapters/input/registerHumanRequestSubmissionIpc';
@@ -55,6 +56,10 @@ export {
   type NativeProviderProfile,
 } from './composition/createNativeProviderPorts';
 export {
+  createNativeTeamHttpApis,
+  type NativeTeamHttpApisDependencies,
+} from './composition/createNativeTeamHttpApis';
+export {
   createNativeTeamLifecycle,
   type NativeTeamLifecycle,
   type NativeTeamLifecycleDependencies,
@@ -63,10 +68,6 @@ export {
   createNativeTeamProvisioningApis,
   type NativeTeamProvisioningApisDependencies,
 } from './composition/createNativeTeamProvisioningApis';
-export {
-  createNativeTeamHttpApis,
-  type NativeTeamHttpApisDependencies,
-} from './composition/createNativeTeamHttpApis';
 export {
   createNodeTeamMemberSettingsFeature,
   createTeamMemberSettingsFeature,

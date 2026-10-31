@@ -7,6 +7,7 @@ import { NativeTeamDiagnostics } from '../adapters/output/NativeTeamDiagnostics'
 import { createBoundTeamLiveStatusQueries } from './createBoundTeamLiveStatusQueries';
 import { createNativeRuntimeSurface } from './createNativeRuntimeSurface';
 
+import type { NativeOpenCodeMemberDeliveryPort } from '../adapters/input/NativeTeamMessagingApi';
 import type { NativeDesktopTeamRuntime } from './createNativeDesktopTeamRuntime';
 import type {
   TeamIpcHandlerApis,
@@ -20,6 +21,8 @@ export interface NativeTeamProvisioningApisDependencies {
   taskActivity: TeamTaskActivityRepairApi;
   /** Removes the member from durable team data after native detach. */
   detachMemberData?(teamName: string, memberName: string): Promise<void>;
+  /** Production OpenCode member prompt ledger; owns delivery state, not runs. */
+  openCodeMemberDelivery?: NativeOpenCodeMemberDeliveryPort;
   now(): string;
 }
 
@@ -65,6 +68,9 @@ export function createNativeTeamProvisioningApis(
       settings: lifecycle.settings,
       sendLeadMessage: lifecycle.sendLeadMessage,
       relayLeadInboxMessages: (teamName) => lifecycle.relay.relay(teamName),
+      ...(deps.openCodeMemberDelivery
+        ? { openCodeMemberDelivery: deps.openCodeMemberDelivery }
+        : {}),
     }),
     toolApproval: new NativeTeamToolApprovalApi({
       runs: lifecycle.runs,

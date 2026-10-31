@@ -10,11 +10,26 @@ import type {
 } from '@main/services/team/contracts/TeamProvisioningApis';
 import type { InboxMessage, OpenCodeRuntimeDeliveryStatus, TeamProviderId } from '@shared/types';
 
+/**
+ * OpenCode member prompt delivery is a durable ledger with acceptance proof and
+ * watchdogs. It owns no runs or processes, so it is injected instead of rebuilt
+ * here; the composition supplies the production ledger.
+ */
+export interface NativeOpenCodeMemberDeliveryPort {
+  relay(
+    teamName: string,
+    memberName: string,
+    options?: TeamOpenCodeMemberInboxRelayOptions
+  ): Promise<TeamOpenCodeMemberInboxRelayResult>;
+  status(teamName: string, messageId: string): Promise<OpenCodeRuntimeDeliveryStatus | null>;
+}
+
 interface Dependencies {
   runs: Pick<TeamRunRegistryRead, 'find'>;
   settings: Pick<MemberLaunchSettingsPort, 'findConfiguredMember'>;
   sendLeadMessage: NativeTeamLifecycle['sendLeadMessage'];
   relayLeadInboxMessages(teamName: string): Promise<number>;
+  openCodeMemberDelivery?: NativeOpenCodeMemberDeliveryPort;
 }
 
 /**
@@ -64,18 +79,23 @@ export class NativeTeamMessagingApi implements TeamMessagingApi {
   }
 
   async relayOpenCodeMemberInboxMessages(
-    _teamName: string,
-    _memberName: string,
-    _options?: TeamOpenCodeMemberInboxRelayOptions
+    teamName: string,
+    memberName: string,
+    options?: TeamOpenCodeMemberInboxRelayOptions
   ): Promise<TeamOpenCodeMemberInboxRelayResult> {
-    throw new Error('OpenCode member inbox relay is not migrated');
+    this.requireRun(teamName);
+    const delivery = this.deps.openCodeMemberDelivery;
+    if (!delivery) throw new Error('OpenCode member delivery ledger is not configured');
+    return delivery.relay(teamName, memberName, options);
   }
 
   async getOpenCodeRuntimeDeliveryStatus(
-    _teamName: string,
-    _messageId: string
+    teamName: string,
+    messageId: string
   ): Promise<OpenCodeRuntimeDeliveryStatus | null> {
-    throw new Error('OpenCode runtime delivery status is not migrated');
+    const delivery = this.deps.openCodeMemberDelivery;
+    if (!delivery) throw new Error('OpenCode member delivery ledger is not configured');
+    return delivery.status(teamName, messageId);
   }
 
   async relayLeadInboxMessages(teamName: string): Promise<number> {

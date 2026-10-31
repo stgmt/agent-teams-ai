@@ -319,6 +319,9 @@ lead reporting/MCP messaging, live-activity push пока fail-closed. Cross-tea
 переотправляется после cooldown. Lane/OpenCode lead delivery остаётся blocked:
 `NativeOpenCodeLaneRuntime.writeInput` отдаёт доставку inbox relay, native-путь
 для lane lead ещё не реализован; `SendLeadMessage` требует process lead.
+OpenCode member delivery (prompt ledger с acceptance proof/watchdog) не владеет
+run-ами и процессами, поэтому инжектится как `NativeOpenCodeMemberDeliveryPort`;
+без порта `NativeTeamMessagingApi` падает fail-closed.
 Member relay: `NativeMemberInboxRelay` батчит unread членской inbox и отправляет
 lead-mediated forward prompt в stdin лида (как legacy flow), коммитит read после
 успешной записи. `relayIntervalMs` включает `startRelays` после launch; release
