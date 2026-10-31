@@ -37,11 +37,16 @@ import type { MemberProcessToken, TeamRunIdentity, TeamRunRegistryRead } from '.
 import type { LifecycleCommands } from '../../core/application/ports/LifecycleCommands';
 import type { LifecycleQueries } from '../../core/application/ports/LifecycleQueries';
 import type { ConfiguredMemberLaunch } from '../../core/application/ports/MemberRuntimePorts';
+import type { MemberLifecycleCommands } from '../../core/application/commands/MemberLifecycleCommands';
 import type { NativeConfiguredProviderPorts } from '../adapters/output/NativeConfiguredProvider';
 import type { MemberLifecycle } from './createMemberLifecycle';
 import type { AppConnectionContext } from '@features/external-agent-connection/contracts';
 import type { TeamRuntimeAdapterRegistry } from '@main/services/team/runtime';
-import type { AttachmentPayload, InboxMessage } from '@shared/types';
+import type {
+  AttachmentPayload,
+  InboxMessage,
+  RetryFailedOpenCodeSecondaryLanesResult,
+} from '@shared/types';
 
 export interface NativeTeamLifecycleDependencies {
   owner: AppConnectionContext;
@@ -76,6 +81,13 @@ export interface NativeTeamLifecycle {
   runs: TeamRunRegistryRead;
   commands: LifecycleCommands;
   queries: LifecycleQueries;
+  settings: Pick<NodeTeamLaunchSettings, 'findConfiguredMember'>;
+  memberCommands: {
+    restartMember: LifecycleCommands['restartMember'];
+    skipMember: LifecycleCommands['skipMember'];
+    retryFailedLanes(run: TeamRunIdentity): Promise<RetryFailedOpenCodeSecondaryLanesResult>;
+    answerLanePermission: MemberLifecycleCommands['answerLanePermission'];
+  };
   logs: Pick<NativeTeamLogStore, 'read'>;
   approvals: Pick<NativeClaudeToolApprovals, 'list' | 'respond' | 'onEvent'>;
   toolApprovalSettings: Pick<NativeToolApprovalSettings, 'get' | 'update'>;
@@ -290,6 +302,24 @@ export function createNativeTeamLifecycle(
     leadRelay.stopPolling(teamName);
     memberRelay.stopPolling(teamName);
   };
+  const commands = createBoundLifecycleCommands({
+    owner: deps.owner,
+    source: {
+      launchCurrent: (...args) => lifecycle.teams.launchCurrent(...args),
+      stop: (run) => lifecycle.teams.stop(run),
+      restart: (target, signal) => lifecycle.commands.restart(target, signal),
+      skip: (target, signal) => lifecycle.commands.skip(target, signal),
+    },
+    load: async (run, signal) => (await settings.capture(run, signal)).members,
+    invalidationSignal: (expected) => deps.contextInvalidationSignal(expected),
+    withExpectedContext: (expected, operation) => deps.withExpectedContext(expected, operation),
+  });
+  const memberCommands: NativeTeamLifecycle['memberCommands'] = {
+    restartMember: commands.restartMember,
+    skipMember: commands.skipMember,
+    retryFailedLanes: (run) => lifecycle.commands.retryFailedLanes(run),
+    answerLanePermission: (input) => lifecycle.commands.answerLanePermission(input),
+  };
   return {
     runs,
     logs,
@@ -300,18 +330,9 @@ export function createNativeTeamLifecycle(
     memberRelay,
     startRelays,
     stopRelays,
-    commands: createBoundLifecycleCommands({
-      owner: deps.owner,
-      source: {
-        launchCurrent: (...args) => lifecycle.teams.launchCurrent(...args),
-        stop: (run) => lifecycle.teams.stop(run),
-        restart: (target, signal) => lifecycle.commands.restart(target, signal),
-        skip: (target, signal) => lifecycle.commands.skip(target, signal),
-      },
-      load: async (run, signal) => (await settings.capture(run, signal)).members,
-      invalidationSignal: (expected) => deps.contextInvalidationSignal(expected),
-      withExpectedContext: (expected, operation) => deps.withExpectedContext(expected, operation),
-    }),
+    commands,
+    settings,
+    memberCommands,
     queries,
     resolveLeadCredential,
     leadStart: {

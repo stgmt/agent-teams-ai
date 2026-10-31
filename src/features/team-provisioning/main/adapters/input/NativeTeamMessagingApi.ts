@@ -5,8 +5,10 @@ import type {
   TeamMessageAttachmentPayload,
   TeamMessageSendOptions,
   TeamMessagingApi,
+  TeamOpenCodeMemberInboxRelayOptions,
+  TeamOpenCodeMemberInboxRelayResult,
 } from '@main/services/team/contracts/TeamProvisioningApis';
-import type { InboxMessage, TeamProviderId } from '@shared/types';
+import type { InboxMessage, OpenCodeRuntimeDeliveryStatus, TeamProviderId } from '@shared/types';
 
 interface Dependencies {
   runs: Pick<TeamRunRegistryRead, 'find'>;
@@ -19,15 +21,7 @@ interface Dependencies {
  * System-path messaging over the native lifecycle. Human messages must use the
  * persisted human request ledger instead; live lead message caches stay empty.
  */
-export class NativeTeamMessagingApi implements Pick<
-  TeamMessagingApi,
-  | 'sendMessageToTeam'
-  | 'resolveRuntimeRecipientProviderId'
-  | 'getCurrentLeadSessionId'
-  | 'getLiveLeadProcessMessages'
-  | 'pushLiveLeadProcessMessage'
-  | 'relayLeadInboxMessages'
-> {
+export class NativeTeamMessagingApi implements TeamMessagingApi {
   constructor(private readonly deps: Dependencies) {}
 
   async sendMessageToTeam(
@@ -61,12 +55,27 @@ export class NativeTeamMessagingApi implements Pick<
     return lead?.lane?.sessionId ?? null;
   }
 
-  getLiveLeadProcessMessages(): InboxMessage[] {
+  getLiveLeadProcessMessages(_teamName?: string): InboxMessage[] {
     return [];
   }
 
-  pushLiveLeadProcessMessage(): void {
+  pushLiveLeadProcessMessage(_teamName?: string, _message?: InboxMessage): void {
     throw new Error('Live lead process messages are not migrated');
+  }
+
+  async relayOpenCodeMemberInboxMessages(
+    _teamName: string,
+    _memberName: string,
+    _options?: TeamOpenCodeMemberInboxRelayOptions
+  ): Promise<TeamOpenCodeMemberInboxRelayResult> {
+    throw new Error('OpenCode member inbox relay is not migrated');
+  }
+
+  async getOpenCodeRuntimeDeliveryStatus(
+    _teamName: string,
+    _messageId: string
+  ): Promise<OpenCodeRuntimeDeliveryStatus | null> {
+    throw new Error('OpenCode runtime delivery status is not migrated');
   }
 
   async relayLeadInboxMessages(teamName: string): Promise<number> {

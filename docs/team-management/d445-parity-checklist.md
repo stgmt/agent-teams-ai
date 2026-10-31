@@ -54,10 +54,10 @@ work before cutover. No row may be silently omitted from the cutover commit.
 
 ## Data/settings
 
-| API                                                                 | Status               | Evidence                                                      |
-| ------------------------------------------------------------------- | -------------------- | ------------------------------------------------------------- |
-| team data (`listTeams`, `getTeamData`, saved request, draft rename) | legacy, independent  | `TeamDataService`; no run ownership                           |
-| member settings update/relaunch                                     | feature slice exists | `createTeamMemberSettingsFeature` + native run identity fence |
+| API                                                                 | Status               | Evidence                                                        |
+| ------------------------------------------------------------------- | -------------------- | --------------------------------------------------------------- |
+| team data (`listTeams`, `getTeamData`, saved request, draft rename) | legacy, independent  | `TeamDataService`; no run ownership                             |
+| member settings update/relaunch                                     | feature slice exists | `createTeamMemberSettingsFeature` + native run identity fence   |
 | tool approval settings                                              | native (in-memory)   | `NativeToolApprovalSettings`; persistence is a separate concern |
 
 ## Cutover sequence (phase 8)
@@ -67,7 +67,7 @@ work before cutover. No row may be silently omitted from the cutover commit.
    still owns runs recreates the split-brain D-445 forbids.
 2. Compose `createNativeDesktopTeamRuntime` in `src/main/index.ts` with the real
    settings/provider/workspace/inbox/control/briefing/registry deps and startup
-   recovery.
+   recovery; assemble `TeamIpcHandlerApis` via `createNativeTeamProvisioningApis`.
 3. Switch IPC/HTTP/preload/renderer to the native snapshot and human request
    ledger; remove `sendDirectToLead` from the human path.
 4. Delete the legacy process-owning launch/stop/recovery code and the legacy

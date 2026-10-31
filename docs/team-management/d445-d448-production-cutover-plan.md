@@ -357,7 +357,9 @@ lead-mediated forward prompt в stdin лида (как legacy flow), комми�
 
 Один интеграционный коммит:
 
-1. `src/main/index.ts`: убрать `createDefaultTeamProvisioningService`, собрать native owner.
+1. `src/main/index.ts`: убрать `createDefaultTeamProvisioningService`, собрать native owner
+   через `createNativeDesktopTeamRuntime` + `createNativeTeamProvisioningApis`
+   (последний уже отдаёт полный `TeamIpcHandlerApis`; blocked-строки fail-closed).
 2. `src/main/http/index.ts`: team routes на native owner + reporting.
 3. `src/preload/index.ts`: новые bridge/каналы, старые удалить.
 4. `src/main/ipc/teams.ts`: human messaging persist-before-send, один writer.
