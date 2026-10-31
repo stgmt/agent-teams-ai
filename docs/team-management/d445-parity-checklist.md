@@ -58,7 +58,7 @@ work before cutover. No row may be silently omitted from the cutover commit.
 | ------------------------------------------------------------------- | -------------------- | ------------------------------------------------------------- |
 | team data (`listTeams`, `getTeamData`, saved request, draft rename) | legacy, independent  | `TeamDataService`; no run ownership                           |
 | member settings update/relaunch                                     | feature slice exists | `createTeamMemberSettingsFeature` + native run identity fence |
-| tool approval settings                                              | blocked              | see above                                                     |
+| tool approval settings                                              | native (in-memory)   | `NativeToolApprovalSettings`; persistence is a separate concern |
 
 ## Cutover sequence (phase 8)
 
