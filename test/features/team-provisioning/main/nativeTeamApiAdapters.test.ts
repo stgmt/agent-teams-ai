@@ -60,18 +60,25 @@ describe('native team API adapters', () => {
     expect(logs.read).toHaveBeenCalledWith('test-team', { limit: 1 });
   });
 
-  it('serves the runtime snapshot and fails closed on legacy lead diagnostics', async () => {
+  it('serves the runtime snapshot and reports lead activity from the log tail', async () => {
     const runtimeSnapshot = vi.fn(async () => ({
       teamName: 'test-team',
       updatedAt: 'now',
       runId: run.runId,
       members: {},
     }));
-    const api = new NativeTeamDiagnostics({ runtimeSnapshot });
+    const api = new NativeTeamDiagnostics({
+      statuses: { runtimeSnapshot },
+      runs: {
+        find: (teamName) => (teamName === 'test-team' ? snapshot : null),
+        isLive: () => true,
+      },
+      logs: { read: () => ({ lines: [], total: 0, hasMore: false }) },
+    });
     await expect(api.getTeamAgentRuntimeSnapshot('test-team')).resolves.toMatchObject({
       runId: run.runId,
     });
-    expect(() => api.getLeadActivityState('test-team')).toThrow('not migrated');
+    expect(api.getLeadActivityState('test-team')).toEqual({ state: 'offline', runId: null });
     expect(() => api.getLeadContextUsage('test-team')).toThrow('not migrated');
   });
 

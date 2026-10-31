@@ -51,7 +51,11 @@ export function createNativeTeamProvisioningApis(
       commands: lifecycle.memberCommands,
       statuses,
     }),
-    diagnostics: new NativeTeamDiagnostics(statuses),
+    diagnostics: new NativeTeamDiagnostics({
+      statuses,
+      runs: lifecycle.runs,
+      logs: deps.runtime.logs,
+    }),
     claudeLogs: new NativeTeamClaudeLogs(deps.runtime.logs),
     messaging: new NativeTeamMessagingApi({
       runs: lifecycle.runs,
