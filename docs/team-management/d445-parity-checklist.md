@@ -45,6 +45,7 @@ work before cutover. No row may be silently omitted from the cutover commit.
 | `sendMessageToTeam`                                   | native (system path)     | `NativeTeamMessagingApi`; attachments fail-closed; human path uses the ledger                                      |
 | `relayLeadInboxMessages`                              | native (transport proof) | `NativeLeadInboxRelay`: batched prompt to lead stdin, read commit after write; reply projection stays in reporting |
 | `relayOpenCodeMemberInboxMessages`                    | blocked                  | legacy OpenCode relay owns the delivery ledger                                                                     |
+| member inbox relay (internal)                         | native                   | `NativeMemberInboxRelay` batches unread rows into a lead forward prompt                                            |
 | `getOpenCodeRuntimeDeliveryStatus`                    | blocked                  | OpenCode delivery ledger                                                                                           |
 | `resolveRuntimeRecipientProviderId` / lead session id | native                   | `NativeTeamMessagingApi` (lane session only)                                                                       |
 | live lead messages / push                             | blocked                  | legacy run payloads                                                                                                |

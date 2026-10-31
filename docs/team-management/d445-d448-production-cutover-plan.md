@@ -311,6 +311,9 @@ delivery proof — transport write (как у member relay), reply projection о
 lead reporting/MCP messaging, live-activity push пока fail-closed. Cross-team maps
 инжектируются через `crossTeamState`, чтобы на cutover делить ledger с
 `CrossTeamService`; work-sync nudge коммитится только при accepted report.
+Member relay: `NativeMemberInboxRelay` батчит unread членской inbox и отправляет
+lead-mediated forward prompt в stdin лида (как legacy flow), коммитит read после
+успешной записи; polling для лида и членов запускается одним `startRelays`.
 Остальные пункты 6b ещё не портированы.
 
 - approvals/tool settings;

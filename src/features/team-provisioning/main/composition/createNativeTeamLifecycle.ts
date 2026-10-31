@@ -15,6 +15,7 @@ import {
 } from '../adapters/output/NativeClaudeToolApprovals';
 import { NativeConfiguredProvider } from '../adapters/output/NativeConfiguredProvider';
 import { NativeLeadInboxRelay } from '../adapters/output/NativeLeadInboxRelay';
+import { NativeMemberInboxRelay } from '../adapters/output/NativeMemberInboxRelay';
 import { NativeTeamLogStore } from '../adapters/output/NativeTeamLogStore';
 import { NativeTeamTaskLedgerReader } from '../adapters/output/NativeTeamTaskLedgerReader';
 import { NativeToolApprovalSettings } from '../adapters/output/NativeToolApprovalSettings';
@@ -81,6 +82,13 @@ export interface NativeTeamLifecycle {
     NativeLeadInboxRelay,
     'relay' | 'schedule' | 'cancel' | 'startPolling' | 'stopPolling' | 'reset' | 'dispose'
   >;
+  memberRelay: Pick<
+    NativeMemberInboxRelay,
+    'relay' | 'startPolling' | 'stopPolling' | 'reset' | 'dispose'
+  >;
+  /** Starts inbox polling for both relays; phase 8 calls this after a successful launch. */
+  startRelays(teamName: string, intervalMs: number): void;
+  stopRelays(teamName: string): void;
   leadStart: Pick<MemberLifecycle['leadStart'], 'execute'>;
   resolveLeadCredential(credential: string): Readonly<TeamRunIdentity>;
   snapshot: MemberLifecycle['snapshot'];
@@ -170,6 +178,7 @@ export function createNativeTeamLifecycle(
     invalidate: (teamName) => deps.invalidate(teamName),
   });
   let relay: NativeLeadInboxRelay | null = null;
+  let memberRelayRef: NativeMemberInboxRelay | null = null;
   const lifecycle = createMemberLifecycle({
     owner: deps.owner,
     settings,
@@ -186,6 +195,7 @@ export function createNativeTeamLifecycle(
       },
       release: async (run) => {
         relay?.reset(run.teamName);
+        memberRelayRef?.reset(run.teamName);
         await config.release(run);
         settings.release(run);
         logs.retainLast(run.teamName, run.runId);
@@ -255,6 +265,14 @@ export function createNativeTeamLifecycle(
     teamsRoot: deps.teamsRoot,
     controlUrl: () => deps.controlUrl(),
   });
+  const memberRelay = new NativeMemberInboxRelay({
+    runs,
+    snapshot: (teamName) => lifecycle.snapshot(teamName),
+    inbox: deps.inboxReader ?? new TeamInboxReader(),
+    send: (run, text) => deps.withExpectedContext(run, () => send.execute(run, text)),
+    teamsRoot: deps.teamsRoot,
+  });
+  memberRelayRef = memberRelay;
   relay = leadRelay;
   return {
     runs,
@@ -263,6 +281,15 @@ export function createNativeTeamLifecycle(
     toolApprovalSettings,
     taskChanges,
     relay: leadRelay,
+    memberRelay,
+    startRelays: (teamName, intervalMs) => {
+      leadRelay.startPolling(teamName, intervalMs);
+      memberRelay.startPolling(teamName, intervalMs);
+    },
+    stopRelays: (teamName) => {
+      leadRelay.stopPolling(teamName);
+      memberRelay.stopPolling(teamName);
+    },
     commands: createBoundLifecycleCommands({
       owner: deps.owner,
       source: {
@@ -311,6 +338,7 @@ export function createNativeTeamLifecycle(
     stopConfigured: (run) => lifecycle.teams.stop(run),
     shutdown: async () => {
       leadRelay.dispose();
+      memberRelay.dispose();
       await lifecycle.teams.shutdown();
     },
     launchConfigured: (run) =>
