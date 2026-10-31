@@ -60,6 +60,10 @@ export {
   type NativeTeamLifecycleDependencies,
 } from './composition/createNativeTeamLifecycle';
 export {
+  createNativeTeamProvisioningApis,
+  type NativeTeamProvisioningApisDependencies,
+} from './composition/createNativeTeamProvisioningApis';
+export {
   createNodeTeamMemberSettingsFeature,
   createTeamMemberSettingsFeature,
   type NodeTeamMemberSettingsFeatureDependencies,
