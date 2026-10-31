@@ -306,8 +306,11 @@ stdin); запись settings пока fail-closed. Task activity repair: `Nativ
 связывает legacy repair с native registry (`aliveRunId`/`findByRunId`/`isLive`):
 живой run пропускает repair, остановленный — чинится один раз. Lead relay:
 `NativeLeadInboxRelay` читает inbox лида, батчит actionable-строки, отправляет один
-prompt в stdin и коммитит read только после успешной записи при живом run; reply
-projection остаётся в lead reporting, live-activity push пока fail-closed.
+prompt в stdin и коммитит read только после успешной записи при живом ready-run;
+delivery proof — transport write (как у member relay), reply projection остаётся в
+lead reporting/MCP messaging, live-activity push пока fail-closed. Cross-team maps
+инжектируются через `crossTeamState`, чтобы на cutover делить ledger с
+`CrossTeamService`; work-sync nudge коммитится только при accepted report.
 Остальные пункты 6b ещё не портированы.
 
 - approvals/tool settings;

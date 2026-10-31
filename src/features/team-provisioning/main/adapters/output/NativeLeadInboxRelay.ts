@@ -17,6 +17,7 @@ import {
   selectActionableLeadRelayUnread,
   selectLeadInboxRelayBatch,
   shouldDeferSameTeamMessage,
+  trimRelayedMessageIdSet,
 } from '@main/services/team/provisioning/TeamProvisioningInboxRelayPolicy';
 import { CROSS_TEAM_SENT_SOURCE, CROSS_TEAM_SOURCE } from '@shared/constants/crossTeam';
 
@@ -30,8 +31,12 @@ import type { InboxMessage } from '@shared/types';
 const SAME_TEAM_RUN_START_SKEW_MS = 1_000;
 const SAME_TEAM_NATIVE_DELIVERY_GRACE_MS = 15_000;
 const RECENT_CROSS_TEAM_DELIVERY_TTL_MS = 10 * 60 * 1000;
-const RELAYED_ID_LIMIT = 300;
 const RELAY_FOLLOW_UP_DELAY_MS = 50;
+
+export interface NativeLeadInboxRelayCrossTeamState {
+  pendingReplies: Map<string, Map<string, number>>;
+  recentDeliveries: Map<string, Map<string, number>>;
+}
 
 export interface NativeLeadInboxRelayDependencies {
   runs: Pick<TeamRunRegistryRead, 'find' | 'isLive'>;
@@ -42,6 +47,10 @@ export interface NativeLeadInboxRelayDependencies {
   /** Marks the given inbox rows read; defaults to the shared inbox persistence helper. */
   markRead?(teamName: string, leadName: string, messageIds: readonly string[]): Promise<void>;
   controlUrl(): Promise<string | null>;
+  /** Shared cross-team ledger; phase 8 wires the same maps as the cross-team service. */
+  crossTeamState?: NativeLeadInboxRelayCrossTeamState;
+  /** True when the lead already has an accepted work-sync report for this agenda. */
+  hasAcceptedLeadWorkSyncReport?(input: { teamName: string; leadName: string }): Promise<boolean>;
   logger?: { debug(message: string): void };
   now?(): number;
   setTimer?(callback: () => void, ms: number): ReturnType<typeof setTimeout>;
@@ -55,18 +64,24 @@ export interface NativeLeadInboxRelayOptions {
 /**
  * Native lead inbox relay: reads the configured lead inbox, batches actionable
  * rows into one stdin prompt and commits them read only after the write
- * succeeded while the run is still live. Assistant reply projection stays in
- * the lead reporting path; this adapter never owns a second lead reply stream.
+ * succeeded while the run is still live. Delivery proof is the transport write
+ * (the same contract as the native member relay), not assistant text capture:
+ * lead replies are published through MCP messaging and lead reporting, so this
+ * adapter never owns a second reply stream. Permission-request rows are relayed
+ * as ordinary text; native lane/process approvals own the answer channels.
  */
 export class NativeLeadInboxRelay {
   private readonly relayed = new Map<string, Set<string>>();
-  private readonly pendingCrossTeamReplies = new Map<string, Map<string, number>>();
-  private readonly recentCrossTeamDeliveries = new Map<string, Map<string, number>>();
+  private readonly pendingCrossTeamReplies: Map<string, Map<string, number>>;
+  private readonly recentCrossTeamDeliveries: Map<string, Map<string, number>>;
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly polling = new Map<string, ReturnType<typeof setInterval>>();
   private readonly inFlight = new Map<string, Promise<number>>();
 
-  constructor(private readonly deps: NativeLeadInboxRelayDependencies) {}
+  constructor(private readonly deps: NativeLeadInboxRelayDependencies) {
+    this.pendingCrossTeamReplies = deps.crossTeamState?.pendingReplies ?? new Map();
+    this.recentCrossTeamDeliveries = deps.crossTeamState?.recentDeliveries ?? new Map();
+  }
 
   /** Serializes relays per team so one batch cannot overtake another. */
   relay(teamName: string, options: NativeLeadInboxRelayOptions = {}): Promise<number> {
@@ -125,6 +140,15 @@ export class NativeLeadInboxRelay {
     for (const teamName of [...this.polling.keys()]) this.stopPolling(teamName);
   }
 
+  /** Clears per-run relay state after a release; in-flight work still exits through isStale. */
+  reset(teamName: string): void {
+    this.cancel(teamName);
+    this.stopPolling(teamName);
+    this.relayed.delete(teamName);
+    this.pendingCrossTeamReplies.delete(teamName);
+    this.recentCrossTeamDeliveries.delete(teamName);
+  }
+
   private async run(teamName: string, options: NativeLeadInboxRelayOptions): Promise<number> {
     const run = this.deps.runs.find(teamName);
     if (!run || !this.deps.runs.isLive(run.identity)) return 0;
@@ -133,7 +157,7 @@ export class NativeLeadInboxRelay {
     const lead = Object.values(snapshot.members).find(
       (member) => member.role === 'lead' && member.membership === 'configured'
     );
-    if (!lead?.process || lead.desired !== 'running') return 0;
+    if (!lead?.process || lead.desired !== 'running' || lead.phase !== 'ready') return 0;
     const leadName = lead.memberName;
     const isStale = (): boolean => {
       const current = this.deps.runs.find(teamName);
@@ -238,14 +262,22 @@ export class NativeLeadInboxRelay {
       permissionRequestIds: new Set(),
     });
     const onlyMessageId = options.onlyMessageId?.trim();
+    const recoveryMessage = actionable.find(
+      (message) => String(message.messageKind) === 'runtime_recovery_nudge'
+    );
     const scoped = onlyMessageId
       ? actionable.filter((message) => message.messageId === onlyMessageId)
-      : actionable;
-    if (scoped.length === 0) return 0;
+      : recoveryMessage
+        ? [recoveryMessage]
+        : actionable;
+    if (scoped.length === 0) {
+      if (deferredIds.size > 0) this.schedule(teamName, SAME_TEAM_NATIVE_DELIVERY_GRACE_MS);
+      return 0;
+    }
 
     const { batch, replyVisibility, hasPendingFollowUpRelay } = selectLeadInboxRelayBatch({
       actionableUnread: scoped,
-      unread,
+      unread: onlyMessageId ? scoped : unread,
       readOnlyIgnoredIds,
       maxRelay: DEFAULT_INBOX_RELAY_BATCH_SIZE,
     });
@@ -276,7 +308,7 @@ export class NativeLeadInboxRelay {
     if (isStale()) return 0;
 
     for (const message of batch) relayedIds.add(message.messageId);
-    this.relayed.set(teamName, trimIds(relayedIds));
+    this.relayed.set(teamName, trimRelayedMessageIdSet(relayedIds));
     rememberRecentCrossTeamLeadDeliveryMessageIds(
       this.recentCrossTeamDeliveries,
       teamName,
@@ -286,7 +318,14 @@ export class NativeLeadInboxRelay {
       now,
       RECENT_CROSS_TEAM_DELIVERY_TTL_MS
     );
-    await this.commitRead(teamName, leadName, batch).catch(() => undefined);
+    const readCommit: typeof batch = [];
+    for (const message of batch) {
+      if (message.messageKind === 'member_work_sync_nudge') {
+        if (!(await this.hasAcceptedLeadWorkSyncReport(teamName, leadName))) continue;
+      }
+      readCommit.push(message);
+    }
+    await this.commitRead(teamName, leadName, readCommit).catch(() => undefined);
     if (deferredIds.size > 0) this.schedule(teamName, SAME_TEAM_NATIVE_DELIVERY_GRACE_MS);
     else if (hasPendingFollowUpRelay) this.schedule(teamName, RELAY_FOLLOW_UP_DELAY_MS);
     return batch.length;
@@ -315,17 +354,20 @@ export class NativeLeadInboxRelay {
     });
   }
 
+  private async hasAcceptedLeadWorkSyncReport(
+    teamName: string,
+    leadName: string
+  ): Promise<boolean> {
+    const check = this.deps.hasAcceptedLeadWorkSyncReport;
+    if (!check) return false;
+    try {
+      return await check({ teamName, leadName });
+    } catch {
+      return false;
+    }
+  }
+
   private log(message: string): void {
     this.deps.logger?.debug(message);
   }
-}
-
-function trimIds(ids: Set<string>): Set<string> {
-  const trimmed = new Set(ids);
-  while (trimmed.size > RELAYED_ID_LIMIT) {
-    const oldest = trimmed.values().next().value;
-    if (oldest === undefined) break;
-    trimmed.delete(oldest);
-  }
-  return trimmed;
 }

@@ -84,10 +84,17 @@ function setup(
     messages?: InboxMessage[];
     live?: boolean;
     lead?: boolean;
+    leadPhase?: 'ready' | 'connecting';
+    hasAcceptedLeadWorkSyncReport?: () => Promise<boolean>;
+    now?: () => number;
     current?: TeamLifecycleSnapshot;
   } = {}
 ) {
   const current = options.current ?? snapshot();
+  if (options.leadPhase) {
+    const lead = current.members['team-lead'];
+    if (lead) (lead as { phase: string }).phase = options.leadPhase;
+  }
   const send = vi.fn(async (_run: TeamRunIdentity, _text: string) => undefined);
   const markRead = vi.fn(
     async (_teamName: string, _leadName: string, _ids: readonly string[]) => undefined
@@ -104,7 +111,10 @@ function setup(
     teamsRoot: 'TEST-teams-root',
     markRead,
     controlUrl: async () => null,
-    now: () => Date.parse(startedAt) + 60_000,
+    ...(options.hasAcceptedLeadWorkSyncReport
+      ? { hasAcceptedLeadWorkSyncReport: options.hasAcceptedLeadWorkSyncReport }
+      : {}),
+    now: options.now ?? (() => Date.parse(startedAt) + 60_000),
   });
   return { relay, send, markRead, getMessagesFor };
 }
@@ -178,6 +188,54 @@ describe('native lead inbox relay', () => {
     await vi.advanceTimersByTimeAsync(3_000);
     expect(getMessagesFor).toHaveBeenCalledTimes(calls);
     relay.dispose();
+  });
+
+  it('does not relay until the lead process is ready', async () => {
+    const { relay, send } = setup({ leadPhase: 'connecting' });
+    await expect(relay.relay(run.teamName)).resolves.toBe(0);
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it('schedules a deferred same-team retry instead of stranding it', async () => {
+    vi.useFakeTimers();
+    let clock = Date.parse(startedAt) + 60_000;
+    const deferred = message({
+      messageId: 'TEST-deferred',
+      source: undefined,
+      timestamp: new Date(clock).toISOString(),
+    });
+    const { relay, send } = setup({ messages: [deferred], now: () => clock });
+    await expect(relay.relay(run.teamName)).resolves.toBe(0);
+    expect(send).not.toHaveBeenCalled();
+    clock += 15_000;
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(send).toHaveBeenCalledOnce();
+    relay.dispose();
+  });
+
+  it('keeps a work-sync nudge unread until the lead report is accepted', async () => {
+    const nudge = message({
+      messageId: 'TEST-nudge',
+      messageKind: 'member_work_sync_nudge',
+    });
+    const rejected = setup({ messages: [nudge] });
+    await expect(rejected.relay.relay(run.teamName)).resolves.toBe(1);
+    expect(rejected.markRead).not.toHaveBeenCalled();
+
+    const accepted = setup({
+      messages: [nudge],
+      hasAcceptedLeadWorkSyncReport: async () => true,
+    });
+    await expect(accepted.relay.relay(run.teamName)).resolves.toBe(1);
+    expect(accepted.markRead).toHaveBeenCalledWith(run.teamName, 'team-lead', ['TEST-nudge']);
+  });
+
+  it('clears per-run relay state on release', async () => {
+    const { relay, send } = setup();
+    await expect(relay.relay(run.teamName)).resolves.toBe(1);
+    relay.reset(run.teamName);
+    await expect(relay.relay(run.teamName)).resolves.toBe(1);
+    expect(send).toHaveBeenCalledTimes(2);
   });
 
   it('marks permanently ignored cross-team echo rows read without sending', async () => {

@@ -49,6 +49,7 @@ function setup(
     stopEmitsRelease?: boolean;
     lanePlan?: readonly { laneId: string; memberNames: readonly string[] }[];
     roster?: readonly { memberName: string; role: 'lead' | 'member' }[];
+    failLaneGroupOnce?: boolean;
   } = {}
 ) {
   const stops: string[] = [];
@@ -59,6 +60,7 @@ function setup(
     allow: boolean;
     message?: string;
   }[] = [];
+  const laneAttempts = new Map<string, number>();
   const groups: { laneId: string; memberNames: string[]; events: MemberLaneGroupEvents | null }[] =
     [];
   const runtime: MemberRuntimePort = {
@@ -94,6 +96,10 @@ function setup(
       };
     },
     async startLaneGroup(settings, tokens, laneId) {
+      const attempts = (laneAttempts.get(laneId) ?? 0) + 1;
+      laneAttempts.set(laneId, attempts);
+      if (options.failLaneGroupOnce && laneId === 'secondary:shared' && attempts === 1)
+        throw new Error('TEST lane launch failed');
       const record = {
         laneId,
         memberNames: tokens.map((token) => token.memberName),
@@ -347,13 +353,34 @@ describe('team lane-group launch', () => {
     expect(shared.lifecycle.snapshot(run.teamName).members.builder.phase).toBe('failed');
     const before = shared.lifecycle.snapshot(run.teamName).members.builder.generation;
     await expect(shared.lifecycle.commands.retryFailedLanes(run)).resolves.toMatchObject({
-      attempted: ['builder', 'tester'],
-      confirmed: ['builder', 'tester'],
+      attempted: ['builder'],
+      confirmed: ['builder'],
       failed: [],
     });
     const after = shared.lifecycle.snapshot(run.teamName).members.builder;
     expect(after.generation).toBe(before + 1);
     expect(after.phase).toBe('ready');
+  });
+
+  it('retries a lane whose launch failed before any group existed', async () => {
+    const sharedRoster = [
+      { memberName: 'team-lead', role: 'lead' as const },
+      { memberName: 'builder', role: 'member' as const },
+      { memberName: 'tester', role: 'member' as const },
+    ];
+    const shared = setup({
+      roster: sharedRoster,
+      lanePlan: [{ laneId: 'secondary:shared', memberNames: ['builder', 'tester'] }],
+      failLaneGroupOnce: true,
+    });
+    await shared.lifecycle.teams.launchConfigured(run, async () => sharedRoster);
+    expect(shared.lifecycle.snapshot(run.teamName).members.builder.phase).toBe('failed');
+    await expect(shared.lifecycle.commands.retryFailedLanes(run)).resolves.toMatchObject({
+      attempted: ['builder', 'tester'],
+      confirmed: ['builder', 'tester'],
+      failed: [],
+    });
+    expect(shared.lifecycle.snapshot(run.teamName).members.builder.phase).toBe('ready');
   });
 
   it('rejects a lane group that names an unconfigured or duplicated member', async () => {

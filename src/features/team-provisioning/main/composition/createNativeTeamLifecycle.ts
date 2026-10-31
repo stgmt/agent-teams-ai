@@ -79,7 +79,7 @@ export interface NativeTeamLifecycle {
   taskChanges: Pick<NativeTeamTaskLedgerReader, 'read'>;
   relay: Pick<
     NativeLeadInboxRelay,
-    'relay' | 'schedule' | 'cancel' | 'startPolling' | 'stopPolling' | 'dispose'
+    'relay' | 'schedule' | 'cancel' | 'startPolling' | 'stopPolling' | 'reset' | 'dispose'
   >;
   leadStart: Pick<MemberLifecycle['leadStart'], 'execute'>;
   resolveLeadCredential(credential: string): Readonly<TeamRunIdentity>;
@@ -185,8 +185,7 @@ export function createNativeTeamLifecycle(
         toolApprovalSettings.initializeForLaunch(run.teamName, lead?.launch.skipPermissions);
       },
       release: async (run) => {
-        relay?.cancel(run.teamName);
-        relay?.stopPolling(run.teamName);
+        relay?.reset(run.teamName);
         await config.release(run);
         settings.release(run);
         logs.retainLast(run.teamName, run.runId);
@@ -252,7 +251,7 @@ export function createNativeTeamLifecycle(
     runs,
     snapshot: (teamName) => lifecycle.snapshot(teamName),
     inbox: deps.inboxReader ?? new TeamInboxReader(),
-    send: (run, text) => send.execute(run, text),
+    send: (run, text) => deps.withExpectedContext(run, () => send.execute(run, text)),
     teamsRoot: deps.teamsRoot,
     controlUrl: () => deps.controlUrl(),
   });
