@@ -114,6 +114,27 @@ describe('native lead activity diagnostics', () => {
     ).toEqual({ state: 'idle', runId: run.runId });
   });
 
+  it('uses normalized assistant/result events for Gemini-style streams', () => {
+    expect(
+      setup({
+        lines: [JSON.stringify({ type: 'assistant', model: 'gemini' })],
+      }).api.getLeadActivityState(run.teamName)
+    ).toEqual({ state: 'active', runId: run.runId });
+    expect(
+      setup({
+        lines: [JSON.stringify({ type: 'result', model: 'gemini' })],
+      }).api.getLeadActivityState(run.teamName)
+    ).toEqual({ state: 'idle', runId: run.runId });
+  });
+
+  it('ignores plain-text diagnostics and returns idle when no stream event exists', () => {
+    expect(
+      setup({ lines: ['[stderr] plain diagnostic', 'not json', '   '] }).api.getLeadActivityState(
+        run.teamName
+      )
+    ).toEqual({ state: 'idle', runId: run.runId });
+  });
+
   it('reports offline for a stopped run, missing lead or failed lead', () => {
     expect(setup({ live: false }).api.getLeadActivityState(run.teamName)).toEqual({
       state: 'offline',
