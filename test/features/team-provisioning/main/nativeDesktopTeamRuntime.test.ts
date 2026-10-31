@@ -9,6 +9,7 @@ import { TeamLifecycleCommands } from '../../../../src/features/team-provisionin
 import { NativeLeadInboxRelay } from '../../../../src/features/team-provisioning/main/adapters/output/NativeLeadInboxRelay';
 import { NativeMemberInboxRelay } from '../../../../src/features/team-provisioning/main/adapters/output/NativeMemberInboxRelay';
 import { createNativeDesktopTeamRuntime } from '../../../../src/features/team-provisioning/main/composition/createNativeDesktopTeamRuntime';
+import { createNativeTeamProvisioningApis } from '../../../../src/features/team-provisioning/main/composition/createNativeTeamProvisioningApis';
 import { NativeTeamConfigStore } from '../../../../src/features/team-provisioning/main/infrastructure/NativeTeamConfigStore';
 
 import type { NativeDesktopTeamRuntimeDependencies } from '../../../../src/features/team-provisioning/main/composition/createNativeDesktopTeamRuntime';
@@ -101,6 +102,26 @@ describe('native desktop team runtime composition', () => {
   it('rejects an invalid relay polling interval before composing', () => {
     expect(() => setup(undefined, { relayIntervalMs: -1 })).toThrow('positive integer');
     expect(() => setup(undefined, { relayIntervalMs: 1.5 })).toThrow('positive integer');
+  });
+
+  it('assembles the IPC surface from the real native runtime composition', async () => {
+    const native = setup();
+    const apis = createNativeTeamProvisioningApis({
+      owner,
+      runtime: native,
+      preflight: {
+        getCliHelpOutput: async () => 'help',
+        prepareForProvisioning: async () => ({}) as never,
+      },
+      taskActivity: { repairStaleTaskActivityIntervalsBeforeSnapshot: async () => undefined },
+      now: () => '2026-10-31T00:00:00.000Z',
+    });
+    expect(Object.keys(apis)).toHaveLength(11);
+    await expect(apis.runtime.getRuntimeState('TEST-team')).resolves.toMatchObject({
+      teamName: 'TEST-team',
+      isAlive: false,
+    });
+    expect(apis.messaging.getCurrentLeadSessionId('TEST-team')).toBeNull();
   });
 
   it('assembles lifecycle and runtime reads without a production owner switch', async () => {
