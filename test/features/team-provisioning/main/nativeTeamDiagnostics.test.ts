@@ -154,8 +154,40 @@ describe('native lead activity diagnostics', () => {
     });
   });
 
-  it('keeps context usage fail-closed', () => {
+  it('derives context usage from the newest usage event', () => {
+    const line = JSON.stringify({
+      type: 'assistant',
+      message: {
+        model: 'claude-sonnet-4-20250514',
+        usage: {
+          input_tokens: 1_000,
+          output_tokens: 200,
+          cache_read_input_tokens: 0,
+          cache_creation_input_tokens: 0,
+        },
+      },
+    });
+    const { api } = setup({ lines: [line] });
+    const usage = api.getLeadContextUsage(run.teamName).usage;
+    expect(usage).toMatchObject({
+      promptInputTokens: 1_000,
+      outputTokens: 200,
+      contextUsedTokens: 1_200,
+      promptInputSource: 'anthropic_usage',
+    });
+    expect(usage?.contextWindowTokens).toBeGreaterThan(0);
+  });
+
+  it('returns null usage when the log tail has no usage event', () => {
     const { api } = setup();
-    expect(() => api.getLeadContextUsage(run.teamName)).toThrow('not migrated');
+    expect(api.getLeadContextUsage(run.teamName)).toEqual({
+      usage: null,
+      runId: run.runId,
+    });
+  });
+
+  it('returns null usage for an offline lead', () => {
+    const { api } = setup({ live: false });
+    expect(api.getLeadContextUsage(run.teamName)).toEqual({ usage: null, runId: null });
   });
 });

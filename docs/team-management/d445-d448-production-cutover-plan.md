@@ -298,7 +298,8 @@ Native logs: `NativeTeamLogStore` (bounded 2000 lines, newest-first через
 `<team>/native-logs.json` и перечитывается после рестарта. `NativeTeamClaudeLogs` отдаёт
 `getClaudeLogs`. Diagnostics: `NativeTeamDiagnostics` отдаёт runtime snapshot;
 lead activity вычисляется по последнему stream-json событию в хвосте логов
-(active/idle/offline), context usage пока fail-closed. Member lifecycle:
+(active/idle/offline), context usage парсится из последнего `usage`-события
+(unknown model → null-токены). Member lifecycle:
 `NativeTeamMemberLifecycleApi` (statuses/restart/skip); attach/detach fail-closed, OpenCode
 secondary retry native (`retryFailedLanes` → `restartLane` для групп с failed-членами,
 lead lane требует relaunch; retry отклоняется, пока native launch не завершён). Approvals: `NativeTeamToolApprovalApi` отвечает на

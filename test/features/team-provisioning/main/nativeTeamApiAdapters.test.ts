@@ -79,7 +79,7 @@ describe('native team API adapters', () => {
       runId: run.runId,
     });
     expect(api.getLeadActivityState('test-team')).toEqual({ state: 'offline', runId: null });
-    expect(() => api.getLeadContextUsage('test-team')).toThrow('not migrated');
+    expect(api.getLeadContextUsage('test-team')).toEqual({ usage: null, runId: null });
   });
 
   it('drives restart and skip from the exact observed member generation', async () => {
