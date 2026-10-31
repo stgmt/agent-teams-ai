@@ -40,14 +40,14 @@ work before cutover. No row may be silently omitted from the cutover commit.
 
 ## Messaging/relay/cross-team
 
-| API                                                                        | Status         | Evidence                                                                                      |
-| -------------------------------------------------------------------------- | -------------- | --------------------------------------------------------------------------------------------- |
-| `sendMessageToTeam`                                                        | split required | human path must use the persisted human request ledger; system path can use `sendLeadMessage` |
-| `relayLeadInboxMessages`                                                   | blocked        | needs inbox read + delivery ledger parity                                                     |
-| `relayOpenCodeMemberInboxMessages`                                         | blocked        | legacy OpenCode relay owns the delivery ledger                                                |
-| `getOpenCodeRuntimeDeliveryStatus`                                         | blocked        | OpenCode delivery ledger                                                                      |
-| `resolveRuntimeRecipientProviderId` / live lead messages / lead session id | blocked        | legacy run payloads                                                                           |
-| cross-team reply metadata / expectations                                   | blocked        | legacy conversation correlation                                                               |
+| API                                                   | Status               | Evidence                                                                      |
+| ----------------------------------------------------- | -------------------- | ----------------------------------------------------------------------------- | --- | ------------------------- | ------- | ------------------- |
+| `sendMessageToTeam`                                   | native (system path) | `NativeTeamMessagingApi`; attachments fail-closed; human path uses the ledger |
+| `relayLeadInboxMessages`                              | blocked              | needs inbox read + delivery ledger parity                                     |
+| `relayOpenCodeMemberInboxMessages`                    | blocked              | legacy OpenCode relay owns the delivery ledger                                |
+| `getOpenCodeRuntimeDeliveryStatus`                    | blocked              | OpenCode delivery ledger                                                      |
+| `resolveRuntimeRecipientProviderId` / lead session id | native               | `NativeTeamMessagingApi` (lane session only)                                  | `n  | live lead messages / push | blocked | legacy run payloads |
+| cross-team reply metadata / expectations              | blocked              | legacy conversation correlation                                               |
 
 ## Data/settings
 
