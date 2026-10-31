@@ -22,6 +22,7 @@ function setup() {
   const relay = vi.fn(async () => 2);
   const findByRunId = vi.fn(async () => progress);
   const lifecycle = {
+    owner,
     runs: {
       find: vi.fn((teamName: string) =>
         teamName === 'TEST-team' ? { identity: { teamName } } : null
@@ -53,7 +54,6 @@ function setup() {
     findByRunId,
   };
   const apis = createNativeTeamProvisioningApis({
-    owner,
     runtime: {
       lifecycle,
       runtime,

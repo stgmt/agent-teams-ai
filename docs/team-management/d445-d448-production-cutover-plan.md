@@ -360,7 +360,8 @@ lead-mediated forward prompt в stdin лида (как legacy flow), комми�
 1. `src/main/index.ts`: убрать `createDefaultTeamProvisioningService`, собрать native owner
    через `createNativeDesktopTeamRuntime` + `createNativeTeamProvisioningApis`
    (последний уже отдаёт полный `TeamIpcHandlerApis`; blocked-строки fail-closed).
-2. `src/main/http/index.ts`: team routes на native owner + reporting.
+2. `src/main/http/index.ts`: team routes на `createNativeTeamHttpApis`
+   (`runtimeControl` остаётся pure OpenCode bridge).
 3. `src/preload/index.ts`: новые bridge/каналы, старые удалить.
 4. `src/main/ipc/teams.ts`: human messaging persist-before-send, один writer.
 5. Renderer: snapshot store/views на новые DTO; убрать старые readiness-поля.

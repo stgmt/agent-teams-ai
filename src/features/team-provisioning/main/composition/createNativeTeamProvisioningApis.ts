@@ -8,7 +8,6 @@ import { NativeTeamDiagnostics } from '../adapters/output/NativeTeamDiagnostics'
 import { createBoundTeamLiveStatusQueries } from './createBoundTeamLiveStatusQueries';
 
 import type { NativeDesktopTeamRuntime } from './createNativeDesktopTeamRuntime';
-import type { AppConnectionContext } from '@features/external-agent-connection/contracts';
 import type {
   TeamIpcHandlerApis,
   TeamProvisioningPreflightApi,
@@ -16,7 +15,6 @@ import type {
 } from '@main/services/team/contracts/TeamProvisioningApis';
 
 export interface NativeTeamProvisioningApisDependencies {
-  owner: Readonly<AppConnectionContext>;
   runtime: NativeDesktopTeamRuntime;
   preflight: TeamProvisioningPreflightApi;
   taskActivity: TeamTaskActivityRepairApi;
@@ -33,8 +31,9 @@ export function createNativeTeamProvisioningApis(
   deps: NativeTeamProvisioningApisDependencies
 ): TeamIpcHandlerApis {
   const lifecycle = deps.runtime.lifecycle;
+  const owner = lifecycle.owner;
   const statuses = createBoundTeamLiveStatusQueries({
-    owner: deps.owner,
+    owner,
     queries: lifecycle.queries,
     now: deps.now,
   });
@@ -61,7 +60,7 @@ export function createNativeTeamProvisioningApis(
       getCurrentRunId: (teamName) => deps.runtime.runtime.getCurrentRunId(teamName),
     },
     memberLifecycle: new NativeTeamMemberLifecycleApi({
-      owner: deps.owner,
+      owner,
       runs: lifecycle.runs,
       commands: lifecycle.memberCommands,
       statuses,

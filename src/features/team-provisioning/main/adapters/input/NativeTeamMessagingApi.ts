@@ -55,11 +55,11 @@ export class NativeTeamMessagingApi implements TeamMessagingApi {
     return lead?.lane?.sessionId ?? null;
   }
 
-  getLiveLeadProcessMessages(_teamName?: string): InboxMessage[] {
+  getLiveLeadProcessMessages(_teamName: string): InboxMessage[] {
     return [];
   }
 
-  pushLiveLeadProcessMessage(_teamName?: string, _message?: InboxMessage): void {
+  pushLiveLeadProcessMessage(_teamName: string, _message: InboxMessage): void {
     throw new Error('Live lead process messages are not migrated');
   }
 

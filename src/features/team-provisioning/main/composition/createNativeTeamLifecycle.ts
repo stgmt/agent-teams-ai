@@ -34,10 +34,10 @@ import { createNativeMemberRuntimeRouting } from './createNativeMemberRuntimeRou
 import { type OpenCodeLaneAdapter, selectOpenCodeLaneAdapter } from './selectOpenCodeLaneAdapter';
 
 import type { MemberProcessToken, TeamRunIdentity, TeamRunRegistryRead } from '../../contracts';
+import type { MemberLifecycleCommands } from '../../core/application/commands/MemberLifecycleCommands';
 import type { LifecycleCommands } from '../../core/application/ports/LifecycleCommands';
 import type { LifecycleQueries } from '../../core/application/ports/LifecycleQueries';
 import type { ConfiguredMemberLaunch } from '../../core/application/ports/MemberRuntimePorts';
-import type { MemberLifecycleCommands } from '../../core/application/commands/MemberLifecycleCommands';
 import type { NativeConfiguredProviderPorts } from '../adapters/output/NativeConfiguredProvider';
 import type { MemberLifecycle } from './createMemberLifecycle';
 import type { AppConnectionContext } from '@features/external-agent-connection/contracts';
@@ -78,6 +78,7 @@ export interface OrphanedRunRecovery {
 }
 
 export interface NativeTeamLifecycle {
+  owner: Readonly<AppConnectionContext>;
   runs: TeamRunRegistryRead;
   commands: LifecycleCommands;
   queries: LifecycleQueries;
@@ -317,10 +318,13 @@ export function createNativeTeamLifecycle(
   const memberCommands: NativeTeamLifecycle['memberCommands'] = {
     restartMember: commands.restartMember,
     skipMember: commands.skipMember,
-    retryFailedLanes: (run) => lifecycle.commands.retryFailedLanes(run),
-    answerLanePermission: (input) => lifecycle.commands.answerLanePermission(input),
+    retryFailedLanes: (run) =>
+      deps.withExpectedContext(run, () => lifecycle.commands.retryFailedLanes(run)),
+    answerLanePermission: (input) =>
+      deps.withExpectedContext(input.run, () => lifecycle.commands.answerLanePermission(input)),
   };
   return {
+    owner: Object.freeze({ ...deps.owner }),
     runs,
     logs,
     approvals,

@@ -107,7 +107,6 @@ describe('native desktop team runtime composition', () => {
   it('assembles the IPC surface from the real native runtime composition', async () => {
     const native = setup();
     const apis = createNativeTeamProvisioningApis({
-      owner,
       runtime: native,
       preflight: {
         getCliHelpOutput: async () => 'help',

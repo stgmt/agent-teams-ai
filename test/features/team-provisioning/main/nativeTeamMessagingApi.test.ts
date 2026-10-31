@@ -76,7 +76,15 @@ describe('native team messaging', () => {
 
   it('keeps unmigrated live lead message APIs explicit', () => {
     const { api } = setup();
-    expect(api.getLiveLeadProcessMessages()).toEqual([]);
-    expect(() => api.pushLiveLeadProcessMessage()).toThrow('not migrated');
+    expect(api.getLiveLeadProcessMessages('test-team')).toEqual([]);
+    expect(() =>
+      api.pushLiveLeadProcessMessage('test-team', {
+        from: 'team-lead',
+        to: 'user',
+        text: 'TEST',
+        timestamp: '2026-10-31T00:00:00.000Z',
+        read: true,
+      })
+    ).toThrow('not migrated');
   });
 });

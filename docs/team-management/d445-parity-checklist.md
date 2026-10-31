@@ -67,7 +67,8 @@ work before cutover. No row may be silently omitted from the cutover commit.
    still owns runs recreates the split-brain D-445 forbids.
 2. Compose `createNativeDesktopTeamRuntime` in `src/main/index.ts` with the real
    settings/provider/workspace/inbox/control/briefing/registry deps and startup
-   recovery; assemble `TeamIpcHandlerApis` via `createNativeTeamProvisioningApis`.
+   recovery; assemble `TeamIpcHandlerApis` via `createNativeTeamProvisioningApis`
+   and `TeamHttpHandlerApis` via `createNativeTeamHttpApis`.
 3. Switch IPC/HTTP/preload/renderer to the native snapshot and human request
    ledger; remove `sendDirectToLead` from the human path.
 4. Delete the legacy process-owning launch/stop/recovery code and the legacy
