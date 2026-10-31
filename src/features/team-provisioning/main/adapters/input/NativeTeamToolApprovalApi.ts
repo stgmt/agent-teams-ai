@@ -13,8 +13,8 @@ interface Dependencies {
 }
 
 /**
- * Tool approvals for adapter lanes. Claude process approvals still depend on the
- * legacy control path and are not migrated; settings writes fail closed too.
+ * Tool approvals for adapter lanes and Claude processes. Settings are native but
+ * in-memory; persistence is a separate concern.
  */
 export class NativeTeamToolApprovalApi implements TeamToolApprovalApi {
   constructor(private readonly deps: Dependencies) {}
