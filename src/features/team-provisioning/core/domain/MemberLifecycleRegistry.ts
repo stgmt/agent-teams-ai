@@ -241,6 +241,30 @@ export class MemberLifecycleRegistry {
     return this.admitStart(team, member, operationId);
   }
 
+  /**
+   * Replaces the owned process of the exact live lead after a resume spawn.
+   * The generation advances so the previous attempt can never match again.
+   */
+  replaceLeadProcess(token: MemberProcessToken, process: OwnedProcessIdentity): MemberProcessToken {
+    if (!Number.isSafeInteger(process.pid) || process.pid < 1 || !process.birthId.trim())
+      throw new Error('Process birth identity is required');
+    const current = this.current(token);
+    if (!current) throw new MemberRestartConflictError('Lead runtime generation is stale');
+    const { team, member } = current;
+    if (member.role !== 'lead') throw new Error('Process replacement must target the lead');
+    if (member.phase !== 'ready' && member.phase !== 'unresponsive')
+      throw new Error('Lead runtime is not stable');
+    if (member.process === null || member.lane !== null)
+      throw new Error('Lead runtime has no owned process');
+    member.process = Object.freeze({ ...process });
+    member.generation++;
+    member.phase = 'connecting';
+    member.resources = 'held';
+    member.exit = null;
+    this.changed(team);
+    return tokenFor(team, member);
+  }
+
   assertRestartTarget(target: MemberGenerationTarget, allowLead = false): void {
     this.assertStartsOpen();
     const team = this.teams.get(target.teamName);

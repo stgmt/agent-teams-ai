@@ -27,6 +27,27 @@ function ready(registry: MemberLifecycleRegistry) {
 }
 
 describe('authoritative member lifecycle', () => {
+  it('replaces the live lead process under a new generation', () => {
+    const registry = setup();
+    const admission = registry.beginLeadRestart(run, 'team-lead', 'lead-start');
+    if (admission.kind !== 'launch') throw new Error('Expected lead launch admission');
+    const token = admission.token;
+    registry.observeSpawn(token, { pid: 10, birthId: 'birth-10' });
+    expect(registry.observeConnected(token)).toBe(true);
+    const next = registry.replaceLeadProcess(token, { pid: 11, birthId: 'birth-11' });
+    expect(next.generation).toBe(token.generation + 1);
+    expect(registry.snapshot(run.teamName).members['team-lead']).toMatchObject({
+      process: { pid: 11, birthId: 'birth-11' },
+      phase: 'connecting',
+      resources: 'held',
+    });
+    expect(() => registry.replaceLeadProcess(token, { pid: 12, birthId: 'birth-12' })).toThrow(
+      'stale'
+    );
+    expect(registry.observeConnected(next)).toBe(true);
+    expect(registry.snapshot(run.teamName).members['team-lead']?.phase).toBe('ready');
+  });
+
   it('reports alive teams and runs only from owned processes', () => {
     const registry = setup();
     expect(registry.aliveTeamNames()).toEqual([]);
