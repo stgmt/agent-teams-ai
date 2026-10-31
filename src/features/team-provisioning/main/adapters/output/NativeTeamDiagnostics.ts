@@ -14,8 +14,25 @@ interface Dependencies {
 }
 
 /** Top-level stream-json events that mean a lead turn is still running. */
-const ACTIVE_EVENT_TYPES = new Set(['assistant', 'user', 'tool_use', 'tool_result']);
-const IDLE_EVENT_TYPES = new Set(['result', 'system']);
+const ACTIVE_EVENT_TYPES = new Set([
+  'assistant',
+  'user',
+  'tool_use',
+  'tool_result',
+  'turn.started',
+  'item.started',
+  'item.updated',
+  'item.completed',
+]);
+const IDLE_EVENT_TYPES = new Set([
+  'result',
+  'system',
+  'turn.completed',
+  'turn.failed',
+  'thread.started',
+  'thread.completed',
+  'error',
+]);
 
 /**
  * Diagnostics that have a native source. Lead activity is derived from the last
@@ -35,7 +52,7 @@ export class NativeTeamDiagnostics {
     if (!lead || (!lead.process && !lead.lane) || lead.phase !== 'ready')
       return { state: 'offline', runId: null };
     return {
-      state: activityFromLogTail(this.deps.logs.read(teamName, { limit: 50 }).lines),
+      state: activityFromLogTail(this.deps.logs.read(teamName, { limit: 200 }).lines),
       runId: snapshot.identity.runId,
     };
   }

@@ -68,8 +68,12 @@ export function createNativeTeamHttpApis(
       getTeamAgentRuntimeSnapshotReadOnly: async (teamName, options) => {
         const runId = options?.memberSpawnStatuses?.runId;
         const cached = runId ? snapshots.get(snapshotKey(teamName, runId)) : undefined;
-        const snapshot = cached ?? (await readSnapshot(teamName));
+        if (cached) return toTeamAgentRuntimeSnapshot(cached, deps.now());
+        const snapshot = await readSnapshot(teamName);
         if (!snapshot) return { teamName, updatedAt: deps.now(), runId: null, members: {} };
+        // Stale statuses must not be paired with a newer run's members.
+        if (runId && snapshot.identity.runId !== runId)
+          return { teamName, updatedAt: deps.now(), runId, members: {} };
         return toTeamAgentRuntimeSnapshot(snapshot, deps.now());
       },
     },

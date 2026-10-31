@@ -101,6 +101,19 @@ describe('native lead activity diagnostics', () => {
     });
   });
 
+  it('understands Codex turn and item events', () => {
+    expect(
+      setup({ lines: [JSON.stringify({ type: 'item.completed' })] }).api.getLeadActivityState(
+        run.teamName
+      )
+    ).toEqual({ state: 'active', runId: run.runId });
+    expect(
+      setup({ lines: [JSON.stringify({ type: 'turn.completed' })] }).api.getLeadActivityState(
+        run.teamName
+      )
+    ).toEqual({ state: 'idle', runId: run.runId });
+  });
+
   it('reports offline for a stopped run, missing lead or failed lead', () => {
     expect(setup({ live: false }).api.getLeadActivityState(run.teamName)).toEqual({
       state: 'offline',

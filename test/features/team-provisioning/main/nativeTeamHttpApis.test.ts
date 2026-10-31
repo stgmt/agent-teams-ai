@@ -117,6 +117,20 @@ describe('native team HTTP API composition', () => {
     expect(apis.runtimeControl).toBe(runtimeControl);
   });
 
+  it('does not pair stale statuses with a newer run snapshot', async () => {
+    const { apis } = setup();
+    const runtime = await apis.memberDiagnostics.getTeamAgentRuntimeSnapshotReadOnly('TEST-team', {
+      memberSpawnStatuses: {
+        statuses: {},
+        runId: 'OLD-run',
+        expectedMembers: [],
+        updatedAt: '2026-10-31T00:00:00.000Z',
+        source: 'live',
+      },
+    });
+    expect(runtime).toMatchObject({ runId: 'OLD-run', members: {} });
+  });
+
   it('projects both diagnostics halves from the same run snapshot', async () => {
     const { apis, readSnapshot } = setup();
     const statuses = await apis.memberDiagnostics.getMemberSpawnStatusesReadOnly('TEST-team');
