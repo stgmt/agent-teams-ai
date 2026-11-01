@@ -5,6 +5,7 @@ import {
 import { buildLeadMessageStdinPayload } from '@main/services/team/provisioning/TeamProvisioningLeadAttachments';
 import { TaskChangeLedgerReader } from '@main/services/team/TaskChangeLedgerReader';
 import { TeamInboxReader } from '@main/services/team/TeamInboxReader';
+import { createLogger } from '@shared/utils/logger';
 
 import { SendLeadMessage } from '../../core/application/commands/SendLeadMessage';
 import { LeadMemberStartAuthority } from '../../core/application/LeadMemberStartAuthority';
@@ -22,6 +23,7 @@ import { NativeLeadOutputStream } from '../adapters/output/NativeLeadOutputStrea
 import { NativeLeadRestartAssessment } from '../adapters/output/NativeLeadRestartAssessment';
 import { NativeMemberInboxRelay } from '../adapters/output/NativeMemberInboxRelay';
 import { createObservedMemberPlanner } from '../adapters/output/NativeObservedMemberPlanner';
+import { NativeOpenCodePromptDeliverySupervisor } from '../adapters/output/NativeOpenCodePromptDeliverySupervisor';
 import { NativeTeamLogStore } from '../adapters/output/NativeTeamLogStore';
 import { NativeTeamTaskLedgerReader } from '../adapters/output/NativeTeamTaskLedgerReader';
 import { NativeToolApprovalSettings } from '../adapters/output/NativeToolApprovalSettings';
@@ -115,6 +117,15 @@ export interface NativeTeamLifecycle {
   leadOutput: Pick<NativeLeadOutputStream, 'facts' | 'detectedSessionId' | 'clearRun'>;
   /** Lead-only restart admission over native run, turn, approval, and session facts. */
   leadRestart: Pick<NativeLeadRestartAssessment, 'assess'>;
+  /**
+   * Driver for the retained OpenCode prompt ledger's retry ladder. Present
+   * whenever the ledger is, so a relayed prompt that was never proven delivered
+   * arms its own verification and a released team drops every armed wake.
+   */
+  promptDelivery: Pick<
+    NativeOpenCodePromptDeliverySupervisor,
+    'scheduleDeliveryVerification' | 'cancelTeam' | 'isEnabled'
+  > | null;
   /** Cross-team reply expectations shared by the lead relay and cross-team sends. */
   crossTeamReplies: NativeCrossTeamReplyLedger;
   inbox: { getMessagesFor(teamName: string, member: string): Promise<InboxMessage[]> };
@@ -221,6 +232,7 @@ export function createNativeTeamLifecycle(
   let relay: NativeLeadInboxRelay | null = null;
   const crossTeamReplies = new NativeCrossTeamReplyLedger();
   let memberRelayRef: NativeMemberInboxRelay | null = null;
+  let promptDelivery: NativeOpenCodePromptDeliverySupervisor | null = null;
   const lifecycle = createMemberLifecycle({
     owner: deps.owner,
     settings,
@@ -237,6 +249,9 @@ export function createNativeTeamLifecycle(
         toolApprovalSettings.initializeForLaunch(run.teamName, lead?.launch.skipPermissions);
       },
       release: async (run) => {
+        // Wakes belong to the run that armed them: a released team drops its
+        // timers before anything else is torn down.
+        promptDelivery?.cancelTeam(run.teamName);
         relay?.reset(run.teamName);
         memberRelayRef?.reset(run.teamName);
         liveLeadMessages.clear(run);
@@ -323,6 +338,20 @@ export function createNativeTeamLifecycle(
     approvals,
   });
   const inboxReader = deps.inboxReader ?? new TeamInboxReader();
+  if (deps.openCodeLeadDelivery) {
+    const deliveryLog = createLogger('team-provisioning:open-code-delivery');
+    promptDelivery = new NativeOpenCodePromptDeliverySupervisor({
+      runs,
+      delivery: deps.openCodeLeadDelivery,
+      readInboxMessages: ({ teamName, memberName }) =>
+        inboxReader.getMessagesFor(teamName, memberName),
+      info: (message) => deliveryLog.info(message),
+      warn: (message) => deliveryLog.warn(message),
+      debug: (message) => deliveryLog.debug(message),
+      diagnostic: (message) => deliveryLog.diagnostic(message),
+      getErrorMessage: (error) => (error instanceof Error ? error.message : String(error)),
+    });
+  }
   const leadRelay = new NativeLeadInboxRelay({
     runs,
     snapshot: (teamName) => lifecycle.snapshot(teamName),
@@ -380,6 +409,7 @@ export function createNativeTeamLifecycle(
     liveLeadMessages,
     leadOutput,
     leadRestart,
+    promptDelivery,
     crossTeamReplies,
     inbox: inboxReader,
     approvals,

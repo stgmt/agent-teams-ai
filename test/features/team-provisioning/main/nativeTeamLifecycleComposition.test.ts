@@ -31,8 +31,17 @@ describe('native lifecycle composition admission', () => {
     const prepareTrust = vi.fn<
       (provider: string, cwd: string, signal: AbortSignal) => Promise<string[]>
     >(() => Promise.resolve([]));
+    const relayOpenCodeMemberInboxMessages = vi.fn(async () => ({
+      relayed: 0,
+      attempted: 0,
+      delivered: 0,
+      failed: 0,
+    }));
     const lifecycle = createNativeTeamLifecycle({
       owner: context.snapshot(),
+      openCodeLeadDelivery: {
+        relayOpenCodeMemberInboxMessages,
+      } as never,
       runtimeRoot: join(root, 'attempts'),
       workspaceRoot: join(root, 'workspaces'),
       teamsRoot,
@@ -120,6 +129,24 @@ describe('native lifecycle composition admission', () => {
     );
     expect(lifecycle.liveLeadMessages.read(run, null)).toHaveLength(1);
     expect(preparations).toBe(2);
+    // The lifecycle owns the ledger driver, so a wake armed here reaches the
+    // production ledger port through it. Cancellation on release is covered
+    // where it is decidable: `NativeOpenCodePromptDeliverySupervisor` drops a
+    // team's armed wakes (this gate would mask a missing cancel later, because a
+    // stopped run is not live).
+    expect(lifecycle.promptDelivery).not.toBeNull();
+    lifecycle.promptDelivery?.scheduleDeliveryVerification({
+      teamName,
+      memberName: 'builder',
+      messageId: 'TEST-armed-wake',
+      delayMs: 600,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 900));
+    expect(relayOpenCodeMemberInboxMessages).toHaveBeenCalledTimes(1);
+    expect(relayOpenCodeMemberInboxMessages.mock.calls[0]?.slice(0, 2)).toEqual([
+      teamName,
+      'builder',
+    ]);
     await lifecycle.commands.stop({ ...request, runId: run.runId });
     expect(lifecycle.liveLeadMessages.read(run, null)).toEqual([]);
     expect(JSON.parse(await readFile(configPath, 'utf8')).appManagedRun).toBeUndefined();
@@ -155,8 +182,17 @@ describe('native lifecycle composition admission', () => {
     const run = { ...context.snapshot(), teamName, runId: 'TEST-run' };
     let stop: Promise<void> | undefined;
     let reads = 0;
+    const relayOpenCodeMemberInboxMessages = vi.fn(async () => ({
+      relayed: 0,
+      attempted: 0,
+      delivered: 0,
+      failed: 0,
+    }));
     const lifecycle = createNativeTeamLifecycle({
       owner: context.snapshot(),
+      openCodeLeadDelivery: {
+        relayOpenCodeMemberInboxMessages,
+      } as never,
       runtimeRoot: join(root, 'attempts'),
       workspaceRoot: join(root, 'workspaces'),
       teamsRoot,
@@ -232,8 +268,17 @@ describe('native lifecycle composition admission', () => {
     const writeConfigFile = vi.fn(() =>
       Promise.reject(new Error('Cancelled launch must not prepare MCP'))
     );
+    const relayOpenCodeMemberInboxMessages = vi.fn(async () => ({
+      relayed: 0,
+      attempted: 0,
+      delivered: 0,
+      failed: 0,
+    }));
     const lifecycle = createNativeTeamLifecycle({
       owner: context.snapshot(),
+      openCodeLeadDelivery: {
+        relayOpenCodeMemberInboxMessages,
+      } as never,
       runtimeRoot: join(root, 'attempts'),
       workspaceRoot: join(root, 'workspaces'),
       teamsRoot,
