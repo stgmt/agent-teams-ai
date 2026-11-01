@@ -275,21 +275,24 @@ export class NativeOpenCodeLaneRuntime implements MemberRuntimePort {
     signal: AbortSignal
   ): Promise<OwnedMemberLaneGroup> {
     signal.throwIfAborted();
-    const lead = settings.find((entry) => entry.role === 'lead') ?? settings[0];
-    const token = tokens[0];
-    if (!lead || !token) throw new Error('OpenCode lane launch requires a configured roster');
+    const [firstSetting] = settings;
+    const [token] = tokens;
+    if (!firstSetting || !token) throw new Error('OpenCode lane launch requires a configured roster');
+    // A primary lane is launched by its lead; a secondary lane holds one member and
+    // has no lead at all, so that member is its launch subject.
+    const subject = settings.find((entry) => entry.role === 'lead') ?? firstSetting;
     if (settings.some((entry) => entry.providerId !== 'opencode'))
       throw new Error('OpenCode lane launch accepts only OpenCode members');
     const input: TeamRuntimeLaunchInput = {
       runId: token.runId,
       teamName: token.teamName,
       laneId,
-      cwd: lead.workingDirectory,
-      ...(lead.instructions.trim() ? { prompt: lead.instructions } : {}),
+      cwd: subject.workingDirectory,
+      ...(subject.instructions.trim() ? { prompt: subject.instructions } : {}),
       providerId: 'opencode',
-      ...(lead.model ? { model: lead.model } : {}),
-      ...(lead.effort ? { effort: lead.effort as EffortLevel } : {}),
-      skipPermissions: lead.skipPermissions !== false,
+      ...(subject.model ? { model: subject.model } : {}),
+      ...(subject.effort ? { effort: subject.effort as EffortLevel } : {}),
+      skipPermissions: subject.skipPermissions !== false,
       expectedMembers: settings.map(memberSpec),
       previousLaunchState: this.deps.previousLaunchState ?? null,
     };
