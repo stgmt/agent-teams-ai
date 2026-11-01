@@ -45,6 +45,8 @@ export interface NativeTeamProvisioningRootDependencies {
 }
 
 export interface NativeTeamProvisioningRoot {
+  /** The IPC handler surface over the same owner; the root must not bind a second one. */
+  apis: ReturnType<typeof createNativeTeamProvisioningApis>;
   createTeam: NativeRuntimeSurface['provisioningStart']['createTeam'];
   launchTeam: NativeRuntimeSurface['provisioningStart']['launchTeam'];
   cancelProvisioning: NativeRuntimeSurface['provisioningRun']['cancelProvisioning'];
@@ -125,6 +127,7 @@ export function createNativeTeamProvisioningRoot(
   });
 
   return {
+    apis,
     createTeam: surface.provisioningStart.createTeam,
     launchTeam: surface.provisioningStart.launchTeam,
     cancelProvisioning: surface.provisioningRun.cancelProvisioning,
