@@ -68,6 +68,7 @@ function launchState(): PersistedTeamLaunchSnapshot {
 
 function build(options: {
   canDeliver: boolean;
+  canAttemptCommittedSession?: boolean;
   recovered: boolean;
   committedEvidence?: OpenCodeCommittedBootstrapSessionEvidence;
 }) {
@@ -85,7 +86,8 @@ function build(options: {
       warn: (message) => events.push(`warn:${message}`),
     },
     canDeliverToOpenCodeRuntimeForTeam: () => options.canDeliver,
-    canAttemptCommittedOpenCodeSessionRecovery: () => options.canDeliver,
+    canAttemptCommittedOpenCodeSessionRecovery: () =>
+      options.canAttemptCommittedSession ?? options.canDeliver,
     cleanupStoppedTeamOpenCodeRuntimeLanesInBackground: (team) => cleanups.push(team),
     tryRecoverMissingOpenCodeSecondaryLaneFromRuntime: async () =>
       options.recovered
@@ -202,5 +204,49 @@ describe('native OpenCode lane recovery', () => {
     ).resolves.toBe(false);
     const laneIndex = await readOpenCodeRuntimeLaneIndex(teamsBasePath, teamName);
     expect(laneIndex?.lanes[laneId]?.state).toBe('degraded');
+  });
+
+  it('brings every recorded lane back at startup and names them', async () => {
+    const { recovery } = build({ canDeliver: true, recovered: true });
+
+    await expect(recovery.recoverLanesForWatchdog(teamName, {})).resolves.toEqual([laneId]);
+  });
+
+  it('cleans a stopped team instead of starting its lanes', async () => {
+    const { recovery, cleanups } = build({ canDeliver: false, recovered: true });
+
+    await expect(recovery.recoverLanesForWatchdog(teamName, {})).resolves.toEqual([]);
+    expect(cleanups).toEqual([teamName]);
+  });
+
+  it('revives a committed session for a stopped team only when asked to', async () => {
+    const committedEvidence = {
+      state: 'healthy',
+      committed: true,
+      activeRunId: 'run-committed',
+      sessions: [{ memberName: 'builder', runId: 'run-committed' }],
+      diagnostics: [],
+    } as never;
+    const refused = build({
+      canDeliver: false,
+      canAttemptCommittedSession: true,
+      recovered: true,
+      committedEvidence,
+    });
+    await expect(refused.recovery.recoverLanesForWatchdog(teamName, {})).resolves.toEqual([]);
+    expect(refused.cleanups).toEqual([teamName]);
+
+    const { recovery, cleanups } = build({
+      canDeliver: false,
+      canAttemptCommittedSession: true,
+      recovered: true,
+      committedEvidence,
+    });
+    await expect(
+      recovery.recoverLanesForWatchdog(teamName, {
+        allowCommittedSessionRecoveryWithoutTeamRuntime: true,
+      })
+    ).resolves.toEqual(expect.any(Array));
+    expect(cleanups).toEqual([]);
   });
 });

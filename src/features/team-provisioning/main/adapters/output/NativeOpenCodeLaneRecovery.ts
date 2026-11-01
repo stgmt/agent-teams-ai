@@ -2,6 +2,7 @@ import {
   type OpenCodeRuntimeLaneRecoveryPorts,
   tryRecoverOpenCodeRuntimeLaneBeforeDelivery,
   tryRecoverOpenCodeRuntimeLaneFromCommittedSessionBeforeDelivery,
+  tryRecoverOpenCodeRuntimeLanesForDeliveryWatchdog,
 } from '@main/services/team/provisioning/TeamProvisioningOpenCodeRuntimeRecoveryFlow';
 import {
   type PersistedTeamConfigCacheEntry,
@@ -72,6 +73,15 @@ export interface NativeOpenCodeLaneRecovery {
     projectPath: string | null;
     previousLaunchState?: PersistedTeamLaunchSnapshot | null;
   }): Promise<boolean>;
+  /**
+   * Startup recovery for every lane the team records: brings back the ones that
+   * can still run and cleans away the ones whose team is stopped. Returns the
+   * lane ids it recovered.
+   */
+  recoverLanesForWatchdog(
+    teamName: string,
+    options: { allowCommittedSessionRecoveryWithoutTeamRuntime?: boolean }
+  ): Promise<string[]>;
 }
 
 export function createNativeOpenCodeLaneRecovery(
@@ -117,5 +127,10 @@ export function createNativeOpenCodeLaneRecovery(
       tryRecoverOpenCodeRuntimeLaneBeforeDelivery(input, ports),
     tryRecoverOpenCodeRuntimeLaneFromCommittedSessionBeforeDelivery: (input) =>
       tryRecoverOpenCodeRuntimeLaneFromCommittedSessionBeforeDelivery(input, ports),
+    // The watchdog asks the same question at startup, for every lane at once:
+    // which recorded lanes can be brought back, and which belong to a team that
+    // is gone and should be cleaned away instead.
+    recoverLanesForWatchdog: (teamName, options) =>
+      tryRecoverOpenCodeRuntimeLanesForDeliveryWatchdog(teamName, options, ports),
   };
 }
