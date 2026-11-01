@@ -106,8 +106,22 @@ describe('native lifecycle composition admission', () => {
       )
       .toBe(true);
     expect(await lifecycle.commands.launch(request)).toEqual(receipt);
+    lifecycle.liveLeadMessages.push(
+      run,
+      {
+        messageId: 'TEST-live-lead-message',
+        from: 'team-lead',
+        to: 'user',
+        text: 'TEST live overlay',
+        timestamp: '2026-10-31T00:00:00.000Z',
+        read: true,
+      },
+      'TEST-session'
+    );
+    expect(lifecycle.liveLeadMessages.read(run, null)).toHaveLength(1);
     expect(preparations).toBe(2);
     await lifecycle.commands.stop({ ...request, runId: run.runId });
+    expect(lifecycle.liveLeadMessages.read(run, null)).toEqual([]);
     expect(JSON.parse(await readFile(configPath, 'utf8')).appManagedRun).toBeUndefined();
     expect(JSON.parse(await readFile(configPath, 'utf8')).members).toHaveLength(2);
     const next = await lifecycle.commands.launch(request);

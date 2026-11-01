@@ -44,15 +44,45 @@ work before cutover. No row may be silently omitted from the cutover commit.
 
 | API                                                   | Status                    | Evidence                                                                                                                 |
 | ----------------------------------------------------- | ------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `sendMessageToTeam`                                   | native (process lead)     | `NativeTeamMessagingApi`; process lead only; lane-lead delivery blocked; attachments fail-closed                         |
+| `sendMessageToTeam`                                   | native                    | `NativeTeamMessagingApi`; process lead via stdin, lane lead via `LeadLaneInboxDelivery` + OpenCode ledger proof; attachments fail-closed |
 | `relayLeadInboxMessages`                              | native (transport proof)  | `NativeLeadInboxRelay`: process lead, batched prompt to stdin, read commit after write                                   |
-| lane/OpenCode lead delivery                           | native (lead inbox, text) | system text becomes a lead inbox row delivered by the member relay; attachments and direct prompt delivery stay blocked  |
+| lane/OpenCode lead delivery                           | native (ledger proof)     | `LeadLaneInboxDelivery` writes the lead inbox row, then prompts the lead session through the OpenCode ledger (`source:'ui-send'`, `onlyMessageId`) and fails loudly without delivery proof; the member relay cannot wake a lead |
 | `relayOpenCodeMemberInboxMessages`                    | native (delegated ledger) | `NativeTeamMessagingApi` injects the retained OpenCode delivery ledger as a non-owning port; unconfigured => fail closed |
 | member inbox relay (internal)                         | native                    | `NativeMemberInboxRelay` batches unread rows into a lead forward prompt; `startRelays` polls both relays                 |
 | `getOpenCodeRuntimeDeliveryStatus`                    | native (delegated ledger) | read through the same injected delivery ledger port; fail closed when unconfigured                                       |
 | `resolveRuntimeRecipientProviderId` / lead session id | native                    | `NativeTeamMessagingApi` (lane session only)                                                                             |
-| live lead messages / push                             | blocked                   | legacy run payloads                                                                                                      |
-| cross-team reply metadata / expectations              | blocked                   | legacy conversation correlation                                                                                          |
+| live lead messages / push                             | partial; production capture remains legacy | `NativeLeadLiveMessageStore` is lifecycle-owned and cleared on run release; native stream capture/production composition is not wired yet |
+| cross-team reply metadata / expectations              | native (binding is phase 8) | `NativeCrossTeamReplyLedger` owns the expectations and delivery proofs shared with `NativeLeadInboxRelay`; `NativeCrossTeamMessagingApi` (+`createNativeTeamCrossTeamApi`) resolves metadata, relays, and proves runtime delivery |
+
+Cross-team limitations kept explicit:
+
+- Recipient identity is resolved from the native registry only; there is no
+  second metadata store to reconcile against, and a removed member is
+  tombstoned so a detached inbox cannot be relayed.
+- Provider identity is read from launch settings before routing, so an
+  unreadable provider fails closed instead of relaying an OpenCode member
+  through the Claude lead path.
+- Lead-recovery probes (`hasSuccessfulLeadRecoveryMessage`,
+  `isLeadRecoveryMessage`) answer `false`: recovery nudges are still created by
+  the legacy recovery path, so the native route omits `lastDelivery` rather than
+  claiming recovery proof it cannot produce.
+
+Known human-path gaps in the native messaging surface (phase 8/9 work, not
+cross-team):
+
+- `NativeTeamMessagingApi.sendMessageToTeam` accepts `userRequestMessageId` and
+  drops it. Legacy registered the id so the lead's reply is linked to the user's
+  message; native cannot yet, because reply linking needs native lead-output
+  capture, which is still legacy (same gap as the live lead message row).
+- `sendMessageToTeam` is also the human lead-message channel
+  (`src/main/ipc/teams.ts` prefixes `Message from user:`). For an OpenCode lead
+  it reaches `LeadLaneInboxDelivery`, so the lead sees that prefix plus a
+  `source:'user_sent'` row. The phase 8 wiring should route human lead messages
+  through the lane path analogous to the member path instead.
+- A system notice relayed to a lane lead is written with `from:'user'`. App-owned
+  notices elsewhere use `from:'system'` + `source:'system_notification'`
+  (`TeamTaskStallNotifier`); `sendMessageToTeam` carries no origin, so the two
+  shapes cannot be told apart yet.
 
 ## Data/settings
 

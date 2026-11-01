@@ -148,6 +148,19 @@ used.
   workspace/inbox/control/briefing/registry/definitions/progress history). It is
   composed and tested but not wired into `src/main/index.ts`; the transport
   cutover is phase 8.
+- 6a.10 (landed): lane lead delivery now has a real channel. `LeadLaneInboxDelivery`
+  writes the lead inbox row and prompts the lead's session through the OpenCode
+  delivery ledger (`source:'ui-send'`, `onlyMessageId`); it fails loudly when the
+  ledger is absent or reports no delivery proof. The previous member-relay call
+  could never wake a lead (`NativeMemberInboxRelay` requires `role:'member'` and a
+  process lead) and reported success for a message nobody read.
+- 6a.11 (landed): cross-team correlation. `NativeCrossTeamReplyLedger` owns the
+  reply expectations and recent lead-delivery proofs, shared with
+  `NativeLeadInboxRelay` through `crossTeamState` and cleared on run release;
+  `NativeCrossTeamMessagingApi` resolves reply metadata, registers/clears
+  expectations, and proves runtime delivery with the same native relay, durable
+  inbox and OpenCode ledger evidence as the legacy route. Lead-recovery probes
+  stay fail-closed because recovery nudges are still created by the legacy path.
 - Remaining before A is complete: switch the production root to this factory,
   shared-lane restart, and recovery after app restart. The legacy OpenCode route
   is not deleted until these land.

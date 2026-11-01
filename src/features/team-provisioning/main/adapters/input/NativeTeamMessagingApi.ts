@@ -1,6 +1,7 @@
 import type { TeamRunRegistryRead } from '../../../contracts';
 import type { MemberLaunchSettingsPort } from '../../../core/application/ports/MemberRuntimePorts';
 import type { NativeTeamLifecycle } from '../../composition/createNativeTeamLifecycle';
+import type { NativeLeadLiveMessageStore } from '../output/NativeLeadLiveMessageStore';
 import type {
   TeamMessageAttachmentPayload,
   TeamMessageSendOptions,
@@ -21,16 +22,17 @@ export type NativeOpenCodeMemberDeliveryPort = Pick<
 >;
 
 interface Dependencies {
-  runs: Pick<TeamRunRegistryRead, 'find'>;
+  runs: Pick<TeamRunRegistryRead, 'find' | 'isLive'>;
   settings: Pick<MemberLaunchSettingsPort, 'findConfiguredMember'>;
+  liveLeadMessages: Pick<NativeLeadLiveMessageStore, 'read' | 'push'>;
   sendLeadMessage: NativeTeamLifecycle['sendLeadMessage'];
   relayLeadInboxMessages(teamName: string): Promise<number>;
   openCodeMemberDelivery?: NativeOpenCodeMemberDeliveryPort;
 }
 
 /**
- * System-path messaging over the native lifecycle. Human messages must use the
- * persisted human request ledger instead; live lead message caches stay empty.
+ * System-path messaging over the native lifecycle. Human messages use the
+ * persisted human request ledger; live messages use lifecycle-owned run state.
  */
 export class NativeTeamMessagingApi implements TeamMessagingApi {
   constructor(private readonly deps: Dependencies) {}
@@ -66,12 +68,35 @@ export class NativeTeamMessagingApi implements TeamMessagingApi {
     return lead?.lane?.sessionId ?? null;
   }
 
-  getLiveLeadProcessMessages(_teamName: string): InboxMessage[] {
-    return [];
+  getLiveLeadProcessMessages(teamName: string): InboxMessage[] {
+    const snapshot = this.liveSnapshot(teamName);
+    if (!snapshot) return [];
+    return this.deps.liveLeadMessages.read(snapshot.identity, this.getCurrentLeadSessionId(teamName));
   }
 
-  pushLiveLeadProcessMessage(_teamName: string, _message: InboxMessage): void {
-    throw new Error('Live lead process messages are not migrated');
+  pushLiveLeadProcessMessage(teamName: string, message: InboxMessage): void {
+    const snapshot = this.liveSnapshot(teamName);
+    // The legacy cache accepted rows for a dead team and silently kept them.
+    // This store is run-scoped, so a row without a live run has nowhere to go;
+    // dropping it is the only honest option, and the caller must never fail:
+    // it runs after the message was already delivered and persisted.
+    if (!snapshot) return;
+    this.deps.liveLeadMessages.push(
+      snapshot.identity,
+      message,
+      this.getCurrentLeadSessionId(teamName)
+    );
+  }
+
+  private liveSnapshot(teamName: string) {
+    const snapshot = this.deps.runs.find(teamName);
+    return snapshot && this.deps.runs.isLive(snapshot.identity) ? snapshot : null;
+  }
+
+  private requireRun(teamName: string) {
+    const snapshot = this.deps.runs.find(teamName);
+    if (!snapshot) throw new Error(`Unknown team: ${teamName}`);
+    return snapshot;
   }
 
   async relayOpenCodeMemberInboxMessages(
@@ -99,9 +124,4 @@ export class NativeTeamMessagingApi implements TeamMessagingApi {
     return this.deps.relayLeadInboxMessages(teamName);
   }
 
-  private requireRun(teamName: string) {
-    const snapshot = this.deps.runs.find(teamName);
-    if (!snapshot) throw new Error(`Unknown team: ${teamName}`);
-    return snapshot;
-  }
 }

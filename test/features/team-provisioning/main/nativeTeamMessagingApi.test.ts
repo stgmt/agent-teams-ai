@@ -2,6 +2,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { NativeTeamMessagingApi } from '../../../../src/features/team-provisioning/main/adapters/input/NativeTeamMessagingApi';
+import { NativeLeadLiveMessageStore } from '../../../../src/features/team-provisioning/main/adapters/output/NativeLeadLiveMessageStore';
 
 import type { TeamLifecycleSnapshot } from '../../../../src/features/team-provisioning/contracts';
 
@@ -28,19 +29,37 @@ function setup(delivery?: {
   relayOpenCodeMemberInboxMessages: ReturnType<typeof vi.fn>;
   getOpenCodeRuntimeDeliveryStatus: ReturnType<typeof vi.fn>;
 }) {
+  let currentSnapshot: typeof snapshot | null = snapshot;
+  let live = true;
   const sendLeadMessage = vi.fn(async () => undefined);
+  const liveLeadMessages = new NativeLeadLiveMessageStore();
   const relayLeadInboxMessages = vi.fn(async () => 0);
   const findConfiguredMember = vi.fn(async () => ({
     providerId: 'opencode',
   }));
   const api = new NativeTeamMessagingApi({
-    runs: { find: (teamName) => (teamName === run.teamName ? snapshot : null) },
+    runs: {
+      find: (teamName) => (teamName === run.teamName ? currentSnapshot : null),
+      isLive: () => live,
+    },
     settings: { findConfiguredMember } as never,
+    liveLeadMessages,
     sendLeadMessage,
     relayLeadInboxMessages,
     ...(delivery ? { openCodeMemberDelivery: delivery as never } : {}),
   });
-  return { api, sendLeadMessage, relayLeadInboxMessages, findConfiguredMember };
+  return {
+    api,
+    sendLeadMessage,
+    relayLeadInboxMessages,
+    findConfiguredMember,
+    setSnapshot: (next: typeof snapshot | null) => {
+      currentSnapshot = next;
+    },
+    setLive: (next: boolean) => {
+      live = next;
+    },
+  };
 }
 
 describe('native team messaging', () => {
@@ -112,17 +131,74 @@ describe('native team messaging', () => {
     );
   });
 
-  it('keeps unmigrated live lead message APIs explicit', () => {
-    const { api } = setup();
+  it('keeps live lead messages bounded, deduplicated, and scoped to the current live run', () => {
+    const { api, setSnapshot, setLive } = setup();
     expect(api.getLiveLeadProcessMessages('test-team')).toEqual([]);
+
+    api.pushLiveLeadProcessMessage('test-team', {
+      messageId: 'message-1',
+      from: 'team-lead',
+      to: 'user',
+      text: 'first',
+      timestamp: '2026-10-31T00:00:00.000Z',
+      read: true,
+    });
+    api.pushLiveLeadProcessMessage('test-team', {
+      messageId: 'message-1',
+      from: 'team-lead',
+      to: 'user',
+      text: 'updated',
+      timestamp: '2026-10-31T00:00:01.000Z',
+      read: true,
+    });
+    expect(api.getLiveLeadProcessMessages('test-team')).toEqual([
+      expect.objectContaining({
+        messageId: 'message-1',
+        text: 'updated',
+        leadSessionId: 'TEST-session',
+      }),
+    ]);
+
+    for (let index = 0; index < 100; index += 1) {
+      api.pushLiveLeadProcessMessage('test-team', {
+        messageId: `message-${index + 2}`,
+        from: 'team-lead',
+        to: 'user',
+        text: `message ${index}`,
+        timestamp: '2026-10-31T00:00:01.000Z',
+        read: true,
+      });
+    }
+    const boundedMessages = api.getLiveLeadProcessMessages('test-team');
+    expect(boundedMessages).toHaveLength(100);
+    expect(boundedMessages.some((message) => message.messageId === 'message-1')).toBe(false);
+
+    setSnapshot({
+      ...snapshot,
+      identity: { ...run, runId: 'TEST-next-run' },
+    } as unknown as TeamLifecycleSnapshot);
+    expect(api.getLiveLeadProcessMessages('test-team')).toEqual([]);
+    api.pushLiveLeadProcessMessage('test-team', {
+      messageId: 'message-2',
+      from: 'team-lead',
+      to: 'user',
+      text: 'next run',
+      timestamp: '2026-10-31T00:00:02.000Z',
+      read: true,
+    });
+    setLive(false);
+    expect(api.getLiveLeadProcessMessages('test-team')).toEqual([]);
+    // The caller runs after delivery and persistence, so a stale run must never
+    // turn a delivered message into an IPC error.
     expect(() =>
       api.pushLiveLeadProcessMessage('test-team', {
         from: 'team-lead',
         to: 'user',
-        text: 'TEST',
-        timestamp: '2026-10-31T00:00:00.000Z',
+        text: 'stale',
+        timestamp: '2026-10-31T00:00:03.000Z',
         read: true,
       })
-    ).toThrow('not migrated');
+    ).not.toThrow();
+    expect(api.getLiveLeadProcessMessages('test-team')).toEqual([]);
   });
 });

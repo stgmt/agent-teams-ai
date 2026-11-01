@@ -23,20 +23,24 @@ function snapshot(lead: Record<string, unknown>): TeamLifecycleSnapshot {
   } as unknown as TeamLifecycleSnapshot;
 }
 
-function setup(current = snapshot({ lane: { laneId: 'primary', sessionId: 'TEST-session' } })) {
+function setup(
+  current = snapshot({ lane: { laneId: 'primary', sessionId: 'TEST-session' } }),
+  delivery: { relayOpenCodeMemberInboxMessages: ReturnType<typeof vi.fn> } | null = {
+    relayOpenCodeMemberInboxMessages: vi.fn(async () => ({ relayed: 1 })),
+  }
+) {
   const sendMessage = vi.fn(async () => ({ messageId: 'TEST-message' }));
-  const relay = vi.fn(async () => 1);
-  const delivery = new LeadLaneInboxDelivery({
+  const instance = new LeadLaneInboxDelivery({
     snapshot: () => current,
     inbox: { sendMessage } as never,
-    relay,
+    ...(delivery ? { deliver: delivery as never } : {}),
   });
-  return { delivery, sendMessage, relay };
+  return { delivery: instance, sendMessage, ledger: delivery };
 }
 
 describe('lane lead system delivery', () => {
-  it('writes a lead inbox row and relays it for a lane lead', async () => {
-    const { delivery, sendMessage, relay } = setup();
+  it('writes a lead inbox row and proves delivery through the OpenCode ledger', async () => {
+    const { delivery, sendMessage, ledger } = setup();
     await expect(delivery.tryDeliver(run, 'TEST message')).resolves.toBe(true);
     expect(sendMessage).toHaveBeenCalledWith('TEST-team', {
       member: 'team-lead',
@@ -45,15 +49,57 @@ describe('lane lead system delivery', () => {
       text: 'TEST message',
       source: 'user_sent',
     });
-    expect(relay).toHaveBeenCalledWith('TEST-team', 'team-lead');
+    expect(ledger?.relayOpenCodeMemberInboxMessages).toHaveBeenCalledWith(
+      'TEST-team',
+      'team-lead',
+      { onlyMessageId: 'TEST-message', source: 'ui-send' }
+    );
+  });
+
+  it('accepts a ledger delivery receipt without a relayed count', async () => {
+    const { delivery } = setup(undefined, {
+      relayOpenCodeMemberInboxMessages: vi.fn(async () => ({
+        relayed: 0,
+        delivered: 0,
+        attempted: 1,
+        failed: 0,
+        lastDelivery: { delivered: true },
+      })),
+    });
+    await expect(delivery.tryDeliver(run, 'TEST message')).resolves.toBe(true);
+  });
+
+  it('fails loudly when the ledger reports no delivery proof', async () => {
+    const { delivery } = setup(undefined, {
+      relayOpenCodeMemberInboxMessages: vi.fn(async () => ({
+        relayed: 0,
+        delivered: 0,
+        attempted: 1,
+        failed: 1,
+        diagnostics: ['session not found'],
+      })),
+    });
+    await expect(delivery.tryDeliver(run, 'TEST message')).rejects.toThrow(
+      'Lane lead message TEST-message for TEST-team was not delivered: session not found'
+    );
+  });
+
+  it('never reports success when the OpenCode ledger is not configured', async () => {
+    const { delivery, sendMessage } = setup(undefined, null);
+    await expect(delivery.tryDeliver(run, 'TEST message')).rejects.toThrow(
+      'the OpenCode delivery ledger is not configured'
+    );
+    // The durable row still exists, so the message is visible instead of lost.
+    expect(sendMessage).toHaveBeenCalledTimes(1);
   });
 
   it('defers to the stdin path for a process lead', async () => {
-    const { delivery, sendMessage } = setup(
+    const { delivery, sendMessage, ledger } = setup(
       snapshot({ process: { pid: 42, birthId: 'TEST-birth' } })
     );
     await expect(delivery.tryDeliver(run, 'TEST message')).resolves.toBe(false);
     expect(sendMessage).not.toHaveBeenCalled();
+    expect(ledger?.relayOpenCodeMemberInboxMessages).not.toHaveBeenCalled();
   });
 
   it('rejects stale runs, empty text and attachments', async () => {

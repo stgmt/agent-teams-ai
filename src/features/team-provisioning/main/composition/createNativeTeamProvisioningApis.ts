@@ -1,3 +1,4 @@
+import { NativeCrossTeamMessagingApi } from '../adapters/input/NativeCrossTeamMessagingApi';
 import { NativeTeamMemberLifecycleApi } from '../adapters/input/NativeTeamMemberLifecycleApi';
 import { NativeTeamMessagingApi } from '../adapters/input/NativeTeamMessagingApi';
 import { NativeTeamToolApprovalApi } from '../adapters/input/NativeTeamToolApprovalApi';
@@ -10,6 +11,7 @@ import { createNativeRuntimeSurface } from './createNativeRuntimeSurface';
 import type { NativeOpenCodeMemberDeliveryPort } from '../adapters/input/NativeTeamMessagingApi';
 import type { NativeDesktopTeamRuntime } from './createNativeDesktopTeamRuntime';
 import type {
+  TeamCrossTeamMessagingApi,
   TeamIpcHandlerApis,
   TeamProvisioningPreflightApi,
   TeamTaskActivityRepairApi,
@@ -66,6 +68,7 @@ export function createNativeTeamProvisioningApis(
     messaging: new NativeTeamMessagingApi({
       runs: lifecycle.runs,
       settings: lifecycle.settings,
+      liveLeadMessages: lifecycle.liveLeadMessages,
       sendLeadMessage: lifecycle.sendLeadMessage,
       relayLeadInboxMessages: (teamName) => lifecycle.relay.relay(teamName),
       ...(deps.openCodeMemberDelivery
@@ -79,4 +82,26 @@ export function createNativeTeamProvisioningApis(
       settings: lifecycle.toolApprovalSettings,
     }),
   };
+}
+
+/**
+ * Cross-team messaging over the same runtime owner. Kept beside the IPC surface
+ * because the cutover binds both from one composition; it never builds a second
+ * registry or a second reply ledger.
+ */
+export function createNativeTeamCrossTeamApi(
+  deps: Pick<NativeTeamProvisioningApisDependencies, 'runtime' | 'openCodeMemberDelivery' | 'now'>
+): TeamCrossTeamMessagingApi {
+  const lifecycle = deps.runtime.lifecycle;
+  return new NativeCrossTeamMessagingApi({
+    runs: lifecycle.runs,
+    replyLedger: lifecycle.crossTeamReplies,
+    settings: lifecycle.settings,
+    inbox: lifecycle.inbox,
+    relayLeadInboxMessages: (teamName, options) => lifecycle.relay.relay(teamName, options),
+    ...(deps.openCodeMemberDelivery
+      ? { openCodeMemberDelivery: deps.openCodeMemberDelivery }
+      : {}),
+    now: () => Date.parse(deps.now()),
+  });
 }

@@ -15,7 +15,9 @@ import {
   NativeClaudeToolApprovals,
 } from '../adapters/output/NativeClaudeToolApprovals';
 import { NativeConfiguredProvider } from '../adapters/output/NativeConfiguredProvider';
+import { NativeCrossTeamReplyLedger } from '../adapters/output/NativeCrossTeamReplyLedger';
 import { NativeLeadInboxRelay } from '../adapters/output/NativeLeadInboxRelay';
+import { NativeLeadLiveMessageStore } from '../adapters/output/NativeLeadLiveMessageStore';
 import { NativeMemberInboxRelay } from '../adapters/output/NativeMemberInboxRelay';
 import { NativeTeamLogStore } from '../adapters/output/NativeTeamLogStore';
 import { NativeTeamTaskLedgerReader } from '../adapters/output/NativeTeamTaskLedgerReader';
@@ -42,6 +44,7 @@ import type {
   ConfiguredMemberLaunch,
   MemberAttachReason,
 } from '../../core/application/ports/MemberRuntimePorts';
+import type { LaneLeadDeliveryPort } from '../adapters/output/LeadLaneInboxDelivery';
 import type { NativeConfiguredProviderPorts } from '../adapters/output/NativeConfiguredProvider';
 import type { MemberLifecycle } from './createMemberLifecycle';
 import type { AppConnectionContext } from '@features/external-agent-connection/contracts';
@@ -65,6 +68,8 @@ export interface NativeTeamLifecycleDependencies {
   briefing(settings: Readonly<ConfiguredMemberLaunch>): Promise<string>;
   /** Adapter for OpenCode lanes; omitted keeps OpenCode unsupported by native launch. */
   openCodeAdapter?: OpenCodeLaneAdapter;
+  /** OpenCode prompt ledger; when present a lane lead receives system messages as prompts. */
+  openCodeLeadDelivery?: LaneLeadDeliveryPort;
   /** Production registry entry source; used when `openCodeAdapter` is omitted. */
   runtimeAdapterRegistry?: Pick<TeamRuntimeAdapterRegistry, 'has' | 'get'>;
   /** Lead inbox reader; defaults to the shared file reader. */
@@ -100,6 +105,10 @@ export interface NativeTeamLifecycle {
     answerLanePermission: MemberLifecycleCommands['answerLanePermission'];
   };
   logs: Pick<NativeTeamLogStore, 'read'>;
+  liveLeadMessages: NativeLeadLiveMessageStore;
+  /** Cross-team reply expectations shared by the lead relay and cross-team sends. */
+  crossTeamReplies: NativeCrossTeamReplyLedger;
+  inbox: { getMessagesFor(teamName: string, member: string): Promise<InboxMessage[]> };
   approvals: Pick<NativeClaudeToolApprovals, 'list' | 'respond' | 'onEvent'>;
   toolApprovalSettings: Pick<NativeToolApprovalSettings, 'get' | 'update'>;
   taskChanges: Pick<NativeTeamTaskLedgerReader, 'read'>;
@@ -208,6 +217,8 @@ export function createNativeTeamLifecycle(
     invalidate: (teamName) => deps.invalidate(teamName),
   });
   let relay: NativeLeadInboxRelay | null = null;
+  const liveLeadMessages = new NativeLeadLiveMessageStore();
+  const crossTeamReplies = new NativeCrossTeamReplyLedger();
   let memberRelayRef: NativeMemberInboxRelay | null = null;
   const lifecycle = createMemberLifecycle({
     owner: deps.owner,
@@ -227,6 +238,8 @@ export function createNativeTeamLifecycle(
       release: async (run) => {
         relay?.reset(run.teamName);
         memberRelayRef?.reset(run.teamName);
+        liveLeadMessages.clear(run);
+        crossTeamReplies.reset(run.teamName);
         await config.release(run);
         settings.release(run);
         logs.retainLast(run.teamName, run.runId);
@@ -263,7 +276,7 @@ export function createNativeTeamLifecycle(
   const laneLead = new LeadLaneInboxDelivery({
     snapshot: (teamName) => lifecycle.snapshot(teamName),
     inbox: deps.inbox,
-    relay: async (teamName, memberName) => (await memberRelayRef?.relay(teamName, memberName)) ?? 0,
+    ...(deps.openCodeLeadDelivery ? { deliver: deps.openCodeLeadDelivery } : {}),
   });
   const sendLead = async (
     run: TeamRunIdentity,
@@ -309,6 +322,7 @@ export function createNativeTeamLifecycle(
     send: (run, text) => deps.withExpectedContext(run, () => send.execute(run, text)),
     teamsRoot: deps.teamsRoot,
     controlUrl: () => deps.controlUrl(),
+    crossTeamState: crossTeamReplies.state,
   });
   const memberRelay = new NativeMemberInboxRelay({
     runs,
@@ -355,6 +369,9 @@ export function createNativeTeamLifecycle(
     owner: Object.freeze({ ...deps.owner }),
     runs,
     logs,
+    liveLeadMessages,
+    crossTeamReplies,
+    inbox: inboxReader,
     approvals,
     toolApprovalSettings,
     taskChanges,
@@ -402,6 +419,7 @@ export function createNativeTeamLifecycle(
     shutdown: async () => {
       leadRelay.dispose();
       memberRelay.dispose();
+      crossTeamReplies.resetAll();
       try {
         await lifecycle.teams.shutdown();
       } finally {
