@@ -19,6 +19,7 @@ import { NativeCrossTeamReplyLedger } from '../adapters/output/NativeCrossTeamRe
 import { NativeLeadInboxRelay } from '../adapters/output/NativeLeadInboxRelay';
 import { NativeLeadLiveMessageStore } from '../adapters/output/NativeLeadLiveMessageStore';
 import { NativeLeadOutputStream } from '../adapters/output/NativeLeadOutputStream';
+import { NativeLeadRestartAssessment } from '../adapters/output/NativeLeadRestartAssessment';
 import { NativeMemberInboxRelay } from '../adapters/output/NativeMemberInboxRelay';
 import { createObservedMemberPlanner } from '../adapters/output/NativeObservedMemberPlanner';
 import { NativeTeamLogStore } from '../adapters/output/NativeTeamLogStore';
@@ -112,6 +113,8 @@ export interface NativeTeamLifecycle {
   liveLeadMessages: NativeLeadLiveMessageStore;
   /** App-owned lead process output: live messages, turn activity, detected session. */
   leadOutput: Pick<NativeLeadOutputStream, 'facts' | 'detectedSessionId' | 'clearRun'>;
+  /** Lead-only restart admission over native run, turn, approval, and session facts. */
+  leadRestart: Pick<NativeLeadRestartAssessment, 'assess'>;
   /** Cross-team reply expectations shared by the lead relay and cross-team sends. */
   crossTeamReplies: NativeCrossTeamReplyLedger;
   inbox: { getMessagesFor(teamName: string, member: string): Promise<InboxMessage[]> };
@@ -313,6 +316,12 @@ export function createNativeTeamLifecycle(
     aliveTeamNames: () => lifecycle.registry.aliveTeamNames(),
     aliveRunId: (teamName) => lifecycle.registry.aliveRunId(teamName),
   });
+  const leadRestart = new NativeLeadRestartAssessment({
+    runs,
+    settings,
+    leadOutput,
+    approvals,
+  });
   const inboxReader = deps.inboxReader ?? new TeamInboxReader();
   const leadRelay = new NativeLeadInboxRelay({
     runs,
@@ -370,6 +379,7 @@ export function createNativeTeamLifecycle(
     logs,
     liveLeadMessages,
     leadOutput,
+    leadRestart,
     crossTeamReplies,
     inbox: inboxReader,
     approvals,
