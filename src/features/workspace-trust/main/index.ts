@@ -31,6 +31,8 @@ export { FileClaudeTrustPersister } from './adapters/output/ClaudeTrustPersister
 export { NodePtyProcessAdapter } from './adapters/output/NodePtyProcessAdapter';
 export { FileTempEmptyMcpConfigStore } from './adapters/output/TempEmptyMcpConfigStore';
 export { createWorkspaceTrustCoordinator } from './composition/createWorkspaceTrustCoordinator';
+export type { NativeWorkspaceTrustPreparation } from './composition/createNativeWorkspaceTrust';
+export { createNativeWorkspaceTrust } from './composition/createNativeWorkspaceTrust';
 export { createWorkspaceTrustFeatures } from './composition/createWorkspaceTrustFeatures';
 export {
   createWorkspaceTrustStatusFeature,

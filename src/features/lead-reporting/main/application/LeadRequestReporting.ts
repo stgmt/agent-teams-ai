@@ -114,12 +114,10 @@ export class LeadRequestReporting {
   /** Invoked by composition only after report delivery and its exact-request closure succeed. */
   completed(run: LeadReportRunIdentity, requestMessageId: string, messageId: string): void {
     const request = this.active.get(this.key(run));
-    if (
-      request?.input.requestMessageId !== requestMessageId ||
-      !request.reportRunId ||
-      messageId !== `lead-report:${request.reportRunId}`
-    )
-      return;
+    if (request?.input.requestMessageId !== requestMessageId || !request.reportRunId) return;
+    // The report operation owns its message identity; trust only a delivery it recorded.
+    const delivered = this.deps.reports.deliveredReport(run, request.reportRunId);
+    if (!delivered || delivered.messageId !== messageId) return;
     request.delivered = { messageId, requestMessageId };
     request.notified = true;
   }

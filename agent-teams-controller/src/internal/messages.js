@@ -1,3 +1,4 @@
+const leadReportingClient = require('./leadReportingClient.js');
 const messageStore = require('./messageStore.js');
 const runtimeHelpers = require('./runtimeHelpers.js');
 const { isOpenCodeMember } = require('./memberMessagingProtocol.js');
@@ -190,7 +191,19 @@ function prepareMessageSend(context, flags) {
 }
 
 function sendMessage(context, flags) {
-  return messageStore.sendInboxMessage(context.paths, prepareMessageSend(context, flags));
+  const prepared = prepareMessageSend(context, flags);
+  if (!leadReportingClient.requiresLeadReporting() || prepared.to !== 'user')
+    return messageStore.sendInboxMessage(context.paths, prepared);
+  // A bound lead cannot append to the user inbox on its own authority. The application
+  // decides which admitted request an answer belongs to and writes the row itself.
+  if (prepared.report) return leadReportingClient.publishLeadReport(context, prepared.report);
+  const requestMessageId =
+    typeof prepared.requestMessageId === 'string' ? prepared.requestMessageId.trim() : '';
+  if (requestMessageId)
+    return leadReportingClient.replyToHumanRequest(context, requestMessageId, prepared.text);
+  throw new Error(
+    'A message to the user requires an app-admitted requestMessageId or an inspected report'
+  );
 }
 
 async function sendMessageAsync(context, flags) {

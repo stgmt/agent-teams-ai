@@ -124,6 +124,7 @@ export interface TeamProvisioningEnvBuilderPorts {
   resolveInteractiveShellEnvBestEffort?: typeof resolveInteractiveShellEnvBestEffort;
   waitForPendingShellEnv?: typeof waitForPendingShellEnv;
   getHomeDir?: typeof getHomeDir;
+  getAttachmentRoot?: () => string;
   getClaudeBasePath?: typeof getClaudeBasePath;
   getAutoDetectedClaudeBasePath?: typeof getAutoDetectedClaudeBasePath;
   getOsUsername?: () => string;
@@ -381,7 +382,7 @@ export async function buildProvisioningEnv({
   });
   const providerConnectionIssue = providerEnvResult.connectionIssues[resolvedProviderId];
   const providerEnv = providerEnvResult.env;
-  const attachmentRoot = path.join(getAppDataPath(), 'attachments');
+  const attachmentRoot = ports.getAttachmentRoot?.() ?? path.join(getAppDataPath(), 'attachments');
   await mkdir(attachmentRoot, { recursive: true, mode: 0o700 });
   providerEnv.CLAUDE_AGENT_TEAMS_ATTACHMENT_ROOT = attachmentRoot;
   const writableEnvResult = await (

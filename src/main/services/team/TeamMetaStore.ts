@@ -98,7 +98,6 @@ function normalizeLaunchIdentity(value: unknown): ProviderModelLaunchIdentity | 
 
   const catalogSource =
     raw.catalogSource === 'anthropic-models-api' ||
-    raw.catalogSource === 'claude-agent-sdk' ||
     raw.catalogSource === 'anthropic-compatible-api' ||
     raw.catalogSource === 'app-server' ||
     raw.catalogSource === 'static-fallback' ||

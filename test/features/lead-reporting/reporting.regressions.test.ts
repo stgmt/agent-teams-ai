@@ -139,7 +139,6 @@ describe('lead report operation boundaries', () => {
   it('does not replace the active human report or publish its predecessor after admitting a successor', async () => {
     const { feature, begin, delivery } = setup();
     const operation = begin('request-one');
-    const operation = begin('request-one');
     const inspection = await feature.inspect('test', operation.reportRunId);
     expect(() => begin('request-two')).toThrow('Previous report request is still active');
     expect(feature.current('test')).toEqual(operation);

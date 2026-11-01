@@ -98,7 +98,7 @@ export class LeadReporting {
       );
       if (!oldest) throw new Error('Too many unfinished report operations');
       if (oldest[1].inspection) this.receipts.delete(oldest[1].inspection.inspectionId);
-      this.dropBaseline(oldest[0], oldest[1]);
+      this.dropBaseline(oldest[1]);
       this.operations.delete(oldest[0]);
       const oldRunKey = runKey(oldest[1].report.run);
       if (this.active.get(oldRunKey) === oldest[0]) this.active.delete(oldRunKey);
@@ -142,7 +142,12 @@ export class LeadReporting {
       throw new Error('Lead run changed during management briefing');
     if (this.active.get(runKey(run)) !== activeId)
       throw new Error('Human report request changed during management briefing; inspect again');
-    return { kind: 'management', inspection };
+    return {
+      kind: 'management',
+      inspection,
+      instruction:
+        'These are current team facts for your own orientation: this is not a new human report request, so do not publish a report, claim a receipt, or answer the user from it.',
+    };
   }
 
   async inspect(credential: string, reportRunId: string): Promise<LeadInspection> {
@@ -166,7 +171,7 @@ export class LeadReporting {
     const operation = this.operations.get(reportRunId);
     if (!operation || !sameRun(operation.report.run, run)) return;
     if (operation.inspection) this.receipts.delete(operation.inspection.inspectionId);
-    this.dropBaseline(reportRunId, operation);
+    this.dropBaseline(operation);
     this.operations.delete(reportRunId);
     const key = runKey(run);
     if (this.active.get(key) === reportRunId) this.active.delete(key);
@@ -274,9 +279,10 @@ export class LeadReporting {
   }
 
   /** A retained report keeps its baseline; eviction must not pin the last facts forever. */
-  private dropBaseline(operationId: string, operation: Operation): void {
+  private dropBaseline(operation: Operation): void {
     const key = baselineKey(operation.report);
-    if (this.baselines.get(key)?.messageId === `lead-report:${operationId}`)
+    const deliveredMessageId = operation.delivered?.messageId;
+    if (deliveredMessageId && this.baselines.get(key)?.messageId === deliveredMessageId)
       this.baselines.delete(key);
   }
 

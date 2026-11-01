@@ -464,13 +464,25 @@ export class TaskChangeLedgerReader {
     }
   }
 
+  /**
+   * Current-format reads only: a superseded v1 bundle is not evidence the replacement
+   * lifecycle may report, so it never answers here.
+   */
+  async readCurrentTaskChanges(
+    params: Parameters<TaskChangeLedgerReader['readTaskChanges']>[0]
+  ): Promise<TaskChangeSetV2 | null> {
+    return this.readTaskChanges(params, { includeLegacyBundle: false });
+  }
+
   async readTaskChanges(params: {
     teamName: string;
     taskId: string;
     projectDir: string;
     projectPath?: string;
     includeDetails: boolean;
-  }): Promise<TaskChangeSetV2 | null> {
+    },
+    options?: { includeLegacyBundle?: boolean }
+  ): Promise<TaskChangeSetV2 | null> {
     const bundleRead = await this.tryReadSummaryBundleV2(
       params.projectDir,
       params.taskId,
@@ -497,7 +509,9 @@ export class TaskChangeLedgerReader {
         });
       }
 
-      const legacy = await this.readLegacyBundleV1(params.projectDir, params.taskId);
+      const legacy = options?.includeLegacyBundle === false
+        ? null
+        : await this.readLegacyBundleV1(params.projectDir, params.taskId);
       if (legacy) {
         return this.buildLegacyResult({
           teamName: params.teamName,
@@ -562,7 +576,10 @@ export class TaskChangeLedgerReader {
       });
     }
 
-    const legacy = await this.readLegacyBundleV1(params.projectDir, params.taskId);
+    const legacy =
+      options?.includeLegacyBundle === false
+        ? null
+        : await this.readLegacyBundleV1(params.projectDir, params.taskId);
     if (legacy) {
       return this.buildLegacyResult({
         teamName: params.teamName,

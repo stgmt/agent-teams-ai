@@ -94,8 +94,8 @@ export interface LeadInspection extends LeadReportFacts {
 }
 
 export type LeadBriefing =
-  | Readonly<{ kind: 'report'; inspection: LeadInspection }>
-  | Readonly<{ kind: 'management'; inspection: LeadReportFacts }>;
+  | Readonly<{ kind: 'report'; inspection: LeadInspection; instruction?: string }>
+  | Readonly<{ kind: 'management'; inspection: LeadReportFacts; instruction?: string }>;
 
 export interface ReportStatement {
   readonly text: string;

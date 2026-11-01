@@ -127,7 +127,8 @@ function verificationLabel(
   if (refs.some((ref) => ref.verification === 'verified' && ref.topic === 'result'))
     return 'verified edit';
   if (refs.some((ref) => ref.topic === 'blocker')) return 'source limitation';
-  if (refs.some((ref) => ref.verification === 'reported')) return 'member claim';
+  if (refs.some((ref) => ref.topic === 'work' || ref.topic === 'action' || ref.topic === 'result'))
+    return 'member claim';
   return 'board fact';
 }
 
@@ -174,7 +175,7 @@ export function renderReport(inspection: LeadInspection, draft: LeadReportDraft)
           .filter((ref): ref is EvidenceRef => !!ref);
         return `[${verificationLabel(refs)}] ${statement.text.trim()}`;
       });
-      return `${member.memberName}: ${statements.join(' ')}`;
+      return `${member.memberName} ${statements.join(' ')}`;
     }),
   ];
   if (inspection.sourceErrors.length)
@@ -202,9 +203,10 @@ export function renderReportLimitation(reason: string | undefined): string {
       : reason === 'publication correction limit'
         ? 'the report could not be matched to verified facts after several attempts'
         : 'the report could not be completed';
+  const limit = cause === 'the report could not be completed' ? '' : ` (${reason})`;
   return [
     'I could not produce a verified team report for this request.',
-    `Reason: ${cause}.`,
+    `Reason: ${cause}${limit}.`,
     'No member status, completed work or management action is confirmed by this failed attempt.',
     'Send a new request after the team data sources recover.',
   ].join('\n');

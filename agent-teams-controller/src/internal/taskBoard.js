@@ -1,4 +1,6 @@
 const kanban = require('./kanban.js');
+const leadReportingClient = require('./leadReportingClient.js');
+const { readLeadReportFacts } = require('./leadReportFacts.js');
 const review = require('./review.js');
 const tasks = require('./tasks.js');
 const startupWork = require('./startupWork.js');
@@ -120,6 +122,10 @@ function deliverStartupWork(context, memberName, options) {
 }
 
 function leadBriefing(context) {
+  // A bound lead reads through the app so a management briefing never becomes a publishable
+  // report operation, and an admitted human request gets the app's own inspection.
+  if (leadReportingClient.requiresLeadReporting())
+    return leadReportingClient.inspectLeadReport(context).then((briefing) => JSON.stringify(briefing));
   return tasks.leadBriefing(context);
 }
 
@@ -202,6 +208,7 @@ module.exports = {
   removeReviewer,
   removeTaskAttachment,
   reconcileTaskCreation,
+  readLeadReportFacts,
   requestChanges,
   requestReview,
   requestTaskBriefing,

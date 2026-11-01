@@ -15,14 +15,18 @@ function realpathIfExists(inputPath: string): string | null {
   }
 }
 
-export function resolveInboxPath(teamName: string, inboxName: string): string {
+export function resolveInboxPath(
+  teamName: string,
+  inboxName: string,
+  teamsBasePathOverride?: string
+): string {
   const safeTeamName = teamName.trim();
   const safeInboxName = inboxName.trim();
   if (!validateFileName(safeTeamName).valid || !validateFileName(safeInboxName).valid) {
     throw new Error('Invalid inbox path');
   }
 
-  const teamsBasePath = getTeamsBasePath();
+  const teamsBasePath = teamsBasePathOverride ?? getTeamsBasePath();
   const teamDir = path.join(teamsBasePath, safeTeamName);
   const inboxDir = path.join(teamsBasePath, safeTeamName, 'inboxes');
   const inboxPath = path.join(inboxDir, `${safeInboxName}.json`);

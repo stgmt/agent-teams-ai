@@ -41,6 +41,7 @@ function setup() {
     resolveLead: () => run,
     now: () => new Date(now).toISOString(),
     newId: () => `test-${++id}`,
+    fingerprint: (value) => value,
     maxInspectionAgeMs: 60_000,
     maxSourceWaitMs: 5_000,
     delivery: { deliver: ({ messageId }) => Promise.resolve({ messageId }), delivered: vi.fn() },

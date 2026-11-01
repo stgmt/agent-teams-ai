@@ -410,6 +410,8 @@ describe('app/controller lead-report delivery on an isolated profile', () => {
         run,
         requestMessageId: 'next-human',
         text: 'спасибо',
+        origin: { kind: 'human' },
+        isMeta: false,
       })
     ).resolves.toContain('next-human');
     expect(

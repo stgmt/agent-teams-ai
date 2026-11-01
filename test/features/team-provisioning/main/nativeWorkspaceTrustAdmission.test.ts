@@ -141,7 +141,7 @@ describe('native lifecycle workspace trust ownership', () => {
     await lifecycle.launchConfigured(run);
     await expect.poll(() => prepare.mock.calls.length).toBe(1);
     const stopped = lifecycle.stopConfigured(run);
-    await expect.poll(() => prepare.mock.calls[0][2].aborted).toBe(true);
+    await expect.poll(() => prepare.mock.calls[0][2]?.aborted).toBe(true);
     expect(lifecycle.snapshot(run.teamName).state).toBe('stopping');
     expect(executable).not.toHaveBeenCalled();
     finish();

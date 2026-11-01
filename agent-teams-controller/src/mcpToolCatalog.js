@@ -154,6 +154,16 @@ const AGENT_TEAMS_NAMESPACED_LEAD_BOOTSTRAP_TOOL_NAMES = AGENT_TEAMS_LEAD_BOOTST
   (toolName) => `mcp__agent-teams__${toolName}`
 );
 
+/**
+ * Tools a headless lead is pre-authorized to call. The desktop launch spec adds
+ * the MCP namespace itself, so these stay unnamespaced. `member_start` stays out
+ * of the teammate set: only the lead starts members.
+ */
+const AGENT_TEAMS_OPERATIONAL_LEAD_TOOL_NAMES = [
+  ...AGENT_TEAMS_LEAD_BOOTSTRAP_TOOL_NAMES,
+  'member_start',
+];
+
 module.exports = {
   AGENT_TEAMS_MANAGEMENT_TOOL_NAMES,
   AGENT_TEAMS_TEAM_TOOL_NAMES,
@@ -172,4 +182,5 @@ module.exports = {
   AGENT_TEAMS_NAMESPACED_TEAMMATE_OPERATIONAL_TOOL_NAMES,
   AGENT_TEAMS_LEAD_BOOTSTRAP_TOOL_NAMES,
   AGENT_TEAMS_NAMESPACED_LEAD_BOOTSTRAP_TOOL_NAMES,
+  AGENT_TEAMS_OPERATIONAL_LEAD_TOOL_NAMES,
 };

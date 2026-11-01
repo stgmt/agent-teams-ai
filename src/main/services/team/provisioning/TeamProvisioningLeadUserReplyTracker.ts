@@ -99,6 +99,21 @@ export function closeRelayUserRequests(run: object, messageIds: readonly string[
   );
 }
 
+/**
+ * The app delivered a report for these human requests. They are answered, so the turn that
+ * produced the report must not answer them again with a fallback or link a later reply to them.
+ */
+export function confirmDeliveredUserReply(run: object, messageIds: readonly string[]): void {
+  const state = trackerStates.get(run);
+  if (!state) return;
+  const delivered = new Set(
+    messageIds.map((messageId) => messageId.trim()).filter((messageId) => messageId.length > 0)
+  );
+  if (delivered.size === 0) return;
+  state.openRequests = state.openRequests.filter((open) => !delivered.has(open.messageId));
+  state.lastAnsweredIds = [...delivered];
+}
+
 /** Full text of the lead's coalesced stream buffer, if any. */
 export function readLiveLeadTextBuffer(buffer: unknown): string | null {
   if (!buffer || typeof buffer !== 'object') return null;
