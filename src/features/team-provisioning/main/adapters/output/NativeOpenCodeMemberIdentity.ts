@@ -1,39 +1,43 @@
+import { resolveOpenCodeMemberIdentityFromDirectory as resolveIdentityFromDirectory } from '@main/services/team/provisioning/TeamProvisioningOpenCodeMemberIdentity';
 import {
   createOpenCodeRuntimeRecoveryIdentityHelpers,
   resolveOpenCodeMemberDeliveryIdentityFromDirectory,
 } from '@main/services/team/provisioning/TeamProvisioningOpenCodeRuntimeRecoveryIdentity';
-import { resolveOpenCodeMemberIdentityFromDirectory as resolveIdentityFromDirectory } from '@main/services/team/provisioning/TeamProvisioningOpenCodeMemberIdentity';
 
 import type {
   OpenCodeMemberDirectory,
   OpenCodeMemberIdentityResolution,
 } from '@main/services/team/opencode/delivery/OpenCodeMemberMessageDeliveryPorts';
-import type { TeamConfig } from '@shared/types';
+import type { TeamConfig, TeamMember } from '@shared/types';
+
+/** A member the runtime is driving on a secondary lane right now. */
+export interface OpenCodeSecondaryLaneRun {
+  laneId: string;
+  memberName: string;
+  cwd?: string;
+}
 
 /**
  * Which lane and which run a member belongs to, answered by the native owner.
  *
- * Delivery needs three answers before it can send anything: whether the member
- * is reached through an OpenCode lane, which lane that is, and whether that lane
- * currently has a live run. All three are read-only questions over the team
- * config and the on-disk lane evidence, so the native side answers them from
- * those sources and keeps using the runtime's own rules for lane placement.
+ * Delivery needs four answers before it can send anything: whether the member is
+ * reached through an OpenCode lane, which lane that is, whether that lane has a
+ * live run, and which members the lane actually carries. Every source below is
+ * required: a delivery question answered from a missing source would place the
+ * member on the wrong lane or skip a member the lane is driving, and both look
+ * like a hang rather than an error.
  */
 export interface NativeOpenCodeMemberIdentityDependencies {
   teamsBasePath: string;
   readConfig(teamName: string): Promise<TeamConfig | null>;
-  /**
-   * Persisted launch metadata for the team. A team launched as OpenCode records
-   * that here, which is the only answer for a member whose own config entry has
-   * no provider. Absent means "read nothing", not "not OpenCode".
-   */
-  readTeamMeta?(teamName: string): Promise<OpenCodeMemberDirectory['teamMeta']>;
-  /** Members with a live secondary adapter lane; absent means no secondary lanes. */
-  readSecondaryRuntimeRuns?(
-    teamName: string
-  ): Promise<readonly { laneId: string; memberName: string; cwd?: string }[]>;
-  /** Run the runtime holds in memory right now, if any; disk evidence is the fallback. */
-  getCurrentOpenCodeRuntimeRunId?(teamName: string, laneId: string): string | null;
+  /** Persisted launch metadata; the only provider answer for a member without its own entry. */
+  readTeamMeta(teamName: string): Promise<OpenCodeMemberDirectory['teamMeta']>;
+  /** Members recorded in launch metadata, including ones the config no longer lists. */
+  readMetaMembers(teamName: string): Promise<readonly TeamMember[]>;
+  /** Members the runtime currently drives on secondary adapter lanes. */
+  readSecondaryRuntimeRuns(teamName: string): Promise<readonly OpenCodeSecondaryLaneRun[]>;
+  /** Run the runtime holds in memory; disk evidence answers when it holds none. */
+  getCurrentOpenCodeRuntimeRunId(teamName: string, laneId: string): string | null;
 }
 
 export interface NativeOpenCodeMemberIdentity {
@@ -61,49 +65,49 @@ export function createNativeOpenCodeMemberIdentity(
     teamName: string
   ): Promise<OpenCodeMemberDirectory> => ({
     config: await deps.readConfig(teamName),
-    teamMeta: (await deps.readTeamMeta?.(teamName)) ?? null,
-    metaMembers: [],
+    teamMeta: await deps.readTeamMeta(teamName),
+    metaMembers: [...(await deps.readMetaMembers(teamName))],
   });
 
   const helpers = createOpenCodeRuntimeRecoveryIdentityHelpers({
     getTeamsBasePath: () => deps.teamsBasePath,
     getCurrentOpenCodeRuntimeRunId: (teamName, laneId) =>
-      deps.getCurrentOpenCodeRuntimeRunId?.(teamName, laneId) ?? null,
+      deps.getCurrentOpenCodeRuntimeRunId(teamName, laneId),
     readOpenCodeMemberDirectory,
     resolveOpenCodeMemberIdentityFromDirectory: (_teamName, memberName, directory) =>
       resolveIdentityFromDirectory({ memberName, directory }),
   });
 
+  const resolveOpenCodeMemberDeliveryIdentity = async (
+    teamName: string,
+    memberName: string
+  ): Promise<OpenCodeMemberIdentityResolution> => {
+    const [directory, secondaryRuntimeRuns] = await Promise.all([
+      readOpenCodeMemberDirectory(teamName),
+      deps.readSecondaryRuntimeRuns(teamName),
+    ]);
+    return resolveOpenCodeMemberDeliveryIdentityFromDirectory({
+      teamName,
+      memberName,
+      directory,
+      resolveOpenCodeMemberIdentityFromDirectory: (_teamName, directoryMemberName, dir) =>
+        resolveIdentityFromDirectory({
+          memberName: directoryMemberName,
+          directory: dir,
+          secondaryRuntimeRuns,
+        }),
+    });
+  };
+
   return {
     readOpenCodeMemberDirectory,
-
     resolveOpenCodeMemberIdentityFromDirectory: (_teamName, memberName, directory) =>
       resolveIdentityFromDirectory({ memberName, directory }),
-
-    async resolveOpenCodeMemberDeliveryIdentity(teamName, memberName) {
-      const directory = await readOpenCodeMemberDirectory(teamName);
-      const secondaryRuntimeRuns = await deps.readSecondaryRuntimeRuns?.(teamName);
-      return resolveOpenCodeMemberDeliveryIdentityFromDirectory({
-        teamName,
-        memberName,
-        directory,
-        resolveOpenCodeMemberIdentityFromDirectory: (_teamName, directoryMemberName, dir) =>
-          resolveIdentityFromDirectory({
-            memberName: directoryMemberName,
-            directory: dir,
-            ...(secondaryRuntimeRuns ? { secondaryRuntimeRuns } : {}),
-          }),
-      });
-    },
-
-    async isOpenCodeRuntimeRecipient(teamName, memberName) {
-      const identity = await this.resolveOpenCodeMemberDeliveryIdentity(teamName, memberName);
-      return identity.ok;
-    },
-
+    resolveOpenCodeMemberDeliveryIdentity,
+    isOpenCodeRuntimeRecipient: async (teamName, memberName) =>
+      (await resolveOpenCodeMemberDeliveryIdentity(teamName, memberName)).ok,
     resolveCurrentOpenCodeRuntimeRunId: (teamName, laneId) =>
       helpers.resolveCurrentOpenCodeRuntimeRunId(teamName, laneId),
-
     isOpenCodeRuntimeLaneIndexActive: (teamName, laneId) =>
       helpers.isOpenCodeRuntimeLaneIndexActive(teamName, laneId),
   };

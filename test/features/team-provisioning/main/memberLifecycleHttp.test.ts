@@ -8,7 +8,6 @@ import {
   BoundControlContext,
 } from '../../../../src/features/external-agent-connection/main/BoundControlContext';
 import { registerBoundControlHttp } from '../../../../src/features/external-agent-connection/main/registerBoundControlHttp';
-
 import { registerMemberLifecycleHttp } from '../../../../src/features/team-provisioning/main/adapters/input/registerMemberLifecycleHttp';
 import { createMemberLifecycle } from '../../../../src/features/team-provisioning/main/composition/createMemberLifecycle';
 

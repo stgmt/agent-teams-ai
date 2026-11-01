@@ -44,6 +44,10 @@ function deliveryPort(delivered: OpenCodeMemberMessageDeliveryInput[]) {
   return createNativeOpenCodeMemberDeliveryPort({
     teamsBasePath,
     readConfig: async () => config,
+    readTeamMeta: async () => null,
+    readMetaMembers: async () => [],
+    readSecondaryRuntimeRuns: async () => [],
+    getCurrentOpenCodeRuntimeRunId: () => null,
     readInbox: async (team, inbox) =>
       (await new TeamInboxReader().getMessagesFor(team, inbox)) as never,
     readTasks: async () => [],

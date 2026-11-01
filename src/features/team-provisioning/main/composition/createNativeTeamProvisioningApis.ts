@@ -10,10 +10,7 @@ import { NativeTeamDiagnostics } from '../adapters/output/NativeTeamDiagnostics'
 import { createBoundTeamLiveStatusQueries } from './createBoundTeamLiveStatusQueries';
 import { createNativeRuntimeSurface } from './createNativeRuntimeSurface';
 
-import type {
-  NativeOpenCodeDeliveryStatusReader,
-  NativeOpenCodeMemberDeliveryPort,
-} from '../adapters/input/NativeTeamMessagingApi';
+import type { NativeOpenCodeMemberDeliveryPort } from '../adapters/input/NativeTeamMessagingApi';
 import type { NativeDesktopTeamRuntime } from './createNativeDesktopTeamRuntime';
 import type {
   TeamCrossTeamMessagingApi,
@@ -31,8 +28,6 @@ export interface NativeTeamProvisioningApisDependencies {
   detachMemberData?(teamName: string, memberName: string): Promise<void>;
   /** Production OpenCode member prompt ledger; owns delivery state, not runs. */
   openCodeMemberDelivery?: NativeOpenCodeMemberDeliveryPort;
-  /** Ledger-only delivery status, used when the full delivery port is absent. */
-  openCodeDeliveryStatus?: NativeOpenCodeDeliveryStatusReader;
   now(): string;
 }
 
@@ -72,7 +67,7 @@ export function createNativeTeamProvisioningApis(
       logs: deps.runtime.logs,
     }),
     claudeLogs: new NativeTeamClaudeLogs(deps.runtime.logs),
-    messaging: buildMessagingApi(lifecycle, deps.openCodeMemberDelivery, deps.openCodeDeliveryStatus),
+    messaging: buildMessagingApi(lifecycle, deps.openCodeMemberDelivery),
     toolApproval: new NativeTeamToolApprovalApi({
       runs: lifecycle.runs,
       commands: lifecycle.memberCommands,
@@ -98,8 +93,7 @@ export function createNativeMcpConsumerQuery(
 
 function buildMessagingApi(
   lifecycle: NativeDesktopTeamRuntime['lifecycle'],
-  openCodeMemberDelivery: NativeOpenCodeMemberDeliveryPort | undefined,
-  openCodeDeliveryStatus?: NativeOpenCodeDeliveryStatusReader
+  openCodeMemberDelivery: NativeOpenCodeMemberDeliveryPort | undefined
 ): TeamIpcHandlerApis['messaging'] {
   // The lifecycle owns the ledger driver, so the wake it arms is the same one
   // its release hook cancels; building a second one here would leak timers.
@@ -112,7 +106,6 @@ function buildMessagingApi(
     sendLeadMessage: lifecycle.sendLeadMessage,
     relayLeadInboxMessages: (teamName) => lifecycle.relay.relay(teamName),
     ...(openCodeMemberDelivery ? { openCodeMemberDelivery } : {}),
-    ...(openCodeDeliveryStatus ? { openCodeDeliveryStatus } : {}),
     ...(supervisor
       ? {
           scheduleDeliveryVerification: (input) => supervisor.scheduleDeliveryVerification(input),
@@ -138,14 +131,9 @@ export function createNativeLanguageChangeNotifier(
   deps: NativeLanguageChangeNotifierDependencies & {
     runtime: Pick<NativeDesktopTeamRuntime, 'runtime' | 'lifecycle'>;
     openCodeMemberDelivery?: NativeOpenCodeMemberDeliveryPort;
-    openCodeDeliveryStatus?: NativeOpenCodeDeliveryStatusReader;
   }
 ): NativeLanguageChangeNotifier {
-  const messaging = buildMessagingApi(
-    deps.runtime.lifecycle,
-    deps.openCodeMemberDelivery,
-    deps.openCodeDeliveryStatus
-  );
+  const messaging = buildMessagingApi(deps.runtime.lifecycle, deps.openCodeMemberDelivery);
   return new NativeLanguageChangeNotifier({
     getAliveTeams: () => deps.runtime.runtime.getAliveTeams(),
     readConfig: (teamName) => deps.readConfig(teamName),

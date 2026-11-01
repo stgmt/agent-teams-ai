@@ -4,10 +4,9 @@ import { basename, dirname, isAbsolute } from 'node:path';
 import { validateTeamName } from '@main/services/team/TeamIdentifierValidation';
 import { boundedDiagnosticString } from '@shared/utils/diagnosticsRedaction';
 import { isCanonicalSettingsLeadMember } from '@shared/utils/leadDetection';
+import agentTeamsController from 'agent-teams-controller';
 
 import { LeadReportSourceFailure } from '../../../core/application/ports';
-
-import { controllerModule } from './controllerModuleInterop';
 
 import type {
   EvidenceRef,
@@ -284,7 +283,7 @@ export class NodeLeadReportSources implements LeadReportSources {
   private board(run: LeadReportRunIdentity, source: 'tasks' | 'results'): AgendaItem[] {
     this.validate(run);
     try {
-      const controller = controllerModule.createController({
+      const controller = agentTeamsController.createController({
         teamName: run.teamName,
         claudeDir: dirname(this.deps.teamsRoot),
         allowUserMessageSender: true,

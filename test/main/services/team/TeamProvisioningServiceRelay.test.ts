@@ -151,7 +151,10 @@ vi.mock(
   }
 );
 
-vi.mock('agent-teams-controller', () => ({
+vi.mock('agent-teams-controller', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('agent-teams-controller')>();
+  return {
+    ...actual,
   AGENT_TEAMS_TEAMMATE_OPERATIONAL_TOOL_NAMES: [] as readonly string[],
   AGENT_TEAMS_OPERATIONAL_LEAD_TOOL_NAMES: [] as readonly string[],
   AGENT_TEAMS_NAMESPACED_LEAD_BOOTSTRAP_TOOL_NAMES: [] as readonly string[],
@@ -170,7 +173,8 @@ vi.mock('agent-teams-controller', () => ({
     buildProcessProtocolText: (teamName: string) =>
       `BACKGROUND PROCESS REGISTRATION (mock for ${teamName})`,
   },
-}));
+};
+});
 
 import { buildLegacyInboxMessageId } from '../../../../src/main/services/team/inboxMessageIdentity';
 import { OpenCodePromptDeliveryContinuityScan } from '../../../../src/main/services/team/opencode/delivery/OpenCodePromptDeliveryContinuityScan';

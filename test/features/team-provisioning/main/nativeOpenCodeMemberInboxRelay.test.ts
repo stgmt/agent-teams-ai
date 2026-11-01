@@ -55,6 +55,10 @@ function build(
   const identity = createNativeOpenCodeMemberIdentity({
     teamsBasePath,
     readConfig: async () => config,
+    readTeamMeta: async () => null,
+    readMetaMembers: async () => [],
+    readSecondaryRuntimeRuns: async () => [],
+    getCurrentOpenCodeRuntimeRunId: () => null,
   });
   const logging = {
     info: () => undefined,

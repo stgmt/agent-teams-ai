@@ -136,6 +136,12 @@ export class NativeLeadInboxRelay {
       throw new Error('Lead relay polling interval must be a positive integer');
     this.stopPolling(teamName);
     const handle = setInterval(() => {
+      // Polling is work on a registered team. A team removed from the registry
+      // answers no snapshot, so its poll ends here instead of throwing per tick.
+      if (!this.deps.runs.find(teamName)) {
+        this.stopPolling(teamName);
+        return;
+      }
       void this.relay(teamName).catch(() => undefined);
     }, intervalMs);
     handle.unref?.();

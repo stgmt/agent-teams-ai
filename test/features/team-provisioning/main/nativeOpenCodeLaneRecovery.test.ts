@@ -6,7 +6,24 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { createNativeOpenCodeLaneRecovery } from '../../../../src/features/team-provisioning/main/adapters/output/NativeOpenCodeLaneRecovery';
-import { createNativeOpenCodeMemberIdentity } from '../../../../src/features/team-provisioning/main/adapters/output/NativeOpenCodeMemberIdentity';
+import {
+  createNativeOpenCodeMemberIdentity,
+  type NativeOpenCodeMemberIdentityDependencies,
+} from '../../../../src/features/team-provisioning/main/adapters/output/NativeOpenCodeMemberIdentity';
+
+function identityDeps(
+  overrides: Partial<NativeOpenCodeMemberIdentityDependencies> &
+    Pick<NativeOpenCodeMemberIdentityDependencies, 'teamsBasePath' | 'readConfig'>
+): NativeOpenCodeMemberIdentityDependencies {
+  return {
+    readTeamMeta: async () => null,
+    readMetaMembers: async () => [],
+    readSecondaryRuntimeRuns: async () => [],
+    getCurrentOpenCodeRuntimeRunId: () => null,
+    ...overrides,
+  };
+}
+
 import { readOpenCodeRuntimeLaneIndex } from '../../../../src/main/services/team/opencode/store/OpenCodeRuntimeManifestEvidenceReader';
 import { setClaudeBasePathOverride } from '../../../../src/main/utils/pathDecoder';
 
@@ -58,10 +75,10 @@ function build(options: {
   const cleanups: string[] = [];
   const recovery = createNativeOpenCodeLaneRecovery({
     teamsBasePath,
-    identity: createNativeOpenCodeMemberIdentity({
+    identity: createNativeOpenCodeMemberIdentity(identityDeps({
       teamsBasePath,
       readConfig: async () => null,
-    }),
+    })),
     readConfig: async () => null,
     logger: {
       info: (message) => events.push(message),
@@ -151,7 +168,7 @@ describe('native OpenCode lane recovery', () => {
     const laneIndex = await readOpenCodeRuntimeLaneIndex(teamsBasePath, teamName);
     expect(laneIndex?.lanes[laneId]?.state).toBe('active');
     await expect(
-      createNativeOpenCodeMemberIdentity({ teamsBasePath, readConfig: async () => null })
+      createNativeOpenCodeMemberIdentity(identityDeps({ teamsBasePath, readConfig: async () => null }))
         .resolveCurrentOpenCodeRuntimeRunId(teamName, laneId)
     ).resolves.toBe('run-committed');
   });

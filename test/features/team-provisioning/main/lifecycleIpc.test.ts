@@ -4,16 +4,16 @@ import { EventEmitter } from 'node:events';
 import Fastify from 'fastify';
 import { describe, expect, it, vi } from 'vitest';
 
-import { BoundControlContext } from '../../../../src/features/external-agent-connection/main/BoundControlContext';
 import { BOUND_CONTROL_CONTEXT_HEADER } from '../../../../src/features/external-agent-connection/contracts';
+import { BoundControlContext } from '../../../../src/features/external-agent-connection/main/BoundControlContext';
 import { registerBoundControlHttp } from '../../../../src/features/external-agent-connection/main/registerBoundControlHttp';
-import { createTeamLifecycleBridge } from '../../../../src/features/team-provisioning/preload/createTeamLifecycleBridge';
-import { watchTeamLifecycle } from '../../../../src/features/team-provisioning/renderer/watchTeamLifecycle';
-import { registerLifecycleSnapshotHttp } from '../../../../src/features/team-provisioning/main/adapters/input/registerLifecycleSnapshotHttp';
 import { TEAM_LIFECYCLE_CHANNELS } from '../../../../src/features/team-provisioning/contracts';
 import { MemberLifecycleRegistry } from '../../../../src/features/team-provisioning/core/domain/MemberLifecycleRegistry';
 import { registerLifecycleIpc } from '../../../../src/features/team-provisioning/main/adapters/input/registerLifecycleIpc';
+import { registerLifecycleSnapshotHttp } from '../../../../src/features/team-provisioning/main/adapters/input/registerLifecycleSnapshotHttp';
 import { createBoundLifecycleQueries } from '../../../../src/features/team-provisioning/main/composition/createBoundLifecycleQueries';
+import { createTeamLifecycleBridge } from '../../../../src/features/team-provisioning/preload/createTeamLifecycleBridge';
+import { watchTeamLifecycle } from '../../../../src/features/team-provisioning/renderer/watchTeamLifecycle';
 
 import type { InvokeIpcWithResult } from '../../../../src/features/team-provisioning/preload/createTeamMemberSettingsBridge';
 import type { IpcMain, IpcMainInvokeEvent, WebContents } from 'electron';

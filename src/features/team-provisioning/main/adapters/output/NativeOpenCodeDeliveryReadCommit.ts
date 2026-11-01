@@ -6,10 +6,7 @@ import { openCodeTaskRefsIncludeAll } from '@main/services/team/opencode/deliver
 
 import type { OpenCodeDeliveryResponseState } from '@main/services/team/opencode/bridge/OpenCodeBridgeCommandContract';
 import type { OpenCodeGroupAcknowledgementReader } from '@main/services/team/opencode/delivery/OpenCodeGroupAcknowledgement';
-import type {
-  OpenCodePromptDeliveryLedgerRecord,
-  OpenCodePromptDeliveryLedgerStore,
-} from '@main/services/team/opencode/delivery/OpenCodePromptDeliveryLedger';
+import type { OpenCodePromptDeliveryLedgerRecord } from '@main/services/team/opencode/delivery/OpenCodePromptDeliveryLedger';
 import type { OpenCodeVisibleReplyProof } from '@main/services/team/opencode/delivery/OpenCodePromptDeliveryWatchdog';
 import type { AgentActionMode, TaskRef } from '@shared/types/team';
 

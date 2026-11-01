@@ -1,6 +1,6 @@
 import { dirname } from 'node:path';
 
-import { controllerModule } from './controllerModuleInterop';
+import agentTeamsController from 'agent-teams-controller';
 
 import type { DeliveredLeadReport, LeadReportRunIdentity } from '../../../contracts';
 import type { LeadReportDelivery } from '../../../core/application/ports';
@@ -23,7 +23,7 @@ export class NodeLeadReportDelivery implements LeadReportDelivery {
   ): Promise<{ messageId: string }> {
     const from = await this.deps.leadName(input.run);
     await this.deps.assertCurrentRun(input.run);
-    const controller = controllerModule.createController({
+    const controller = agentTeamsController.createController({
       teamName: input.run.teamName,
       claudeDir: dirname(this.deps.teamsRoot),
       allowUserMessageSender: true,

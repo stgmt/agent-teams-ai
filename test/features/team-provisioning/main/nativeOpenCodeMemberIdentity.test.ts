@@ -5,7 +5,24 @@ import { dirname, join } from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { createNativeOpenCodeMemberIdentity } from '../../../../src/features/team-provisioning/main/adapters/output/NativeOpenCodeMemberIdentity';
+import {
+  createNativeOpenCodeMemberIdentity,
+  type NativeOpenCodeMemberIdentityDependencies,
+} from '../../../../src/features/team-provisioning/main/adapters/output/NativeOpenCodeMemberIdentity';
+
+function identityDeps(
+  overrides: Partial<NativeOpenCodeMemberIdentityDependencies> &
+    Pick<NativeOpenCodeMemberIdentityDependencies, 'teamsBasePath' | 'readConfig'>
+): NativeOpenCodeMemberIdentityDependencies {
+  return {
+    readTeamMeta: async () => null,
+    readMetaMembers: async () => [],
+    readSecondaryRuntimeRuns: async () => [],
+    getCurrentOpenCodeRuntimeRunId: () => null,
+    ...overrides,
+  };
+}
+
 import {
   getOpenCodeRuntimeLaneIndexPath,
   getOpenCodeRuntimeManifestPath,
@@ -49,10 +66,10 @@ function config(providerId: string | undefined): TeamConfig {
 
 describe('native OpenCode member identity', () => {
   it('resolves a member to a lane when the team was configured with OpenCode', async () => {
-    const identity = await createNativeOpenCodeMemberIdentity({
+    const identity = await createNativeOpenCodeMemberIdentity(identityDeps({
       teamsBasePath: '/TEST/teams',
       readConfig: async () => config('opencode'),
-    }).resolveOpenCodeMemberDeliveryIdentity(teamName, 'builder');
+    })).resolveOpenCodeMemberDeliveryIdentity(teamName, 'builder');
 
     expect(identity.ok).toBe(true);
     if (!identity.ok) throw new Error('expected a resolvable identity');
@@ -61,10 +78,10 @@ describe('native OpenCode member identity', () => {
   });
 
   it('refuses a member of a team that is not OpenCode', async () => {
-    const subject = createNativeOpenCodeMemberIdentity({
+    const subject = createNativeOpenCodeMemberIdentity(identityDeps({
       teamsBasePath: '/TEST/teams',
       readConfig: async () => config('claude'),
-    });
+    }));
 
     await expect(
       subject.resolveOpenCodeMemberDeliveryIdentity(teamName, 'builder')
@@ -73,7 +90,7 @@ describe('native OpenCode member identity', () => {
   });
 
   it('uses persisted launch metadata to place a member without its own provider entry', async () => {
-    const subject = createNativeOpenCodeMemberIdentity({
+    const subject = createNativeOpenCodeMemberIdentity(identityDeps({
       teamsBasePath: '/TEST/teams',
       // A team launched as OpenCode records the provider once, not per member.
       readConfig: async () =>
@@ -90,16 +107,37 @@ describe('native OpenCode member identity', () => {
           ],
         }) as never,
       readTeamMeta: async () => ({ launchIdentity: { providerId: 'opencode' } }),
-    });
+    }));
 
     await expect(subject.isOpenCodeRuntimeRecipient(teamName, 'builder')).resolves.toBe(true);
   });
 
+  it('resolves a member that only launch metadata still records', async () => {
+    const subject = createNativeOpenCodeMemberIdentity(
+      identityDeps({
+        teamsBasePath: '/TEST/teams',
+        readConfig: async () =>
+          ({
+            name: 'Alpha',
+            projectPath: '/TEST/alpha',
+            members: [{ name: 'team-lead', agentType: 'team-lead', providerId: 'opencode' }],
+          }) as never,
+        readMetaMembers: async () => [
+          { name: 'builder', agentType: 'general-purpose', provider: 'opencode' } as never,
+        ],
+      })
+    );
+
+    await expect(
+      subject.resolveOpenCodeMemberDeliveryIdentity(teamName, 'builder')
+    ).resolves.toMatchObject({ ok: true, canonicalMemberName: 'builder' });
+  });
+
   it('reports an unknown member as unavailable rather than guessing a lane', async () => {
-    const subject = createNativeOpenCodeMemberIdentity({
+    const subject = createNativeOpenCodeMemberIdentity(identityDeps({
       teamsBasePath: '/TEST/teams',
       readConfig: async () => config('opencode'),
-    });
+    }));
 
     await expect(
       subject.resolveOpenCodeMemberDeliveryIdentity(teamName, 'nobody')
@@ -120,12 +158,12 @@ describe('native OpenCode run resolution', () => {
       manifest(teamName, 'run-on-disk')
     );
 
-    const subject = createNativeOpenCodeMemberIdentity({
+    const subject = createNativeOpenCodeMemberIdentity(identityDeps({
       teamsBasePath: base,
       readConfig: async () => null,
       getCurrentOpenCodeRuntimeRunId: (team, lane) =>
         team === teamName && lane === 'primary' ? 'run-in-memory' : null,
-    });
+    }));
 
     await expect(subject.resolveCurrentOpenCodeRuntimeRunId(teamName, 'primary')).resolves.toBe(
       'run-in-memory'
@@ -155,10 +193,10 @@ describe('native OpenCode run resolution', () => {
       manifest(teamName, 'run-secondary')
     );
 
-    const subject = createNativeOpenCodeMemberIdentity({
+    const subject = createNativeOpenCodeMemberIdentity(identityDeps({
       teamsBasePath: base,
       readConfig: async () => null,
-    });
+    }));
 
     await expect(subject.resolveCurrentOpenCodeRuntimeRunId(teamName, 'primary')).resolves.toBe(
       'run-primary'
@@ -175,10 +213,10 @@ describe('native OpenCode run resolution', () => {
 
   it('treats a missing lane index as no lane at all', async () => {
     const base = await teamsBasePath();
-    const subject = createNativeOpenCodeMemberIdentity({
+    const subject = createNativeOpenCodeMemberIdentity(identityDeps({
       teamsBasePath: base,
       readConfig: async () => null,
-    });
+    }));
 
     await expect(subject.resolveCurrentOpenCodeRuntimeRunId(teamName, 'primary')).resolves.toBeNull();
     await expect(subject.isOpenCodeRuntimeLaneIndexActive(teamName, 'primary')).resolves.toBe(

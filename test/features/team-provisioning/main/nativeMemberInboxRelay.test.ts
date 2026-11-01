@@ -204,4 +204,31 @@ describe('native member inbox relay', () => {
     expect(getMessagesFor).not.toHaveBeenCalledWith(run.teamName, 'team-lead');
     relay.dispose();
   });
+  it('ends polling when the team is no longer registered', async () => {
+    vi.useFakeTimers();
+    let registered = true;
+    const snapshots = vi.fn(() => snapshot());
+    const relay = new NativeMemberInboxRelay({
+      runs: {
+        find: () => (registered ? snapshot() : null),
+        isLive: () => true,
+      },
+      snapshot: snapshots,
+      inbox: { getMessagesFor: async () => [] },
+      send: async () => undefined,
+      teamsRoot: 'TEST-teams-root',
+    });
+
+    relay.startPolling(run.teamName, 10);
+    await vi.advanceTimersByTimeAsync(30);
+    expect(snapshots.mock.calls.length).toBeGreaterThan(0);
+
+    registered = false;
+    const beforeRemoval = snapshots.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(60);
+
+    expect(snapshots.mock.calls.length).toBe(beforeRemoval);
+    relay.dispose();
+  });
+
 });

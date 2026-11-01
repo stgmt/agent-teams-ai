@@ -43,7 +43,6 @@ export function createNodeLeadReporting(deps: Dependencies): NodeLeadReporting {
   const now = (): string => new Date().toISOString();
   // One source budget stays below the controller's HTTP timeout (30s) with headroom.
   const maxSourceWaitMs = 10_000;
-  const requestDeadlineMs = 180_000;
   const sources = new NodeLeadReportSources({
     teamsRoot: deps.teamsRoot,
     members: deps.members,

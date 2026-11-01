@@ -6,6 +6,7 @@ import { createNativeOpenCodeMemberInboxRelay } from '../adapters/output/NativeO
 import { createNativeOpenCodeVisibleReplyProof } from '../adapters/output/NativeOpenCodeVisibleReplyProof';
 
 import type { NativeOpenCodeMemberDeliveryPort } from '../adapters/input/NativeTeamMessagingApi';
+import type { OpenCodeSecondaryLaneRun } from '../adapters/output/NativeOpenCodeMemberIdentity';
 import type { OpenCodeMemberMessageDeliveryInput } from '@main/services/team/opencode/delivery/OpenCodeMemberMessageDeliveryPorts';
 import type { OpenCodeMemberInboxDelivery } from '@main/services/team/opencode/delivery/OpenCodeMemberMessageDeliveryPorts';
 import type { OpenCodePromptDeliveryLedgerRecord } from '@main/services/team/opencode/delivery/OpenCodePromptDeliveryLedger';
@@ -35,7 +36,7 @@ import type {
 export interface NativeOpenCodeMemberDeliveryPortDependencies {
   teamsBasePath: string;
   readConfig(teamName: string): Promise<TeamConfig | null>;
-  readTeamMeta?(teamName: string): Promise<{
+  readTeamMeta(teamName: string): Promise<{
     launchIdentity?: {
       providerId?: unknown;
       selectedModel?: unknown;
@@ -45,10 +46,9 @@ export interface NativeOpenCodeMemberDeliveryPortDependencies {
     model?: unknown;
     cwd?: unknown;
   } | null>;
-  readSecondaryRuntimeRuns?(
-    teamName: string
-  ): Promise<readonly { laneId: string; memberName: string; cwd?: string }[]>;
-  getCurrentOpenCodeRuntimeRunId?(teamName: string, laneId: string): string | null;
+  readMetaMembers(teamName: string): Promise<readonly TeamMember[]>;
+  readSecondaryRuntimeRuns(teamName: string): Promise<readonly OpenCodeSecondaryLaneRun[]>;
+  getCurrentOpenCodeRuntimeRunId(teamName: string, laneId: string): string | null;
   readInbox(teamName: string, inboxName: string): Promise<readonly unknown[]>;
   readTasks(teamName: string): Promise<readonly TeamTask[]>;
 
@@ -110,13 +110,10 @@ export function createNativeOpenCodeMemberDeliveryPort(
   const identity = createNativeOpenCodeMemberIdentity({
     teamsBasePath: deps.teamsBasePath,
     readConfig: deps.readConfig,
-    ...(deps.readTeamMeta ? { readTeamMeta: deps.readTeamMeta } : {}),
-    ...(deps.readSecondaryRuntimeRuns
-      ? { readSecondaryRuntimeRuns: deps.readSecondaryRuntimeRuns }
-      : {}),
-    ...(deps.getCurrentOpenCodeRuntimeRunId
-      ? { getCurrentOpenCodeRuntimeRunId: deps.getCurrentOpenCodeRuntimeRunId }
-      : {}),
+    readTeamMeta: deps.readTeamMeta,
+    readMetaMembers: deps.readMetaMembers,
+    readSecondaryRuntimeRuns: deps.readSecondaryRuntimeRuns,
+    getCurrentOpenCodeRuntimeRunId: deps.getCurrentOpenCodeRuntimeRunId,
   });
   const ledgerTransitions = createNativeOpenCodeLedgerTransitions({
     logging: {

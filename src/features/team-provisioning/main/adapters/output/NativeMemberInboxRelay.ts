@@ -72,6 +72,12 @@ export class NativeMemberInboxRelay {
       throw new Error('Member relay polling interval must be a positive integer');
     this.stopPolling(teamName);
     const handle = setInterval(() => {
+      // Polling is work on a registered team. A team removed from the registry
+      // answers no snapshot, so its poll ends here instead of throwing per tick.
+      if (!this.deps.runs.find(teamName)) {
+        this.stopPolling(teamName);
+        return;
+      }
       const snapshot = this.deps.snapshot(teamName);
       for (const member of Object.values(snapshot.members)) {
         if (member.role !== 'member' || member.membership !== 'configured') continue;
