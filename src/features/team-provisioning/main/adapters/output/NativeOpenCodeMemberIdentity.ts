@@ -56,6 +56,8 @@ export interface NativeOpenCodeMemberIdentity {
   /** The run the lane is on, from memory when live and from disk evidence otherwise. */
   resolveCurrentOpenCodeRuntimeRunId(teamName: string, laneId: string): Promise<string | null>;
   isOpenCodeRuntimeLaneIndexActive(teamName: string, laneId: string): Promise<boolean>;
+  /** The members a lane actually carries, for a sweep that walks lanes rather than members. */
+  resolveMembersForRuntimeLane(teamName: string, laneId: string): Promise<string[]>;
 }
 
 export function createNativeOpenCodeMemberIdentity(
@@ -110,5 +112,7 @@ export function createNativeOpenCodeMemberIdentity(
       helpers.resolveCurrentOpenCodeRuntimeRunId(teamName, laneId),
     isOpenCodeRuntimeLaneIndexActive: (teamName, laneId) =>
       helpers.isOpenCodeRuntimeLaneIndexActive(teamName, laneId),
+    resolveMembersForRuntimeLane: (teamName, laneId) =>
+      helpers.resolveOpenCodeMembersForRuntimeLane(teamName, laneId),
   };
 }
