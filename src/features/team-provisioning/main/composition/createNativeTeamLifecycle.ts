@@ -22,6 +22,7 @@ import { NativeLeadInboxRelay } from '../adapters/output/NativeLeadInboxRelay';
 import { NativeLeadLiveMessageStore } from '../adapters/output/NativeLeadLiveMessageStore';
 import { NativeLeadOutputStream } from '../adapters/output/NativeLeadOutputStream';
 import { NativeLeadRestartAssessment } from '../adapters/output/NativeLeadRestartAssessment';
+import { NativeLeadRuntimeRestart } from '../adapters/output/NativeLeadRuntimeRestart';
 import { NativeMemberInboxRelay } from '../adapters/output/NativeMemberInboxRelay';
 import { createObservedMemberPlanner } from '../adapters/output/NativeObservedMemberPlanner';
 import { NativeOpenCodePromptDeliverySupervisor } from '../adapters/output/NativeOpenCodePromptDeliverySupervisor';
@@ -121,6 +122,8 @@ export interface NativeTeamLifecycle {
   leadOutput: Pick<NativeLeadOutputStream, 'facts' | 'detectedSessionId' | 'clearRun'>;
   /** Lead-only restart admission over native run, turn, approval, and session facts. */
   leadRestart: Pick<NativeLeadRestartAssessment, 'assess'>;
+  /** The lead's process owner: fenced in-place restart and shutdown cancellation. */
+  leadRuntime: Pick<NativeLeadRuntimeRestart, 'restart' | 'assess' | 'cancelPendingLaunches'>;
   /**
    * Provider each member was configured with for this run, captured when the
    * launch read its canonical settings. It answers "was this run ever an
@@ -373,6 +376,12 @@ export function createNativeTeamLifecycle(
     leadOutput,
     approvals,
   });
+  const leadRuntime = new NativeLeadRuntimeRestart({
+    assessment: leadRestart,
+    lifecycle: lifecycle.commands,
+    runs,
+    leadOutput,
+  });
   const inboxReader = deps.inboxReader ?? new TeamInboxReader();
   if (deps.openCodeLeadDelivery) {
     const deliveryLog = createLogger('team-provisioning:open-code-delivery');
@@ -466,6 +475,7 @@ export function createNativeTeamLifecycle(
     liveLeadMessages,
     leadOutput,
     leadRestart,
+    leadRuntime,
     configuredProviders: (runId) => configuredProvidersByRun.get(runId) ?? null,
     promptDelivery,
     crossTeamReplies,

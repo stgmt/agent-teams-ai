@@ -80,6 +80,18 @@ function bootstrap(patch: Record<string, unknown> = {}) {
 }
 
 describe('native Claude launch planning with app-owned roster and scoped tools', () => {
+  it('resumes the captured session instead of starting a new one', async () => {
+    const { planner } = setup();
+    const plan = await planner.prepare(
+      { ...settings, resumeSessionId: 'TEST-session' },
+      token,
+      new AbortController().signal
+    );
+    const index = plan.args.indexOf('--resume');
+    expect(index).toBeGreaterThan(-1);
+    expect(plan.args[index + 1]).toBe('TEST-session');
+  });
+
   it('prepares a lead-only bootstrap, preserves selected provider arguments and denies roster changes', async () => {
     const { planner, prepareArtifacts } = setup();
     const plan = await planner.prepare(settings, token, new AbortController().signal);

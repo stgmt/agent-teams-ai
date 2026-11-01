@@ -258,6 +258,7 @@ export class NativeClaudeLaunchPlanner implements NodeMemberLaunchPlanner {
           ? ['--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions']
           : ['--permission-prompt-tool', 'stdio', '--permission-mode', 'default']),
         ...provider.args,
+        ...(settings.resumeSessionId ? ['--resume', settings.resumeSessionId] : []),
       ];
       const env = withoutParentGitSelection({
         ...provider.env,

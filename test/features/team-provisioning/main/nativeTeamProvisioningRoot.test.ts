@@ -108,14 +108,6 @@ function buildDeps(teamsRoot: string): NativeTeamProvisioningRootDependencies {
     inboxRelay: {
       relayOpenCodeMemberInboxMessages: async () => ({ diagnostics: [], delivered: 0 }) as never,
     },
-    leadRuntime: {
-      restartLeadRuntime: async () => undefined,
-      assessLeadRuntimeRestart: async () => ({
-        outcome: 'relaunch_required',
-        reason: 'No exact app-owned live lead run',
-      }),
-    },
-    cancelPendingLaunches: async () => undefined,
   };
 }
 

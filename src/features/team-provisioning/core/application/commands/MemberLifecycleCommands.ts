@@ -37,6 +37,11 @@ interface Dependencies {
   ): Promise<void>;
 }
 
+/** Launch settings a restart applies on top of the resolved member configuration. */
+export type LaunchOverrides = Partial<
+  Pick<ConfiguredMemberLaunch, 'model' | 'effort' | 'resumeSessionId'>
+>;
+
 interface PendingRestart {
   target: Readonly<MemberGenerationTarget>;
   abort: AbortController;
@@ -59,6 +64,8 @@ export class MemberLifecycleCommands {
   private readonly executions = new Map<string, Execution>();
   private readonly teamLaunches = new Set<string>();
   private readonly restarts = new Map<string, PendingRestart>();
+  /** One-shot launch overrides, consumed by the next spawn of that member. */
+  private readonly overrides = new Map<string, Readonly<LaunchOverrides>>();
 
   /** Lane work lives in its own collaborator; the two halves share only ports. */
   readonly lanes: MemberLaneCommands;
@@ -399,6 +406,28 @@ export class MemberLifecycleCommands {
     return stops;
   }
 
+  /**
+   * Shutdown path: aborts every launch that has not settled yet and waits for the
+   * owned processes and lanes to drain. Nothing new can be admitted afterwards,
+   * because the registry stops accepting starts on shutdown.
+   */
+  async cancelPendingLaunches(): Promise<void> {
+    const stops: Promise<void>[] = [];
+    for (const execution of [...this.executions.values()]) {
+      execution.abort.abort();
+      stops.push(this.stopOwnedRuntime(execution));
+    }
+    for (const group of this.lanes.entries()) {
+      group.abort.abort();
+      stops.push(this.lanes.stopLaneGroup(group));
+    }
+    const results = await Promise.allSettled(stops);
+    const failures = results.flatMap((result) =>
+      result.status === 'rejected' ? [result.reason as unknown] : []
+    );
+    if (failures.length) throw new AggregateError(failures, 'Pending launch cancellation failed');
+  }
+
   hasUnreleased(team: TeamRunIdentity): boolean {
     return (
       [...this.executions.values()].some(
@@ -469,8 +498,43 @@ export class MemberLifecycleCommands {
     return startLane.call(this.ports.runtime, settings, token, signal);
   }
 
+  /**
+   * Restarts the lead in place with new launch settings. The run id is fenced, so
+   * a caller that lost the run cannot replace a process it no longer owns, and the
+   * overrides apply to exactly one launch: the next spawn consumes them.
+   */
+  async restartLeadWithSettings(input: {
+    team: Readonly<TeamRunIdentity>;
+    memberName: string;
+    generation: number;
+    expectedRunId: string;
+    overrides: Readonly<LaunchOverrides>;
+  }): Promise<MemberStartAdmission> {
+    await this.ports.gate.run(input.team.teamName, async () => {
+      if (this.ports.registry.aliveRunId(input.team.teamName) !== input.expectedRunId)
+        throw new Error('Lead run owner changed');
+      const member = this.ports.registry.snapshot(input.team.teamName).members[input.memberName];
+      if (!member || member.role !== 'lead') throw new Error('Lead member not found');
+      this.overrides.set(key(input.team, input.memberName), input.overrides);
+    });
+    try {
+      return await this.restart(
+        { ...input.team, memberName: input.memberName, generation: input.generation },
+        undefined,
+        { allowLead: true }
+      );
+    } finally {
+      // A launch that never reached spawn must not leave settings for a later one.
+      this.overrides.delete(key(input.team, input.memberName));
+    }
+  }
+
+
   private async spawn(execution: Execution): Promise<void> {
     const { token } = execution;
+    // Consumed before the first await, so a cancelled launch cannot inherit settings.
+    const overrides = this.overrides.get(key(token, token.memberName));
+    this.overrides.delete(key(token, token.memberName));
     try {
       const settings = await awaitWithAbort(
         this.ports.settings.findConfiguredMember(token, token.memberName),
@@ -487,6 +551,7 @@ export class MemberLifecycleCommands {
       }
       const launchSettings = Object.freeze({
         ...settings,
+        ...(overrides ?? {}),
         team: Object.freeze({ ...settings.team }),
       });
       const kind = this.ports.runtime.kind?.(settings.providerId) ?? 'process';

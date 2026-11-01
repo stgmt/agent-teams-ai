@@ -28,15 +28,6 @@ import type { OpenCodeMemberDeliveryBusyInput } from '../adapters/output/NativeO
 import type { NativeOpenCodeMemberInboxRelay } from '../adapters/output/NativeOpenCodeMemberInboxRelay';
 import type { MemberSpawnStatusesSnapshot, TeamAgentRuntimeSnapshot } from '@shared/types';
 
-/** Late-bound lead restart port; the runtime owner supplies the concrete spawn/stop path. */
-export interface NativeLeadRuntimeRestartPort {
-  restartLeadRuntime(teamName: string): Promise<void>;
-  assessLeadRuntimeRestart(
-    teamName: string,
-    settings: Readonly<NativeLeadRuntimeSettings>
-  ): Promise<NativeLeadRestartAvailability>;
-}
-
 export interface NativeTeamProvisioningRootDependencies {
   runtimeDeps: NativeDesktopTeamRuntimeDependencies;
   /**
@@ -51,9 +42,6 @@ export interface NativeTeamProvisioningRootDependencies {
   languageDeps: Omit<NativeLanguageChangeNotifierDependencies, 'runtime' | 'openCodeMemberDelivery'>;
   busyStatus: Pick<NativeOpenCodeDeliveryBusyStatus, 'getBusyStatus'>;
   inboxRelay: Pick<NativeOpenCodeMemberInboxRelay, 'relayOpenCodeMemberInboxMessages'>;
-  leadRuntime: NativeLeadRuntimeRestartPort;
-  /** Cancels adapter launches still admitted when the app shuts down. */
-  cancelPendingLaunches(): Promise<void>;
 }
 
 export interface NativeTeamProvisioningRoot {
@@ -87,11 +75,18 @@ export interface NativeTeamProvisioningRoot {
   ) => ReturnType<NativeOpenCodeMemberInboxRelay['relayOpenCodeMemberInboxMessages']>;
   getMemberSpawnStatuses: (teamName: string) => Promise<MemberSpawnStatusesSnapshot>;
   getTeamAgentRuntimeSnapshot: (teamName: string) => Promise<TeamAgentRuntimeSnapshot>;
-  restartLeadRuntime: (teamName: string) => Promise<void>;
-  assessLeadRuntimeRestart: (
-    teamName: string,
-    settings: Readonly<NativeLeadRuntimeSettings>
-  ) => Promise<NativeLeadRestartAvailability>;
+  restartLeadRuntime: (input: {
+    teamName: string;
+    expectedRunId: string;
+    before: Readonly<NativeLeadRuntimeSettings>;
+    after: Readonly<NativeLeadRuntimeSettings>;
+  }) => Promise<void>;
+  assessLeadRuntimeRestart: (input: {
+    teamName: string;
+    providerId: NativeLeadRuntimeSettings['providerId'];
+    model: string | null;
+    effort: NativeLeadRuntimeSettings['effort'];
+  }) => Promise<NativeLeadRestartAvailability>;
   notifyLanguageChange: (language: string) => Promise<void>;
   hasLiveOpenCodeMcpConsumers: () => boolean;
   cancelPendingRuntimeAdapterLaunchesForShutdown: () => Promise<void>;
@@ -166,11 +161,16 @@ export function createNativeTeamProvisioningRoot(
       apis.memberLifecycle.getMemberSpawnStatuses(teamName),
     getTeamAgentRuntimeSnapshot: (teamName) =>
       apis.diagnostics.getTeamAgentRuntimeSnapshot(teamName),
-    restartLeadRuntime: (teamName) => deps.leadRuntime.restartLeadRuntime(teamName),
-    assessLeadRuntimeRestart: (teamName, settings) =>
-      deps.leadRuntime.assessLeadRuntimeRestart(teamName, settings),
+    restartLeadRuntime: (input) => nativeRuntime.lifecycle.leadRuntime.restart(input),
+    assessLeadRuntimeRestart: (input) =>
+      nativeRuntime.lifecycle.leadRuntime.assess(input.teamName, {
+        providerId: input.providerId,
+        model: input.model,
+        effort: input.effort,
+      }),
     notifyLanguageChange: (language) => languageNotifier.notify(language),
     hasLiveOpenCodeMcpConsumers: () => mcpConsumers.hasLiveOpenCodeMcpConsumers(),
-    cancelPendingRuntimeAdapterLaunchesForShutdown: () => deps.cancelPendingLaunches(),
+    cancelPendingRuntimeAdapterLaunchesForShutdown: () =>
+      nativeRuntime.lifecycle.leadRuntime.cancelPendingLaunches(),
   };
 }

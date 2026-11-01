@@ -24,6 +24,7 @@ export interface ConfiguredMemberLaunch {
   workingDirectory: string;
   baseWorkingDirectory?: string;
   isolation?: 'worktree';
+  resumeSessionId?: string; // resumes an existing CLI session instead of starting a new one
   taskLedgerProjectDirectory?: string;
   worktree?: Readonly<{
     baseRepoPath: string;
