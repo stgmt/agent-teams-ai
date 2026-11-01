@@ -36,7 +36,8 @@ function snapshot(
 
 function query(
   entries: Record<string, TeamLifecycleSnapshot>,
-  configured?: Record<string, Record<string, string>>
+  configured?: Record<string, Record<string, string>>,
+  pendingLaunchAdmissions = 0
 ) {
   return new NativeMcpConsumerQuery({
     runs: {
@@ -49,12 +50,21 @@ function query(
             configured[runId] ? new Map(Object.entries(configured[runId]!)) : null,
         }
       : {}),
+    pendingLaunchAdmissions: () => pendingLaunchAdmissions,
   });
 }
 
 describe('native MCP consumer query', () => {
   it('reports no consumers without live runs', () => {
     expect(query({}).hasLiveOpenCodeMcpConsumers()).toBe(false);
+  });
+
+  it('keeps the bridge for a launch admitted but not yet visible as a run', () => {
+    expect(query({}, undefined, 1).hasLiveOpenCodeMcpConsumers()).toBe(true);
+    expect(query({ alpha: snapshot('ready', { builder: member(false) }) }, undefined, 1)
+      .hasLiveOpenCodeMcpConsumers()).toBe(true);
+    expect(query({ alpha: snapshot('ready', { builder: member(false) }) }, undefined, 0)
+      .hasLiveOpenCodeMcpConsumers()).toBe(false);
   });
 
   it('reports a consumer while a lane-backed member is live', () => {

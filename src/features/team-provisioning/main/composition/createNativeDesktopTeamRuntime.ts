@@ -36,6 +36,7 @@ export interface NativeDesktopTeamRuntimeDependencies {
   definitions: TeamLaunchRequestPersistence;
   progressHistory: ProvisioningStatusReaderPort;
   bootstrapRuntime?: DesktopTeamRuntimeDependencies['bootstrapRuntime'];
+  launchAdmission?: DesktopTeamRuntimeDependencies['launchAdmission'];
   /** Teams to scan for orphaned native run claims at startup. */
   listTeamNames(): Promise<readonly string[]>;
   /** Enables inbox relay polling after launch; omitted keeps relays on-demand. */
@@ -83,6 +84,7 @@ export function createNativeDesktopTeamRuntime(
     definitions: deps.definitions,
     progressHistory: deps.progressHistory,
     ...(deps.bootstrapRuntime ? { bootstrapRuntime: deps.bootstrapRuntime } : {}),
+    ...(deps.launchAdmission ? { launchAdmission: deps.launchAdmission } : {}),
     now: deps.now ?? (() => new Date().toISOString()),
   });
   return {

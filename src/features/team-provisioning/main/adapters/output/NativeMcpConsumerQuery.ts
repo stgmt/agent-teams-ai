@@ -7,6 +7,12 @@ export interface NativeMcpConsumerQueryDependencies {
    * Absent before the launch has read its settings.
    */
   configuredProviders?(runId: string): ReadonlyMap<string, string> | null;
+  /**
+   * Launches admitted but not yet visible as a run. A launch in flight may still
+   * resolve to OpenCode, so the bridge must survive it exactly as it survives a
+   * run in `preparing`.
+   */
+  pendingLaunchAdmissions?(): number;
 }
 
 /**
@@ -30,6 +36,7 @@ export class NativeMcpConsumerQuery {
   constructor(private readonly deps: NativeMcpConsumerQueryDependencies) {}
 
   hasLiveOpenCodeMcpConsumers(): boolean {
+    if ((this.deps.pendingLaunchAdmissions?.() ?? 0) > 0) return true;
     for (const teamName of this.deps.runs.aliveTeamNames()) {
       const snapshot = this.deps.runs.find(teamName);
       if (!snapshot) continue;

@@ -37,6 +37,11 @@ export interface DesktopTeamRuntimeDependencies {
   progressHistory: ProvisioningStatusReaderPort;
   /** Persisted runtime state for a team the current registry never saw. */
   bootstrapRuntime?: { read(teamName: string): Promise<TeamRuntimeState | null> };
+  /**
+   * Cross-feature launch admission: throws when another launch path is already
+   * admitting, so two owners never provision the same runtime at once.
+   */
+  launchAdmission?: { assertAdmitted(): void };
   now(): string;
 }
 
@@ -57,6 +62,12 @@ export interface DesktopTeamRuntime extends ProvisioningStatusReaderPort {
   isTeamAlive(teamName: string): boolean;
   getAliveTeams(): string[];
   getCurrentRunId(teamName: string): string | null;
+  /**
+   * Launches admitted and not yet finished. A pending launch consumes the
+   * app-owned HTTP bridge the same way a live lane does, so the bridge must not
+   * be torn down while this is non-zero.
+   */
+  pendingLaunchAdmissions(): number;
 }
 
 const PROVISIONING_STATES = new Set(['preparing', 'starting']);
@@ -84,7 +95,21 @@ export function createDesktopTeamRuntime(deps: DesktopTeamRuntimeDependencies): 
     });
   };
 
+  let pendingLaunchAdmissions = 0;
   const launch = async (
+    teamName: string,
+    onProgress: (progress: TeamProvisioningProgress) => void
+  ): Promise<TeamLaunchResponse> => {
+    deps.launchAdmission?.assertAdmitted();
+    pendingLaunchAdmissions += 1;
+    try {
+      return await launchRun(teamName, onProgress);
+    } finally {
+      pendingLaunchAdmissions -= 1;
+    }
+  };
+
+  const launchRun = async (
     teamName: string,
     onProgress: (progress: TeamProvisioningProgress) => void
   ): Promise<TeamLaunchResponse> => {
@@ -258,6 +283,10 @@ export function createDesktopTeamRuntime(deps: DesktopTeamRuntimeDependencies): 
 
     getCurrentRunId(teamName) {
       return deps.lifecycle.runs.aliveRunId(teamName);
+    },
+
+    pendingLaunchAdmissions() {
+      return pendingLaunchAdmissions;
     },
 
     async findByRunId(runId) {

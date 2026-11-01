@@ -87,6 +87,7 @@ export function createNativeMcpConsumerQuery(
   return new NativeMcpConsumerQuery({
     runs: deps.runtime.lifecycle.runs,
     configuredProviders: (runId) => deps.runtime.lifecycle.configuredProviders(runId),
+    pendingLaunchAdmissions: () => deps.runtime.runtime.pendingLaunchAdmissions(),
   });
 }
 

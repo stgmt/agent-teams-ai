@@ -48,7 +48,9 @@ function member(
 
 const lead = (): MemberLifecycleSnapshot => member('team-lead', 'ready');
 
-function harness(options: { initial?: TeamLifecycleSnapshot } = {}) {
+function harness(
+  options: { initial?: TeamLifecycleSnapshot } & Pick<DesktopTeamRuntimeDependencies, 'launchAdmission'> = {}
+) {
   let version = 0;
   let current: TeamLifecycleSnapshot | null = options.initial ?? null;
   const feed = new LifecycleSnapshotFeed(() => {});
@@ -118,6 +120,7 @@ function harness(options: { initial?: TeamLifecycleSnapshot } = {}) {
     definitions,
     progressHistory: history,
     bootstrapRuntime,
+    ...(options.launchAdmission ? { launchAdmission: options.launchAdmission } : {}),
     now: () => now,
   };
   return {
@@ -401,3 +404,51 @@ describe('desktop team runtime over the native lifecycle', () => {
     await expect(feed.next()).resolves.toMatchObject({ done: true });
   });
 });
+
+describe('launch admission across features', () => {
+  it('refuses a launch the shared guard denies and leaves nothing pending', async () => {
+    const assertAdmitted = vi.fn(() => {
+      throw new Error('TEST admission refused');
+    });
+    const { runtime, commands } = harness({ launchAdmission: { assertAdmitted } });
+    const { onProgress } = collect();
+
+    await expect(
+      runtime.launchTeam({ teamName, cwd: '/TEST/cwd', model: 'TEST-model' }, onProgress)
+    ).rejects.toThrow('TEST admission refused');
+    expect(assertAdmitted).toHaveBeenCalledTimes(1);
+    expect(commands.launch).not.toHaveBeenCalled();
+    expect(runtime.pendingLaunchAdmissions()).toBe(0);
+  });
+
+  it('counts a live admission until the launch settles, so the bridge stays up', async () => {
+    const assertAdmitted = vi.fn();
+    const { runtime, commands } = harness({ launchAdmission: { assertAdmitted } });
+    const release = deferred();
+    const launch = commands.launch.getMockImplementation()!;
+    commands.launch.mockImplementation(async (input) => {
+      await release.promise;
+      return await launch(input);
+    });
+    const { onProgress } = collect();
+
+    const pending = runtime.launchTeam(
+      { teamName, cwd: '/TEST/cwd', model: 'TEST-model' },
+      onProgress
+    );
+    await vi.waitFor(() => expect(runtime.pendingLaunchAdmissions()).toBe(1));
+
+    release.resolve();
+    await pending;
+    expect(assertAdmitted).toHaveBeenCalledTimes(1);
+    expect(runtime.pendingLaunchAdmissions()).toBe(0);
+  });
+});
+
+function deferred(): { promise: Promise<void>; resolve(): void } {
+  let resolve = (): void => {};
+  const promise = new Promise<void>((settle) => {
+    resolve = settle;
+  });
+  return { promise, resolve };
+}
