@@ -79,8 +79,6 @@ export function createNodeLeadReporting(deps: Dependencies): NodeLeadReporting {
     reports,
     sources,
     delivery,
-    maxSourceWaitMs,
-    requestDeadlineMs,
   });
   return {
     reports,

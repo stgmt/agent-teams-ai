@@ -29,7 +29,6 @@ interface Dependencies {
     | 'buildRuntimeTurnSettledEnvironment'
     | 'resolveControlApiBaseUrl'
     | 'getHomeDir'
-    | 'getAttachmentRoot'
     | 'getClaudeBasePath'
     | 'getAutoDetectedClaudeBasePath'
     | 'buildProviderAwareCliEnv'
@@ -111,7 +110,6 @@ export function createNativeProviderPorts(deps: Dependencies): NativeConfiguredP
             return env ? profileEnvironment(env) : null;
           },
           getHomeDir: () => profile.homeDirectory,
-          getAttachmentRoot: () => profile.attachmentRoot,
           getClaudeBasePath: () => profile.claudeConfigDirectory,
           getAutoDetectedClaudeBasePath: () => profile.autoDetectedClaudeConfigDirectory,
           prepareAgentChildProcessWritableEnv: async (env, preparationOptions) => {

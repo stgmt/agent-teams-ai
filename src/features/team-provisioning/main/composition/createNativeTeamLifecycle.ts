@@ -291,7 +291,7 @@ export function createNativeTeamLifecycle(
   const taskChanges = new NativeTeamTaskLedgerReader({
     teamsRoot: deps.teamsRoot,
     queries,
-    reader: { readTaskChanges: (input) => ledger.readCurrentTaskChanges(input) },
+    reader: { readTaskChanges: (input) => ledger.readTaskChanges(input) },
   });
   const runs = Object.freeze<TeamRunRegistryRead>({
     find: (teamName) => lifecycle.registry.find(teamName),
