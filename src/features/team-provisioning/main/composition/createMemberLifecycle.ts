@@ -24,6 +24,11 @@ import type { AppConnectionContext } from '@features/external-agent-connection/c
 
 export interface MemberLifecycleDependencies {
   owner: AppConnectionContext;
+  /**
+   * The composition root's single registry instance. Supplying it lets the root
+   * hold the same owner the lifecycle mutates instead of creating a second one.
+   */
+  registry?: MemberLifecycleRegistry;
   settings: MemberLaunchSettingsPort;
   runtime: MemberRuntimePort;
   authority?: LeadMemberStartAuthority;
@@ -50,7 +55,7 @@ export interface MemberLifecycle {
 }
 
 export function createMemberLifecycle(dependencies: MemberLifecycleDependencies): MemberLifecycle {
-  const registry = new MemberLifecycleRegistry(dependencies.owner);
+  const registry = dependencies.registry ?? new MemberLifecycleRegistry(dependencies.owner);
   const authority = dependencies.authority ?? new LeadMemberStartAuthority();
   const gate = new TeamOperationQueue();
   const commands = new MemberLifecycleCommands({

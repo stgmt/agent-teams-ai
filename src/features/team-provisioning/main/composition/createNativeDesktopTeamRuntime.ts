@@ -1,3 +1,5 @@
+import { MemberLifecycleRegistry } from '../../core/domain/MemberLifecycleRegistry';
+
 import { createDesktopTeamRuntime } from './createDesktopTeamRuntime';
 import { createNativeTeamLifecycle } from './createNativeTeamLifecycle';
 
@@ -46,6 +48,12 @@ export interface NativeDesktopTeamRuntimeDependencies {
 
 export interface NativeDesktopTeamRuntime {
   lifecycle: NativeTeamLifecycle;
+  /**
+   * The one mutable owner of run/member state this composition created. The
+   * lifecycle mutates this exact instance; holding it here lets a caller fence
+   * or inspect an exact run without reaching into the lifecycle facade.
+   */
+  registry: MemberLifecycleRegistry;
   runtime: DesktopTeamRuntime;
   /** Native in-memory logs; persistence across restart is a phase 7 concern. */
   logs: Pick<NativeTeamLifecycle['logs'], 'read'>;
@@ -60,8 +68,10 @@ export interface NativeDesktopTeamRuntime {
 export function createNativeDesktopTeamRuntime(
   deps: NativeDesktopTeamRuntimeDependencies
 ): NativeDesktopTeamRuntime {
+  const registry = new MemberLifecycleRegistry(deps.owner);
   const lifecycle = createNativeTeamLifecycle({
     owner: deps.owner,
+    registry,
     settings: deps.settings,
     provider: deps.provider,
     runtimeRoot: deps.runtimeRoot,
@@ -89,6 +99,7 @@ export function createNativeDesktopTeamRuntime(
   });
   return {
     lifecycle,
+    registry,
     runtime,
     logs: lifecycle.logs,
     recoverStartup: async () => lifecycle.recoverOrphanedRuns(await deps.listTeamNames()),

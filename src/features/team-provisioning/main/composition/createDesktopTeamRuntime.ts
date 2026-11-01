@@ -66,6 +66,14 @@ export interface DesktopTeamRuntime extends ProvisioningStatusReaderPort {
   stopAllTeams(): Promise<readonly { teamName: string; error: string }[]>;
   isTeamAlive(teamName: string): boolean;
   getAliveTeams(): string[];
+  /** Same facts under the name the application root reads them by. */
+  getAliveTeamNames(): string[];
+  /**
+   * Whether the team system holds anything right now: an admitted launch or a
+   * run that still owns its team. The app shell keeps shared resources (the
+   * bridge, the scheduler) alive while this is true.
+   */
+  hasActiveTeamRuntimes(): boolean;
   getCurrentRunId(teamName: string): string | null;
   /**
    * Launches admitted and not yet finished. A pending launch consumes the
@@ -301,6 +309,14 @@ export function createDesktopTeamRuntime(deps: DesktopTeamRuntimeDependencies): 
 
     getAliveTeams() {
       return [...deps.lifecycle.runs.aliveTeamNames()];
+    },
+
+    getAliveTeamNames() {
+      return [...deps.lifecycle.runs.aliveTeamNames()];
+    },
+
+    hasActiveTeamRuntimes() {
+      return pendingLaunchAdmissions > 0 || deps.lifecycle.runs.aliveTeamNames().length > 0;
     },
 
     getCurrentRunId(teamName) {

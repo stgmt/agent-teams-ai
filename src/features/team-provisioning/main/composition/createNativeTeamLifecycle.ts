@@ -64,6 +64,8 @@ import type {
 
 export interface NativeTeamLifecycleDependencies {
   owner: AppConnectionContext;
+  /** Root-owned lifecycle registry; omitted keeps the lifecycle as its creator. */
+  registry?: MemberLifecycle['registry'];
   settings: Omit<ConstructorParameters<typeof NodeTeamLaunchSettings>[0], 'teamsRoot'>;
   provider: NativeConfiguredProviderPorts;
   runtimeRoot: string;
@@ -263,6 +265,7 @@ export function createNativeTeamLifecycle(
   const configuredProvidersByRun = new Map<string, ReadonlyMap<string, string>>();
   const lifecycle = createMemberLifecycle({
     owner: deps.owner,
+    ...(deps.registry ? { registry: deps.registry } : {}),
     settings,
     authority,
     runtime: routing.runtime,
