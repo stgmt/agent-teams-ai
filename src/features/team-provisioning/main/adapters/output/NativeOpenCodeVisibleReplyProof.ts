@@ -45,6 +45,21 @@ export interface NativeOpenCodeVisibleReplyProof {
     ledgerRecord: OpenCodePromptDeliveryLedgerRecord;
     visibleReply: OpenCodeVisibleReplyProof | null;
   }>;
+  /**
+   * Turns a recorded reply into the row the recipient actually sees, when the
+   * ledger proves the member answered but nothing was written to the inbox yet.
+   */
+  materializePlainTextReplyIfNeeded(input: {
+    checkpoint?: () => void | Promise<void>;
+    ledger: OpenCodePromptDeliveryLedgerStore;
+    ledgerRecord: OpenCodePromptDeliveryLedgerRecord;
+    teamName: string;
+    memberName: string;
+    visibleReply?: OpenCodeVisibleReplyProof | null;
+  }): Promise<{
+    ledgerRecord: OpenCodePromptDeliveryLedgerRecord;
+    visibleReply: OpenCodeVisibleReplyProof | null;
+  }>;
 }
 
 export function createNativeOpenCodeVisibleReplyProof(
@@ -70,5 +85,6 @@ export function createNativeOpenCodeVisibleReplyProof(
 
   return {
     applyDestinationProof: (input) => service.applyDestinationProof(input),
+    materializePlainTextReplyIfNeeded: (input) => service.materializePlainTextReplyIfNeeded(input),
   };
 }
