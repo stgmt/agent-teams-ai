@@ -4,6 +4,7 @@ import { NativeTeamMessagingApi } from '../adapters/input/NativeTeamMessagingApi
 import { NativeTeamToolApprovalApi } from '../adapters/input/NativeTeamToolApprovalApi';
 import { NativeLanguageChangeNotifier } from '../adapters/output/NativeLanguageChangeNotifier';
 import { NativeMcpConsumerQuery } from '../adapters/output/NativeMcpConsumerQuery';
+import { NativeOpenCodePromptDeliverySupervisor } from '../adapters/output/NativeOpenCodePromptDeliverySupervisor';
 import { NativeTeamClaudeLogs } from '../adapters/output/NativeTeamClaudeLogs';
 import { NativeTeamDiagnostics } from '../adapters/output/NativeTeamDiagnostics';
 
@@ -11,6 +12,7 @@ import { createBoundTeamLiveStatusQueries } from './createBoundTeamLiveStatusQue
 import { createNativeRuntimeSurface } from './createNativeRuntimeSurface';
 
 import type { NativeOpenCodeMemberDeliveryPort } from '../adapters/input/NativeTeamMessagingApi';
+import type { NativeOpenCodePromptDeliverySupervisorDependencies } from '../adapters/output/NativeOpenCodePromptDeliverySupervisor';
 import type { NativeDesktopTeamRuntime } from './createNativeDesktopTeamRuntime';
 import type {
   TeamCrossTeamMessagingApi,
@@ -28,6 +30,14 @@ export interface NativeTeamProvisioningApisDependencies {
   detachMemberData?(teamName: string, memberName: string): Promise<void>;
   /** Production OpenCode member prompt ledger; owns delivery state, not runs. */
   openCodeMemberDelivery?: NativeOpenCodeMemberDeliveryPort;
+  /**
+   * Native driver for that ledger's retry ladder. Absent, a relayed prompt is
+   * verified by whoever enumerated the inbox rows.
+   */
+  openCodePromptDelivery?: Pick<
+    NativeOpenCodePromptDeliverySupervisorDependencies,
+    'readInboxMessages' | 'info' | 'warn' | 'debug' | 'diagnostic' | 'getErrorMessage'
+  >;
   now(): string;
 }
 
@@ -67,7 +77,7 @@ export function createNativeTeamProvisioningApis(
       logs: deps.runtime.logs,
     }),
     claudeLogs: new NativeTeamClaudeLogs(deps.runtime.logs),
-    messaging: buildMessagingApi(lifecycle, deps.openCodeMemberDelivery),
+    messaging: buildMessagingApi(lifecycle, deps.openCodeMemberDelivery, deps.openCodePromptDelivery),
     toolApproval: new NativeTeamToolApprovalApi({
       runs: lifecycle.runs,
       commands: lifecycle.memberCommands,
@@ -89,8 +99,22 @@ export function createNativeMcpConsumerQuery(
 
 function buildMessagingApi(
   lifecycle: NativeDesktopTeamRuntime['lifecycle'],
-  openCodeMemberDelivery: NativeOpenCodeMemberDeliveryPort | undefined
+  openCodeMemberDelivery: NativeOpenCodeMemberDeliveryPort | undefined,
+  promptDelivery:
+    | Pick<
+        NativeOpenCodePromptDeliverySupervisorDependencies,
+        'readInboxMessages' | 'info' | 'warn' | 'debug' | 'diagnostic' | 'getErrorMessage'
+      >
+    | undefined = undefined
 ): TeamIpcHandlerApis['messaging'] {
+  const supervisor =
+    openCodeMemberDelivery && promptDelivery
+      ? new NativeOpenCodePromptDeliverySupervisor({
+          runs: lifecycle.runs,
+          delivery: openCodeMemberDelivery,
+          ...promptDelivery,
+        })
+      : null;
   return new NativeTeamMessagingApi({
     runs: lifecycle.runs,
     settings: lifecycle.settings,
@@ -99,6 +123,11 @@ function buildMessagingApi(
     sendLeadMessage: lifecycle.sendLeadMessage,
     relayLeadInboxMessages: (teamName) => lifecycle.relay.relay(teamName),
     ...(openCodeMemberDelivery ? { openCodeMemberDelivery } : {}),
+    ...(supervisor
+      ? {
+          scheduleDeliveryVerification: (input) => supervisor.scheduleDeliveryVerification(input),
+        }
+      : {}),
   });
 }
 

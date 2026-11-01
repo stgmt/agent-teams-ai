@@ -28,6 +28,7 @@ const snapshot = {
 function setup(delivery?: {
   relayOpenCodeMemberInboxMessages: ReturnType<typeof vi.fn>;
   getOpenCodeRuntimeDeliveryStatus: ReturnType<typeof vi.fn>;
+  scheduleDeliveryVerification?: ReturnType<typeof vi.fn>;
 }) {
   let currentSnapshot: typeof snapshot | null = snapshot;
   let live = true;
@@ -47,6 +48,9 @@ function setup(delivery?: {
     sendLeadMessage,
     relayLeadInboxMessages,
     ...(delivery ? { openCodeMemberDelivery: delivery as never } : {}),
+    ...(delivery?.scheduleDeliveryVerification
+      ? { scheduleDeliveryVerification: delivery.scheduleDeliveryVerification as never }
+      : {}),
   });
   return {
     api,
@@ -119,6 +123,50 @@ describe('native team messaging', () => {
     await expect(api.relayOpenCodeMemberInboxMessages('absent', 'builder')).rejects.toThrow(
       'Unknown team'
     );
+  });
+
+  it('arms the retained retry ladder when a targeted relay is not proven delivered', async () => {
+    const relayOpenCodeMemberInboxMessages = vi.fn(async () => ({
+      relayed: 1,
+      attempted: 1,
+      delivered: 0,
+      failed: 0,
+      lastDelivery: { delivered: false, ledgerRecordId: 'record-1' },
+    }) as never);
+    const scheduleDeliveryVerification = vi.fn();
+    const { api } = setup({
+      relayOpenCodeMemberInboxMessages,
+      getOpenCodeRuntimeDeliveryStatus: vi.fn(async () => null),
+      scheduleDeliveryVerification,
+    });
+
+    await api.relayOpenCodeMemberInboxMessages('test-team', 'builder', { onlyMessageId: 'message' });
+
+    expect(scheduleDeliveryVerification).toHaveBeenCalledWith({
+      teamName: 'test-team',
+      memberName: 'builder',
+      messageId: 'message',
+    });
+  });
+
+  it('does not arm a wake for a relay the ledger already proved', async () => {
+    const relayOpenCodeMemberInboxMessages = vi.fn(async () => ({
+      relayed: 1,
+      attempted: 1,
+      delivered: 1,
+      failed: 0,
+      lastDelivery: { delivered: true, ledgerRecordId: 'record-1' },
+    }) as never);
+    const scheduleDeliveryVerification = vi.fn();
+    const { api } = setup({
+      relayOpenCodeMemberInboxMessages,
+      getOpenCodeRuntimeDeliveryStatus: vi.fn(async () => null),
+      scheduleDeliveryVerification,
+    });
+
+    await api.relayOpenCodeMemberInboxMessages('test-team', 'builder', { onlyMessageId: 'message' });
+
+    expect(scheduleDeliveryVerification).not.toHaveBeenCalled();
   });
 
   it('fails closed when no OpenCode member delivery ledger is configured', async () => {

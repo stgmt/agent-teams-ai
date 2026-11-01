@@ -24,6 +24,11 @@ export { NativeLanguageChangeNotifier } from './adapters/output/NativeLanguageCh
 export { NativeMcpConsumerQuery } from './adapters/output/NativeMcpConsumerQuery';
 export type { NativeOpenCodeLaneRuntimeDependencies } from './adapters/output/NativeOpenCodeLaneRuntime';
 export { NativeOpenCodeLaneRuntime } from './adapters/output/NativeOpenCodeLaneRuntime';
+export type {
+  NativeDeliveryVerificationSchedule,
+  NativeOpenCodePromptDeliverySupervisorDependencies,
+} from './adapters/output/NativeOpenCodePromptDeliverySupervisor';
+export { NativeOpenCodePromptDeliverySupervisor } from './adapters/output/NativeOpenCodePromptDeliverySupervisor';
 export type { NativeTaskActivityRepairDependencies } from './adapters/output/NativeTaskActivityRepair';
 export { NativeTaskActivityRepair } from './adapters/output/NativeTaskActivityRepair';
 export { NativeTeamClaudeLogs } from './adapters/output/NativeTeamClaudeLogs';

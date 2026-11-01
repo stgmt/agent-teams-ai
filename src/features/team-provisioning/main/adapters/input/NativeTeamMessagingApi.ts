@@ -31,6 +31,16 @@ interface Dependencies {
   sendLeadMessage: NativeTeamLifecycle['sendLeadMessage'];
   relayLeadInboxMessages(teamName: string): Promise<number>;
   openCodeMemberDelivery?: NativeOpenCodeMemberDeliveryPort;
+  /**
+   * Arms the retained ledger's own retry ladder for a prompt this app just
+   * wrote to a lane. Without it a prompt whose acceptance was never proven waits
+   * for the next inbox write, which is exactly the wake the legacy owner armed.
+   */
+  scheduleDeliveryVerification?: (input: {
+    teamName: string;
+    memberName: string;
+    messageId: string;
+  }) => void;
 }
 
 /**
@@ -112,7 +122,14 @@ export class NativeTeamMessagingApi implements TeamMessagingApi {
     this.requireRun(teamName);
     const delivery = this.deps.openCodeMemberDelivery;
     if (!delivery) throw new Error('OpenCode member delivery ledger is not configured');
-    return delivery.relayOpenCodeMemberInboxMessages(teamName, memberName, options);
+    const result = await delivery.relayOpenCodeMemberInboxMessages(teamName, memberName, options);
+    // A targeted relay can name the row it just wrote; a batch relay leaves the
+    // row identities to the caller that enumerated them.
+    const messageId = options?.onlyMessageId?.trim();
+    if (messageId && result.lastDelivery && !result.lastDelivery.delivered) {
+      this.deps.scheduleDeliveryVerification?.({ teamName, memberName, messageId });
+    }
+    return result;
   }
 
   async getOpenCodeRuntimeDeliveryStatus(
