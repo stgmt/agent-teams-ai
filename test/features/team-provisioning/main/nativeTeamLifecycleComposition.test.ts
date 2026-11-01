@@ -129,6 +129,13 @@ describe('native lifecycle composition admission', () => {
     );
     expect(lifecycle.liveLeadMessages.read(run, null)).toHaveLength(1);
     expect(preparations).toBe(2);
+    // The launch read the canonical roster, so the providers it configured are a
+    // known fact for this run - the only source that still answers for a member
+    // whose lane is gone.
+    expect([...(lifecycle.configuredProviders(run.runId) ?? [])]).toEqual([
+      ['team-lead', 'anthropic'],
+      ['builder', 'anthropic'],
+    ]);
     // The lifecycle owns the ledger driver, so a wake armed here reaches the
     // production ledger port through it. Cancellation on release is covered
     // where it is decidable: `NativeOpenCodePromptDeliverySupervisor` drops a
@@ -149,6 +156,7 @@ describe('native lifecycle composition admission', () => {
     ]);
     await lifecycle.commands.stop({ ...request, runId: run.runId });
     expect(lifecycle.liveLeadMessages.read(run, null)).toEqual([]);
+    expect(lifecycle.configuredProviders(run.runId)).toBeNull();
     expect(JSON.parse(await readFile(configPath, 'utf8')).appManagedRun).toBeUndefined();
     expect(JSON.parse(await readFile(configPath, 'utf8')).members).toHaveLength(2);
     const next = await lifecycle.commands.launch(request);

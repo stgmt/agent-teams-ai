@@ -27,15 +27,28 @@ function snapshot(
   state: TeamLifecycleSnapshot['state'],
   members: TeamLifecycleSnapshot['members']
 ) {
-  return { identity: { teamName: 'alpha' }, state, members } as unknown as TeamLifecycleSnapshot;
+  return {
+    identity: { teamName: 'alpha', runId: 'run-alpha' },
+    state,
+    members,
+  } as unknown as TeamLifecycleSnapshot;
 }
 
-function query(entries: Record<string, TeamLifecycleSnapshot>) {
+function query(
+  entries: Record<string, TeamLifecycleSnapshot>,
+  configured?: Record<string, Record<string, string>>
+) {
   return new NativeMcpConsumerQuery({
     runs: {
       aliveTeamNames: () => Object.keys(entries),
       find: (teamName: string) => entries[teamName] ?? null,
     },
+    ...(configured
+      ? {
+          configuredProviders: (runId: string) =>
+            configured[runId] ? new Map(Object.entries(configured[runId]!)) : null,
+        }
+      : {}),
   });
 }
 
@@ -72,6 +85,22 @@ describe('native MCP consumer query', () => {
     expect(query({ alpha: snapshot('ready', { builder: settled }) }).hasLiveOpenCodeMcpConsumers()).toBe(
       false
     );
+  });
+
+  it('answers for a run configured with OpenCode after its lane went away', () => {
+    const settled = {
+      ...member(false),
+      phase: 'exited',
+    } as unknown as TeamLifecycleSnapshot['members'][string];
+    const runs = { alpha: snapshot('ready', { builder: settled }) };
+
+    expect(query(runs).hasLiveOpenCodeMcpConsumers()).toBe(false);
+    expect(
+      query(runs, { 'run-alpha': { builder: 'opencode' } }).hasLiveOpenCodeMcpConsumers()
+    ).toBe(true);
+    expect(
+      query(runs, { 'run-alpha': { builder: 'anthropic' } }).hasLiveOpenCodeMcpConsumers()
+    ).toBe(false);
   });
 
   it('keeps the bridge while a launch can still resolve to OpenCode', () => {

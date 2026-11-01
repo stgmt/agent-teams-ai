@@ -1,3 +1,7 @@
+import {
+  isOpenCodePromptDeliveryCancelled,
+  type OpenCodePromptDeliveryLedgerStore,
+} from '@main/services/team/opencode/delivery/OpenCodePromptDeliveryLedger';
 import { OPENCODE_PROMPT_DELIVERY_OBSERVE_DELAY_MS } from '@main/services/team/opencode/delivery/OpenCodePromptDeliveryWatchdog';
 import { OpenCodePromptDeliveryWatchdogScheduler } from '@main/services/team/opencode/delivery/OpenCodePromptDeliveryWatchdogScheduler';
 
@@ -6,8 +10,20 @@ import type { NativeOpenCodeMemberDeliveryPort } from '../input/NativeTeamMessag
 
 type LaneFact = { readonly laneId: string; readonly runtimeAlive: boolean };
 
+/**
+ * One team's prompt ledger, opened at the same durable path the app already
+ * writes. A sweep reads what an interrupted session left behind; the ledger is
+ * the only owner of that state.
+ */
+export interface NativePromptLedgerAccess {
+  open(teamName: string, laneId: string): Pick<OpenCodePromptDeliveryLedgerStore, 'listDue'>;
+}
+
 export interface NativeOpenCodePromptDeliverySupervisorDependencies {
-  runs: Pick<TeamRunRegistryRead, 'find' | 'isLive'>;
+  runs: Pick<TeamRunRegistryRead, 'find' | 'isLive' | 'aliveTeamNames'>;
+  /** Durable ledger access; without it the supervisor only drives armed wakes. */
+  ledgers?: NativePromptLedgerAccess;
+  now?(): Date;
   /** The retained member prompt ledger; this supervisor drives it, never owns it. */
   delivery: Pick<NativeOpenCodeMemberDeliveryPort, 'relayOpenCodeMemberInboxMessages'>;
   readInboxMessages(input: {
@@ -20,6 +36,10 @@ export interface NativeOpenCodePromptDeliverySupervisorDependencies {
   diagnostic(message: string): void;
   getErrorMessage(error: unknown): string;
 }
+
+/** How many due rows one sweep takes, and how often a sweep runs. */
+export const NATIVE_DELIVERY_SWEEP_LIMIT = 8;
+export const NATIVE_DELIVERY_SWEEP_INTERVAL_MS = 15_000;
 
 export interface NativeDeliveryVerificationSchedule {
   teamName: string;
@@ -55,6 +75,8 @@ const RECORD_NOT_FOUND_PREFIX = 'OpenCode prompt delivery record not found:';
  */
 export class NativeOpenCodePromptDeliverySupervisor {
   private readonly scheduler: OpenCodePromptDeliveryWatchdogScheduler;
+  private sweepTimer: ReturnType<typeof setInterval> | null = null;
+  private sweeping = false;
 
   constructor(private readonly deps: NativeOpenCodePromptDeliverySupervisorDependencies) {
     this.scheduler = new OpenCodePromptDeliveryWatchdogScheduler({
@@ -126,6 +148,86 @@ export class NativeOpenCodePromptDeliverySupervisor {
 
   cancelTeam(teamName: string): void {
     this.scheduler.cancelTeam(teamName);
+  }
+
+  /**
+   * Starts the periodic due-delivery sweep. A row whose retry was scheduled but
+   * never fired - the app was closed, the process died, the relay was cancelled
+   * mid-flight - stays due in the ledger forever otherwise, because every other
+   * path only looks at rows as they are written.
+   */
+  start(intervalMs: number = NATIVE_DELIVERY_SWEEP_INTERVAL_MS): void {
+    if (!this.deps.ledgers || this.sweepTimer || intervalMs < 1) return;
+    this.sweepTimer = setInterval(() => void this.sweepDueDeliveries(), intervalMs);
+  }
+
+  stop(): void {
+    if (!this.sweepTimer) return;
+    clearInterval(this.sweepTimer);
+    this.sweepTimer = null;
+  }
+
+  /**
+   * One sweep pass: every due, non-cancelled, still-current record of a live
+   * team is handed to the scheduler, which relays it through the same guarded
+   * path as any other wake.
+   */
+  async sweepDueDeliveries(): Promise<number> {
+    const ledgers = this.deps.ledgers;
+    if (!ledgers || this.sweeping) return 0;
+    this.sweeping = true;
+    let armed = 0;
+    try {
+      const now = this.deps.now?.() ?? new Date();
+      for (const teamName of this.liveTeamNames()) {
+        const snapshot = this.deps.runs.find(teamName);
+        if (!snapshot) continue;
+        for (const [memberName, lane] of this.memberLanes(snapshot)) {
+          const due = await ledgers.open(teamName, lane.laneId).listDue({
+            teamName,
+            now,
+            limit: NATIVE_DELIVERY_SWEEP_LIMIT,
+          });
+          for (const record of due) {
+            // A record left by an earlier run of the same team is history: its
+            // inbox row belongs to a rollout that no longer exists.
+            if (record.runId && record.runId !== snapshot.identity.runId) continue;
+            if (isOpenCodePromptDeliveryCancelled(record)) continue;
+            this.scheduleDeliveryVerification({
+              teamName,
+              memberName: record.memberName || memberName,
+              messageId: record.inboxMessageId,
+              delayMs: 500,
+            });
+            armed++;
+          }
+        }
+      }
+    } catch (error) {
+      this.deps.warn(`OpenCode delivery sweep failed: ${this.deps.getErrorMessage(error)}`);
+    } finally {
+      this.sweeping = false;
+    }
+    return armed;
+  }
+
+  private liveTeamNames(): readonly string[] {
+    const names: string[] = [];
+    for (const teamName of this.deps.runs.aliveTeamNames()) {
+      const snapshot = this.deps.runs.find(teamName);
+      if (snapshot && this.deps.runs.isLive(snapshot.identity)) names.push(teamName);
+    }
+    return names;
+  }
+
+  private memberLanes(snapshot: {
+    members: Readonly<Record<string, { lane: LaneFact | null }>>;
+  }): readonly (readonly [string, LaneFact])[] {
+    const lanes: (readonly [string, LaneFact])[] = [];
+    for (const [memberName, member] of Object.entries(snapshot.members)) {
+      if (member.lane) lanes.push([memberName, member.lane] as const);
+    }
+    return lanes;
   }
 
   private findTeamLanes(teamName: string): LaneFact[] {

@@ -2,6 +2,7 @@ import {
   validateAgentAttachmentIpcPayload,
   validateAgentAttachmentSerializedIpcPayload,
 } from '@features/agent-attachments/main';
+import { createOpenCodePromptDeliveryLedger } from '@main/services/team/provisioning/OpenCodePromptDeliveryQueries';
 import { buildLeadMessageStdinPayload } from '@main/services/team/provisioning/TeamProvisioningLeadAttachments';
 import { TaskChangeLedgerReader } from '@main/services/team/TaskChangeLedgerReader';
 import { TeamInboxReader } from '@main/services/team/TeamInboxReader';
@@ -118,6 +119,13 @@ export interface NativeTeamLifecycle {
   /** Lead-only restart admission over native run, turn, approval, and session facts. */
   leadRestart: Pick<NativeLeadRestartAssessment, 'assess'>;
   /**
+   * Provider each member was configured with for this run, captured when the
+   * launch read its canonical settings. It answers "was this run ever an
+   * OpenCode run" for a member that has not attached yet or whose lane is gone,
+   * which a lane observation alone cannot. Cleared when the run releases.
+   */
+  configuredProviders(runId: string): ReadonlyMap<string, string> | null;
+  /**
    * Driver for the retained OpenCode prompt ledger's retry ladder. Present
    * whenever the ledger is, so a relayed prompt that was never proven delivered
    * arms its own verification and a released team drops every armed wake.
@@ -233,6 +241,7 @@ export function createNativeTeamLifecycle(
   const crossTeamReplies = new NativeCrossTeamReplyLedger();
   let memberRelayRef: NativeMemberInboxRelay | null = null;
   let promptDelivery: NativeOpenCodePromptDeliverySupervisor | null = null;
+  const configuredProvidersByRun = new Map<string, ReadonlyMap<string, string>>();
   const lifecycle = createMemberLifecycle({
     owner: deps.owner,
     settings,
@@ -245,10 +254,15 @@ export function createNativeTeamLifecycle(
         await settings.prepareWorkspace(run, workspace, signal);
         await config.prepare(run, signal);
         const configured = await settings.runtimeConfiguration(run);
+        configuredProvidersByRun.set(
+          run.runId,
+          new Map(configured.members.map(({ launch }) => [launch.memberName, launch.providerId]))
+        );
         const lead = configured.members.find(({ launch }) => launch.role === 'lead');
         toolApprovalSettings.initializeForLaunch(run.teamName, lead?.launch.skipPermissions);
       },
       release: async (run) => {
+        configuredProvidersByRun.delete(run.runId);
         // Wakes belong to the run that armed them: a released team drops its
         // timers before anything else is torn down.
         promptDelivery?.cancelTeam(run.teamName);
@@ -342,6 +356,12 @@ export function createNativeTeamLifecycle(
     const deliveryLog = createLogger('team-provisioning:open-code-delivery');
     promptDelivery = new NativeOpenCodePromptDeliverySupervisor({
       runs,
+      ledgers: {
+        // The same durable per-lane ledger file the app already writes; a sweep
+        // only reads what an interrupted delivery left behind.
+        open: (teamName, laneId) =>
+          createOpenCodePromptDeliveryLedger(teamName, laneId, { teamsBasePath: deps.teamsRoot }),
+      },
       delivery: deps.openCodeLeadDelivery,
       readInboxMessages: ({ teamName, memberName }) =>
         inboxReader.getMessagesFor(teamName, memberName),
@@ -373,6 +393,7 @@ export function createNativeTeamLifecycle(
   const startRelays = (teamName: string, intervalMs: number): void => {
     leadRelay.startPolling(teamName, intervalMs);
     memberRelay.startPolling(teamName, intervalMs);
+    promptDelivery?.start();
   };
   const stopRelays = (teamName: string): void => {
     leadRelay.stopPolling(teamName);
@@ -381,7 +402,14 @@ export function createNativeTeamLifecycle(
   const commands = createBoundLifecycleCommands({
     owner: deps.owner,
     source: {
-      launchCurrent: (...args) => lifecycle.teams.launchCurrent(...args),
+      launchCurrent: async (...args) => {
+        const receipt = await lifecycle.teams.launchCurrent(...args);
+        // A live team must be swept for due deliveries whether or not inbox
+        // polling was enabled: a relay the app scheduled itself is not an inbox
+        // write, so nothing else would re-arm it.
+        promptDelivery?.start();
+        return receipt;
+      },
       stop: (run) => lifecycle.teams.stop(run),
       restart: (target, signal) => lifecycle.commands.restart(target, signal),
       skip: (target, signal) => lifecycle.commands.skip(target, signal),
@@ -409,6 +437,7 @@ export function createNativeTeamLifecycle(
     liveLeadMessages,
     leadOutput,
     leadRestart,
+    configuredProviders: (runId) => configuredProvidersByRun.get(runId) ?? null,
     promptDelivery,
     crossTeamReplies,
     inbox: inboxReader,
@@ -457,6 +486,7 @@ export function createNativeTeamLifecycle(
     watch: (teamName) => lifecycle.watch(teamName),
     stopConfigured: (run) => lifecycle.teams.stop(run),
     shutdown: async () => {
+      promptDelivery?.stop();
       leadRelay.dispose();
       memberRelay.dispose();
       crossTeamReplies.resetAll();
@@ -473,6 +503,7 @@ export function createNativeTeamLifecycle(
           async (signal) => (await settings.capture(run, signal)).members
         );
         if (deps.relayIntervalMs) startRelays(run.teamName, deps.relayIntervalMs);
+        promptDelivery?.start();
         return Object.freeze({ run: receipt.run });
       }),
   };

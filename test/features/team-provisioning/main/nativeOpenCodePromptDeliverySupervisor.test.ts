@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { NativeOpenCodePromptDeliverySupervisor } from '../../../../src/features/team-provisioning/main/adapters/output/NativeOpenCodePromptDeliverySupervisor';
 
 import type { TeamLifecycleSnapshot } from '../../../../src/features/team-provisioning/contracts';
+import type { NativeOpenCodePromptDeliverySupervisorDependencies } from '../../../../src/features/team-provisioning/main/adapters/output/NativeOpenCodePromptDeliverySupervisor';
 
 function lane(runtimeAlive: boolean) {
   return {
@@ -20,13 +21,19 @@ function snapshot(
   state: TeamLifecycleSnapshot['state'],
   members: TeamLifecycleSnapshot['members']
 ) {
-  return { identity: { teamName: 'alpha' }, state, members } as unknown as TeamLifecycleSnapshot;
+  return {
+    identity: { teamName: 'alpha', runId: 'run-alpha' },
+    desired: 'running',
+    state,
+    members,
+  } as unknown as TeamLifecycleSnapshot;
 }
 
 function supervisor(options: {
   runs?: Record<string, TeamLifecycleSnapshot>;
   relay?: ReturnType<typeof vi.fn>;
   readInboxMessages?: ReturnType<typeof vi.fn>;
+  ledgers?: NativeOpenCodePromptDeliverySupervisorDependencies['ledgers'];
 }) {
   const relay = options.relay ?? vi.fn(async () => ({ relayed: 1, attempted: 1, delivered: 1, failed: 0 }));
   const runs = options.runs ?? {};
@@ -35,14 +42,19 @@ function supervisor(options: {
     subject: new NativeOpenCodePromptDeliverySupervisor({
       runs: {
         find: (teamName: string) => runs[teamName] ?? null,
-        isLive: (run: { teamName?: string; identity?: { teamName?: string } }) =>
-          Boolean(runs[run.identity?.teamName ?? run.teamName ?? '']),
+        isLive: (run: { teamName?: string; identity?: { teamName?: string } }) => {
+          const team = run.identity?.teamName ?? run.teamName ?? '';
+          const snapshot = runs[team];
+          return Boolean(snapshot) && snapshot.desired !== 'stopped';
+        },
+        aliveTeamNames: () => Object.keys(runs),
       },
       delivery: {
         relayOpenCodeMemberInboxMessages: relay as never,
       },
       readInboxMessages:
         options.readInboxMessages ?? vi.fn(async () => [{ messageId: 'message-1', read: false }]),
+      ...(options.ledgers ? { ledgers: options.ledgers } : {}),
       info: () => {},
       warn: () => {},
       debug: () => {},
@@ -145,6 +157,52 @@ describe('native OpenCode prompt delivery supervisor', () => {
     await vi.advanceTimersByTimeAsync(3_200);
 
     expect(relay).not.toHaveBeenCalled();
+  });
+
+  it('arms a wake for a due record a previous session left behind', async () => {
+    const record = (inboxMessageId: string, overrides: Record<string, unknown> = {}) => ({
+      inboxMessageId,
+      memberName: 'builder',
+      runId: 'run-alpha',
+      laneId: 'primary',
+      status: 'retry_scheduled',
+      responseState: 'not_observed',
+      nextAttemptAt: '2026-01-01T00:00:00.000Z',
+      ...overrides,
+    });
+    const listDue = vi.fn(async () => [
+      record('due-row'),
+      record('other-run-row', { runId: 'run-previous' }),
+      record('cancelled-row', { cancelledAt: '2026-01-01T00:00:00.000Z' }),
+    ]);
+    const { relay, subject } = supervisor({
+      runs: { alpha: liveRun },
+      ledgers: { open: () => ({ listDue }) } as never,
+    });
+
+    await expect(subject.sweepDueDeliveries()).resolves.toBe(1);
+    expect(listDue).toHaveBeenCalledWith({
+      teamName: 'alpha',
+      now: expect.any(Date),
+      limit: expect.any(Number),
+    });
+
+    await vi.advanceTimersByTimeAsync(3_200);
+    expect(relay).toHaveBeenCalledTimes(1);
+    expect(relay.mock.calls[0]?.slice(0, 2)).toEqual(['alpha', 'builder']);
+    expect(relay.mock.calls[0]?.[2]).toMatchObject({ onlyMessageId: 'due-row' });
+  });
+
+  it('skips a team whose run is no longer live', async () => {
+    const listDue = vi.fn(async () => []);
+    const stopped = { ...liveRun, desired: 'stopped' } as unknown as TeamLifecycleSnapshot;
+    const { subject } = supervisor({
+      runs: { alpha: stopped },
+      ledgers: { open: () => ({ listDue }) } as never,
+    });
+
+    await expect(subject.sweepDueDeliveries()).resolves.toBe(0);
+    expect(listDue).not.toHaveBeenCalled();
   });
 
   it('stays off when the retained watchdog switch is off', async () => {

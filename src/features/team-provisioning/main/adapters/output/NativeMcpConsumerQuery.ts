@@ -2,6 +2,11 @@ import type { TeamRunRegistryRead } from '../../../contracts';
 
 export interface NativeMcpConsumerQueryDependencies {
   runs: Pick<TeamRunRegistryRead, 'aliveTeamNames' | 'find'>;
+  /**
+   * Providers each member was configured with for that run, captured at launch.
+   * Absent before the launch has read its settings.
+   */
+  configuredProviders?(runId: string): ReadonlyMap<string, string> | null;
 }
 
 /**
@@ -9,16 +14,17 @@ export interface NativeMcpConsumerQueryDependencies {
  *
  * The legacy predicate read the run payload (`request.providerId`,
  * `allEffectiveMembers`, `mixedSecondaryLanes`), which the native registry does
- * not hold. The registry does carry the two facts that matter:
+ * not hold. It is reproduced from the facts the native owner actually has:
  *
- * - an OpenCode member is lane-backed, so `member.lane !== null` marks exactly
- *   the members that consume the bridge (only `NativeOpenCodeLaneRuntime`
- *   produces lane observations);
- * - a run in `preparing`/`starting` may still resolve to OpenCode, and the
- *   legacy predicate over-approximated the same way by returning true for any
- *   pending admission;
- * - a member still `starting`/`connecting` has no lane observation yet, so its
- *   provider is still unknown and the bridge must stay up until it is known.
+ * - the providers a member was *configured* with, captured when the launch read
+ *   its canonical settings - the same field legacy read as
+ *   `request.providerId` / `allEffectiveMembers[].providerId`. It is the only
+ *   source that still answers after a lane went away;
+ * - a lane-backed member (`member.lane !== null`), because only
+ *   `NativeOpenCodeLaneRuntime` produces lane observations;
+ * - a run in `preparing`/`starting`, and a member still `starting`/`connecting`,
+ *   which the legacy predicate over-approximated the same way for a pending
+ *   admission: the provider may still resolve to OpenCode.
  */
 export class NativeMcpConsumerQuery {
   constructor(private readonly deps: NativeMcpConsumerQueryDependencies) {}
@@ -28,7 +34,9 @@ export class NativeMcpConsumerQuery {
       const snapshot = this.deps.runs.find(teamName);
       if (!snapshot) continue;
       if (snapshot.state === 'preparing' || snapshot.state === 'starting') return true;
-      for (const member of Object.values(snapshot.members)) {
+      const configured = this.deps.configuredProviders?.(snapshot.identity.runId) ?? null;
+      for (const [memberName, member] of Object.entries(snapshot.members)) {
+        if (configured?.get(memberName) === 'opencode') return true;
         if (member.lane !== null) return true;
         // A member that has not been observed yet may still turn out to be
         // lane-backed; tearing the bridge down before that answer exists would
