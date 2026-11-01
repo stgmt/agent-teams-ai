@@ -56,6 +56,24 @@ describe('native MCP consumer query', () => {
     ).toBe(false);
   });
 
+  it('keeps the bridge for a ready run whose members are still connecting', () => {
+    const connecting = {
+      ...member(false),
+      phase: 'connecting',
+    } as unknown as TeamLifecycleSnapshot['members'][string];
+    expect(query({ alpha: snapshot('ready', { builder: connecting }) }).hasLiveOpenCodeMcpConsumers()).toBe(
+      true
+    );
+
+    const settled = {
+      ...member(false),
+      phase: 'ready',
+    } as unknown as TeamLifecycleSnapshot['members'][string];
+    expect(query({ alpha: snapshot('ready', { builder: settled }) }).hasLiveOpenCodeMcpConsumers()).toBe(
+      false
+    );
+  });
+
   it('keeps the bridge while a launch can still resolve to OpenCode', () => {
     for (const state of ['preparing', 'starting'] as const) {
       expect(

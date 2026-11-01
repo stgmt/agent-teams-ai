@@ -16,7 +16,9 @@ export interface NativeMcpConsumerQueryDependencies {
  *   produces lane observations);
  * - a run in `preparing`/`starting` may still resolve to OpenCode, and the
  *   legacy predicate over-approximated the same way by returning true for any
- *   pending admission.
+ *   pending admission;
+ * - a member still `starting`/`connecting` has no lane observation yet, so its
+ *   provider is still unknown and the bridge must stay up until it is known.
  */
 export class NativeMcpConsumerQuery {
   constructor(private readonly deps: NativeMcpConsumerQueryDependencies) {}
@@ -26,7 +28,13 @@ export class NativeMcpConsumerQuery {
       const snapshot = this.deps.runs.find(teamName);
       if (!snapshot) continue;
       if (snapshot.state === 'preparing' || snapshot.state === 'starting') return true;
-      if (Object.values(snapshot.members).some((member) => member.lane !== null)) return true;
+      for (const member of Object.values(snapshot.members)) {
+        if (member.lane !== null) return true;
+        // A member that has not been observed yet may still turn out to be
+        // lane-backed; tearing the bridge down before that answer exists would
+        // strand an OpenCode host that is already starting.
+        if (member.phase === 'starting' || member.phase === 'connecting') return true;
+      }
     }
     return false;
   }
