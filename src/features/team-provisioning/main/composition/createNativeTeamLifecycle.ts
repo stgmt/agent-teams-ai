@@ -18,7 +18,9 @@ import { NativeConfiguredProvider } from '../adapters/output/NativeConfiguredPro
 import { NativeCrossTeamReplyLedger } from '../adapters/output/NativeCrossTeamReplyLedger';
 import { NativeLeadInboxRelay } from '../adapters/output/NativeLeadInboxRelay';
 import { NativeLeadLiveMessageStore } from '../adapters/output/NativeLeadLiveMessageStore';
+import { NativeLeadOutputStream } from '../adapters/output/NativeLeadOutputStream';
 import { NativeMemberInboxRelay } from '../adapters/output/NativeMemberInboxRelay';
+import { createObservedMemberPlanner } from '../adapters/output/NativeObservedMemberPlanner';
 import { NativeTeamLogStore } from '../adapters/output/NativeTeamLogStore';
 import { NativeTeamTaskLedgerReader } from '../adapters/output/NativeTeamTaskLedgerReader';
 import { NativeToolApprovalSettings } from '../adapters/output/NativeToolApprovalSettings';
@@ -77,6 +79,8 @@ export interface NativeTeamLifecycleDependencies {
   /** Enables inbox relay polling after a successful launch. Omitted keeps relays on-demand. */
   relayIntervalMs?: number;
   invalidate(teamName: string): void;
+  /** Live lead text arrived; the cutover forwards this to the renderer/HTTP team-change feed. */
+  onLeadMessage?(teamName: string, runId: string): void;
   contextInvalidationSignal(expected: AppConnectionContext): AbortSignal;
   withExpectedContext<T>(expected: AppConnectionContext, operation: () => Promise<T>): Promise<T>;
 }
@@ -106,6 +110,8 @@ export interface NativeTeamLifecycle {
   };
   logs: Pick<NativeTeamLogStore, 'read'>;
   liveLeadMessages: NativeLeadLiveMessageStore;
+  /** App-owned lead process output: live messages, turn activity, detected session. */
+  leadOutput: Pick<NativeLeadOutputStream, 'facts' | 'detectedSessionId' | 'clearRun'>;
   /** Cross-team reply expectations shared by the lead relay and cross-team sends. */
   crossTeamReplies: NativeCrossTeamReplyLedger;
   inbox: { getMessagesFor(teamName: string, member: string): Promise<InboxMessage[]> };
@@ -184,24 +190,17 @@ export function createNativeTeamLifecycle(
     store: new NativeClaudeApprovalStore(),
     write: (token, line) => writeApprovalLine(token, line),
   });
-  const plannerWithLogs = {
-    prepare: async (
-      launch: Parameters<typeof planner.prepare>[0],
-      token: Parameters<typeof planner.prepare>[1],
-      signal: AbortSignal
-    ) => {
-      const plan = await planner.prepare(launch, token, signal);
-      return {
-        ...plan,
-        observeOutput: (line: string, stream: 'stdout' | 'stderr') => {
-          if (stream === 'stdout') approvals.observeLine(token, line);
-          logs.append(token.runId, token.teamName, stream === 'stderr' ? `[stderr] ${line}` : line);
-          return plan.observeOutput?.(line, stream) ?? null;
-        },
-      };
-    },
-  };
-  const nativeRuntime = new NodeMemberRuntime(plannerWithLogs, (expected, operation) =>
+  const liveLeadMessages = new NativeLeadLiveMessageStore();
+  const leadOutput = new NativeLeadOutputStream({
+    liveLeadMessages,
+    ...(deps.onLeadMessage ? { notifyLeadMessage: deps.onLeadMessage } : {}),
+  });
+  const observedPlanner = createObservedMemberPlanner(planner, {
+    approvals,
+    leadOutput,
+    logs,
+  });
+  const nativeRuntime = new NodeMemberRuntime(observedPlanner, (expected, operation) =>
     deps.withExpectedContext(expected, operation)
   );
   const openCodeAdapter =
@@ -217,7 +216,6 @@ export function createNativeTeamLifecycle(
     invalidate: (teamName) => deps.invalidate(teamName),
   });
   let relay: NativeLeadInboxRelay | null = null;
-  const liveLeadMessages = new NativeLeadLiveMessageStore();
   const crossTeamReplies = new NativeCrossTeamReplyLedger();
   let memberRelayRef: NativeMemberInboxRelay | null = null;
   const lifecycle = createMemberLifecycle({
@@ -239,6 +237,7 @@ export function createNativeTeamLifecycle(
         relay?.reset(run.teamName);
         memberRelayRef?.reset(run.teamName);
         liveLeadMessages.clear(run);
+        leadOutput.clearRun(run.runId);
         crossTeamReplies.reset(run.teamName);
         await config.release(run);
         settings.release(run);
@@ -370,6 +369,7 @@ export function createNativeTeamLifecycle(
     runs,
     logs,
     liveLeadMessages,
+    leadOutput,
     crossTeamReplies,
     inbox: inboxReader,
     approvals,

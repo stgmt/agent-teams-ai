@@ -2,6 +2,7 @@ import type { TeamRunRegistryRead } from '../../../contracts';
 import type { MemberLaunchSettingsPort } from '../../../core/application/ports/MemberRuntimePorts';
 import type { NativeTeamLifecycle } from '../../composition/createNativeTeamLifecycle';
 import type { NativeLeadLiveMessageStore } from '../output/NativeLeadLiveMessageStore';
+import type { NativeLeadOutputStream } from '../output/NativeLeadOutputStream';
 import type {
   TeamMessageAttachmentPayload,
   TeamMessageSendOptions,
@@ -25,6 +26,8 @@ interface Dependencies {
   runs: Pick<TeamRunRegistryRead, 'find' | 'isLive'>;
   settings: Pick<MemberLaunchSettingsPort, 'findConfiguredMember'>;
   liveLeadMessages: Pick<NativeLeadLiveMessageStore, 'read' | 'push'>;
+  /** Process-lead output capture; a lane lead carries its session on the lane instead. */
+  leadOutput?: Pick<NativeLeadOutputStream, 'detectedSessionId'>;
   sendLeadMessage: NativeTeamLifecycle['sendLeadMessage'];
   relayLeadInboxMessages(teamName: string): Promise<number>;
   openCodeMemberDelivery?: NativeOpenCodeMemberDeliveryPort;
@@ -65,7 +68,9 @@ export class NativeTeamMessagingApi implements TeamMessagingApi {
     const snapshot = this.deps.runs.find(teamName);
     if (!snapshot) return null;
     const lead = Object.values(snapshot.members).find((member) => member.role === 'lead');
-    return lead?.lane?.sessionId ?? null;
+    return (
+      lead?.lane?.sessionId ?? this.deps.leadOutput?.detectedSessionId(snapshot.identity.runId) ?? null
+    );
   }
 
   getLiveLeadProcessMessages(teamName: string): InboxMessage[] {

@@ -33,9 +33,8 @@ export interface NativeTeamProvisioningApisDependencies {
 
 /**
  * Assembles the native `TeamIpcHandlerApis` surface over one runtime owner.
- * Unmigrated rows (live lead process messages, OpenCode lane lead delivery)
- * stay explicit fail-closed methods in their adapters; always-on composition
- * and the production switch remain phase 8.
+ * Live lead messages come from the lifecycle-owned lead output capture; the
+ * production switch that binds this surface remains phase 8.
  */
 export function createNativeTeamProvisioningApis(
   deps: NativeTeamProvisioningApisDependencies
@@ -96,6 +95,7 @@ function buildMessagingApi(
     runs: lifecycle.runs,
     settings: lifecycle.settings,
     liveLeadMessages: lifecycle.liveLeadMessages,
+    leadOutput: lifecycle.leadOutput,
     sendLeadMessage: lifecycle.sendLeadMessage,
     relayLeadInboxMessages: (teamName) => lifecycle.relay.relay(teamName),
     ...(openCodeMemberDelivery ? { openCodeMemberDelivery } : {}),
