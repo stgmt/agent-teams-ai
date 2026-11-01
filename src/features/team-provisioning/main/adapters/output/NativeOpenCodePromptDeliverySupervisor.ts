@@ -18,7 +18,10 @@ type LaneFact = { readonly laneId: string; readonly runtimeAlive: boolean };
  * the only owner of that state.
  */
 export interface NativePromptLedgerAccess {
-  open(teamName: string, laneId: string): Pick<OpenCodePromptDeliveryLedgerStore, 'listDue'>;
+  open(
+    teamName: string,
+    laneId: string
+  ): Pick<OpenCodePromptDeliveryLedgerStore, 'listDue' | 'markNextAttemptDeferred'>;
 }
 
 export interface NativeOpenCodePromptDeliverySupervisorDependencies {
@@ -207,7 +210,8 @@ export class NativeOpenCodePromptDeliverySupervisor {
         const snapshot = this.deps.runs.find(teamName);
         if (!snapshot) continue;
         for (const [memberName, lane] of this.memberLanes(snapshot)) {
-          const due = await ledgers.open(teamName, lane.laneId).listDue({
+          const ledger = ledgers.open(teamName, lane.laneId);
+          const due = await ledger.listDue({
             teamName,
             now,
             limit: NATIVE_DELIVERY_SWEEP_LIMIT,
@@ -224,7 +228,14 @@ export class NativeOpenCodePromptDeliverySupervisor {
             // app was not looking, or be waiting in a live turn right now. Only
             // an unproven, idle row is worth a second prompt.
             const verdict = await this.decideRearm(teamName, record);
-            if (verdict !== 'retry') continue;
+            if (verdict === 'observe') {
+              // A row left holding a deadline in the past is re-decided by the
+              // next sweep, which turns an observation into a tight loop. Move
+              // only its deadline: status, attempts and every observation field
+              // are exactly what the settle path still has to read.
+              await this.deferObservation(teamName, record, ledger);
+              continue;
+            }
             this.scheduleDeliveryVerification({
               teamName,
               memberName: record.memberName || memberName,
@@ -273,6 +284,35 @@ export class NativeOpenCodePromptDeliverySupervisor {
     if (status.responseState?.startsWith('responded_')) return 'observe';
     if (status.accepted === true) return 'observe';
     return 'retry';
+  }
+
+  /**
+   * A deferred row is not silent: `getOpenCodeRuntimeDeliveryStatus` answers it
+   * from the same record and returns `responsePending` plus the queue identity,
+   * which is what the delivery view reads. Only the deadline moves here, so the
+   * record keeps the state the caller asked about.
+   */
+  private async deferObservation(
+    teamName: string,
+    record: OpenCodePromptDeliveryLedgerRecord,
+    ledger: Pick<OpenCodePromptDeliveryLedgerStore, 'markNextAttemptDeferred'>
+  ): Promise<void> {
+    const now = this.deps.now?.() ?? new Date();
+    try {
+      await ledger.markNextAttemptDeferred({
+        id: record.id,
+        nextAttemptAt: new Date(
+          now.getTime() + OPENCODE_PROMPT_DELIVERY_OBSERVE_DELAY_MS
+        ).toISOString(),
+        deferredAt: now.toISOString(),
+      });
+    } catch (error) {
+      // Losing the deadline write costs an extra observation pass; turning it
+      // into a failed sweep would cost the rest of the teams in this pass.
+      this.deps.debug(
+        `OpenCode delivery deferral failed for ${teamName}/${record.inboxMessageId}: ${this.deps.getErrorMessage(error)}`
+      );
+    }
   }
 
   private liveTeamNames(): readonly string[] {

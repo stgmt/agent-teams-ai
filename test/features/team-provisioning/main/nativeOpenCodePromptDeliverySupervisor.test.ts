@@ -219,7 +219,9 @@ describe('native OpenCode prompt delivery supervisor', () => {
     };
     const { relay, subject } = supervisor({
       runs: { alpha: liveRun },
-      ledgers: { open: () => ({ listDue: vi.fn(async () => [record]) }) } as never,
+      ledgers: {
+        open: () => ({ listDue: vi.fn(async () => [record]), markNextAttemptDeferred: vi.fn() }),
+      } as never,
       status: async () => ({ responsePending: true, ledgerStatus: 'accepted' }),
     });
 
@@ -240,7 +242,9 @@ describe('native OpenCode prompt delivery supervisor', () => {
     };
     const { relay, subject } = supervisor({
       runs: { alpha: liveRun },
-      ledgers: { open: () => ({ listDue: vi.fn(async () => [record]) }) } as never,
+      ledgers: {
+        open: () => ({ listDue: vi.fn(async () => [record]), markNextAttemptDeferred: vi.fn() }),
+      } as never,
       status: async () => ({ responseState: 'not_observed', ledgerStatus: 'failed_retryable' }),
     });
 
@@ -261,11 +265,42 @@ describe('native OpenCode prompt delivery supervisor', () => {
     };
     const { relay, subject } = supervisor({
       runs: { alpha: liveRun },
-      ledgers: { open: () => ({ listDue: vi.fn(async () => [record]) }) } as never,
+      ledgers: {
+        open: () => ({ listDue: vi.fn(async () => [record]), markNextAttemptDeferred: vi.fn() }),
+      } as never,
       status: async () => ({ responseState: 'responded_visible_message' }),
     });
 
     await expect(subject.sweepDueDeliveries()).resolves.toBe(0);
+    await vi.advanceTimersByTimeAsync(3_200);
+    expect(relay).not.toHaveBeenCalled();
+  });
+
+  it('moves an observed row out of the due set without touching its verdict', async () => {
+    const record = {
+      id: 'row-1',
+      inboxMessageId: 'pending-row',
+      memberName: 'builder',
+      runId: 'run-alpha',
+      laneId: 'primary',
+      status: 'retry_scheduled',
+      attempts: 2,
+      responseState: 'not_observed',
+      nextAttemptAt: '2026-01-01T00:00:00.000Z',
+    };
+    const markNextAttemptDeferred = vi.fn(async () => record);
+    const { relay, subject } = supervisor({
+      runs: { alpha: liveRun },
+      ledgers: {
+        open: () => ({ listDue: vi.fn(async () => [record]), markNextAttemptDeferred }),
+      } as never,
+      status: async () => ({ responsePending: true }),
+    });
+
+    await expect(subject.sweepDueDeliveries()).resolves.toBe(0);
+    expect(markNextAttemptDeferred).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'row-1' })
+    );
     await vi.advanceTimersByTimeAsync(3_200);
     expect(relay).not.toHaveBeenCalled();
   });
