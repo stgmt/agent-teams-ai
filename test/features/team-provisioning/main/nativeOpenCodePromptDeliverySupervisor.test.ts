@@ -34,6 +34,7 @@ function supervisor(options: {
   relay?: ReturnType<typeof vi.fn>;
   readInboxMessages?: ReturnType<typeof vi.fn>;
   ledgers?: NativeOpenCodePromptDeliverySupervisorDependencies['ledgers'];
+  status?: (teamName: string, messageId: string) => Promise<unknown>;
 }) {
   const relay = options.relay ?? vi.fn(async () => ({ relayed: 1, attempted: 1, delivered: 1, failed: 0 }));
   const runs = options.runs ?? {};
@@ -52,6 +53,9 @@ function supervisor(options: {
       delivery: {
         relayOpenCodeMemberInboxMessages: relay as never,
       },
+      ...(options.status
+        ? { observeDelivery: options.status as never }
+        : {}),
       readInboxMessages:
         options.readInboxMessages ?? vi.fn(async () => [{ messageId: 'message-1', read: false }]),
       ...(options.ledgers ? { ledgers: options.ledgers } : {}),
@@ -174,12 +178,22 @@ describe('native OpenCode prompt delivery supervisor', () => {
       record('due-row'),
       record('other-run-row', { runId: 'run-previous' }),
       record('cancelled-row', { cancelledAt: '2026-01-01T00:00:00.000Z' }),
+      record('accepted-row', {
+        status: 'accepted',
+        responseState: 'pending',
+        runtimePromptMessageId: 'runtime-prompt-1',
+        lastRuntimePromptMessageId: 'runtime-prompt-1',
+      }),
+      record('unknown-acceptance-row', { acceptanceUnknown: true }),
+      record('repair-handoff-row', { groupRepairHandoffPending: true }),
     ]);
     const { relay, subject } = supervisor({
       runs: { alpha: liveRun },
       ledgers: { open: () => ({ listDue }) } as never,
     });
 
+    // One row is safe to re-prompt. A row from an earlier run, a cancelled row,
+    // an accepted-but-unfinished row and an acceptance-unknown row are not.
     await expect(subject.sweepDueDeliveries()).resolves.toBe(1);
     expect(listDue).toHaveBeenCalledWith({
       teamName: 'alpha',
@@ -191,6 +205,69 @@ describe('native OpenCode prompt delivery supervisor', () => {
     expect(relay).toHaveBeenCalledTimes(1);
     expect(relay.mock.calls[0]?.slice(0, 2)).toEqual(['alpha', 'builder']);
     expect(relay.mock.calls[0]?.[2]).toMatchObject({ onlyMessageId: 'due-row' });
+  });
+
+  it('observes a row instead of re-prompting when a turn is still in flight', async () => {
+    const record = {
+      inboxMessageId: 'pending-row',
+      memberName: 'builder',
+      runId: 'run-alpha',
+      laneId: 'primary',
+      status: 'retry_scheduled',
+      responseState: 'not_observed',
+      nextAttemptAt: '2026-01-01T00:00:00.000Z',
+    };
+    const { relay, subject } = supervisor({
+      runs: { alpha: liveRun },
+      ledgers: { open: () => ({ listDue: vi.fn(async () => [record]) }) } as never,
+      status: async () => ({ responsePending: true, ledgerStatus: 'accepted' }),
+    });
+
+    await expect(subject.sweepDueDeliveries()).resolves.toBe(0);
+    await vi.advanceTimersByTimeAsync(3_200);
+    expect(relay).not.toHaveBeenCalled();
+  });
+
+  it('re-prompts a row the runtime never answered', async () => {
+    const record = {
+      inboxMessageId: 'unanswered-row',
+      memberName: 'builder',
+      runId: 'run-alpha',
+      laneId: 'primary',
+      status: 'failed_retryable',
+      responseState: 'not_observed',
+      nextAttemptAt: '2026-01-01T00:00:00.000Z',
+    };
+    const { relay, subject } = supervisor({
+      runs: { alpha: liveRun },
+      ledgers: { open: () => ({ listDue: vi.fn(async () => [record]) }) } as never,
+      status: async () => ({ responseState: 'not_observed', ledgerStatus: 'failed_retryable' }),
+    });
+
+    await expect(subject.sweepDueDeliveries()).resolves.toBe(1);
+    await vi.advanceTimersByTimeAsync(3_200);
+    expect(relay).toHaveBeenCalledTimes(1);
+  });
+
+  it('never re-prompts a row whose reply already arrived', async () => {
+    const record = {
+      inboxMessageId: 'answered-row',
+      memberName: 'builder',
+      runId: 'run-alpha',
+      laneId: 'primary',
+      status: 'retry_scheduled',
+      responseState: 'not_observed',
+      nextAttemptAt: '2026-01-01T00:00:00.000Z',
+    };
+    const { relay, subject } = supervisor({
+      runs: { alpha: liveRun },
+      ledgers: { open: () => ({ listDue: vi.fn(async () => [record]) }) } as never,
+      status: async () => ({ responseState: 'responded_visible_message' }),
+    });
+
+    await expect(subject.sweepDueDeliveries()).resolves.toBe(0);
+    await vi.advanceTimersByTimeAsync(3_200);
+    expect(relay).not.toHaveBeenCalled();
   });
 
   it('skips a team whose run is no longer live', async () => {

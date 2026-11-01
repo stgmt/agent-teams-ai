@@ -50,6 +50,7 @@ import type {
   ConfiguredMemberLaunch,
   MemberAttachReason,
 } from '../../core/application/ports/MemberRuntimePorts';
+import type { NativeOpenCodeMemberDeliveryPort } from '../adapters/input/NativeTeamMessagingApi';
 import type { LaneLeadDeliveryPort } from '../adapters/output/LeadLaneInboxDelivery';
 import type { NativeConfiguredProviderPorts } from '../adapters/output/NativeConfiguredProvider';
 import type { MemberLifecycle } from './createMemberLifecycle';
@@ -165,6 +166,24 @@ export interface NativeTeamLifecycle {
   ): Promise<void>;
   /** Clears native run claims that are not alive in this process. */
   recoverOrphanedRuns(teamNames: readonly string[]): Promise<OrphanedRunRecovery>;
+}
+
+/**
+ * The ledger port that can also report what the runtime did with a message. The
+ * lifecycle accepts the narrow lead-delivery port, so the sweep's observation
+ * source is optional by construction.
+ */
+function hasDeliveryObservation(port: unknown): port is {
+  getOpenCodeRuntimeDeliveryStatus: NonNullable<
+    NativeOpenCodeMemberDeliveryPort['getOpenCodeRuntimeDeliveryStatus']
+  >;
+} {
+  return (
+    typeof port === 'object' &&
+    port !== null &&
+    typeof (port as { getOpenCodeRuntimeDeliveryStatus?: unknown })
+      .getOpenCodeRuntimeDeliveryStatus === 'function'
+  );
 }
 
 /** Composes native launch components without the former provisioning host or restart algorithm. */
@@ -363,6 +382,9 @@ export function createNativeTeamLifecycle(
           createOpenCodePromptDeliveryLedger(teamName, laneId, { teamsBasePath: deps.teamsRoot }),
       },
       delivery: deps.openCodeLeadDelivery,
+      ...(hasDeliveryObservation(deps.openCodeLeadDelivery)
+        ? { observeDelivery: deps.openCodeLeadDelivery.getOpenCodeRuntimeDeliveryStatus }
+        : {}),
       readInboxMessages: ({ teamName, memberName }) =>
         inboxReader.getMessagesFor(teamName, memberName),
       info: (message) => deliveryLog.info(message),

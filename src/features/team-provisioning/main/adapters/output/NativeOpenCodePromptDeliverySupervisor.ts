@@ -1,7 +1,9 @@
 import {
   isOpenCodePromptDeliveryCancelled,
+  type OpenCodePromptDeliveryLedgerRecord,
   type OpenCodePromptDeliveryLedgerStore,
 } from '@main/services/team/opencode/delivery/OpenCodePromptDeliveryLedger';
+import { isOpenCodePromptDeliveryObserveOnlyPendingRecord } from '@main/services/team/opencode/delivery/OpenCodePromptDeliveryStalePendingPolicy';
 import { OPENCODE_PROMPT_DELIVERY_OBSERVE_DELAY_MS } from '@main/services/team/opencode/delivery/OpenCodePromptDeliveryWatchdog';
 import { OpenCodePromptDeliveryWatchdogScheduler } from '@main/services/team/opencode/delivery/OpenCodePromptDeliveryWatchdogScheduler';
 
@@ -26,6 +28,11 @@ export interface NativeOpenCodePromptDeliverySupervisorDependencies {
   now?(): Date;
   /** The retained member prompt ledger; this supervisor drives it, never owns it. */
   delivery: Pick<NativeOpenCodeMemberDeliveryPort, 'relayOpenCodeMemberInboxMessages'>;
+  /**
+   * The runtime's own account of a message, when the ledger port can answer it.
+   * Absent, the sweep decides from the ledger record alone.
+   */
+  observeDelivery?: NativeOpenCodeMemberDeliveryPort['getOpenCodeRuntimeDeliveryStatus'];
   readInboxMessages(input: {
     teamName: string;
     memberName: string;
@@ -50,6 +57,23 @@ export interface NativeDeliveryVerificationSchedule {
 }
 
 const RECORD_NOT_FOUND_PREFIX = 'OpenCode prompt delivery record not found:';
+
+/**
+ * Whether a due record may be delivered again.
+ *
+ * The ledger records what the runtime answered. A prompt it accepted but has not
+ * finished, a corrected handoff awaiting its own reply, and an attempt whose
+ * acceptance was never observed all mean "we do not know whether the member is
+ * already working on this". A retry there is not a repair - it is a second copy
+ * of the same request in front of an agent that has no memory of the first.
+ * Those rows are left for the observation path.
+ */
+function isSafeToRearm(record: OpenCodePromptDeliveryLedgerRecord): boolean {
+  if (record.acceptanceUnknown) return false;
+  if (record.groupRepairHandoffPending) return false;
+  if (isOpenCodePromptDeliveryObserveOnlyPendingRecord(record)) return false;
+  return true;
+}
 
 /**
  * Native driver for the retained OpenCode member prompt ledger.
@@ -193,6 +217,14 @@ export class NativeOpenCodePromptDeliverySupervisor {
             // inbox row belongs to a rollout that no longer exists.
             if (record.runId && record.runId !== snapshot.identity.runId) continue;
             if (isOpenCodePromptDeliveryCancelled(record)) continue;
+            // A row that already has a prompt the runtime accepted, or one whose
+            // acceptance is unknown, needs an observation rather than a second
+            // prompt: re-sending is how a member answers the same request twice.
+            // Observe before deciding: the row may have been answered while the
+            // app was not looking, or be waiting in a live turn right now. Only
+            // an unproven, idle row is worth a second prompt.
+            const verdict = await this.decideRearm(teamName, record);
+            if (verdict !== 'retry') continue;
             this.scheduleDeliveryVerification({
               teamName,
               memberName: record.memberName || memberName,
@@ -209,6 +241,38 @@ export class NativeOpenCodePromptDeliverySupervisor {
       this.sweeping = false;
     }
     return armed;
+  }
+
+  /**
+   * Whether a due row may be delivered again, judged from the ledger record and
+   * the runtime's own account of the message.
+   *
+   * `observe` keeps the row out of the retry path without settling it: a turn in
+   * flight, a prompt the runtime accepted, or an acceptance nobody witnessed.
+   * The next pass observes again - an observation is free, a second prompt is
+   * not.
+   */
+  private async decideRearm(
+    teamName: string,
+    record: OpenCodePromptDeliveryLedgerRecord
+  ): Promise<'retry' | 'observe'> {
+    if (!isSafeToRearm(record)) return 'observe';
+    const observe = this.deps.observeDelivery;
+    if (!observe) return 'retry';
+    let status: Awaited<ReturnType<typeof observe>>;
+    try {
+      status = await observe(teamName, record.inboxMessageId);
+    } catch (error) {
+      this.deps.debug(
+        `OpenCode delivery observation failed for ${teamName}/${record.inboxMessageId}: ${this.deps.getErrorMessage(error)}`
+      );
+      return 'observe';
+    }
+    if (!status) return 'retry';
+    if (status.responsePending === true) return 'observe';
+    if (status.responseState?.startsWith('responded_')) return 'observe';
+    if (status.accepted === true) return 'observe';
+    return 'retry';
   }
 
   private liveTeamNames(): readonly string[] {
