@@ -48,7 +48,7 @@ export function composeExternalAgentConnection(options: {
   hasLiveRuntimeConsumers?(): boolean;
   teamManagement?: [
     data: TeamPromptManagementData,
-    lifecycle: TeamPromptManagementLifecycle,
+    lifecycle: () => TeamPromptManagementLifecycle,
     emit: (event: TeamChangeEvent) => void,
   ];
 }) {

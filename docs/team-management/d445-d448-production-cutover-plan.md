@@ -397,10 +397,18 @@ lead-mediated forward prompt в stdin лида (как legacy flow), комми�
 | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `isTeamAlive`, `getAliveTeams`, `getAliveTeamNames`, `getRuntimeState`, `getTeamAgentRuntimeSnapshot`, `hasActiveTeamRuntimes`, `getMemberSpawnStatuses`, `stopAllTeams`, `relayInboxFileToLiveRecipient`, `setRuntimeAdapterRegistry`, `setControlApiBaseUrlResolver` | `assessLeadRuntimeRestart`/`restartLeadRuntime` (native lead restart через `LeadMemberStartAuthority`), `hasLiveOpenCodeMcpConsumers`, `scanOpenCodePromptDeliveryWatchdog`, `scheduleOpenCodeMemberInboxDeliveryWake`, `getOpenCodeMemberDeliveryBusyStatus`, `warmup`, `prepareForProvisioning`, `setCrossTeamSender` |
 
-Порядок инициализации: `externalAgentConnection` сейчас создаётся после сервиса,
-но native runtime требует его `withExpectedContext`/`contextInvalidationSignal`;
-`runtimeAdapterRegistry` регистрируется ещё позже (`index.ts:2091`). Cutover
-начинается с переноса этих двух блоков выше создания owner-а.
+Порядок инициализации. Сделано: `externalAgentConnection` создаётся до
+`createDefaultTeamProvisioningService`, а lifecycle передаётся в
+`composeTeamPromptManagement` ленивым провайдером `() => lifecycle` (цикл
+«соединение нужно сервису, сервис нужен соединению» разорван без фасада;
+композиция не вызывает провайдер — проверено одноразовым прогоном).
+
+Осталось: `runtimeAdapterRegistry` (`index.ts`) по-прежнему создаётся после
+сервиса, и просто поднять его нельзя — комментарий у
+`windowsStartupCleanup.preflight()` требует сначала вычистить чужие хосты
+OpenCode, иначе первый запуск гоняется со старым хостом за loopback-порт. Значит
+перенос — это перестановка блока reaping выше создания owner-а, а не одна строка;
+проверять её нужно запуском приложения, а не только типами.
 
 App-shell состояние (`controlUrl`, turn-settled env, member gateway seams), которое
 сейчас живёт внутри legacy-сервиса, должно перейти в `createNativeProviderPorts`

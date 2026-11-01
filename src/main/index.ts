@@ -1948,6 +1948,32 @@ async function initializeServices(): Promise<void> {
   await cleanupOrphanedDeterministicBootstrapSpecs().catch(() =>
     console.warn('Could not clean retired bootstrap files')
   );
+  externalAgentConnection = composeExternalAgentConnection({
+    appInstanceId: openCodeManagedHostInstanceId,
+    nativeRun: [
+      cliInstallerService,
+      () => codexAccountFeature?.refreshSnapshot({ bypassCache: true }),
+    ],
+    teamManagement: [
+      teamDataService,
+      // Late-bound: the service is composed after this connection and needs its context fence.
+      () => teamProvisioningService,
+      forwardTeamChangeToRendererAndHttp,
+    ],
+    hasLiveRuntimeConsumers: () => teamProvisioningService?.hasLiveOpenCodeMcpConsumers() ?? false,
+    cdp: nativeRendererCdp,
+    getMainContents: () => mainWindow?.webContents ?? null,
+    isLocalContext: () =>
+      contextRegistry.getActiveContextId() === 'local' &&
+      !['connecting', 'connected'].includes(sshConnectionManager.getStatus().state),
+    getControlUrl: getTeamControlApiBaseUrl,
+    startControl: () => startHttpServer(handleModeSwitch),
+    reconfigureRoot: async () => {
+      reconfigureLocalContextForClaudeRoot();
+      await schedulerService?.reloadForClaudeRootChange();
+      if (httpServer?.isRunning()) await syncTeamControlApiState();
+    },
+  });
   teamProvisioningService = createDefaultTeamProvisioningService(
     () => teamGroupChatsFeature,
     resolveOpenCodeInputDeclaration,
@@ -1988,27 +2014,6 @@ async function initializeServices(): Promise<void> {
   teamProvisioningService.setWorkspaceTrustCoordinator(workspaceTrust.coordinator);
   workspaceTrustFeature.registerWorkspaceTrustIpc(ipcMain, workspaceTrust.status);
   projectFolderFeature.registerProjectFolderFeature(ipcMain);
-  externalAgentConnection = composeExternalAgentConnection({
-    appInstanceId: openCodeManagedHostInstanceId,
-    nativeRun: [
-      cliInstallerService,
-      () => codexAccountFeature?.refreshSnapshot({ bypassCache: true }),
-    ],
-    teamManagement: [teamDataService, teamProvisioningService, forwardTeamChangeToRendererAndHttp],
-    hasLiveRuntimeConsumers: () => teamProvisioningService.hasLiveOpenCodeMcpConsumers(),
-    cdp: nativeRendererCdp,
-    getMainContents: () => mainWindow?.webContents ?? null,
-    isLocalContext: () =>
-      contextRegistry.getActiveContextId() === 'local' &&
-      !['connecting', 'connected'].includes(sshConnectionManager.getStatus().state),
-    getControlUrl: getTeamControlApiBaseUrl,
-    startControl: () => startHttpServer(handleModeSwitch),
-    reconfigureRoot: async () => {
-      reconfigureLocalContextForClaudeRoot();
-      await schedulerService?.reloadForClaudeRootChange();
-      if (httpServer?.isRunning()) await syncTeamControlApiState();
-    },
-  });
   teamProvisioningService.setLaunchAdmissionGuard(externalAgentConnection.assertLaunchAdmission);
   teamRuntimeRecoveryFeature = createTeamRuntimeRecoveryFeature({
     teamsBasePath: getTeamsBasePath(),
