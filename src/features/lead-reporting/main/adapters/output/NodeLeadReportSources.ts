@@ -4,12 +4,10 @@ import { basename, dirname, isAbsolute } from 'node:path';
 import { validateTeamName } from '@main/services/team/TeamIdentifierValidation';
 import { boundedDiagnosticString } from '@shared/utils/diagnosticsRedaction';
 import { isCanonicalSettingsLeadMember } from '@shared/utils/leadDetection';
-import * as controllerModuleNs from 'agent-teams-controller';
 
 import { LeadReportSourceFailure } from '../../../core/application/ports';
 
-const controllerModule =
-  (controllerModuleNs as { default?: typeof controllerModuleNs }).default ?? controllerModuleNs;
+import { controllerModule } from './controllerModuleInterop';
 
 import type {
   EvidenceRef,

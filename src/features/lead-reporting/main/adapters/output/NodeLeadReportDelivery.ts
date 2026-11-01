@@ -1,12 +1,10 @@
 import { dirname } from 'node:path';
 
-import * as controllerModuleNs from 'agent-teams-controller';
+import { controllerModule } from './controllerModuleInterop';
 
 import type { DeliveredLeadReport, LeadReportRunIdentity } from '../../../contracts';
 import type { LeadReportDelivery } from '../../../core/application/ports';
 
-const controllerModule =
-  (controllerModuleNs as { default?: typeof controllerModuleNs }).default ?? controllerModuleNs;
 
 /** Only this app-side adapter writes user reports. MCP never appends them independently. */
 export class NodeLeadReportDelivery implements LeadReportDelivery {

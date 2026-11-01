@@ -153,6 +153,7 @@ vi.mock(
 
 vi.mock('agent-teams-controller', () => ({
   AGENT_TEAMS_TEAMMATE_OPERATIONAL_TOOL_NAMES: [] as readonly string[],
+  AGENT_TEAMS_OPERATIONAL_LEAD_TOOL_NAMES: [] as readonly string[],
   AGENT_TEAMS_NAMESPACED_LEAD_BOOTSTRAP_TOOL_NAMES: [] as readonly string[],
   AGENT_TEAMS_NAMESPACED_TEAMMATE_OPERATIONAL_TOOL_NAMES: [] as readonly string[],
   createController: ({ teamName }: { teamName: string }) => ({
