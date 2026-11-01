@@ -420,6 +420,10 @@ export function createNativeTeamLifecycle(
   const stopRelays = (teamName: string): void => {
     leadRelay.stopPolling(teamName);
     memberRelay.stopPolling(teamName);
+    // A wake is the other half of polling: stopping relay work while leaving an
+    // armed timer behind would deliver a prompt into a team whose relays were
+    // just declared stopped. `release` cancels the same wakes when the run goes.
+    promptDelivery?.cancelTeam(teamName);
   };
   const commands = createBoundLifecycleCommands({
     owner: deps.owner,
