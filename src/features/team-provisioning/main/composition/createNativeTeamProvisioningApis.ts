@@ -3,6 +3,7 @@ import { NativeTeamMemberLifecycleApi } from '../adapters/input/NativeTeamMember
 import { NativeTeamMessagingApi } from '../adapters/input/NativeTeamMessagingApi';
 import { NativeTeamToolApprovalApi } from '../adapters/input/NativeTeamToolApprovalApi';
 import { NativeLanguageChangeNotifier } from '../adapters/output/NativeLanguageChangeNotifier';
+import { NativeMcpConsumerQuery } from '../adapters/output/NativeMcpConsumerQuery';
 import { NativeTeamClaudeLogs } from '../adapters/output/NativeTeamClaudeLogs';
 import { NativeTeamDiagnostics } from '../adapters/output/NativeTeamDiagnostics';
 
@@ -75,6 +76,16 @@ export function createNativeTeamProvisioningApis(
       settings: lifecycle.toolApprovalSettings,
     }),
   };
+}
+
+/**
+ * Whether the app-owned HTTP MCP bridge still has consumers. Sync by contract,
+ * so it reads only the registry instead of launch settings.
+ */
+export function createNativeMcpConsumerQuery(
+  deps: Pick<NativeTeamProvisioningApisDependencies, 'runtime'>
+): NativeMcpConsumerQuery {
+  return new NativeMcpConsumerQuery({ runs: deps.runtime.lifecycle.runs });
 }
 
 function buildMessagingApi(

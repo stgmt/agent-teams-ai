@@ -54,6 +54,7 @@ work before cutover. No row may be silently omitted from the cutover commit.
 | live lead messages / push                             | partial; production capture remains legacy | `NativeLeadLiveMessageStore` is lifecycle-owned and cleared on run release; native stream capture/production composition is not wired yet |
 | cross-team reply metadata / expectations              | native (binding is phase 8) | `NativeCrossTeamReplyLedger` owns the expectations and delivery proofs shared with `NativeLeadInboxRelay`; `NativeCrossTeamMessagingApi` (+`createNativeTeamCrossTeamApi`) resolves metadata, relays, and proves runtime delivery |
 | `notifyLanguageChange`                                | native adapter, binding is phase 8 | `NativeLanguageChangeNotifier` takes the alive set from the native registry, reads config through the non-owning reader, sends through `NativeTeamMessagingApi`, and writes the language with a CAS update under the pinned `.config.lock`; the per-team policy stays the shared pure function |
+| `hasLiveOpenCodeMcpConsumers`                          | native adapter, binding is phase 8 | `NativeMcpConsumerQuery` derives it from the registry: an OpenCode member is lane-backed (`member.lane !== null`; only `NativeOpenCodeLaneRuntime` produces lane observations), and a run in `preparing`/`starting` counts as a consumer, matching the legacy over-approximation for pending admissions |
 
 Cross-team limitations kept explicit:
 

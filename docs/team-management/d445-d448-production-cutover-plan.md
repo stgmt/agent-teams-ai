@@ -407,8 +407,14 @@ App-shell состояние (`controlUrl`, turn-settled env, member gateway sea
 напрямую; иначе native launch не соберёт env.
 
 Уже снято с legacy-владельца (native adapter + composition готовы, вызов
-переключается cutover-коммитом): `notifyLanguageChange` —
-`NativeLanguageChangeNotifier` + `createNativeLanguageChangeNotifier`.
+переключается cutover-коммитом):
+
+- `notifyLanguageChange` — `NativeLanguageChangeNotifier` +
+  `createNativeLanguageChangeNotifier`;
+- `hasLiveOpenCodeMcpConsumers` — `NativeMcpConsumerQuery` +
+  `createNativeMcpConsumerQuery` (выводится из реестра: OpenCode-участник
+  lane-backed, а прогон в `preparing`/`starting` считается потребителем, как и
+  прежнее «приём в процессе»).
 
 #### Проверенный статус оставшихся девяти (после ревизии кода)
 
@@ -418,14 +424,13 @@ App-shell состояние (`controlUrl`, turn-settled env, member gateway sea
 | Метод | Что проверено | Чем блокируется |
 | --- | --- | --- |
 | `warmup`, `prepareForProvisioning` | Probe-подсистема CLI/моделей, процессов команд не держит; native-поверхность уже принимает `TeamProvisioningPreflightApi` в `createNativeTeamProvisioningApis` | Ничем: остаётся инжектированной невладеющей зависимостью («чистый фасад может остаться»). Отдельный порт не нужен. |
-| `hasLiveOpenCodeMcpConsumers` | Legacy читает payload прогона (`request.providerId`, `allEffectiveMembers`, `mixedSecondaryLanes`), которого в native-реестре нет по контракту | Нужно решение: записывать набор провайдеров при приёме прогона либо отдельный порт. Вызов синхронный (`index.ts:1998`), настройки читаются асинхронно |
 | `scanOpenCodePromptDeliveryWatchdog`, `scheduleOpenCodeMemberInboxDeliveryWake`, `getOpenCodeMemberDeliveryBusyStatus` | Строятся из путей к ledger-файлам плюс `isOpenCodeRuntimeRecipient` и восстановление лейна (`tryRecoverOpenCodeRuntimeLaneForConfiguredMember*`), которые читают состояние legacy-сервиса | Владением OpenCode-лейнами (blocking spike `d445-opencode-parity-spike.md`) |
 | `setCrossTeamSender` | Сеттер-трамплин `(request) => crossTeamService.send(request)`; в native кросс-командная отправка — конструкторная зависимость (`createNativeTeamCrossTeamApi`), а оставшийся потребитель — `OpenCodeRuntimeDeliveryPorts.getCrossTeamSender` | Тем же владением OpenCode-лейнами; самостоятельного порта нет |
 | `assessLeadRuntimeRestart`, `restartLeadRuntime` | Политика в `TeamProvisioningLeadRuntimeRestart.ts`; порты включают `spawn`, watchdog, `syncPersistedMetadata`, `stopPersistentTeamMembers`, `stopMixedSecondaryRuntimeLanes`. Поддерживает только `Exclude<TeamProviderId,'opencode'>` | Заменой процесса лида целиком плюс остановкой secondary-лейнов (OpenCode) |
 
-Следствие для порядка: единственная точка, которую можно делать без spike по
-OpenCode, — `hasLiveOpenCodeMcpConsumers` (решение по приёму набора провайдеров).
-Остальное ждёт go/no-go по OpenCode-лейнам.
+Следствие для порядка: без spike по OpenCode остаётся только перенос
+композиционного порядка в `src/main/index.ts`; всё остальное ждёт go/no-go по
+OpenCode-лейнам.
 
 OpenCode ledger-операции (`scan`/`wake`/`busy`) расширяют
 `NativeOpenCodeMemberDeliveryPort`; порт остаётся невладеющим.

@@ -21,6 +21,7 @@ export {
   NativeClaudeToolApprovals,
 } from './adapters/output/NativeClaudeToolApprovals';
 export { NativeLanguageChangeNotifier } from './adapters/output/NativeLanguageChangeNotifier';
+export { NativeMcpConsumerQuery } from './adapters/output/NativeMcpConsumerQuery';
 export type { NativeOpenCodeLaneRuntimeDependencies } from './adapters/output/NativeOpenCodeLaneRuntime';
 export { NativeOpenCodeLaneRuntime } from './adapters/output/NativeOpenCodeLaneRuntime';
 export type { NativeTaskActivityRepairDependencies } from './adapters/output/NativeTaskActivityRepair';
@@ -67,6 +68,7 @@ export {
 } from './composition/createNativeTeamLifecycle';
 export {
   createNativeLanguageChangeNotifier,
+  createNativeMcpConsumerQuery,
   createNativeTeamProvisioningApis,
   type NativeLanguageChangeNotifierDependencies,
   type NativeTeamProvisioningApisDependencies,
