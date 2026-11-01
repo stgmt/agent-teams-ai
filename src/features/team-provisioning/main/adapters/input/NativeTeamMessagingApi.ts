@@ -22,6 +22,12 @@ export type NativeOpenCodeMemberDeliveryPort = Pick<
   'relayOpenCodeMemberInboxMessages' | 'getOpenCodeRuntimeDeliveryStatus'
 >;
 
+/** Only the ledger read: it needs no runtime, so it can be answered natively. */
+export type NativeOpenCodeDeliveryStatusReader = Pick<
+  TeamMessagingApi,
+  'getOpenCodeRuntimeDeliveryStatus'
+>;
+
 interface Dependencies {
   runs: Pick<TeamRunRegistryRead, 'find' | 'isLive'>;
   settings: Pick<MemberLaunchSettingsPort, 'findConfiguredMember'>;
@@ -31,6 +37,11 @@ interface Dependencies {
   sendLeadMessage: NativeTeamLifecycle['sendLeadMessage'];
   relayLeadInboxMessages(teamName: string): Promise<number>;
   openCodeMemberDelivery?: NativeOpenCodeMemberDeliveryPort;
+  /**
+   * Ledger-only delivery status; used when the full delivery port is absent so a
+   * message the app already delivered still reports its state.
+   */
+  openCodeDeliveryStatus?: NativeOpenCodeDeliveryStatusReader;
   /**
    * Arms the retained ledger's own retry ladder for a prompt this app just
    * wrote to a lane. Without it a prompt whose acceptance was never proven waits
@@ -136,9 +147,9 @@ export class NativeTeamMessagingApi implements TeamMessagingApi {
     teamName: string,
     messageId: string
   ): Promise<OpenCodeRuntimeDeliveryStatus | null> {
-    const delivery = this.deps.openCodeMemberDelivery;
-    if (!delivery) throw new Error('OpenCode member delivery ledger is not configured');
-    return delivery.getOpenCodeRuntimeDeliveryStatus(teamName, messageId);
+    const reader = this.deps.openCodeDeliveryStatus ?? this.deps.openCodeMemberDelivery;
+    if (!reader) throw new Error('OpenCode member delivery ledger is not configured');
+    return reader.getOpenCodeRuntimeDeliveryStatus(teamName, messageId);
   }
 
   async relayLeadInboxMessages(teamName: string): Promise<number> {
