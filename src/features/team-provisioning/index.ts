@@ -2,6 +2,11 @@
 export { memberIsLive } from './core/domain/teamLifecycleState';
 export { NodeTeamDefinitionStore } from './main/adapters/output/NodeTeamDefinitionStore';
 export {
+  createNativeTeamProvisioningGraph,
+  type NativeTeamProvisioningGraphDependencies,
+  type NativeTeamProvisioningStores,
+} from './main/composition/createNativeTeamProvisioningGraph';
+export {
   createNativeTeamProvisioningRoot,
   type NativeTeamProvisioningRoot,
   type NativeTeamProvisioningRootDependencies,
