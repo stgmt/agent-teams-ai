@@ -452,3 +452,45 @@ function deferred(): { promise: Promise<void>; resolve(): void } {
   });
   return { promise, resolve };
 }
+
+describe('shutdown over the native runtime', () => {
+  it('stops the team that still holds a run', async () => {
+    const { runtime, commands } = harness({
+      initial: {
+        identity: { ...owner, teamName, runId: 'TEST-run' },
+        desired: 'running',
+        resources: 'held',
+        error: null,
+        startedAt,
+        version: 1,
+        state: 'ready',
+        members: { 'team-lead': lead() },
+      },
+    });
+
+    await expect(runtime.stopAllTeams()).resolves.toEqual([]);
+
+    expect(commands.stop).toHaveBeenCalledTimes(1);
+    expect(commands.stop).toHaveBeenCalledWith(expect.objectContaining({ teamName }));
+  });
+
+  it('reports a failed release instead of letting it abort the shutdown', async () => {
+    const { runtime, commands } = harness({
+      initial: {
+        identity: { ...owner, teamName, runId: 'TEST-run' },
+        desired: 'running',
+        resources: 'held',
+        error: null,
+        startedAt,
+        version: 1,
+        state: 'release-failed',
+        members: { 'team-lead': lead() },
+      },
+    });
+    commands.stop.mockRejectedValueOnce(new Error('TEST release failed'));
+
+    await expect(runtime.stopAllTeams()).resolves.toEqual([
+      { teamName, error: 'TEST release failed' },
+    ]);
+  });
+});

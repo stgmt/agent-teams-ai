@@ -59,6 +59,11 @@ export interface DesktopTeamRuntime extends ProvisioningStatusReaderPort {
   hasProvisioningRun(teamName: string): boolean;
   getRuntimeState(teamName: string): Promise<TeamRuntimeState>;
   stopTeam(teamName: string): Promise<void>;
+  /**
+   * Shutdown path: stops every team that still holds a run and reports the ones
+   * that failed, so one stuck release cannot keep the process alive.
+   */
+  stopAllTeams(): Promise<readonly { teamName: string; error: string }[]>;
   isTeamAlive(teamName: string): boolean;
   getAliveTeams(): string[];
   getCurrentRunId(teamName: string): string | null;
@@ -93,6 +98,14 @@ export function createDesktopTeamRuntime(deps: DesktopTeamRuntimeDependencies): 
       teamName: run.teamName,
       runId: run.runId,
     });
+  };
+
+  const stopTeam = async (teamName: string): Promise<void> => {
+    const snapshot = deps.lifecycle.runs.find(teamName);
+    // A stopped and released run has nothing to stop; anything else (including a
+    // failed release) must reach the command so the release can be retried.
+    if (!snapshot || snapshot.state === 'stopped') return;
+    await stop(snapshot.identity);
   };
 
   let pendingLaunchAdmissions = 0;
@@ -265,12 +278,21 @@ export function createDesktopTeamRuntime(deps: DesktopTeamRuntimeDependencies): 
       return { ...runtime, progress: toTeamProvisioningProgress(snapshot, deps.now()) };
     },
 
-    async stopTeam(teamName) {
-      const snapshot = deps.lifecycle.runs.find(teamName);
-      // A stopped and released run has nothing to stop; anything else (including a
-      // failed release) must reach the command so the release can be retried.
-      if (!snapshot || snapshot.state === 'stopped') return;
-      await stop(snapshot.identity);
+    stopTeam,
+
+    async stopAllTeams() {
+      const failures: { teamName: string; error: string }[] = [];
+      for (const teamName of deps.lifecycle.runs.aliveTeamNames()) {
+        try {
+          await stopTeam(teamName);
+        } catch (error) {
+          failures.push({
+            teamName,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+      return failures;
     },
 
     isTeamAlive(teamName) {
