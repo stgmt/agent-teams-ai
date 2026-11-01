@@ -1,7 +1,10 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from 'vitest';
 
-import { createNativeTeamProvisioningApis } from '../../../../src/features/team-provisioning/main/composition/createNativeTeamProvisioningApis';
+import {
+  createNativeLanguageChangeNotifier,
+  createNativeTeamProvisioningApis,
+} from '../../../../src/features/team-provisioning/main/composition/createNativeTeamProvisioningApis';
 
 import type { NativeDesktopTeamRuntime } from '../../../../src/features/team-provisioning/main/composition/createNativeDesktopTeamRuntime';
 import type { TeamProvisioningProgress } from '../../../../src/shared/types';
@@ -79,7 +82,17 @@ function setup(withDelivery = true) {
     ...(withDelivery ? { openCodeMemberDelivery: openCodeMemberDelivery as never } : {}),
     now: () => '2026-10-31T00:00:00.000Z',
   });
-  return { apis, relay, findByRunId, memberCommands, toolApprovalSettings, openCodeMemberDelivery };
+  return {
+    apis,
+    relay,
+    findByRunId,
+    memberCommands,
+    toolApprovalSettings,
+    openCodeMemberDelivery,
+    sendLeadMessage: lifecycle.sendLeadMessage,
+    runtimeStub: runtime,
+    lifecycle,
+  };
 }
 
 describe('native team provisioning API composition', () => {
@@ -149,5 +162,27 @@ describe('native team provisioning API composition', () => {
     await expect(
       apis.messaging.getOpenCodeRuntimeDeliveryStatus('TEST-team', 'message')
     ).rejects.toThrow('not configured');
+  });
+
+  it('notifies the alive teams from the native registry through the shared messaging adapter', async () => {
+    const { runtimeStub, lifecycle, sendLeadMessage } = setup();
+    const writeLanguage = vi.fn(async () => undefined);
+    const notifier = createNativeLanguageChangeNotifier({
+      runtime: { runtime: runtimeStub, lifecycle } as unknown as NativeDesktopTeamRuntime,
+      readConfig: vi.fn(async () => ({ name: 'TEST-team', language: 'en' })),
+      writeLanguage,
+      getSystemLocale: () => 'en-US',
+      resolveLanguageName: (code: string) => code,
+      logger: { info: vi.fn(), warn: vi.fn() },
+    });
+
+    await notifier.notify('fr');
+
+    expect(runtimeStub.getAliveTeams).toHaveBeenCalled();
+    expect(sendLeadMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ teamName: 'TEST-team', runId: 'TEST-run' }),
+      expect.stringContaining('"fr"')
+    );
+    expect(writeLanguage).toHaveBeenCalledWith('TEST-team', 'fr');
   });
 });

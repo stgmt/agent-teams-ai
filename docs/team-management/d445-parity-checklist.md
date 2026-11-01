@@ -53,6 +53,7 @@ work before cutover. No row may be silently omitted from the cutover commit.
 | `resolveRuntimeRecipientProviderId` / lead session id | native                    | `NativeTeamMessagingApi` (lane session only)                                                                             |
 | live lead messages / push                             | partial; production capture remains legacy | `NativeLeadLiveMessageStore` is lifecycle-owned and cleared on run release; native stream capture/production composition is not wired yet |
 | cross-team reply metadata / expectations              | native (binding is phase 8) | `NativeCrossTeamReplyLedger` owns the expectations and delivery proofs shared with `NativeLeadInboxRelay`; `NativeCrossTeamMessagingApi` (+`createNativeTeamCrossTeamApi`) resolves metadata, relays, and proves runtime delivery |
+| `notifyLanguageChange`                                | native adapter, binding is phase 8 | `NativeLanguageChangeNotifier` takes the alive set from the native registry, reads config through the non-owning reader, sends through `NativeTeamMessagingApi`, and writes the language with a CAS update under the pinned `.config.lock`; the per-team policy stays the shared pure function |
 
 Cross-team limitations kept explicit:
 

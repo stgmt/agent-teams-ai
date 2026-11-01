@@ -20,6 +20,7 @@ export {
   NativeClaudeApprovalStore,
   NativeClaudeToolApprovals,
 } from './adapters/output/NativeClaudeToolApprovals';
+export { NativeLanguageChangeNotifier } from './adapters/output/NativeLanguageChangeNotifier';
 export type { NativeOpenCodeLaneRuntimeDependencies } from './adapters/output/NativeOpenCodeLaneRuntime';
 export { NativeOpenCodeLaneRuntime } from './adapters/output/NativeOpenCodeLaneRuntime';
 export type { NativeTaskActivityRepairDependencies } from './adapters/output/NativeTaskActivityRepair';
@@ -65,7 +66,9 @@ export {
   type NativeTeamLifecycleDependencies,
 } from './composition/createNativeTeamLifecycle';
 export {
+  createNativeLanguageChangeNotifier,
   createNativeTeamProvisioningApis,
+  type NativeLanguageChangeNotifierDependencies,
   type NativeTeamProvisioningApisDependencies,
 } from './composition/createNativeTeamProvisioningApis';
 export {

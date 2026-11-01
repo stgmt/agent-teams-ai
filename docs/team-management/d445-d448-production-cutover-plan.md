@@ -395,7 +395,7 @@ lead-mediated forward prompt в stdin лида (как legacy flow), комми�
 
 | Готово, замена механическая                                                                                                                                                                                                                                            | Нужен native-эквивалент                                                                                                                                                                                                                                                                                                                         |
 | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `isTeamAlive`, `getAliveTeams`, `getAliveTeamNames`, `getRuntimeState`, `getTeamAgentRuntimeSnapshot`, `hasActiveTeamRuntimes`, `getMemberSpawnStatuses`, `stopAllTeams`, `relayInboxFileToLiveRecipient`, `setRuntimeAdapterRegistry`, `setControlApiBaseUrlResolver` | `assessLeadRuntimeRestart`/`restartLeadRuntime` (native lead restart через `LeadMemberStartAuthority`), `hasLiveOpenCodeMcpConsumers`, `scanOpenCodePromptDeliveryWatchdog`, `scheduleOpenCodeMemberInboxDeliveryWake`, `getOpenCodeMemberDeliveryBusyStatus`, `notifyLanguageChange`, `warmup`, `prepareForProvisioning`, `setCrossTeamSender` |
+| `isTeamAlive`, `getAliveTeams`, `getAliveTeamNames`, `getRuntimeState`, `getTeamAgentRuntimeSnapshot`, `hasActiveTeamRuntimes`, `getMemberSpawnStatuses`, `stopAllTeams`, `relayInboxFileToLiveRecipient`, `setRuntimeAdapterRegistry`, `setControlApiBaseUrlResolver` | `assessLeadRuntimeRestart`/`restartLeadRuntime` (native lead restart через `LeadMemberStartAuthority`), `hasLiveOpenCodeMcpConsumers`, `scanOpenCodePromptDeliveryWatchdog`, `scheduleOpenCodeMemberInboxDeliveryWake`, `getOpenCodeMemberDeliveryBusyStatus`, `warmup`, `prepareForProvisioning`, `setCrossTeamSender` |
 
 Порядок инициализации: `externalAgentConnection` сейчас создаётся после сервиса,
 но native runtime требует его `withExpectedContext`/`contextInvalidationSignal`;
@@ -405,6 +405,10 @@ lead-mediated forward prompt в stdin лида (как legacy flow), комми�
 App-shell состояние (`controlUrl`, turn-settled env, member gateway seams), которое
 сейчас живёт внутри legacy-сервиса, должно перейти в `createNativeProviderPorts`
 напрямую; иначе native launch не соберёт env.
+
+Уже снято с legacy-владельца (native adapter + composition готовы, вызов
+переключается cutover-коммитом): `notifyLanguageChange` —
+`NativeLanguageChangeNotifier` + `createNativeLanguageChangeNotifier`.
 
 OpenCode ledger-операции (`scan`/`wake`/`busy`) расширяют
 `NativeOpenCodeMemberDeliveryPort`; порт остаётся невладеющим.

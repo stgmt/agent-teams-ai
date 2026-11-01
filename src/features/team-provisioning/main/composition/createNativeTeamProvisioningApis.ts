@@ -2,6 +2,7 @@ import { NativeCrossTeamMessagingApi } from '../adapters/input/NativeCrossTeamMe
 import { NativeTeamMemberLifecycleApi } from '../adapters/input/NativeTeamMemberLifecycleApi';
 import { NativeTeamMessagingApi } from '../adapters/input/NativeTeamMessagingApi';
 import { NativeTeamToolApprovalApi } from '../adapters/input/NativeTeamToolApprovalApi';
+import { NativeLanguageChangeNotifier } from '../adapters/output/NativeLanguageChangeNotifier';
 import { NativeTeamClaudeLogs } from '../adapters/output/NativeTeamClaudeLogs';
 import { NativeTeamDiagnostics } from '../adapters/output/NativeTeamDiagnostics';
 
@@ -16,6 +17,7 @@ import type {
   TeamProvisioningPreflightApi,
   TeamTaskActivityRepairApi,
 } from '@main/services/team/contracts/TeamProvisioningApis';
+import type { TeamConfig } from '@shared/types';
 
 export interface NativeTeamProvisioningApisDependencies {
   runtime: NativeDesktopTeamRuntime;
@@ -65,16 +67,7 @@ export function createNativeTeamProvisioningApis(
       logs: deps.runtime.logs,
     }),
     claudeLogs: new NativeTeamClaudeLogs(deps.runtime.logs),
-    messaging: new NativeTeamMessagingApi({
-      runs: lifecycle.runs,
-      settings: lifecycle.settings,
-      liveLeadMessages: lifecycle.liveLeadMessages,
-      sendLeadMessage: lifecycle.sendLeadMessage,
-      relayLeadInboxMessages: (teamName) => lifecycle.relay.relay(teamName),
-      ...(deps.openCodeMemberDelivery
-        ? { openCodeMemberDelivery: deps.openCodeMemberDelivery }
-        : {}),
-    }),
+    messaging: buildMessagingApi(lifecycle, deps.openCodeMemberDelivery),
     toolApproval: new NativeTeamToolApprovalApi({
       runs: lifecycle.runs,
       commands: lifecycle.memberCommands,
@@ -82,6 +75,51 @@ export function createNativeTeamProvisioningApis(
       settings: lifecycle.toolApprovalSettings,
     }),
   };
+}
+
+function buildMessagingApi(
+  lifecycle: NativeDesktopTeamRuntime['lifecycle'],
+  openCodeMemberDelivery: NativeOpenCodeMemberDeliveryPort | undefined
+): TeamIpcHandlerApis['messaging'] {
+  return new NativeTeamMessagingApi({
+    runs: lifecycle.runs,
+    settings: lifecycle.settings,
+    liveLeadMessages: lifecycle.liveLeadMessages,
+    sendLeadMessage: lifecycle.sendLeadMessage,
+    relayLeadInboxMessages: (teamName) => lifecycle.relay.relay(teamName),
+    ...(openCodeMemberDelivery ? { openCodeMemberDelivery } : {}),
+  });
+}
+
+export interface NativeLanguageChangeNotifierDependencies {
+  readConfig(teamName: string): Promise<TeamConfig | null>;
+  writeLanguage(teamName: string, language: string): Promise<void>;
+  getSystemLocale(): string;
+  resolveLanguageName(code: string, systemLocale?: string): string;
+  logger: { info(message: string): void; warn(message: string): void };
+}
+
+/**
+ * `notifyLanguageChange` over the native owner: alive teams come from the native
+ * registry and the message goes through the same messaging adapter as every
+ * other lead delivery, so a lane lead is reached by the lane inbox.
+ */
+export function createNativeLanguageChangeNotifier(
+  deps: NativeLanguageChangeNotifierDependencies & {
+    runtime: Pick<NativeDesktopTeamRuntime, 'runtime' | 'lifecycle'>;
+    openCodeMemberDelivery?: NativeOpenCodeMemberDeliveryPort;
+  }
+): NativeLanguageChangeNotifier {
+  const messaging = buildMessagingApi(deps.runtime.lifecycle, deps.openCodeMemberDelivery);
+  return new NativeLanguageChangeNotifier({
+    getAliveTeams: () => deps.runtime.runtime.getAliveTeams(),
+    readConfig: (teamName) => deps.readConfig(teamName),
+    writeLanguage: (teamName, language) => deps.writeLanguage(teamName, language),
+    sendMessageToTeam: (teamName, message) => messaging.sendMessageToTeam(teamName, message),
+    getSystemLocale: () => deps.getSystemLocale(),
+    resolveLanguageName: (code, systemLocale) => deps.resolveLanguageName(code, systemLocale),
+    logger: deps.logger,
+  });
 }
 
 /**
