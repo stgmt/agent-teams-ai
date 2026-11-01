@@ -35,7 +35,8 @@ function supervisor(options: {
     subject: new NativeOpenCodePromptDeliverySupervisor({
       runs: {
         find: (teamName: string) => runs[teamName] ?? null,
-        aliveTeamNames: () => Object.keys(runs),
+        isLive: (run: { teamName?: string; identity?: { teamName?: string } }) =>
+          Boolean(runs[run.identity?.teamName ?? run.teamName ?? '']),
       },
       delivery: {
         relayOpenCodeMemberInboxMessages: relay as never,
@@ -82,9 +83,23 @@ describe('native OpenCode prompt delivery supervisor', () => {
       'builder',
       { onlyMessageId: 'message-1', source: 'watchdog' },
     ]);
+
+    // A guarded schedule forwards its guard, so a walk cannot outlive the
+    // generation that armed it.
+    const guarded = supervisor({ runs: { alpha: liveRun } });
+    const isCurrent = () => true;
+    guarded.subject.scheduleDeliveryVerification({
+      teamName: 'alpha',
+      memberName: 'builder',
+      messageId: 'message-2',
+      isCurrent,
+    });
+    await vi.advanceTimersByTimeAsync(3_200);
+
+    expect(guarded.relay.mock.calls[0]?.[2]).toMatchObject({ onlyMessageId: 'message-2', isCurrent });
   });
 
-  it('leaves the wake queued while the lane runtime is gone', async () => {
+  it('still relays when a lane observation is stale but the run is live', async () => {
     const deadRun = snapshot('ready', {
       builder: {
         memberName: 'builder',
@@ -101,7 +116,7 @@ describe('native OpenCode prompt delivery supervisor', () => {
 
     await vi.advanceTimersByTimeAsync(3_200);
 
-    expect(relay).not.toHaveBeenCalled();
+    expect(relay).toHaveBeenCalledTimes(1);
   });
 
   it('does not relay a wake that a newer generation revoked', async () => {

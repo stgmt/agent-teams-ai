@@ -7,7 +7,7 @@ import type { NativeOpenCodeMemberDeliveryPort } from '../input/NativeTeamMessag
 type LaneFact = { readonly laneId: string; readonly runtimeAlive: boolean };
 
 export interface NativeOpenCodePromptDeliverySupervisorDependencies {
-  runs: Pick<TeamRunRegistryRead, 'find' | 'aliveTeamNames'>;
+  runs: Pick<TeamRunRegistryRead, 'find' | 'isLive'>;
   /** The retained member prompt ledger; this supervisor drives it, never owns it. */
   delivery: Pick<NativeOpenCodeMemberDeliveryPort, 'relayOpenCodeMemberInboxMessages'>;
   readInboxMessages(input: {
@@ -40,8 +40,9 @@ const RECORD_NOT_FOUND_PREFIX = 'OpenCode prompt delivery record not found:';
  * and relayed every retry. This supervisor is that caller, and it answers the
  * scheduler from native facts alone:
  *
- * - a team can be delivered to when its run is live and some member still has a
- *   lane whose runtime answered, so a retry is never aimed at a dead host;
+ * - a team can be delivered to while its run is live; refusing a dead lane is
+ *   the ledger's own decision, taken per wake with the lane identity it already
+ *   resolves;
  * - a member's identity is the lane the registry observed for it, which is what
  *   the legacy resolution read from its own lane index;
  * - lane activity asks the same observation, by lane id.
@@ -57,13 +58,28 @@ export class NativeOpenCodePromptDeliverySupervisor {
 
   constructor(private readonly deps: NativeOpenCodePromptDeliverySupervisorDependencies) {
     this.scheduler = new OpenCodePromptDeliveryWatchdogScheduler({
-      canDeliverToTeamRuntime: (teamName) => this.findTeamLanes(teamName).some((lane) => lane.runtimeAlive),
+      // Ask the question the legacy gate asked: is this run still ours to
+      // deliver to. A lane observation that is missing or briefly stale is not
+      // an answer to it - the ledger resolves identity per wake and refuses a
+      // dead lane on its own. A wake dropped here is dropped for good, because
+      // the scheduler deletes its timer before this branch runs.
+      canDeliverToTeamRuntime: (teamName) => {
+        const snapshot = this.deps.runs.find(teamName);
+        return snapshot ? this.deps.runs.isLive(snapshot.identity) : false;
+      },
       recoverBeforeDelivery: async () => false,
       relay: async (input) => {
         const result = await this.deps.delivery.relayOpenCodeMemberInboxMessages(
           input.teamName,
           input.memberName,
-          { onlyMessageId: input.messageId, source: 'watchdog' }
+          {
+            onlyMessageId: input.messageId,
+            source: 'watchdog',
+            // The guard is the only thing that stops a walk outliving the
+            // generation that armed it; the scheduler's own check runs before
+            // this call, not during it.
+            ...(input.isCurrent ? { isCurrent: input.isCurrent } : {}),
+          }
         );
         return result.diagnostics ? { diagnostics: result.diagnostics } : {};
       },
@@ -76,15 +92,13 @@ export class NativeOpenCodePromptDeliverySupervisor {
         const lane = this.findMemberLane(input.teamName, input.memberName);
         return lane ? { ok: true, laneId: lane.laneId } : { ok: false };
       },
-      isLaneActive: async (input) => {
-        for (const teamName of this.deps.runs.aliveTeamNames()) {
-          const lanes = this.findTeamLanes(teamName);
-          if (lanes.some((lane) => lane.laneId === input.laneId)) {
-            return lanes.some((lane) => lane.laneId === input.laneId && lane.runtimeAlive);
-          }
-        }
-        return false;
-      },
+      // Lane ids are per team (`primary`, `secondary:opencode:<member>`), so the
+      // answer must come from the named team only: another team's `primary` says
+      // nothing about this one.
+      isLaneActive: async (input) =>
+        this.findTeamLanes(input.teamName).some(
+          (lane) => lane.laneId === input.laneId && lane.runtimeAlive
+        ),
       isRecordNotFoundError: (error) =>
         this.deps.getErrorMessage(error).startsWith(RECORD_NOT_FOUND_PREFIX),
       info: (message) => this.deps.info(message),

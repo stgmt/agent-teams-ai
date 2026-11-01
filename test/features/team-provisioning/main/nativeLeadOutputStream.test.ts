@@ -136,15 +136,39 @@ describe('NativeLeadOutputStream', () => {
     });
   });
 
-  it('ignores non-lead members, non-JSON noise, and a failed result does not settle the turn', () => {
+  it('ignores non-lead members and non-JSON noise', () => {
     const { output, messages } = setup();
 
     output.observeLine({ ...lead, role: 'member' }, assistant([{ type: 'text', text: 'nope' }]));
     output.observeLine(lead, 'not json at all');
     output.observeLine(lead, assistant([{ type: 'text', text: 'Working.' }]));
-    output.observeLine(lead, JSON.stringify({ type: 'result', subtype: 'error_max_turns' }));
 
     expect(messages().map((message) => message.text)).toEqual(['Working.']);
+  });
+
+  it('settles the turn on a failed result, because the process stays alive', () => {
+    const { output } = setup();
+
+    output.observeLine(lead, assistant([{ type: 'text', text: 'Working.' }]));
+    expect(output.facts(token.runId)?.activity).toBe('active');
+
+    for (const subtype of ['error', 'error_during_execution', 'error_max_turns']) {
+      output.observeLine(lead, assistant([{ type: 'text', text: 'Working again.' }]));
+      output.observeLine(lead, JSON.stringify({ type: 'result', subtype }));
+      expect(output.facts(token.runId)?.activity, subtype).toBe('idle');
+      expect(output.facts(token.runId)?.activeToolCalls, subtype).toEqual([]);
+    }
+  });
+
+  it('keeps the turn open while a tool call has no result yet', () => {
+    const { output } = setup();
+
+    output.observeLine(
+      lead,
+      assistant([{ type: 'tool_use', id: 'tool-1', name: 'Bash', input: {} }])
+    );
+
+    expect(output.facts(token.runId)?.activeToolCalls).toEqual(['Bash']);
     expect(output.facts(token.runId)?.activity).toBe('active');
   });
 

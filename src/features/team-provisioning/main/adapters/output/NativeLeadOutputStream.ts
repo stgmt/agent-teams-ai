@@ -117,21 +117,16 @@ export class NativeLeadOutputStream {
       return;
     }
     if (message.type === 'result') {
-      const subtype =
-        typeof message.subtype === 'string'
-          ? message.subtype
-          : typeof message.result === 'object' &&
-              message.result !== null &&
-              typeof (message.result as Record<string, unknown>).subtype === 'string'
-            ? ((message.result as Record<string, unknown>).subtype as string)
-            : undefined;
-      if (subtype === 'success' || subtype === undefined) {
-        // Turn ended: no tool call survives it, and the lead is idle again.
-        state.activeToolCalls.clear();
-        state.activity = 'idle';
-        state.buffer = null;
-        state.pendingToolCalls = [];
-      }
+      // Every result closes the turn, whatever its subtype: a failure
+      // (`error`, `error_during_execution`, `error_max_turns`) ends it exactly as
+      // a success does, and the process stays alive. Keeping the lead `active`
+      // after a failed turn would leave it that way for the rest of the run, and
+      // the restart assessment reads activity - a restart would never be
+      // admitted again.
+      state.activeToolCalls.clear();
+      state.activity = 'idle';
+      state.buffer = null;
+      state.pendingToolCalls = [];
     }
   }
 
