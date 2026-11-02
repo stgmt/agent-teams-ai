@@ -113,6 +113,17 @@ export interface NativeOpenCodeDeliveryStackSources {
 export interface NativeOpenCodeDeliveryStack {
   /** Whether a member is mid-turn, for the UI that asks before it sends. */
   busyStatus: NativeOpenCodeDeliveryBusyStatus;
+  /**
+   * The lane a runtime names for a member. The host speaks in members; ledgers, evidence
+   * and approvals are keyed by lane, so this is the one translation between them.
+   */
+  resolveRuntimeLaneId(input: {
+    teamName: string;
+    runId: string;
+    memberName?: string;
+  }): Promise<string>;
+  /** Whether a member is delivered to through an OpenCode lane at all. */
+  isOpenCodeRuntimeRecipient(teamName: string, memberName: string): Promise<boolean>;
   /** The messaging surface the root binds: relay a member's inbox, and status. */
   deliveryPort: NativeOpenCodeMemberDeliveryPort;
   /** One wake scheduler for the whole app; two would double every retry. */
@@ -394,6 +405,18 @@ export function createNativeOpenCodeDeliveryStack(
 
   return {
     busyStatus,
+    resolveRuntimeLaneId: async ({ teamName, memberName }) => {
+      const resolved = await identity.resolveOpenCodeMemberDeliveryIdentity(
+        teamName,
+        memberName ?? ''
+      );
+      if (!resolved.ok || !resolved.laneId) {
+        throw new Error(`No OpenCode lane for ${memberName ?? 'the named member'} of ${teamName}`);
+      }
+      return resolved.laneId;
+    },
+    isOpenCodeRuntimeRecipient: (teamName, memberName) =>
+      identity.isOpenCodeRuntimeRecipient(teamName, memberName),
     deliveryPort,
     scheduler,
     deliver: (teamName, input) => service.deliver(teamName, input),
