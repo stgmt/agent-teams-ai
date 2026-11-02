@@ -1,3 +1,5 @@
+import { NativeCrossTeamMessagingApi } from '../adapters/input/NativeCrossTeamMessagingApi';
+
 import {
   createNativeDesktopTeamRuntime,
   type NativeDesktopTeamRuntime,
@@ -53,6 +55,10 @@ export interface NativeTeamProvisioningRoot {
   runtime: NativeDesktopTeamRuntime;
   /** The IPC handler surface over the same owner; the root must not bind a second one. */
   apis: ReturnType<typeof createNativeTeamProvisioningApis>;
+  /** Cross-team messaging over the same lifecycle ledger the lead relay uses. */
+  crossTeam: NativeCrossTeamMessagingApi;
+  /** OpenCode member inbox relay; the task-stall monitor relays through the same path. */
+  relayOpenCodeMemberInboxMessages: NativeOpenCodeMemberInboxRelay['relayOpenCodeMemberInboxMessages'];
   createTeam: NativeRuntimeSurface['provisioningStart']['createTeam'];
   launchTeam: NativeRuntimeSurface['provisioningStart']['launchTeam'];
   cancelProvisioning: NativeRuntimeSurface['provisioningRun']['cancelProvisioning'];
@@ -151,9 +157,23 @@ export function createNativeTeamProvisioningRoot(
       : {}),
   });
 
+  const crossTeam = new NativeCrossTeamMessagingApi({
+    runs: nativeRuntime.registry,
+    replyLedger: nativeRuntime.lifecycle.crossTeamReplies,
+    settings: nativeRuntime.lifecycle.settings,
+    inbox: nativeRuntime.lifecycle.inbox,
+    relayLeadInboxMessages: (teamName) => apis.messaging.relayLeadInboxMessages(teamName),
+    ...(deps.apisDeps.openCodeMemberDelivery
+      ? { openCodeMemberDelivery: deps.apisDeps.openCodeMemberDelivery }
+      : {}),
+  });
+
   return {
     runtime: nativeRuntime,
     apis,
+    crossTeam,
+    relayOpenCodeMemberInboxMessages: (teamName, memberName, options) =>
+      deps.inboxRelay.relayOpenCodeMemberInboxMessages(teamName, memberName, options),
     createTeam: surface.provisioningStart.createTeam,
     launchTeam: surface.provisioningStart.launchTeam,
     cancelProvisioning: surface.provisioningRun.cancelProvisioning,
