@@ -415,7 +415,11 @@ export function createNativeOpenCodeDeliveryStack(
         memberName ?? ''
       );
       if (!resolved.ok || !resolved.laneId) {
-        throw new Error(`No OpenCode lane for ${memberName ?? 'the named member'} of ${teamName}`);
+        // Payload-shaped message: the control route maps it to a 400, not a 500, because
+        // the caller named a member this team has no lane for.
+        throw new Error(
+          `OpenCode runtime payload names no lane for ${memberName ?? 'the named member'} of ${teamName}`
+        );
       }
       return resolved.laneId;
     },

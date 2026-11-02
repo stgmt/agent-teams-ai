@@ -110,10 +110,10 @@ describe('native runtime control port', () => {
     const port = createNativeOpenCodeRuntimeControlPort(sources());
 
     await expect(port.recordOpenCodeRuntimeHeartbeat({ teamName: 'TEST-team' })).rejects.toThrow(
-      /non-empty runId/
+      /OpenCode runtime payload requires a non-empty runId/
     );
     await expect(port.deliverOpenCodeRuntimeMessage('not-an-object')).rejects.toThrow(
-      /must be an object/
+      /OpenCode runtime payload must be an object/
     );
   });
 

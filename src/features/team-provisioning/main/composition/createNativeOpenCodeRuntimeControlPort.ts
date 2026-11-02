@@ -44,14 +44,15 @@ export interface NativeOpenCodeRuntimeControlSources {
 const REQUIRED = ['teamName', 'runId', 'memberName', 'runtimeSessionId'] as const;
 
 function record(raw: unknown): Record<string, unknown> {
-  if (!raw || typeof raw !== 'object') throw new Error('Runtime control payload must be an object');
+  if (!raw || typeof raw !== 'object')
+    throw new Error('OpenCode runtime payload must be an object');
   return raw as Record<string, unknown>;
 }
 
 function requiredString(payload: Record<string, unknown>, key: string): string {
   const value = payload[key];
   if (typeof value !== 'string' || !value.trim()) {
-    throw new Error(`Runtime control payload requires a non-empty ${key}`);
+    throw new Error(`OpenCode runtime payload requires a non-empty ${key}`);
   }
   return value.trim();
 }
