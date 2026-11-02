@@ -27,6 +27,12 @@ export interface NativeAppManagedBootstrapBuildDiagnostics {
 
 export interface NativeAppManagedBootstrapBuildResult {
   specs: Map<string, NativeAppManagedBootstrapSpec>;
+  /**
+   * The bounded, redacted briefing text each spec's `briefingHash` was taken from.
+   * Kept beside the specs so a caller that must launch the same member can reuse
+   * the exact text instead of rebuilding it from team metadata.
+   */
+  briefings: Map<string, string>;
   diagnostics: NativeAppManagedBootstrapBuildDiagnostics;
 }
 
@@ -303,6 +309,7 @@ export async function buildNativeAppManagedBootstrapSpecsWithDiagnostics(params:
     allowUserMessageSender: false,
   });
   const result = new Map<string, NativeAppManagedBootstrapSpec>();
+  const briefings = new Map<string, string>();
   let totalContextChars = 0;
   const nativeMembers = params.members
     .map((member) => ({
@@ -375,6 +382,7 @@ export async function buildNativeAppManagedBootstrapSpecsWithDiagnostics(params:
       throw new Error('Native app-managed bootstrap context exceeds aggregate size budget');
     }
 
+    briefings.set(member.name, boundedBriefing);
     result.set(member.name, {
       schemaVersion: 1,
       mode: 'startup_context_file',
@@ -396,5 +404,5 @@ export async function buildNativeAppManagedBootstrapSpecsWithDiagnostics(params:
     }),
   };
 
-  return { specs: result, diagnostics };
+  return { specs: result, briefings, diagnostics };
 }
