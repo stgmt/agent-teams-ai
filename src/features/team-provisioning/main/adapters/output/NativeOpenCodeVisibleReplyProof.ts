@@ -34,6 +34,10 @@ export interface NativeOpenCodeVisibleReplyProofDependencies {
 }
 
 export interface NativeOpenCodeVisibleReplyProof {
+  /** The reply a relayed prompt produced, found by the message it relays. */
+  findByRelayOfMessageId(input: Parameters<
+    OpenCodeVisibleReplyProofService['findByRelayOfMessageId']
+  >[0]): ReturnType<OpenCodeVisibleReplyProofService['findByRelayOfMessageId']>;
   applyDestinationProof(input: {
     checkpoint?: () => void | Promise<void>;
     ledger: OpenCodePromptDeliveryLedgerStore;
@@ -84,6 +88,7 @@ export function createNativeOpenCodeVisibleReplyProof(
   });
 
   return {
+    findByRelayOfMessageId: (input) => service.findByRelayOfMessageId(input),
     applyDestinationProof: (input) => service.applyDestinationProof(input),
     materializePlainTextReplyIfNeeded: (input) => service.materializePlainTextReplyIfNeeded(input),
   };
