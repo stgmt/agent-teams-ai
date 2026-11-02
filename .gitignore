@@ -86,3 +86,4 @@ remotion/*
 # Deterministic announcement build output (edit landing/content/announcements).
 /landing/public/announcements/
 /landing/public/announcements.tmp-*/
+release2/
