@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from 'vitest';
 
+import { createNativeSecondaryRuntimeRunStore } from '../../../../src/features/team-provisioning/main/adapters/output/NativeSecondaryRuntimeRunStore';
 import { createNativeOpenCodeDeliveryWatchdogProductionDeps } from '../../../../src/features/team-provisioning/main/composition/createNativeOpenCodeDeliveryWatchdogProduction';
 
 import type { NativeOpenCodeDeliveryWatchdogProductionSources } from '../../../../src/features/team-provisioning/main/composition/createNativeOpenCodeDeliveryWatchdogProduction';
@@ -22,7 +23,7 @@ function sources(
     launchState: { read: async () => null, write: async () => ({}) as never },
     isTeamAlive: () => true,
     adapterRegistry: { has: () => true, get: () => adapter as never },
-    aliveRunId: () => null,
+    runs: createNativeSecondaryRuntimeRunStore(),
     openCodeAdapter: () => adapter,
     config: { read: async () => null },
     teamMeta: { getMeta: async () => null },
@@ -31,8 +32,6 @@ function sources(
     queue: { run: async (_team, operation) => operation() },
     ledgers: () => ({ listDue: async () => [], markNextAttemptDeferred: async () => undefined }),
     scheduler: { isEnabled: () => true, schedule: () => undefined, isStaleError: () => false },
-    readSecondaryRuntimeRuns: async () => [],
-    getCurrentOpenCodeRuntimeRunId: () => null,
     hasAcceptedMemberWorkSyncReport: async () => false,
     hasAcknowledgedInbound: async () => true,
     emitRuntimeDeliveryReplyAdvisoryRefresh: () => undefined,
@@ -41,8 +40,6 @@ function sources(
     invalidateRuntimeSnapshotCaches: () => undefined,
     syncToolApprovals: () => undefined,
     permissionListingAdapter: () => null,
-    deleteSecondaryRuntimeRun: () => undefined,
-    clearPrimaryRuntimeRun: () => undefined,
     readPersistedTeamProjectPath: () => null,
     logPromptDeliveryEvent: () => undefined,
     logger: { info: () => undefined, warn: () => undefined, debug: () => undefined },

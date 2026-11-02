@@ -14,6 +14,7 @@ import type { TeamOperationQueue } from '../../core/application/TeamOperationQue
 import type { OpenCodeSecondaryLaneRun } from '../adapters/output/NativeOpenCodeMemberIdentity';
 import type { createNativeOpenCodePromptDeliveryLedgerFactory } from '../adapters/output/NativeOpenCodePromptDeliveryLedgerFactory';
 import type { NativePromptLedgerAccess } from '../adapters/output/NativeOpenCodePromptDeliverySupervisor';
+import type { NativeSecondaryRuntimeRunStore } from '../adapters/output/NativeSecondaryRuntimeRunStore';
 import type { NativeOpenCodeDeliveryWatchdogDependencies } from './createNativeOpenCodeDeliveryWatchdog';
 import type { OpenCodeGroupAcknowledgementReader } from '@main/services/team/opencode/delivery/OpenCodeGroupAcknowledgement';
 import type { OpenCodePromptDeliveryWatchdogScheduler } from '@main/services/team/opencode/delivery/OpenCodePromptDeliveryWatchdogScheduler';
@@ -36,8 +37,8 @@ export interface NativeOpenCodeDeliveryWatchdogProductionSources {
   /** Team liveness as the runtime owner reports it, by team name. */
   isTeamAlive(teamName: string): boolean;
   adapterRegistry: Pick<TeamRuntimeAdapterRegistry, 'has' | 'get'>;
-  /** The run the lane is on, for the permission sync's run guard. */
-  aliveRunId(teamName: string): string | null;
+  /** Lanes and their runs; the supervisor reads and cleans the same store. */
+  runs: NativeSecondaryRuntimeRunStore;
   openCodeAdapter(): TeamLaunchRuntimeAdapter | null;
   config: { read(teamName: string): Promise<TeamConfig | null> };
   teamMeta: Pick<TeamMetaStore, 'getMeta'>;
@@ -46,8 +47,6 @@ export interface NativeOpenCodeDeliveryWatchdogProductionSources {
   queue: Pick<TeamOperationQueue, 'run'>;
   ledgers: ReturnType<typeof createNativeOpenCodePromptDeliveryLedgerFactory>;
   scheduler: Pick<OpenCodePromptDeliveryWatchdogScheduler, 'isEnabled' | 'schedule' | 'isStaleError'>;
-  readSecondaryRuntimeRuns(teamName: string): Promise<readonly OpenCodeSecondaryLaneRun[]>;
-  getCurrentOpenCodeRuntimeRunId(teamName: string, laneId: string): string | null;
   hasAcceptedMemberWorkSyncReport(input: {
     teamName: string;
     memberName: string;
@@ -96,9 +95,11 @@ export function createNativeOpenCodeDeliveryWatchdogProductionDeps(
     readConfig: (teamName) => sources.config.read(teamName),
     readTeamMeta: (teamName) => sources.teamMeta.getMeta(teamName) as never,
     readMetaMembers: (teamName) => sources.membersMeta.getMeta(teamName) as never,
-    readSecondaryRuntimeRuns: (teamName) => sources.readSecondaryRuntimeRuns(teamName),
+    readSecondaryRuntimeRuns: async (teamName) =>
+      sources.runs.getSecondaryRuntimeRuns(teamName) as readonly OpenCodeSecondaryLaneRun[],
     getCurrentOpenCodeRuntimeRunId: (teamName, laneId) =>
-      sources.getCurrentOpenCodeRuntimeRunId(teamName, laneId),
+      sources.runs.getSecondaryRuntimeRuns(teamName).find((entry) => entry.laneId === laneId)
+        ?.runId ?? null,
   });
   const recoveryBoundary = createTeamProvisioningOpenCodeRuntimeRecoveryBoundary({
     teamsBasePath: sources.teamsBasePath,
@@ -145,8 +146,8 @@ export function createNativeOpenCodeDeliveryWatchdogProductionDeps(
     canDeliverToOpenCodeRuntimeForTeam: (teamName) => isLive(teamName),
     getOpenCodeRuntimeAdapter,
     deleteSecondaryRuntimeRun: (teamName, laneId) =>
-      sources.deleteSecondaryRuntimeRun(teamName, laneId),
-    clearPrimaryRuntimeRun: (teamName) => sources.clearPrimaryRuntimeRun(teamName),
+      sources.runs.deleteSecondaryRuntimeRun(teamName, laneId),
+    clearPrimaryRuntimeRun: (teamName) => sources.runs.clearPrimaryRuntimeRun(teamName),
     logger: { info: (m) => sources.logger.info(m), warn: (m) => sources.logger.warn(m) },
   });
   const proof = createNativeOpenCodeVisibleReplyProof({
@@ -160,7 +161,9 @@ export function createNativeOpenCodeDeliveryWatchdogProductionDeps(
   });
   const permissions = createNativeOpenCodeRuntimePermissionSync({
     teamsBasePath: sources.teamsBasePath,
-    runs: { aliveRunId: (teamName) => sources.aliveRunId(teamName) },
+    runs: {
+      aliveRunId: (teamName) => sources.runs.getPrimaryRuntimeRun(teamName)?.runId ?? null,
+    },
     readConfig: (teamName) => sources.config.read(teamName),
     getPermissionListingAdapter: () => sources.permissionListingAdapter(),
     store: sources.launchState,
@@ -190,7 +193,8 @@ export function createNativeOpenCodeDeliveryWatchdogProductionDeps(
   const bootstrap = createNativeOpenCodeBootstrapEvidence({
     teamsBasePath: sources.teamsBasePath,
     resolveCurrentOpenCodeRuntimeRunId: async (teamName, laneId) =>
-      sources.getCurrentOpenCodeRuntimeRunId(teamName, laneId),
+      sources.runs.getSecondaryRuntimeRuns(teamName).find((entry) => entry.laneId === laneId)
+        ?.runId ?? null,
     warn: (message) => sources.logger.warn(message),
   });
   const ledgers: NativePromptLedgerAccess = {
