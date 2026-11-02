@@ -133,6 +133,7 @@ import { TeamProvisioningAppShellBoundary } from '@main/services/team/provisioni
 import { createTeamProvisioningEnvRuntimePorts } from '@main/services/team/provisioning/TeamProvisioningEnvRuntimePorts';
 import { readPersistedTeamProjectPath } from '@main/services/team/provisioning/TeamProvisioningPersistedTeamConfigAccess';
 import { resolveOpenCodeInboxAttachmentPayloads } from '@main/services/team/provisioning/TeamProvisioningOpenCodeAttachmentPayloads';
+import { buildProviderAwareCliEnv } from '@main/services/runtime/providerAwareCliEnv';
 import { execCli } from '@main/utils/childProcess';
 import {
   getAnthropicFastModeDefault,
@@ -2102,8 +2103,8 @@ async function initializeServices(): Promise<void> {
       },
       environment: {
         ...provisioningEnvPorts.getProvisioningEnvBuilderPorts(),
-        buildProviderAwareCliEnv:
-          provisioningEnvPorts.getProvisioningEnvBuilderPorts().buildProviderAwareCliEnv!,
+        // The builder's own fallback is unreachable through a spread, so the step is named.
+        buildProviderAwareCliEnv,
       },
       identity: {
         execCli,

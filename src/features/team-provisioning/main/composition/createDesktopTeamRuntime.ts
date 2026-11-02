@@ -1,6 +1,7 @@
 import { memberIsLive } from '@features/team-provisioning';
 import { toTeamProvisioningProgress } from '@main/team-runtime/nativeTeamProgressProjection';
 import { toTeamRuntimeState } from '@main/team-runtime/nativeTeamRuntimeProjection';
+import { createLogger } from '@shared/utils/logger';
 
 import { TeamDefinitionExistsError } from '../adapters/output/NodeTeamDefinitionStore';
 
@@ -83,6 +84,8 @@ export interface DesktopTeamRuntime extends ProvisioningStatusReaderPort {
   pendingLaunchAdmissions(): number;
 }
 
+const logger = createLogger('Service:TeamRuntime');
+
 const PROVISIONING_STATES = new Set(['preparing', 'starting']);
 const FAILED_STATES = new Set(['failed', 'release-failed']);
 const TERMINAL_STATES = new Set(['ready', 'degraded', 'failed', 'stopped', 'release-failed']);
@@ -158,6 +161,18 @@ export function createDesktopTeamRuntime(deps: DesktopTeamRuntimeDependencies): 
       if (snapshot.version <= historyVersion || snapshot.version === last.version) return;
       last.version = snapshot.version;
       onProgress(toTeamProvisioningProgress(snapshot, deps.now()));
+      // A failed run must say why. Without this the interface shows "Team launch failed"
+      // and the reason dies with the snapshot the user never sees.
+      if (FAILED_STATES.has(snapshot.state)) {
+        const memberErrors = Object.values(snapshot.members)
+          .filter((member) => member.error)
+          .map((member) => `${member.memberName}: ${member.error}`);
+        logger.error(
+          `[${snapshot.identity.teamName}] launch ${snapshot.state}: ${
+            snapshot.error ?? 'no team error'
+          }${memberErrors.length ? ` | ${memberErrors.join(' | ')}` : ''}`
+        );
+      }
     };
     void (async () => {
       try {
