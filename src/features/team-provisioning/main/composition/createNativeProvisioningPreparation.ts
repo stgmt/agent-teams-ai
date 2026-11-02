@@ -8,6 +8,10 @@ import {
   createTeamProvisioningProviderDiagnosticsRuntime,
   type TeamProvisioningProviderDiagnosticsRuntime,
 } from '@main/services/team/provisioning/TeamProvisioningProviderDiagnosticsPorts';
+import {
+  type CliHelpOutputCache,
+  getCliHelpOutputForProvisioning,
+} from '@main/services/team/provisioning/TeamProvisioningProviderPreflight';
 import { createInMemoryProviderProbeCachePort } from '@main/services/team/provisioning/TeamProvisioningProviderProbeCache';
 import { TeamMemberWorktreeManager } from '@main/services/team/TeamMemberWorktreeManager';
 import { execCli } from '@main/utils/childProcess';
@@ -30,6 +34,12 @@ export interface NativeProvisioningPreparationDependencies {
 }
 
 export interface NativeProvisioningPreparation {
+  /**
+   * The CLI help text the launch dialog shows. It comes from the same probe cache
+   * and the same process launcher as readiness, so the help a user reads describes
+   * the binary the launch will actually use.
+   */
+  getCliHelpOutput(cwd?: string): Promise<string>;
   /** Primes the CLI/provider probe so the first launch does not pay for it. */
   warmup(): Promise<void>;
   /** Checks the target project, providers and models before a launch begins. */
@@ -63,8 +73,10 @@ export function createNativeProvisioningPreparation(
     });
   const providerStatusBridge = new ClaudeMultimodelBridgeService();
   const memberWorktrees = deps.memberWorktrees ?? new TeamMemberWorktreeManager();
+  const providerProbeCache = createInMemoryProviderProbeCachePort();
+  const cliHelpCache: CliHelpOutputCache = { output: null, cachedAtMs: 0 };
   const coordinator = new TeamProvisioningPrepareCoordinator({
-    providerProbeCache: createInMemoryProviderProbeCachePort(),
+    providerProbeCache,
     getOpenCodeRuntimeAdapter: () =>
       deps.runtimeAdapterRegistry.has('opencode')
         ? deps.runtimeAdapterRegistry.get('opencode')
@@ -102,5 +114,24 @@ export function createNativeProvisioningPreparation(
   return {
     warmup: () => coordinator.warmup(),
     prepareForProvisioning: (cwd, options) => coordinator.prepareForProvisioning(cwd, options),
+    getCliHelpOutput: (cwd) =>
+      getCliHelpOutputForProvisioning({
+        ...(cwd ? { cwd } : {}),
+        cache: cliHelpCache,
+        ports: {
+          // The binary the help text describes is the one readiness probes, resolved
+          // by the same resolver; asking for a second one would describe another CLI.
+          getCachedOrProbeResult: async () => {
+            const claudePath = await ClaudeBinaryResolver.resolve();
+            return claudePath ? { claudePath } : null;
+          },
+          buildProvisioningEnv: async () => ({
+            env: (await deps.provider.environment('anthropic', undefined, {})).env,
+          }),
+          spawnProbe: (claudePath, args, targetCwd, env, timeoutMs) =>
+            diagnostics.spawnProbe(claudePath, args, targetCwd, env, timeoutMs),
+        },
+        now: Date.now,
+      }),
   };
 }

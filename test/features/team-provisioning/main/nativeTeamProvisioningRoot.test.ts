@@ -58,7 +58,6 @@ function runtimeDeps(teamsRoot: string): NativeDesktopTeamRuntimeDependencies {
 function buildDeps(teamsRoot: string): NativeTeamProvisioningRootDependencies {
   return {
     runtimeDeps: runtimeDeps(teamsRoot),
-    getCliHelpOutput: async () => '',
     apisDeps: {
       taskActivity: { repairStaleTaskActivityIntervalsBeforeSnapshot: async () => undefined },
       now: () => '2026-11-02T00:00:00.000Z',

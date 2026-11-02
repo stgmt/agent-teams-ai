@@ -50,7 +50,6 @@ function build(teamsRoot: string, overrides: Partial<NativeTeamProvisioningGraph
       progressHistory: { findByRunId: async () => undefined },
       listTeamNames: async () => [],
     },
-    getCliHelpOutput: async () => 'help',
     apisDeps: {
       taskActivity: { repairStaleTaskActivityIntervalsBeforeSnapshot: async () => undefined },
       now: () => '2026-11-02T00:00:00.000Z',

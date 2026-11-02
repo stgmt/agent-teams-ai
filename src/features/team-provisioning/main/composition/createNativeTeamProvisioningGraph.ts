@@ -32,7 +32,6 @@ export interface NativeTeamProvisioningGraphDependencies {
     removeConfigFile(path: string): Promise<void>;
   };
   apisDeps: Parameters<typeof createNativeTeamProvisioningRoot>[0]['apisDeps'];
-  getCliHelpOutput: Parameters<typeof createNativeTeamProvisioningRoot>[0]['getCliHelpOutput'];
   watchdogDeps: Parameters<typeof createNativeTeamProvisioningRoot>[0]['watchdogDeps'];
   prepDeps: Parameters<typeof createNativeTeamProvisioningRoot>[0]['prepDeps'];
   languageDeps: Parameters<typeof createNativeTeamProvisioningRoot>[0]['languageDeps'];
@@ -66,7 +65,6 @@ export function createNativeTeamProvisioningGraph(
       inbox: { sendMessage: (teamName, message, options) => deps.stores.inbox.sendMessage(teamName, message, options) },
     },
     apisDeps: deps.apisDeps,
-    getCliHelpOutput: deps.getCliHelpOutput,
     watchdogDeps: deps.watchdogDeps,
     prepDeps: deps.prepDeps,
     languageDeps: deps.languageDeps,

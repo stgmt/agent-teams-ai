@@ -36,10 +36,8 @@ export interface NativeTeamProvisioningRootDependencies {
    * owner they already hold so runs recorded on it are the runs read here.
    */
   nativeRuntime?: NativeDesktopTeamRuntime;
-  /** The IPC preflight surface; preparation comes from this root's own pipeline. */
+  /** The IPC preflight surface; preparation and its help text come from this root. */
   apisDeps: Omit<NativeTeamProvisioningApisDependencies, 'runtime' | 'preflight'>;
-  /** CLI help text shown before a launch; the probe itself belongs to preparation. */
-  getCliHelpOutput(): Promise<string>;
   watchdogDeps: NativeOpenCodeDeliveryWatchdogDependencies;
   prepDeps: NativeProvisioningPreparationDependencies;
   languageDeps: Omit<NativeLanguageChangeNotifierDependencies, 'runtime' | 'openCodeMemberDelivery'>;
@@ -121,7 +119,7 @@ export function createNativeTeamProvisioningRoot(
   const apis = createNativeTeamProvisioningApis({
     ...deps.apisDeps,
     preflight: {
-      getCliHelpOutput: () => deps.getCliHelpOutput(),
+      getCliHelpOutput: () => prep.getCliHelpOutput(),
       prepareForProvisioning: (cwd, options) => prep.prepareForProvisioning(cwd, options),
     },
     runtime: nativeRuntime,
