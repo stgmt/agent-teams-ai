@@ -256,6 +256,7 @@ import { shouldSuppressDesktopNotificationForInboxText } from '@shared/utils/idl
 import { createLogger } from '@shared/utils/logger';
 import { isReviewPickupEscalationMessage } from '@shared/utils/teamAutomationMessages';
 import { isTeamInternalControlMessageEnvelope } from '@shared/utils/teamInternalControlMessages';
+import { mkdirSync } from 'node:fs';
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
 import { AnnouncementsLifecycle } from './announcementsLifecycle';
 import {
@@ -2176,13 +2177,19 @@ async function initializeServices(): Promise<void> {
     getTrackedRunId: (teamName) => provisioningRootRef?.runtime.registry.aliveRunId(teamName) ?? null,
     hasRun: (runId) => Boolean(provisioningRootRef?.runtime.registry.findByRunId(runId)),
   });
+  // A launch writes its owned attempt under the runtime root and gives isolated members
+  // a workspace; both directories must exist before the first launch, not after it fails.
+  const provisioningRuntimeRoot = join(getAppDataPath(), 'team-runtime');
+  const provisioningWorkspaceRoot = join(getAppDataPath(), 'team-workspaces');
+  mkdirSync(provisioningRuntimeRoot, { recursive: true });
+  mkdirSync(provisioningWorkspaceRoot, { recursive: true });
   const provisioningRuntimeDeps = {
     owner: provisioningConnectionContext,
     currentContext: () => provisioningConnectionContext,
     teamsRoot: getTeamsBasePath(),
     provider: provisioningSupport.providerPorts,
-    runtimeRoot: join(getAppDataPath(), 'team-runtime'),
-    workspaceRoot: join(getAppDataPath(), 'team-workspaces'),
+    runtimeRoot: provisioningRuntimeRoot,
+    workspaceRoot: provisioningWorkspaceRoot,
     controlUrl: async () => {
       const url = getTeamControlApiBaseUrl();
       if (!url) throw new Error('Team control API is not ready');
