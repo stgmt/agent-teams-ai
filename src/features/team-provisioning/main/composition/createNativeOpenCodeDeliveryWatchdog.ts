@@ -81,6 +81,11 @@ export interface NativeOpenCodeDeliveryWatchdog {
   scanContinuity(teamName: string): Promise<number>;
   /** The same pass over lanes the caller already resolved. */
   scanActiveLanes(teamName: string, laneIds: string[]): Promise<number>;
+  /**
+   * The one coordinator behind the passes. The delivery service reads its policies
+   * from here, so a record judged pending by a scan and by a send uses one rule set.
+   */
+  coordinator: OpenCodePromptDeliveryWatchdogCoordinator;
 }
 
 export function createNativeOpenCodeDeliveryWatchdog(
@@ -157,6 +162,7 @@ export function createNativeOpenCodeDeliveryWatchdog(
   const coordinator = new OpenCodePromptDeliveryWatchdogCoordinator(ports);
 
   return {
+    coordinator,
     scan: async (teamName) => {
       await captureTeam(teamName);
       return await coordinator.scan(teamName);
