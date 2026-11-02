@@ -35,6 +35,12 @@ import type { InboxMessage } from '@shared/types';
  * files the delivery path writes.
  */
 export interface NativeOpenCodeDeliveryWatchdogDependencies {
+  /**
+   * The coordinator to use. The delivery service reads the same policies the scans do,
+   * so the caller that owns both passes one instance; omitting it builds one from the
+   * facts below.
+   */
+  coordinator?: OpenCodePromptDeliveryWatchdogCoordinator;
   teamsBasePath: string;
   /** The one wake scheduler of the app; two would double every retry. */
   scheduler: Pick<OpenCodePromptDeliveryWatchdogScheduler, 'isEnabled' | 'schedule' | 'isStaleError'>;
@@ -122,7 +128,9 @@ export function createNativeOpenCodeDeliveryWatchdog(
     await captureLanes(teamName, (await readActiveLaneIds(teamName)) ?? []);
   };
 
-  const ports: OpenCodePromptDeliveryWatchdogCoordinatorPorts = {
+  const ports: OpenCodePromptDeliveryWatchdogCoordinatorPorts | null = deps.coordinator
+    ? null
+    : {
     hasAcknowledgedInbound: deps.hasAcknowledgedInbound,
     hasAcceptedMemberWorkSyncReport: (input) => deps.hasAcceptedMemberWorkSyncReport(input),
     taskRefsIncludeAll: openCodeTaskRefsIncludeAll,
@@ -159,7 +167,8 @@ export function createNativeOpenCodeDeliveryWatchdog(
     getErrorMessage: (error) => deps.getErrorMessage(error),
   };
 
-  const coordinator = new OpenCodePromptDeliveryWatchdogCoordinator(ports);
+  const coordinator =
+    deps.coordinator ?? new OpenCodePromptDeliveryWatchdogCoordinator(ports as never);
 
   return {
     coordinator,
