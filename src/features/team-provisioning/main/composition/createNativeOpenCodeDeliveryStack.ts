@@ -16,6 +16,8 @@ import { createNativeOpenCodeStoppedTeamLaneCleanup } from '../adapters/output/N
 import { createNativeOpenCodeVisibleReplyProof } from '../adapters/output/NativeOpenCodeVisibleReplyProof';
 
 import { createNativeOpenCodeDeliveryHost } from './createNativeOpenCodeDeliveryHost';
+
+import type { NativeOpenCodeBootstrapEvidence } from '../adapters/output/NativeOpenCodeBootstrapEvidence';
 import { createNativeOpenCodeMemberDeliveryPort } from './createNativeOpenCodeMemberDeliveryPort';
 import { createNativeOpenCodeRecoveryHost } from './createNativeOpenCodeRecoveryHost';
 
@@ -122,6 +124,8 @@ export interface NativeOpenCodeDeliveryStack {
     runId: string;
     memberName?: string;
   }): Promise<string>;
+  /** Bootstrapped session evidence; the runtime-control checkin commits into it. */
+  bootstrap: NativeOpenCodeBootstrapEvidence;
   /** Whether a member is delivered to through an OpenCode lane at all. */
   isOpenCodeRuntimeRecipient(teamName: string, memberName: string): Promise<boolean>;
   /** The messaging surface the root binds: relay a member's inbox, and status. */
@@ -405,6 +409,7 @@ export function createNativeOpenCodeDeliveryStack(
 
   return {
     busyStatus,
+    bootstrap,
     resolveRuntimeLaneId: async ({ teamName, memberName }) => {
       const resolved = await identity.resolveOpenCodeMemberDeliveryIdentity(
         teamName,

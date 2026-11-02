@@ -42,7 +42,7 @@ function resolverSource(kind: ResolverKind): string {
     if (ts.isCallExpression(node)) {
       if (
         kind === 'provisioning' &&
-        node.expression.getText(source) === 'teamProvisioningService.setControlApiBaseUrlResolver'
+        node.expression.getText(source) === 'provisioningShell.setControlApiBaseUrlResolver'
       ) {
         matches.push(node.arguments[0]);
       }
