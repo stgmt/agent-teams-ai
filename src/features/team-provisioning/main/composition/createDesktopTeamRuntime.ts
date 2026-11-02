@@ -1,7 +1,6 @@
 import { memberIsLive } from '@features/team-provisioning';
 import { toTeamProvisioningProgress } from '@main/team-runtime/nativeTeamProgressProjection';
 import { toTeamRuntimeState } from '@main/team-runtime/nativeTeamRuntimeProjection';
-import { createLogger } from '@shared/utils/logger';
 
 import { TeamDefinitionExistsError } from '../adapters/output/NodeTeamDefinitionStore';
 
@@ -43,6 +42,12 @@ export interface DesktopTeamRuntimeDependencies {
    * admitting, so two owners never provision the same runtime at once.
    */
   launchAdmission?: { assertAdmitted(): void };
+  /**
+   * Where a failed launch reports why. Omitted keeps the composition silent, which is
+   * what tests want; the application root passes its logger so the reason reaches the
+   * log instead of dying with a snapshot nobody reads.
+   */
+  log?(message: string): void;
   now(): string;
 }
 
@@ -83,8 +88,6 @@ export interface DesktopTeamRuntime extends ProvisioningStatusReaderPort {
    */
   pendingLaunchAdmissions(): number;
 }
-
-const logger = createLogger('Service:TeamRuntime');
 
 const PROVISIONING_STATES = new Set(['preparing', 'starting']);
 const FAILED_STATES = new Set(['failed', 'release-failed']);
@@ -167,7 +170,7 @@ export function createDesktopTeamRuntime(deps: DesktopTeamRuntimeDependencies): 
         const memberErrors = Object.values(snapshot.members)
           .filter((member) => member.error)
           .map((member) => `${member.memberName}: ${member.error}`);
-        logger.error(
+        deps.log?.(
           `[${snapshot.identity.teamName}] launch ${snapshot.state}: ${
             snapshot.error ?? 'no team error'
           }${memberErrors.length ? ` | ${memberErrors.join(' | ')}` : ''}`
