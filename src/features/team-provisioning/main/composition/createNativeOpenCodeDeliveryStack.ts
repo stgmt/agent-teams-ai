@@ -7,6 +7,7 @@ import { createOpenCodeMemberMessageDeliveryServiceFromHost } from '@main/servic
 import { getErrorMessage } from '@shared/utils/errorHandling';
 
 import { createNativeOpenCodeBootstrapEvidence } from '../adapters/output/NativeOpenCodeBootstrapEvidence';
+import { NativeOpenCodeDeliveryBusyStatus } from '../adapters/output/NativeOpenCodeDeliveryBusyStatus';
 import { createNativeOpenCodeLaneRecovery } from '../adapters/output/NativeOpenCodeLaneRecovery';
 import { createNativeOpenCodePromptDeliveryLedgerFactory } from '../adapters/output/NativeOpenCodePromptDeliveryLedgerFactory';
 import { createNativeOpenCodeRuntimePermissionSync } from '../adapters/output/NativeOpenCodeRuntimePermissionSync';
@@ -101,6 +102,8 @@ export interface NativeOpenCodeDeliveryStackSources {
 }
 
 export interface NativeOpenCodeDeliveryStack {
+  /** Whether a member is mid-turn, for the UI that asks before it sends. */
+  busyStatus: NativeOpenCodeDeliveryBusyStatus;
   /** The messaging surface the root binds: relay a member's inbox, and status. */
   deliveryPort: NativeOpenCodeMemberDeliveryPort;
   /** One wake scheduler for the whole app; two would double every retry. */
@@ -333,6 +336,18 @@ export function createNativeOpenCodeDeliveryStack(
     getErrorMessage,
   });
 
+  const busyStatus = new NativeOpenCodeDeliveryBusyStatus({
+    teamsBasePath: sources.teamsBasePath,
+    identity,
+    inbox: sources.inbox,
+    recoverLaneForConfiguredMemberBeforeDelivery: (input) =>
+      recovery.facade.tryRecoverOpenCodeRuntimeLaneForConfiguredMemberBeforeDelivery(input),
+    recoverLaneAndVerifyActive: (input) =>
+      recovery.facade.tryRecoverOpenCodeRuntimeLaneForConfiguredMemberAndVerifyActive(input),
+    createLedger: (teamName, laneId) => ledgers.open(teamName, laneId),
+    scheduleWake: (input) => schedulerPort.schedule(input as never),
+  });
+
   const scheduler = new OpenCodePromptDeliveryWatchdogScheduler({
     canDeliverToTeamRuntime: (teamName) => isLive(teamName),
     recoverBeforeDelivery: async ({ teamName, memberName }) =>
@@ -369,6 +384,7 @@ export function createNativeOpenCodeDeliveryStack(
   schedulerRef = scheduler;
 
   return {
+    busyStatus,
     deliveryPort,
     scheduler,
     deliver: (teamName, input) => service.deliver(teamName, input),
