@@ -1974,6 +1974,17 @@ async function initializeServices(): Promise<void> {
       if (httpServer?.isRunning()) await syncTeamControlApiState();
     },
   });
+  publishStartupStatus({
+    phase: 'runtime',
+    message: 'Resolving local runtime...',
+  });
+  const runtimeAdapterRegistry = await startupStage(() =>
+    createOpenCodeRuntimeAdapterRegistry(
+      (phase, message) => publishStartupStatus({ phase, message }),
+      gatewayLaunchRuntime
+    )
+  );
+  assertStartupActive(isShutdownStarted);
   teamProvisioningService = createDefaultTeamProvisioningService(
     () => teamGroupChatsFeature,
     resolveOpenCodeInputDeclaration,
@@ -2082,17 +2093,6 @@ async function initializeServices(): Promise<void> {
         logError: (message) => logger.error(message),
       })
     );
-  publishStartupStatus({
-    phase: 'runtime',
-    message: 'Resolving local runtime...',
-  });
-  const runtimeAdapterRegistry = await startupStage(() =>
-    createOpenCodeRuntimeAdapterRegistry(
-      (phase, message) => publishStartupStatus({ phase, message }),
-      gatewayLaunchRuntime
-    )
-  );
-  assertStartupActive(isShutdownStarted);
   teamProvisioningService.setRuntimeAdapterRegistry(runtimeAdapterRegistry);
   // Fence launches before the control listener opens; run cleanup after bounded startup.
   const settleStartupRuntimeSweep = windowsStartupCleanup
