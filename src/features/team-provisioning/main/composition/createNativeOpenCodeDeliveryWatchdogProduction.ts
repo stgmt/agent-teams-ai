@@ -93,7 +93,7 @@ export function createNativeOpenCodeDeliveryWatchdogProductionDeps(
     teamsBasePath: sources.teamsBasePath,
     readConfig: (teamName) => sources.config.read(teamName),
     readTeamMeta: (teamName) => sources.teamMeta.getMeta(teamName) as never,
-    readMetaMembers: (teamName) => sources.membersMeta.getMeta(teamName) as never,
+    readMetaMembers: async (teamName) => (await sources.membersMeta.getMeta(teamName))?.members ?? [],
     readSecondaryRuntimeRuns: async (teamName) =>
       sources.runs.getSecondaryRuntimeRuns(teamName) as readonly OpenCodeSecondaryLaneRun[],
     getCurrentOpenCodeRuntimeRunId: (teamName, laneId) =>
@@ -121,7 +121,9 @@ export function createNativeOpenCodeDeliveryWatchdogProductionDeps(
         identity.resolveOpenCodeMemberIdentityFromDirectory(teamName, memberName, directory as never),
       readConfigForObservation: (teamName) => sources.config.read(teamName),
       teamMetaStore: { getMeta: (teamName) => sources.teamMeta.getMeta(teamName) as never },
-      membersMetaStore: { getMembers: (teamName) => sources.membersMeta.getMeta(teamName) as never },
+      membersMetaStore: {
+        getMembers: async (teamName) => (await sources.membersMeta.getMeta(teamName))?.members ?? [],
+      },
       readPersistedTeamProjectPath: (teamName) => sources.readPersistedTeamProjectPath(teamName),
       openCodeRuntimeRecoveryIdentity: {
         isOpenCodeRuntimeLaneIndexActive: (teamName, laneId) =>
@@ -141,7 +143,7 @@ export function createNativeOpenCodeDeliveryWatchdogProductionDeps(
     teamsBasePath: sources.teamsBasePath,
     queue: sources.queue,
     readConfig: (teamName) => sources.config.read(teamName),
-    readMembersMeta: (teamName) => sources.membersMeta.getMeta(teamName) as never,
+    readMembersMeta: async (teamName) => (await sources.membersMeta.getMeta(teamName))?.members ?? [],
     canDeliverToOpenCodeRuntimeForTeam: (teamName) => isLive(teamName),
     getOpenCodeRuntimeAdapter,
     deleteSecondaryRuntimeRun: (teamName, laneId) =>
