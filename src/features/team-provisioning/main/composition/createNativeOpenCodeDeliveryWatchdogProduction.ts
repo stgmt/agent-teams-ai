@@ -1,23 +1,20 @@
-import { createTeamProvisioningOpenCodeRuntimeLaneRecoveryPortsFromHost } from '@main/services/team/provisioning/TeamProvisioningOpenCodeRuntimeLaneRecoveryPortsFactory';
-import { createTeamProvisioningOpenCodeRuntimeRecoveryBoundary } from '@main/services/team/provisioning/TeamProvisioningOpenCodeRuntimeRecoveryBoundaryFactory';
 import { getErrorMessage } from '@shared/utils/errorHandling';
 
 import { createNativeOpenCodeBootstrapEvidence } from '../adapters/output/NativeOpenCodeBootstrapEvidence';
 import { createNativeOpenCodeLaneRecovery } from '../adapters/output/NativeOpenCodeLaneRecovery';
-import { createNativeOpenCodeMemberIdentity } from '../adapters/output/NativeOpenCodeMemberIdentity';
 import { createNativeOpenCodePromptDeliveryLedgerFactory } from '../adapters/output/NativeOpenCodePromptDeliveryLedgerFactory';
 import { createNativeOpenCodeRuntimePermissionSync } from '../adapters/output/NativeOpenCodeRuntimePermissionSync';
 import { createNativeOpenCodeRuntimePidMemory } from '../adapters/output/NativeOpenCodeRuntimePidMemory';
 import { createNativeOpenCodeStoppedTeamLaneCleanup } from '../adapters/output/NativeOpenCodeStoppedTeamLaneCleanup';
 import { createNativeOpenCodeVisibleReplyProof } from '../adapters/output/NativeOpenCodeVisibleReplyProof';
 
+import { createNativeOpenCodeRecoveryHost } from './createNativeOpenCodeRecoveryHost';
+
 import type { TeamOperationQueue } from '../../core/application/TeamOperationQueue';
-import type { OpenCodeSecondaryLaneRun } from '../adapters/output/NativeOpenCodeMemberIdentity';
 import type { NativePromptLedgerAccess } from '../adapters/output/NativeOpenCodePromptDeliverySupervisor';
 import type { NativeSecondaryRuntimeRunStore } from '../adapters/output/NativeSecondaryRuntimeRunStore';
 import type { NativeOpenCodeDeliveryWatchdogDependencies } from './createNativeOpenCodeDeliveryWatchdog';
 import type { OpenCodeGroupAcknowledgementReader } from '@main/services/team/opencode/delivery/OpenCodeGroupAcknowledgement';
-import type { OpenCodeMemberDirectory } from '@main/services/team/opencode/delivery/OpenCodeMemberMessageDeliveryPorts';
 import type { OpenCodePromptDeliveryWatchdogScheduler } from '@main/services/team/opencode/delivery/OpenCodePromptDeliveryWatchdogScheduler';
 import type {
   OpenCodeRuntimePermissionListingAdapter,
@@ -92,63 +89,21 @@ export function createNativeOpenCodeDeliveryWatchdogProductionDeps(
   // the runtime says the team is alive. Every port below reads this, never its own copy.
   const isLive = (teamName: string) =>
     sources.openCodeAdapter() !== null && sources.isTeamAlive(teamName);
-  /**
-   * The directory wants the launch-relevant slice of the team meta file, not the file.
-   * The slice is named explicitly so a new field cannot silently become part of it.
-   */
-  const readTeamMetaForDirectory = async (
-    teamName: string
-  ): Promise<OpenCodeMemberDirectory['teamMeta']> => {
-    const meta = await sources.teamMeta.getMeta(teamName);
-    if (!meta) return null as unknown as OpenCodeMemberDirectory['teamMeta'];
-    return {
-      ...(meta.providerId ? { providerId: meta.providerId } : {}),
-      cwd: meta.cwd,
-    } as OpenCodeMemberDirectory['teamMeta'];
-  };
-  const identity = createNativeOpenCodeMemberIdentity({
+  const recovery = createNativeOpenCodeRecoveryHost({
     teamsBasePath: sources.teamsBasePath,
-    readConfig: (teamName) => sources.config.read(teamName),
-    readTeamMeta: (teamName) => readTeamMetaForDirectory(teamName),
-    readMetaMembers: async (teamName) => (await sources.membersMeta.getMeta(teamName))?.members ?? [],
-    readSecondaryRuntimeRuns: async (teamName) =>
-      sources.runs.getSecondaryRuntimeRuns(teamName) as readonly OpenCodeSecondaryLaneRun[],
-    getCurrentOpenCodeRuntimeRunId: (teamName, laneId) =>
-      sources.runs.getSecondaryRuntimeRuns(teamName).find((entry) => entry.laneId === laneId)
-        ?.runId ?? null,
+    launchState: sources.launchState,
+    runs: sources.runs,
+    config: sources.config,
+    teamMeta: sources.teamMeta,
+    membersMeta: sources.membersMeta,
+    isDeliverable: (teamName) => isLive(teamName),
+    cleanupStoppedLanesInBackground: (teamName) =>
+      stoppedLanes.stopLanesForStoppedTeamInBackground(teamName),
+    readPersistedTeamProjectPath: (teamName) => sources.readPersistedTeamProjectPath(teamName),
+    openCodeAdapter: () => sources.openCodeAdapter(),
+    logger: sources.logger,
   });
-  const recoveryBoundary = createTeamProvisioningOpenCodeRuntimeRecoveryBoundary({
-    teamsBasePath: sources.teamsBasePath,
-    logger: { warn: (message: string) => sources.logger.warn(message) },
-    getOpenCodeRuntimeAdapter,
-    getErrorMessage,
-  });
-  const recoveryPorts = createTeamProvisioningOpenCodeRuntimeLaneRecoveryPortsFromHost(
-    {
-      runTracking: {
-        canDeliverToOpenCodeRuntimeForTeam: (teamName) => isLive(teamName),
-        canAttemptCommittedOpenCodeSessionRecovery: (teamName) => isLive(teamName),
-      },
-      cleanupStoppedTeamOpenCodeRuntimeLanesInBackground: (teamName) =>
-        stoppedLanes.stopLanesForStoppedTeamInBackground(teamName),
-      launchStateStore: { read: (teamName) => sources.launchState.read(teamName) },
-      openCodeRuntimeRecoveryBoundary: recoveryBoundary,
-      readOpenCodeMemberDirectory: (teamName) => identity.readOpenCodeMemberDirectory(teamName),
-      resolveOpenCodeMemberIdentityFromDirectory: (teamName, memberName, directory) =>
-        identity.resolveOpenCodeMemberIdentityFromDirectory(teamName, memberName, directory),
-      readConfigForObservation: (teamName) => sources.config.read(teamName),
-      teamMetaStore: { getMeta: (teamName) => readTeamMetaForDirectory(teamName) },
-      membersMetaStore: {
-        getMembers: async (teamName) => (await sources.membersMeta.getMeta(teamName))?.members ?? [],
-      },
-      readPersistedTeamProjectPath: (teamName) => sources.readPersistedTeamProjectPath(teamName),
-      openCodeRuntimeRecoveryIdentity: {
-        isOpenCodeRuntimeLaneIndexActive: (teamName, laneId) =>
-          identity.isOpenCodeRuntimeLaneIndexActive(teamName, laneId),
-      },
-    },
-    { logger: sources.logger }
-  );
+  const { identity } = recovery;
   const pidMemory = createNativeOpenCodeRuntimePidMemory({
     store: sources.launchState,
     invalidateRuntimeSnapshotCaches: (teamName) => sources.invalidateRuntimeSnapshotCaches(teamName),
@@ -198,15 +153,15 @@ export function createNativeOpenCodeDeliveryWatchdogProductionDeps(
     identity,
     readConfig: (teamName) => sources.config.read(teamName),
     logger: { info: (m) => sources.logger.info(m), warn: (m) => sources.logger.warn(m) },
-    canDeliverToOpenCodeRuntimeForTeam: recoveryPorts.canDeliverToOpenCodeRuntimeForTeam,
+    canDeliverToOpenCodeRuntimeForTeam: recovery.ports.canDeliverToOpenCodeRuntimeForTeam,
     canAttemptCommittedOpenCodeSessionRecovery:
-      recoveryPorts.canAttemptCommittedOpenCodeSessionRecovery,
+      recovery.ports.canAttemptCommittedOpenCodeSessionRecovery,
     cleanupStoppedTeamOpenCodeRuntimeLanesInBackground:
-      recoveryPorts.cleanupStoppedTeamOpenCodeRuntimeLanesInBackground,
+      recovery.ports.cleanupStoppedTeamOpenCodeRuntimeLanesInBackground,
     tryRecoverMissingOpenCodeSecondaryLaneFromRuntime:
-      recoveryPorts.tryRecoverMissingOpenCodeSecondaryLaneFromRuntime,
+      recovery.ports.tryRecoverMissingOpenCodeSecondaryLaneFromRuntime,
     tryRecoverActiveOpenCodeSecondaryLaneFromRuntime:
-      recoveryPorts.tryRecoverActiveOpenCodeSecondaryLaneFromRuntime,
+      recovery.ports.tryRecoverActiveOpenCodeSecondaryLaneFromRuntime,
   });
   const bootstrap = createNativeOpenCodeBootstrapEvidence({
     teamsBasePath: sources.teamsBasePath,
