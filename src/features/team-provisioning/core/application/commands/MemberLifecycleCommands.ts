@@ -35,6 +35,16 @@ interface Dependencies {
     team: TeamRunIdentity,
     launch: Readonly<ConfiguredMemberLaunch>
   ): Promise<void>;
+  /**
+   * A member's runtime reported a failure. Recovery decides whether a lead can be
+   * restarted, so the observation leaves the registry instead of dying in it.
+   */
+  reportRuntimeFailure?(input: {
+    teamName: string;
+    memberName: string;
+    runId: string;
+    detail: string;
+  }): void;
 }
 
 /** Launch settings a restart applies on top of the resolved member configuration. */
@@ -72,6 +82,7 @@ export class MemberLifecycleCommands {
 
   constructor(private readonly ports: Dependencies) {
     this.lanes = new MemberLaneCommands({
+      ...(ports.reportRuntimeFailure ? { reportRuntimeFailure: ports.reportRuntimeFailure } : {}),
       registry: ports.registry,
       settings: ports.settings,
       runtime: ports.runtime,
@@ -576,6 +587,13 @@ export class MemberLifecycleCommands {
         },
         failed: (error) => {
           if (accepted) this.ports.registry.observeRuntimeFailed(token, error);
+          if (accepted)
+            this.ports.reportRuntimeFailure?.({
+              teamName: token.teamName,
+              memberName: token.memberName,
+              runId: token.runId,
+              detail: error,
+            });
           this.settleTeamLaunch(token);
         },
         releaseFailed: (error) => {
@@ -585,6 +603,12 @@ export class MemberLifecycleCommands {
           }
           this.ports.registry.observeRuntimeFailed(token, error);
           this.ports.registry.observeMemberReleaseFailed(token);
+          this.ports.reportRuntimeFailure?.({
+            teamName: token.teamName,
+            memberName: token.memberName,
+            runId: token.runId,
+            detail: error,
+          });
           this.settleTeamLaunch(token);
         },
         exited: (exit) => {

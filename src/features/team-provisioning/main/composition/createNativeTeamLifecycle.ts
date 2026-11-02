@@ -89,6 +89,16 @@ export interface NativeTeamLifecycleDependencies {
   invalidate(teamName: string): void;
   /** Live lead text arrived; the cutover forwards this to the renderer/HTTP team-change feed. */
   onLeadMessage?(teamName: string, runId: string): void;
+  /**
+   * A member's runtime reported a failure. The shell forwards it to the recovery
+   * feature, which is the only owner of "restart the lead or let the team fail".
+   */
+  onRuntimeFailure?(input: {
+    teamName: string;
+    memberName: string;
+    runId: string;
+    detail: string;
+  }): void;
   contextInvalidationSignal(expected: AppConnectionContext): AbortSignal;
   withExpectedContext<T>(expected: AppConnectionContext, operation: () => Promise<T>): Promise<T>;
 }
@@ -274,6 +284,9 @@ export function createNativeTeamLifecycle(
     runtime: routing.runtime,
     laneGroups: routing.laneGroups,
     registerConfiguredMember: (run, launch) => config.addMember(run, launch),
+    ...(deps.onRuntimeFailure
+      ? { reportRuntimeFailure: (input) => deps.onRuntimeFailure?.(input) }
+      : {}),
     teamResources: {
       prepare: async (run, signal) => {
         await settings.prepareWorkspace(run, workspace, signal);

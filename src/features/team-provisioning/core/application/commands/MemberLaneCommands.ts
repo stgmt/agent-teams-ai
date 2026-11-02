@@ -63,6 +63,13 @@ export interface MemberLaneCommandPorts {
   settled(team: TeamRunIdentity, memberName: string): Promise<void>;
   /** A full team launch is in flight; retrying a lane under it would race it. */
   teamLaunchInProgress(team: Readonly<TeamRunIdentity>): boolean;
+  /** A lane member's runtime failed; recovery owns what happens next. */
+  reportRuntimeFailure?(input: {
+    teamName: string;
+    memberName: string;
+    runId: string;
+    detail: string;
+  }): void;
 }
 
 export class MemberLaneCommands {
@@ -420,6 +427,12 @@ export class MemberLaneCommands {
           const token = byName.get(memberName);
           if (token && accepted.get(memberName)) {
             this.ports.registry.observeRuntimeFailed(token, error);
+            this.ports.reportRuntimeFailure?.({
+              teamName: token.teamName,
+              memberName: token.memberName,
+              runId: token.runId,
+              detail: error,
+            });
             this.settleTeamLaunch(token);
           }
         },

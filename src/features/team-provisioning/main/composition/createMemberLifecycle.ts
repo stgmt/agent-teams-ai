@@ -41,6 +41,13 @@ export interface MemberLifecycleDependencies {
     team: TeamRunIdentity,
     launch: Readonly<ConfiguredMemberLaunch>
   ): Promise<void>;
+  /** A member runtime failed; the recovery feature decides what to do with it. */
+  reportRuntimeFailure?(input: {
+    teamName: string;
+    memberName: string;
+    runId: string;
+    detail: string;
+  }): void;
 }
 
 export interface MemberLifecycle {
@@ -66,6 +73,9 @@ export function createMemberLifecycle(dependencies: MemberLifecycleDependencies)
     nextOperationId: randomUUID,
     ...(dependencies.registerConfiguredMember
       ? { registerConfiguredMember: dependencies.registerConfiguredMember }
+      : {}),
+    ...(dependencies.reportRuntimeFailure
+      ? { reportRuntimeFailure: dependencies.reportRuntimeFailure }
       : {}),
   });
   return {
