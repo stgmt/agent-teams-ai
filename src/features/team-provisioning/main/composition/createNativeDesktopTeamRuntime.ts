@@ -36,7 +36,12 @@ export interface NativeDesktopTeamRuntimeDependencies {
   /** Non-owning OpenCode prompt ledger; enables lane lead delivery and member relay. */
   openCodeMemberDelivery?: NativeTeamLifecycleDependencies['openCodeLeadDelivery'];
   definitions: TeamLaunchRequestPersistence;
-  progressHistory: ProvisioningStatusReaderPort;
+  /**
+   * Progress for runs the registry no longer holds. Omitted means the shell keeps no
+   * such history, which is the only truthful answer: a run that left the registry and
+   * was not retained is not answered from a guess.
+   */
+  progressHistory?: ProvisioningStatusReaderPort;
   bootstrapRuntime?: DesktopTeamRuntimeDependencies['bootstrapRuntime'];
   launchAdmission?: DesktopTeamRuntimeDependencies['launchAdmission'];
   /** Teams to scan for orphaned native run claims at startup. */
@@ -92,7 +97,7 @@ export function createNativeDesktopTeamRuntime(
     currentContext: deps.currentContext,
     lifecycle,
     definitions: deps.definitions,
-    progressHistory: deps.progressHistory,
+    progressHistory: deps.progressHistory ?? { findByRunId: async () => undefined },
     ...(deps.bootstrapRuntime ? { bootstrapRuntime: deps.bootstrapRuntime } : {}),
     ...(deps.launchAdmission ? { launchAdmission: deps.launchAdmission } : {}),
     now: deps.now ?? (() => new Date().toISOString()),

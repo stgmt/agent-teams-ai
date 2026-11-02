@@ -111,7 +111,17 @@ type NativeProvisioningPreparation = ReturnType<typeof createNativeProvisioningP
 export function createNativeTeamProvisioningRoot(
   deps: NativeTeamProvisioningRootDependencies
 ): NativeTeamProvisioningRoot {
-  const nativeRuntime = deps.nativeRuntime ?? createNativeDesktopTeamRuntime(deps.runtimeDeps);
+  const nativeRuntime =
+    deps.nativeRuntime ??
+    createNativeDesktopTeamRuntime({
+      ...deps.runtimeDeps,
+      // Progress for runs the registry no longer holds. The registry answers every run
+      // it knows about first, so this only speaks for runs that left it - and the shell
+      // keeps none across restarts, exactly as the previous chain did.
+      progressHistory: deps.runtimeDeps.progressHistory ?? {
+        findByRunId: async () => undefined,
+      },
+    });
   const surface = createNativeRuntimeSurface(nativeRuntime.runtime);
   // Preparation is built first: the IPC preflight answers with the same pipeline the
   // launch readiness check uses, so a readiness answer can never come from a second one.

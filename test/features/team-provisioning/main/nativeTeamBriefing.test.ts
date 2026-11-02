@@ -1,0 +1,69 @@
+// @vitest-environment node
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import { afterEach, describe, expect, it } from 'vitest';
+
+import { createNativeTeamBriefing } from '../../../../src/features/team-provisioning/main/composition/createNativeTeamBriefing';
+
+import type { ConfiguredMemberLaunch } from '../../../../src/features/team-provisioning/core/application/ports/MemberRuntimePorts';
+
+const directories: string[] = [];
+afterEach(() => {
+  for (const directory of directories.splice(0))
+    rmSync(directory, { recursive: true, force: true, maxRetries: 20 });
+});
+
+function launch(cwd: string, instructions?: string): Readonly<ConfiguredMemberLaunch> {
+  return {
+    team: {
+      appInstanceId: 'TEST-app',
+      dataRootFingerprint: 'TEST-root',
+      connectionGeneration: 1,
+      teamName: 'TEST-team',
+      runId: 'run-1',
+    },
+    memberName: 'Builder',
+    configurationRevision: 'rev-1',
+    providerId: 'anthropic',
+    model: null,
+    workingDirectory: cwd,
+    instructions: instructions ?? '',
+  } as unknown as Readonly<ConfiguredMemberLaunch>;
+}
+
+describe('native team briefing', () => {
+  it('falls back to the configured instructions when the app bootstraps nothing', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'briefing-'));
+    directories.push(cwd);
+    const briefing = createNativeTeamBriefing({ readMembersMeta: async () => [] });
+
+    await expect(briefing(launch(cwd, 'You build the thing.'))).resolves.toBe(
+      'You build the thing.'
+    );
+  });
+
+  it('refuses to launch a member with no briefing at all', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'briefing-'));
+    directories.push(cwd);
+    const briefing = createNativeTeamBriefing({ readMembersMeta: async () => [] });
+
+    await expect(briefing(launch(cwd))).rejects.toThrow(/no briefing to launch with/);
+  });
+
+  it('reads the roster from the team its settings name', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'briefing-'));
+    directories.push(cwd);
+    const asked: string[] = [];
+    const briefing = createNativeTeamBriefing({
+      readMembersMeta: async (teamName) => {
+        asked.push(teamName);
+        return [];
+      },
+    });
+
+    await briefing(launch(cwd, 'instructions'));
+    expect(asked).toEqual(['TEST-team']);
+  });
+});
