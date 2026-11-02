@@ -16,13 +16,12 @@ import { createNativeOpenCodeStoppedTeamLaneCleanup } from '../adapters/output/N
 import { createNativeOpenCodeVisibleReplyProof } from '../adapters/output/NativeOpenCodeVisibleReplyProof';
 
 import { createNativeOpenCodeDeliveryHost } from './createNativeOpenCodeDeliveryHost';
-
-import type { NativeOpenCodeBootstrapEvidence } from '../adapters/output/NativeOpenCodeBootstrapEvidence';
 import { createNativeOpenCodeMemberDeliveryPort } from './createNativeOpenCodeMemberDeliveryPort';
 import { createNativeOpenCodeRecoveryHost } from './createNativeOpenCodeRecoveryHost';
 
 import type { TeamOperationQueue } from '../../core/application/TeamOperationQueue';
 import type { NativeOpenCodeMemberDeliveryPort } from '../adapters/input/NativeTeamMessagingApi';
+import type { NativeOpenCodeBootstrapEvidence } from '../adapters/output/NativeOpenCodeBootstrapEvidence';
 import type { NativePromptLedgerAccess } from '../adapters/output/NativeOpenCodePromptDeliverySupervisor';
 import type { NativeSecondaryRuntimeRunStore } from '../adapters/output/NativeSecondaryRuntimeRunStore';
 import type { NativeOpenCodeDeliveryWatchdogDependencies } from './createNativeOpenCodeDeliveryWatchdog';

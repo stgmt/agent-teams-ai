@@ -1,9 +1,9 @@
 import type { TeamRunIdentity, TeamRunRegistryRead } from '../../../contracts';
 import type { MemberLifecycleCommands } from '../../../core/application/commands/MemberLifecycleCommands';
+import type { NativeLeadOutputStream } from './NativeLeadOutputStream';
 import type { NativeLeadRestartAvailability } from './NativeLeadRestartAssessment';
 import type { NativeLeadRestartAssessment } from './NativeLeadRestartAssessment';
 import type { NativeLeadRuntimeSettings } from './NativeLeadRestartAssessment';
-import type { NativeLeadOutputStream } from './NativeLeadOutputStream';
 
 export interface NativeLeadRuntimeRestartDependencies {
   /** Restart admission: run liveness, turn activity, approvals, detected session. */
