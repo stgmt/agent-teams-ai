@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
 import { createNativeSecondaryRuntimeRunStore } from '../../../../src/features/team-provisioning/main/adapters/output/NativeSecondaryRuntimeRunStore';
 import { createNativeOpenCodeDeliveryWatchdogProductionDeps } from '../../../../src/features/team-provisioning/main/composition/createNativeOpenCodeDeliveryWatchdogProduction';
@@ -30,7 +30,6 @@ function sources(
     membersMeta: { getMeta: async () => null },
     inbox: { getMessagesFor: async () => [] },
     queue: { run: async (_team, operation) => operation() },
-    ledgers: () => ({ listDue: async () => [], markNextAttemptDeferred: async () => undefined }),
     scheduler: { isEnabled: () => true, schedule: () => undefined, isStaleError: () => false },
     hasAcceptedMemberWorkSyncReport: async () => false,
     hasAcknowledgedInbound: async () => true,
@@ -73,11 +72,11 @@ describe('production delivery supervisor', () => {
     expect(noAdapter.canDeliverToTeamRuntime('TEST-team')).toBe(false);
   });
 
-  it('opens the ledger through the shared factory it was given', () => {
-    const open = vi.fn(() => ({}) as never);
-    const deps = createNativeOpenCodeDeliveryWatchdogProductionDeps(sources({ ledgers: open }));
+  it('opens a lane ledger under the teams root it was given', () => {
+    const deps = createNativeOpenCodeDeliveryWatchdogProductionDeps(sources());
 
-    expect(deps.ledgers.open('TEST-team', 'lane-1')).toBeDefined();
-    expect(open).toHaveBeenCalledWith('TEST-team', 'lane-1');
+    const ledger = deps.ledgers.open('TEST-team', 'lane-1');
+    expect(ledger).toBeDefined();
+    expect(typeof ledger.listDue).toBe('function');
   });
 });

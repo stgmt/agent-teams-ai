@@ -5,6 +5,7 @@ import { getErrorMessage } from '@shared/utils/errorHandling';
 import { createNativeOpenCodeBootstrapEvidence } from '../adapters/output/NativeOpenCodeBootstrapEvidence';
 import { createNativeOpenCodeLaneRecovery } from '../adapters/output/NativeOpenCodeLaneRecovery';
 import { createNativeOpenCodeMemberIdentity } from '../adapters/output/NativeOpenCodeMemberIdentity';
+import { createNativeOpenCodePromptDeliveryLedgerFactory } from '../adapters/output/NativeOpenCodePromptDeliveryLedgerFactory';
 import { createNativeOpenCodeRuntimePermissionSync } from '../adapters/output/NativeOpenCodeRuntimePermissionSync';
 import { createNativeOpenCodeRuntimePidMemory } from '../adapters/output/NativeOpenCodeRuntimePidMemory';
 import { createNativeOpenCodeStoppedTeamLaneCleanup } from '../adapters/output/NativeOpenCodeStoppedTeamLaneCleanup';
@@ -12,7 +13,6 @@ import { createNativeOpenCodeVisibleReplyProof } from '../adapters/output/Native
 
 import type { TeamOperationQueue } from '../../core/application/TeamOperationQueue';
 import type { OpenCodeSecondaryLaneRun } from '../adapters/output/NativeOpenCodeMemberIdentity';
-import type { createNativeOpenCodePromptDeliveryLedgerFactory } from '../adapters/output/NativeOpenCodePromptDeliveryLedgerFactory';
 import type { NativePromptLedgerAccess } from '../adapters/output/NativeOpenCodePromptDeliverySupervisor';
 import type { NativeSecondaryRuntimeRunStore } from '../adapters/output/NativeSecondaryRuntimeRunStore';
 import type { NativeOpenCodeDeliveryWatchdogDependencies } from './createNativeOpenCodeDeliveryWatchdog';
@@ -45,7 +45,6 @@ export interface NativeOpenCodeDeliveryWatchdogProductionSources {
   membersMeta: Pick<TeamMembersMetaStore, 'getMeta'>;
   inbox: Pick<TeamInboxReader, 'getMessagesFor'>;
   queue: Pick<TeamOperationQueue, 'run'>;
-  ledgers: ReturnType<typeof createNativeOpenCodePromptDeliveryLedgerFactory>;
   scheduler: Pick<OpenCodePromptDeliveryWatchdogScheduler, 'isEnabled' | 'schedule' | 'isStaleError'>;
   hasAcceptedMemberWorkSyncReport(input: {
     teamName: string;
@@ -197,8 +196,11 @@ export function createNativeOpenCodeDeliveryWatchdogProductionDeps(
         ?.runId ?? null,
     warn: (message) => sources.logger.warn(message),
   });
+  // One file per lane is the on-disk rule of the whole delivery path, so the
+  // factory is built here from the teams root instead of being handed in.
+  const openLedger = createNativeOpenCodePromptDeliveryLedgerFactory(sources.teamsBasePath);
   const ledgers: NativePromptLedgerAccess = {
-    open: (teamName, laneId) => sources.ledgers(teamName, laneId),
+    open: (teamName, laneId) => openLedger(teamName, laneId),
   };
   return {
     teamsBasePath: sources.teamsBasePath,
