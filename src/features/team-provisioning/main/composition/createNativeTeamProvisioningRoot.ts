@@ -36,7 +36,10 @@ export interface NativeTeamProvisioningRootDependencies {
    * owner they already hold so runs recorded on it are the runs read here.
    */
   nativeRuntime?: NativeDesktopTeamRuntime;
-  apisDeps: Omit<NativeTeamProvisioningApisDependencies, 'runtime'>;
+  /** The IPC preflight surface; preparation comes from this root's own pipeline. */
+  apisDeps: Omit<NativeTeamProvisioningApisDependencies, 'runtime' | 'preflight'>;
+  /** CLI help text shown before a launch; the probe itself belongs to preparation. */
+  getCliHelpOutput(): Promise<string>;
   watchdogDeps: NativeOpenCodeDeliveryWatchdogDependencies;
   prepDeps: NativeProvisioningPreparationDependencies;
   languageDeps: Omit<NativeLanguageChangeNotifierDependencies, 'runtime' | 'openCodeMemberDelivery'>;
@@ -112,8 +115,17 @@ export function createNativeTeamProvisioningRoot(
 ): NativeTeamProvisioningRoot {
   const nativeRuntime = deps.nativeRuntime ?? createNativeDesktopTeamRuntime(deps.runtimeDeps);
   const surface = createNativeRuntimeSurface(nativeRuntime.runtime);
-  const apis = createNativeTeamProvisioningApis({ ...deps.apisDeps, runtime: nativeRuntime });
+  // Preparation is built first: the IPC preflight answers with the same pipeline the
+  // launch readiness check uses, so a readiness answer can never come from a second one.
   const prep = createNativeProvisioningPreparation(deps.prepDeps);
+  const apis = createNativeTeamProvisioningApis({
+    ...deps.apisDeps,
+    preflight: {
+      getCliHelpOutput: () => deps.getCliHelpOutput(),
+      prepareForProvisioning: (cwd, options) => prep.prepareForProvisioning(cwd, options),
+    },
+    runtime: nativeRuntime,
+  });
   const watchdog: NativeOpenCodeDeliveryWatchdog = createNativeOpenCodeDeliveryWatchdog(
     deps.watchdogDeps
   );
