@@ -18,10 +18,12 @@ type LaneFact = { readonly laneId: string; readonly runtimeAlive: boolean };
  * the only owner of that state.
  */
 export interface NativePromptLedgerAccess {
-  open(
-    teamName: string,
-    laneId: string
-  ): Pick<OpenCodePromptDeliveryLedgerStore, 'listDue' | 'markNextAttemptDeferred'>;
+  /**
+   * The lane's ledger. Callers take what they need from it: the supervisor reads due
+   * rows, the watchdog needs the whole store, and narrowing it here would force one of
+   * them to hold a second, differently-typed handle to the same file.
+   */
+  open(teamName: string, laneId: string): OpenCodePromptDeliveryLedgerStore;
 }
 
 export interface NativeOpenCodePromptDeliverySupervisorDependencies {

@@ -22,7 +22,6 @@ function sources(
     teamsBasePath: 'C:/TEST-teams',
     launchState: { read: async () => null, write: async () => ({}) as never },
     isTeamAlive: () => true,
-    adapterRegistry: { has: () => true, get: () => adapter as never },
     runs: createNativeSecondaryRuntimeRunStore(),
     openCodeAdapter: () => adapter,
     config: { read: async () => null },
@@ -65,7 +64,7 @@ describe('production delivery supervisor', () => {
   it('stops delivering when the team is not alive or the adapter is missing', () => {
     const dead = createNativeOpenCodeDeliveryWatchdogProductionDeps(sources({ isTeamAlive: () => false }));
     const noAdapter = createNativeOpenCodeDeliveryWatchdogProductionDeps(
-      sources({ adapterRegistry: { has: () => false, get: () => adapter as never } })
+      sources({ openCodeAdapter: () => null })
     );
 
     expect(dead.canDeliverToTeamRuntime('TEST-team')).toBe(false);

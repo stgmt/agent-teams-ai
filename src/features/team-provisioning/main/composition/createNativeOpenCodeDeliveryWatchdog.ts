@@ -133,7 +133,7 @@ export function createNativeOpenCodeDeliveryWatchdog(
     },
     stopRuntimeLanesForStoppedTeam: (teamName) => deps.stoppedLanes.stopLanesForStoppedTeam(teamName),
     readActiveRuntimeLaneIds: (teamName) => readActiveLaneIds(teamName),
-    createLedger: (teamName, laneId) => deps.ledgers.open(teamName, laneId) as never,
+    createLedger: (teamName, laneId) => deps.ledgers.open(teamName, laneId),
     resolveMembersForRuntimeLane: (teamName, laneId) =>
       deps.identity.resolveMembersForRuntimeLane(teamName, laneId),
     getInboxMessages: (teamName, memberName) => deps.readInboxMessages(teamName, memberName),

@@ -7,7 +7,6 @@ import {
 } from '@main/services/team/approvals/RuntimeToolApprovalCoordinator';
 
 import type { RuntimeToolApprovalEntry } from '@main/services/team/approvals/RuntimeToolApprovalCoordinator';
-import type { TeamLaunchRuntimeAdapter } from '@main/services/team/runtime/TeamRuntimeAdapter';
 import type { ToolApprovalRequest, ToolApprovalSettings } from '@shared/types/team';
 
 type OpenCodeApprovalState = Parameters<
@@ -33,8 +32,20 @@ export interface NativeOpenCodeApprovalSource {
  */
 export interface NativeRuntimeToolApprovalSources {
   getSettings(teamName: string): ToolApprovalSettings;
-  /** Answers go back to the bridge that asked; the provider decides which one. */
-  openCodeAdapter(): TeamLaunchRuntimeAdapter | null;
+  /**
+   * Sends the answer back to the bridge that asked. The shell supplies this because
+   * answering needs the lane's launch state and expected members, which the approval
+   * entry does not carry; building them here would mean holding launch state twice.
+   */
+  answerOpenCodePermission(input: {
+    teamName: string;
+    runId: string;
+    laneId?: string;
+    memberName: string;
+    requestId: string;
+    decision: 'allow' | 'reject';
+    message?: string;
+  }): Promise<void>;
   emitApprovalEvent(event: RuntimeToolApprovalEvent): void;
   showApprovalNotification?(approval: ToolApprovalRequest): void;
   dismissApprovalNotification?(requestId: string): void;
@@ -90,18 +101,15 @@ export function createNativeRuntimeToolApproval(
     : (input: OpenCodeApprovalState) => openCode.collectPendingApprovals(input);
   const answerEntry = async (entry: RuntimeToolApprovalEntry, allow: boolean, message?: string) => {
     if (entry.providerId !== 'opencode') return;
-    const adapter = sources.openCodeAdapter();
-    if (!adapter?.answerRuntimePermission) {
-      throw new Error('OpenCode runtime bridge cannot answer tool approvals');
-    }
-    await adapter.answerRuntimePermission({
+    await sources.answerOpenCodePermission({
       teamName: entry.approval.teamName,
       runId: entry.approval.runId,
+      ...(entry.laneId ? { laneId: entry.laneId } : {}),
       memberName: entry.memberName,
       requestId: entry.providerRequestId,
       decision: allow ? 'allow' : 'reject',
       ...(message ? { message } : {}),
-    } as never);
+    });
   };
   const coordinator = new RuntimeToolApprovalCoordinator({
     getSettings: (teamName) => sources.getSettings(teamName),

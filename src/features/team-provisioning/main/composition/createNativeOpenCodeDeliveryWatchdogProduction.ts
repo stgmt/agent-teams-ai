@@ -17,14 +17,18 @@ import type { NativePromptLedgerAccess } from '../adapters/output/NativeOpenCode
 import type { NativeSecondaryRuntimeRunStore } from '../adapters/output/NativeSecondaryRuntimeRunStore';
 import type { NativeOpenCodeDeliveryWatchdogDependencies } from './createNativeOpenCodeDeliveryWatchdog';
 import type { OpenCodeGroupAcknowledgementReader } from '@main/services/team/opencode/delivery/OpenCodeGroupAcknowledgement';
+import type { OpenCodeMemberDirectory } from '@main/services/team/opencode/delivery/OpenCodeMemberMessageDeliveryPorts';
 import type { OpenCodePromptDeliveryWatchdogScheduler } from '@main/services/team/opencode/delivery/OpenCodePromptDeliveryWatchdogScheduler';
-import type { TeamRuntimeAdapterRegistry } from '@main/services/team/runtime/TeamRuntimeAdapter';
+import type {
+  OpenCodeRuntimePermissionListingAdapter,
+  OpenCodeRuntimePermissionToolApprovalSyncInput,
+} from '@main/services/team/provisioning/TeamProvisioningOpenCodeRuntimePermissions';
 import type { TeamLaunchRuntimeAdapter } from '@main/services/team/runtime/TeamRuntimeAdapter';
 import type { TeamInboxReader } from '@main/services/team/TeamInboxReader';
 import type { TeamLaunchStateStore } from '@main/services/team/TeamLaunchStateStore';
 import type { TeamMembersMetaStore } from '@main/services/team/TeamMembersMetaStore';
 import type { TeamMetaStore } from '@main/services/team/TeamMetaStore';
-import type { TeamConfig } from '@shared/types';
+import type { InboxMessage, TeamChangeEvent, TeamConfig } from '@shared/types';
 
 /**
  * Everything the delivery supervisor needs that is owned by the application shell
@@ -36,7 +40,6 @@ export interface NativeOpenCodeDeliveryWatchdogProductionSources {
   launchState: Pick<TeamLaunchStateStore, 'read' | 'write'>;
   /** Team liveness as the runtime owner reports it, by team name. */
   isTeamAlive(teamName: string): boolean;
-  adapterRegistry: Pick<TeamRuntimeAdapterRegistry, 'has' | 'get'>;
   /** Lanes and their runs; the supervisor reads and cleans the same store. */
   runs: NativeSecondaryRuntimeRunStore;
   openCodeAdapter(): TeamLaunchRuntimeAdapter | null;
@@ -51,18 +54,16 @@ export interface NativeOpenCodeDeliveryWatchdogProductionSources {
     memberName: string;
   }): Promise<boolean>;
   hasAcknowledgedInbound: OpenCodeGroupAcknowledgementReader;
-  emitRuntimeDeliveryReplyAdvisoryRefresh(teamName: string, message: never): void;
-  emitTeamChange(event: never): void;
+  emitRuntimeDeliveryReplyAdvisoryRefresh(teamName: string, message: InboxMessage): void;
+  emitTeamChange(event: TeamChangeEvent): void;
   emitMemberSpawnChange(input: {
     teamName: string;
     runId?: string | null;
     memberName: string;
   }): void;
   invalidateRuntimeSnapshotCaches(teamName: string): void;
-  syncToolApprovals(input: never): void;
-  permissionListingAdapter(): ReturnType<
-    Parameters<typeof createNativeOpenCodeRuntimePermissionSync>[0]['getPermissionListingAdapter']
-  >;
+  syncToolApprovals(input: OpenCodeRuntimePermissionToolApprovalSyncInput): void;
+  permissionListingAdapter(): OpenCodeRuntimePermissionListingAdapter | null;
   deleteSecondaryRuntimeRun(teamName: string, laneId: string): void;
   clearPrimaryRuntimeRun(teamName: string): void;
   readPersistedTeamProjectPath(teamName: string): string | null;
@@ -87,12 +88,28 @@ export function createNativeOpenCodeDeliveryWatchdogProductionDeps(
 ): NativeOpenCodeDeliveryWatchdogDependencies {
   const nowIso = sources.now ?? (() => new Date().toISOString());
   const getOpenCodeRuntimeAdapter = () => sources.openCodeAdapter();
+  // One answer to "can this team be delivered to": the OpenCode adapter exists and
+  // the runtime says the team is alive. Every port below reads this, never its own copy.
   const isLive = (teamName: string) =>
-    sources.adapterRegistry.has('opencode') && sources.isTeamAlive(teamName);
+    sources.openCodeAdapter() !== null && sources.isTeamAlive(teamName);
+  /**
+   * The directory wants the launch-relevant slice of the team meta file, not the file.
+   * The slice is named explicitly so a new field cannot silently become part of it.
+   */
+  const readTeamMetaForDirectory = async (
+    teamName: string
+  ): Promise<OpenCodeMemberDirectory['teamMeta']> => {
+    const meta = await sources.teamMeta.getMeta(teamName);
+    if (!meta) return null as unknown as OpenCodeMemberDirectory['teamMeta'];
+    return {
+      ...(meta.providerId ? { providerId: meta.providerId } : {}),
+      cwd: meta.cwd,
+    } as OpenCodeMemberDirectory['teamMeta'];
+  };
   const identity = createNativeOpenCodeMemberIdentity({
     teamsBasePath: sources.teamsBasePath,
     readConfig: (teamName) => sources.config.read(teamName),
-    readTeamMeta: (teamName) => sources.teamMeta.getMeta(teamName) as never,
+    readTeamMeta: (teamName) => readTeamMetaForDirectory(teamName),
     readMetaMembers: async (teamName) => (await sources.membersMeta.getMeta(teamName))?.members ?? [],
     readSecondaryRuntimeRuns: async (teamName) =>
       sources.runs.getSecondaryRuntimeRuns(teamName) as readonly OpenCodeSecondaryLaneRun[],
@@ -118,9 +135,9 @@ export function createNativeOpenCodeDeliveryWatchdogProductionDeps(
       openCodeRuntimeRecoveryBoundary: recoveryBoundary,
       readOpenCodeMemberDirectory: (teamName) => identity.readOpenCodeMemberDirectory(teamName),
       resolveOpenCodeMemberIdentityFromDirectory: (teamName, memberName, directory) =>
-        identity.resolveOpenCodeMemberIdentityFromDirectory(teamName, memberName, directory as never),
+        identity.resolveOpenCodeMemberIdentityFromDirectory(teamName, memberName, directory),
       readConfigForObservation: (teamName) => sources.config.read(teamName),
-      teamMetaStore: { getMeta: (teamName) => sources.teamMeta.getMeta(teamName) as never },
+      teamMetaStore: { getMeta: (teamName) => readTeamMetaForDirectory(teamName) },
       membersMetaStore: {
         getMembers: async (teamName) => (await sources.membersMeta.getMeta(teamName))?.members ?? [],
       },
@@ -135,7 +152,7 @@ export function createNativeOpenCodeDeliveryWatchdogProductionDeps(
   const pidMemory = createNativeOpenCodeRuntimePidMemory({
     store: sources.launchState,
     invalidateRuntimeSnapshotCaches: (teamName) => sources.invalidateRuntimeSnapshotCaches(teamName),
-    emitTeamChange: (event) => sources.emitTeamChange(event as never),
+    emitTeamChange: (event) => sources.emitTeamChange(event),
     logDebug: (message) => sources.logger.debug(message),
     now: nowIso,
   });
@@ -154,7 +171,7 @@ export function createNativeOpenCodeDeliveryWatchdogProductionDeps(
   const proof = createNativeOpenCodeVisibleReplyProof({
     readConfig: (teamName) => sources.config.read(teamName),
     emitRuntimeDeliveryReplyAdvisoryRefresh: (teamName, message) =>
-      sources.emitRuntimeDeliveryReplyAdvisoryRefresh(teamName, message as never),
+      sources.emitRuntimeDeliveryReplyAdvisoryRefresh(teamName, message),
     warn: (message) => sources.logger.warn(message),
     getErrorMessage,
     hasAcknowledgedInbound: sources.hasAcknowledgedInbound,
@@ -168,13 +185,13 @@ export function createNativeOpenCodeDeliveryWatchdogProductionDeps(
     readConfig: (teamName) => sources.config.read(teamName),
     getPermissionListingAdapter: () => sources.permissionListingAdapter(),
     store: sources.launchState,
-    syncToolApprovals: (input) => sources.syncToolApprovals(input as never),
+    syncToolApprovals: (input) => sources.syncToolApprovals(input),
     invalidateRuntimeSnapshotCaches: (teamName) => sources.invalidateRuntimeSnapshotCaches(teamName),
     emitMemberSpawnChange: (input) => sources.emitMemberSpawnChange(input),
     logger: { warn: (m) => sources.logger.warn(m), debug: (m) => sources.logger.debug(m) },
     now: nowIso,
     serializeLaunchStateUpdate: (teamName, operation) =>
-      sources.queue.run(teamName, operation) as never,
+      sources.queue.run(teamName, operation),
   });
   const lanes = createNativeOpenCodeLaneRecovery({
     teamsBasePath: sources.teamsBasePath,

@@ -4,7 +4,6 @@ import { describe, expect, it, vi } from 'vitest';
 import { createNativeRuntimeToolApproval } from '../../../../src/features/team-provisioning/main/composition/createNativeRuntimeToolApproval';
 
 import type { RuntimeToolApprovalEntry } from '@main/services/team/approvals/RuntimeToolApprovalCoordinator';
-import type { TeamLaunchRuntimeAdapter } from '@main/services/team/runtime/TeamRuntimeAdapter';
 import type { ToolApprovalSettings } from '@shared/types/team';
 
 const settings = {
@@ -40,12 +39,13 @@ const state = {
 
 describe('native runtime tool approval', () => {
   it('records a lane approval and answers it through the OpenCode bridge', async () => {
-    const answerRuntimePermission = vi.fn(async () => ({}) as never);
+    const answerRuntimePermission = vi.fn(async (_input: unknown) => ({}) as never);
     const emitApprovalEvent = vi.fn();
     const approval = createNativeRuntimeToolApproval({
       getSettings: () => settings,
-      openCodeAdapter: () =>
-        ({ answerRuntimePermission }) as unknown as TeamLaunchRuntimeAdapter,
+      answerOpenCodePermission: async (input) => {
+        await answerRuntimePermission(input);
+      },
       emitApprovalEvent,
       approvals: { collect: () => [openCodeEntry] },
     });
@@ -74,7 +74,9 @@ describe('native runtime tool approval', () => {
   it('refuses to answer when the runtime bridge cannot take the answer', async () => {
     const approval = createNativeRuntimeToolApproval({
       getSettings: () => settings,
-      openCodeAdapter: () => ({}) as unknown as TeamLaunchRuntimeAdapter,
+      answerOpenCodePermission: async () => {
+        throw new Error('OpenCode runtime bridge cannot answer tool approvals');
+      },
       emitApprovalEvent: () => undefined,
       approvals: { collect: () => [openCodeEntry] },
     });
@@ -99,7 +101,9 @@ describe('native runtime tool approval', () => {
   it('treats an approval that is no longer pending as answered nowhere', async () => {
     const approval = createNativeRuntimeToolApproval({
       getSettings: () => settings,
-      openCodeAdapter: () => ({}) as unknown as TeamLaunchRuntimeAdapter,
+      answerOpenCodePermission: async () => {
+        throw new Error('OpenCode runtime bridge cannot answer tool approvals');
+      },
       emitApprovalEvent: () => undefined,
     });
 

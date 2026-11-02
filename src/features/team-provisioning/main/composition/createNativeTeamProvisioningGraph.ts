@@ -6,7 +6,6 @@ import type { NativeDesktopTeamRuntimeDependencies } from './createNativeDesktop
 import type { NativeTeamLifecycleDependencies } from './createNativeTeamLifecycle';
 import type { NativeTeamProvisioningRoot } from './createNativeTeamProvisioningRoot';
 import type { TeamInboxWriter } from '@main/services/team/TeamInboxWriter';
-import type { TeamMcpConfigBuilder } from '@main/services/team/TeamMcpConfigBuilder';
 import type { TeamMembersMetaStore } from '@main/services/team/TeamMembersMetaStore';
 import type { TeamMetaStore } from '@main/services/team/TeamMetaStore';
 
@@ -19,7 +18,7 @@ export interface NativeTeamProvisioningStores {
   teamsRoot: string;
   metadata: Pick<TeamMetaStore, 'getMeta'>;
   members: Pick<TeamMembersMetaStore, 'getMeta'>;
-  mcp: Pick<TeamMcpConfigBuilder, 'writeConfigFile'>;
+  mcp: Pick<NativeTeamLifecycleDependencies['mcp'], 'writeConfigFile'>;
   inbox: Pick<TeamInboxWriter, 'sendMessage'>;
   invalidate(teamName: string): void;
 }
@@ -53,8 +52,7 @@ export function createNativeTeamProvisioningGraph(
     members: deps.stores.members,
   };
   const mcp: NativeTeamLifecycleDependencies['mcp'] = {
-    writeConfigFile: (cwd, options) =>
-      deps.stores.mcp.writeConfigFile(cwd, options as never) as Promise<string>,
+    writeConfigFile: (cwd, options) => deps.stores.mcp.writeConfigFile(cwd, options),
     removeConfigFile: (path) => deps.mcpConfig.removeConfigFile(path),
   };
   return createNativeTeamProvisioningRoot({
