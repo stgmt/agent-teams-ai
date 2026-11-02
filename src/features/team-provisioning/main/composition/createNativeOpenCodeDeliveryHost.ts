@@ -13,6 +13,7 @@ import type { NativeOpenCodeVisibleReplyProof } from '../adapters/output/NativeO
 import type { NativeSecondaryRuntimeRunStore } from '../adapters/output/NativeSecondaryRuntimeRunStore';
 import type { NativeOpenCodeRecoveryHost } from './createNativeOpenCodeRecoveryHost';
 import type { OpenCodeRuntimeMessageAdapter } from '@main/services/team/opencode/delivery/OpenCodeMemberMessageDeliveryPorts';
+import type { DeliverableTrackedRun } from '@main/services/team/opencode/delivery/OpenCodeMemberMessageDeliveryPorts';
 import type { OpenCodePromptDeliveryLedgerRecord } from '@main/services/team/opencode/delivery/OpenCodePromptDeliveryLedger';
 import type { OpenCodePromptDeliveryWatchdogCoordinator } from '@main/services/team/opencode/delivery/OpenCodePromptDeliveryWatchdogCoordinator';
 import type { OpenCodePromptDeliveryWatchdogScheduler } from '@main/services/team/opencode/delivery/OpenCodePromptDeliveryWatchdogScheduler';
@@ -50,7 +51,7 @@ export interface NativeOpenCodeDeliveryHostSources {
   isMemberLifecycleOperationActive(teamName: string, memberName: string): boolean;
   readPersistedTeamProjectPath(teamName: string): string | null;
   /** Run snapshot the delivery service asks for by id. */
-  readRun(runId: string): { runId: string; teamName: string; providerId: string } | undefined;
+  readRun(runId: string): DeliverableTrackedRun | undefined;
   emitPromptDeliveryTaskLogChange(record: OpenCodePromptDeliveryLedgerRecord, detail: string): void;
   logPromptDeliveryEvent(
     event: string,

@@ -26,6 +26,12 @@ export interface NativeTeamProvisioningStores {
 export interface NativeTeamProvisioningGraphDependencies {
   /** Paths and stores the graph owns wiring for; everything else is supplied by the shell. */
   stores: NativeTeamProvisioningStores;
+  /**
+   * The runtime owner, when the shell already built it. Delivery needs its run
+   * registry, so the shell constructs the runtime first and hands it here rather than
+   * letting the graph build a second one that the shell cannot see.
+   */
+  nativeRuntime?: Parameters<typeof createNativeTeamProvisioningRoot>[0]['nativeRuntime'];
   runtimeDeps: Omit<NativeDesktopTeamRuntimeDependencies, 'settings' | 'mcp' | 'inbox'>;
   mcpConfig: {
     removeConfigFile(path: string): Promise<void>;
@@ -56,6 +62,7 @@ export function createNativeTeamProvisioningGraph(
     removeConfigFile: (path) => deps.mcpConfig.removeConfigFile(path),
   };
   return createNativeTeamProvisioningRoot({
+    ...(deps.nativeRuntime ? { nativeRuntime: deps.nativeRuntime } : {}),
     runtimeDeps: {
       ...deps.runtimeDeps,
       settings: lifecycleSettings,

@@ -46,6 +46,11 @@ export interface NativeTeamProvisioningRootDependencies {
 }
 
 export interface NativeTeamProvisioningRoot {
+  /**
+   * The runtime owner this root answers from. Delivery and the shell's late-bound
+   * collaborators read it, so they must see the same instance the root uses.
+   */
+  runtime: NativeDesktopTeamRuntime;
   /** The IPC handler surface over the same owner; the root must not bind a second one. */
   apis: ReturnType<typeof createNativeTeamProvisioningApis>;
   createTeam: NativeRuntimeSurface['provisioningStart']['createTeam'];
@@ -147,6 +152,7 @@ export function createNativeTeamProvisioningRoot(
   });
 
   return {
+    runtime: nativeRuntime,
     apis,
     createTeam: surface.provisioningStart.createTeam,
     launchTeam: surface.provisioningStart.launchTeam,

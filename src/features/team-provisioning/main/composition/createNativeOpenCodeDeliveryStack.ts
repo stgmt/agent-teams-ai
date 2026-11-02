@@ -24,7 +24,10 @@ import type { NativeOpenCodeMemberDeliveryPort } from '../adapters/input/NativeT
 import type { NativePromptLedgerAccess } from '../adapters/output/NativeOpenCodePromptDeliverySupervisor';
 import type { NativeSecondaryRuntimeRunStore } from '../adapters/output/NativeSecondaryRuntimeRunStore';
 import type { NativeOpenCodeDeliveryWatchdogDependencies } from './createNativeOpenCodeDeliveryWatchdog';
-import type { OpenCodeMemberMessageDeliveryInput } from '@main/services/team/opencode/delivery/OpenCodeMemberMessageDeliveryPorts';
+import type {
+  DeliverableTrackedRun,
+  OpenCodeMemberMessageDeliveryInput,
+} from '@main/services/team/opencode/delivery/OpenCodeMemberMessageDeliveryPorts';
 import type { OpenCodeMemberInboxDelivery } from '@main/services/team/opencode/delivery/OpenCodeMemberMessageDeliveryPorts';
 import type { OpenCodeRuntimeMessageAdapter } from '@main/services/team/opencode/delivery/OpenCodeMemberMessageDeliveryPorts';
 import type { OpenCodePromptDeliveryLedgerRecord } from '@main/services/team/opencode/delivery/OpenCodePromptDeliveryLedger';
@@ -61,7 +64,13 @@ export interface NativeOpenCodeDeliveryStackSources {
   stoppingTeams: { has(teamName: string): boolean };
   isMemberLifecycleOperationActive(teamName: string, memberName: string): boolean;
   readPersistedTeamProjectPath(teamName: string): string | null;
-  readRun(runId: string): { runId: string; teamName: string; providerId: string } | undefined;
+  /**
+   * Launch metadata for a run, projected from the persisted launch state. The delivery
+   * service reads it synchronously, so the shell keeps a cache that is refreshed when a
+   * team's launch state changes; an unknown run answers undefined and the delivery falls
+   * back to the configured identity rather than inventing a model.
+   */
+  readRun(runId: string): DeliverableTrackedRun | undefined;
   resolveOpenCodeInboxAttachmentPayloads(input: {
     teamName: string;
     message: RelayInboxMessage;
