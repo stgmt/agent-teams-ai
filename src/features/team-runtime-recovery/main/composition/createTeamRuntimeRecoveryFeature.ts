@@ -21,7 +21,7 @@ import {
   TeamRuntimeRecoveryStorePaths,
 } from '../infrastructure';
 
-import type { LeadRuntimeFailureObservation } from '@main/services/team/TeamProvisioningService';
+import type { LeadRuntimeFailureObservation } from '@main/services/team/provisioning/TeamProvisioningRuntimeFailureObservationBoundary';
 import type { TeamNotificationPayload } from '@main/utils/teamNotificationBuilder';
 import type {
   InboxMessage,
