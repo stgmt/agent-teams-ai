@@ -2092,7 +2092,10 @@ async function initializeServices(): Promise<void> {
         attachmentRoot: join(getAppDataPath(), 'attachments'),
       },
       executable: async () => {
-        const binary = await ClaudeBinaryResolver.resolve();
+        // Native member launch resolves its own provider, not the configured orchestrator:
+        // the orchestrator-aware resolve answers the runtime CLI, and a team launch would
+        // then start the wrong binary.
+        const binary = await ClaudeBinaryResolver.resolveNative();
         if (!binary) throw new Error('Claude CLI is not available for team provisioning');
         return binary;
       },

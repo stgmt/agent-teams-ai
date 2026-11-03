@@ -33,6 +33,8 @@ export interface NativeDesktopTeamRuntimeDependencies {
   withExpectedContext<T>(expected: AppConnectionContext, operation: () => Promise<T>): Promise<T>;
   /** Startup-created registry; the OpenCode entry is selected only when present. */
   runtimeAdapterRegistry?: NativeTeamLifecycleDependencies['runtimeAdapterRegistry'];
+  /** Where a failed launch reports why; the shell supplies its logger. */
+  log?(message: string): void;
   /** Non-owning OpenCode prompt ledger; enables lane lead delivery and member relay. */
   openCodeMemberDelivery?: NativeTeamLifecycleDependencies['openCodeLeadDelivery'];
   definitions: TeamLaunchRequestPersistence;
@@ -100,6 +102,7 @@ export function createNativeDesktopTeamRuntime(
     progressHistory: deps.progressHistory ?? { findByRunId: async () => undefined },
     ...(deps.bootstrapRuntime ? { bootstrapRuntime: deps.bootstrapRuntime } : {}),
     ...(deps.launchAdmission ? { launchAdmission: deps.launchAdmission } : {}),
+    ...(deps.log ? { log: deps.log } : {}),
     now: deps.now ?? (() => new Date().toISOString()),
   });
   return {
