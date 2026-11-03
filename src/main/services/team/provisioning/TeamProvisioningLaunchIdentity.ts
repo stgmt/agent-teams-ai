@@ -52,6 +52,10 @@ export interface ReadRuntimeProviderLaunchFactsInput {
   limitContext?: boolean;
 }
 
+import * as os from 'os';
+
+import { detectLocalModelRouter } from './localModelRouter';
+
 export interface ReadRuntimeProviderLaunchFactsPorts {
   execCli(
     binaryPath: string | null,
@@ -60,6 +64,8 @@ export interface ReadRuntimeProviderLaunchFactsPorts {
   ): Promise<{ stdout: string; stderr: string }>;
   getCodexModelCatalog(params: { cwd: string }): Promise<CliProviderModelCatalog | null>;
   warn(message: string): void;
+  /** Loopback router detection; injected by tests. */
+  detectLocalModelRouter?: typeof detectLocalModelRouter;
 }
 
 export interface RuntimeProviderCliOutputs {
@@ -238,6 +244,19 @@ export function buildRuntimeProviderLaunchFacts(
   };
 }
 
+async function withLocalRouterModels(
+  facts: RuntimeProviderLaunchFacts,
+  input: ReadRuntimeProviderLaunchFactsInput,
+  ports: ReadRuntimeProviderLaunchFactsPorts
+): Promise<RuntimeProviderLaunchFacts> {
+  if (input.providerId !== 'anthropic') return facts;
+  const router = await (ports.detectLocalModelRouter ?? detectLocalModelRouter)({
+    homeDir: os.homedir(),
+    env: input.env,
+  });
+  return router?.models.length ? { ...facts, localRouterModelIds: router.models } : facts;
+}
+
 export async function readRuntimeProviderLaunchFacts(
   input: ReadRuntimeProviderLaunchFactsInput,
   ports: ReadRuntimeProviderLaunchFactsPorts
@@ -301,12 +320,12 @@ export async function readRuntimeProviderLaunchFacts(
     isUsableCodexModelCatalog(initialFacts.modelCatalog) ||
     initialFacts.runtimeCapabilities?.modelCatalog?.dynamic !== true
   ) {
-    return initialFacts;
+    return withLocalRouterModels(initialFacts, input, ports);
   }
 
   const codexCatalog = await ports.getCodexModelCatalog({ cwd: input.cwd });
   if (!isUsableCodexModelCatalog(codexCatalog)) {
-    return initialFacts;
+    return withLocalRouterModels(initialFacts, input, ports);
   }
 
   return buildRuntimeProviderLaunchFacts({

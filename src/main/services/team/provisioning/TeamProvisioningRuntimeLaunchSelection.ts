@@ -74,6 +74,11 @@ export interface RuntimeProviderLaunchFacts {
   modelListParsed?: boolean;
   modelCatalog: CliProviderModelCatalog | null;
   runtimeCapabilities: CliProviderRuntimeCapabilities | null;
+  /**
+   * Models served by a loopback router. Such a router has no Anthropic catalog, so this
+   * list is the only honest answer about what the selected model can run.
+   */
+  localRouterModelIds?: readonly string[];
   providerStatus?:
     | (Partial<CliProviderStatus> & { providerId?: CliProviderStatus['providerId'] })
     | null;
@@ -819,7 +824,12 @@ export function validateRuntimeLaunchSelection(params: {
         effort: params.effort,
         runtimeCapabilities: params.facts.runtimeCapabilities,
       });
-      if (effortSupport.kind !== 'supported') {
+      const servedByLocalRouter =
+        effortSupport.kind === 'unverified-catalog-missing' &&
+        (params.facts.localRouterModelIds ?? []).some(
+          (id) => id === resolvedLaunchModel || id === params.model?.split('@')[0]?.trim()
+        );
+      if (effortSupport.kind !== 'supported' && !servedByLocalRouter) {
         throw new TeamLaunchValidationError(
           `${params.actorLabel} uses Anthropic effort "${params.effort}", but ${formatAnthropicEffortSupportFailure(
             {

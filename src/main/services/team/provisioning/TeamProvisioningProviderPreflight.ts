@@ -274,6 +274,10 @@ export async function verifySelectedProviderModelsForProvisioning({
     limitContext,
   });
 
+  // A loopback router serves models the Anthropic catalog cannot describe, so the model
+  // list carried by the launch facts is the only honest source here.
+  const localRouterModels = new Set<string>(runtimeFacts.localRouterModelIds ?? []);
+
   const recordOutcome = (
     requestedModelId: string,
     outcome: ProviderCompatibilityModelOutcome
@@ -310,6 +314,15 @@ export async function verifySelectedProviderModelsForProvisioning({
       runtimeCapabilities: runtimeFacts.runtimeCapabilities,
     });
     if (effortSupport.kind === 'supported') {
+      return true;
+    }
+    if (
+      effortSupport.kind === 'unverified-catalog-missing' &&
+      localRouterModels.has(requestedModelId.split('@')[0].trim())
+    ) {
+      details.push(
+        `Selected model ${requestedModelId} runs through the local model router; effort "${effort}" is carried by the router.`
+      );
       return true;
     }
 
