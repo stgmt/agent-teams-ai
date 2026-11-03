@@ -2092,12 +2092,13 @@ async function initializeServices(): Promise<void> {
         attachmentRoot: join(getAppDataPath(), 'attachments'),
       },
       executable: async () => {
-        // A team member is started by the Agent Teams orchestrator CLI: it is the binary that
-        // understands the launch flags this path passes. The plain Claude CLI is only a
-        // fallback for a machine without a staged runtime, and it rejects those flags.
-        const binary =
-          (await ClaudeBinaryResolver.resolve()) ?? (await ClaudeBinaryResolver.resolveNative());
-        if (!binary) throw new Error('Claude CLI is not available for team provisioning');
+        // Members are started by the Agent Teams runtime: it is the binary that understands
+        // the launch flags this path passes. Falling back to the plain Claude CLI would start
+        // a binary that rejects them, and the launch would fail on the first member.
+        const binary = await ClaudeBinaryResolver.resolve();
+        if (!binary) {
+          throw new Error('Agent Teams runtime is not available for team provisioning');
+        }
         return binary;
       },
       controlUrl: async () => {
