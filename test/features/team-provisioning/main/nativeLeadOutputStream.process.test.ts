@@ -1,4 +1,8 @@
 // @vitest-environment node
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import { describe, expect, it, vi } from 'vitest';
 
 import { BoundControlContext } from '../../../../src/features/external-agent-connection/main/BoundControlContext';
@@ -55,7 +59,9 @@ describe('observed member planner', () => {
     const liveLeadMessages = new NativeLeadLiveMessageStore();
     const notifyLeadMessage = vi.fn();
     const leadOutput = new NativeLeadOutputStream({ liveLeadMessages, notifyLeadMessage });
-    const logs = new NativeTeamLogStore({ teamsRoot: process.cwd() });
+    // A real team directory belongs in a temp root, not in the repository checkout.
+    const teamsRoot = await mkdtemp(join(tmpdir(), 'TEST-teams-'));
+    const logs = new NativeTeamLogStore({ teamsRoot });
     const approvals = new NativeClaudeToolApprovals({
       store: new NativeClaudeApprovalStore(),
       write: () => Promise.resolve(),
@@ -123,5 +129,6 @@ describe('observed member planner', () => {
 
     unsubscribe();
     await member.stop();
+    await rm(teamsRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
 });
