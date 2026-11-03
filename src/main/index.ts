@@ -2254,6 +2254,19 @@ async function initializeServices(): Promise<void> {
         teamInboxWriter.sendMessage(teamName, message, options),
     },
   });
+  // A claim left by an earlier app instance is not a live owner: without this sweep the
+  // team keeps the dead run as owner and every later launch fails with "another run owner".
+  void provisioningRuntime
+    .recoverStartup()
+    .then((recovery) => {
+      for (const teamName of recovery.recovered)
+        logger.info(`[team] released an orphaned run claim for ${teamName}`);
+      for (const failure of recovery.failed)
+        logger.warn(`[team] could not release ${failure.teamName}: ${failure.error}`);
+    })
+    .catch((error: unknown) =>
+      logger.warn(`[team] orphaned run recovery failed: ${String(error)}`)
+    );
   const provisioningDelivery = createNativeOpenCodeDeliveryStack({
     teamsBasePath: getTeamsBasePath(),
     launchState: provisioningLaunchState,
