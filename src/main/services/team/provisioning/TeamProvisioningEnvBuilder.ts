@@ -39,6 +39,11 @@ import {
 } from '../../runtime/geminiRuntimeAuth';
 
 import {
+  applyLocalModelRouterCredential,
+  applyLocalModelRouterEnv,
+  detectLocalModelRouter,
+} from './localModelRouter';
+import {
   AnthropicApiKeyHelperLeaseConflictError,
   type AnthropicApiKeyHelperSetupLease,
 } from './TeamProvisioningAnthropicApiKeyHelperLease';
@@ -136,6 +141,7 @@ export interface TeamProvisioningEnvBuilderPorts {
   materializeAnthropicTeamApiKeyHelper?: typeof materializeAnthropicTeamApiKeyHelper;
   verifyAnthropicTeamApiKeyHelperMaterial?: typeof verifyAnthropicTeamApiKeyHelperMaterial;
   cleanupAnthropicTeamApiKeyHelperMaterial?: typeof cleanupAnthropicTeamApiKeyHelperMaterial;
+  detectLocalModelRouter?: typeof detectLocalModelRouter;
 }
 
 export interface BuildProvisioningEnvOptions {
@@ -439,7 +445,26 @@ export async function buildProvisioningEnv({
     return { env: providerEnv, authSource: 'none', geminiRuntimeAuth: null, providerArgs: [] };
   }
 
-  if (providerConnectionIssue) {
+  // The lead only publishes its team through the deterministic bootstrap; without this
+  // flag the runtime exits right after startup and the launch reports a bare failure.
+  if (!providerEnv.CLAUDE_ENABLE_DETERMINISTIC_TEAM_BOOTSTRAP?.trim())
+    providerEnv.CLAUDE_ENABLE_DETERMINISTIC_TEAM_BOOTSTRAP = '1';
+
+  // A loopback router replaces the Anthropic subscription: members reach the model
+  // through it, so it decides both egress and whether a credential must be present.
+  const localRouter =
+    resolvedProviderId === 'anthropic'
+      ? await (ports.detectLocalModelRouter ?? detectLocalModelRouter)({
+          homeDir: home,
+          env: processEnv,
+        })
+      : null;
+  if (localRouter) {
+    applyLocalModelRouterEnv(providerEnv, localRouter);
+    applyLocalModelRouterCredential(providerEnv, localRouter);
+  }
+
+  if (providerConnectionIssue && !localRouter) {
     return {
       env: providerEnv,
       authSource: 'configured_api_key_missing',
