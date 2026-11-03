@@ -80,6 +80,27 @@ function bootstrap(patch: Record<string, unknown> = {}) {
 }
 
 describe('native Claude launch planning with app-owned roster and scoped tools', () => {
+  it('refuses a member whose provider has no credential when the application requires access', async () => {
+    const guarded = new NativeClaudeLaunchPlanner({
+      prepareWorkspace: (launch) => Promise.resolve(launch),
+      prepareProvider: () =>
+        Promise.resolve({ executable: 'TEST-claude.exe', env: {}, args: [] }),
+      prepareArtifacts: () =>
+        Promise.resolve({
+          mcpConfigPath: 'TEST-mcp.json',
+          bootstrapSpecPath: 'TEST-bootstrap.json',
+          eventsPath: 'TEST-events.jsonl',
+          bootstrapProof: { proofToken: 'TEST-proof', contextHash: 'c', briefingHash: 'b', boundaryMs: 1 },
+          env: {},
+          dispose: () => Promise.resolve(),
+        }),
+      requireProviderAuth: true,
+    });
+    await expect(guarded.prepare(settings, token, new AbortController().signal)).rejects.toThrow(
+      'Claude access is not configured'
+    );
+  });
+
   it('resumes the captured session instead of starting a new one', async () => {
     const { planner } = setup();
     const plan = await planner.prepare(

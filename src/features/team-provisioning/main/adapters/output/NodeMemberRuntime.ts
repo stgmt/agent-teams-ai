@@ -243,9 +243,11 @@ export class NodeMemberRuntime implements MemberRuntimePort {
       let carry = '';
       let discardLine = false;
       const observeLine = (line: string): void => {
-        // A terminal process observation cannot be undone by output still draining from a pipe.
-        if (terminal || line.length > 1024 * 1024) return;
+        // A terminal process observation cannot be undone by output still draining from a pipe,
+        // but a member that has already exited still owes the user its last words.
+        if (line.length > 1024 * 1024) return;
         if (stream === 'stderr') rememberStderr(line);
+        if (terminal) return;
         try {
           const observation = plan.observeOutput
             ? plan.observeOutput(line.replace(/\r$/, ''), stream)

@@ -175,9 +175,19 @@ export function createDesktopTeamRuntime(deps: DesktopTeamRuntimeDependencies): 
         const memberErrors = Object.values(snapshot.members)
           .filter((member) => member.error)
           .map((member) => `${member.memberName}: ${member.error}`);
+        // A run that fails without any member error must still name what stopped it,
+        // otherwise the file says nothing about a member that never started.
+        const states = Object.values(snapshot.members)
+          .map(
+            (member) =>
+              `${member.memberName}=${member.phase}${member.desired === 'running' ? '' : `/${member.desired}`}`
+          )
+          .join(' ');
         const reason = `[${new Date().toISOString()}] ${snapshot.state}: ${
           snapshot.error ?? 'no team error'
-        }${memberErrors.length ? ` | ${memberErrors.join(' | ')}` : ''}\n`;
+        }${memberErrors.length ? ` | ${memberErrors.join(' | ')}` : ''}${
+          states ? ` | members: ${states}` : ''
+        }\n`;
         if (deps.teamsRootForFailureLog)
           void appendFile(
             join(deps.teamsRootForFailureLog, snapshot.identity.teamName, 'launch-failure.txt'),

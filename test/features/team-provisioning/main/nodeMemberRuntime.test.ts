@@ -95,6 +95,25 @@ describe('owned Node member process adapter', () => {
     }
   );
 
+  it('carries a dying member\'s stderr into the exit observation', async () => {
+    const process = await runtime(
+      "process.stderr.write('TEST-cause: no access\\n'); setTimeout(() => process.exit(3), 250)"
+    ).spawn(settings, token, new AbortController().signal);
+    const exited = vi.fn();
+    process.subscribe({
+      connected: vi.fn(),
+      exited,
+      connectionLost: vi.fn(),
+      failed: vi.fn(),
+      releaseFailed: vi.fn(),
+      released: vi.fn(),
+    });
+    await vi.waitFor(() => expect(exited).toHaveBeenCalled(), { timeout: 10_000 });
+    expect(exited.mock.calls[0][0]).toMatchObject({ kind: 'exit', code: 3 });
+    expect(exited.mock.calls[0][0].stderrTail.join(' ')).toContain('TEST-cause: no access');
+    await process.stop();
+  });
+
   it('replays real readiness and exit observations without inventing a live process', async () => {
     const process = await runtime("console.log('TEST-ready'); process.exitCode=7").spawn(
       settings,
