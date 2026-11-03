@@ -2092,10 +2092,11 @@ async function initializeServices(): Promise<void> {
         attachmentRoot: join(getAppDataPath(), 'attachments'),
       },
       executable: async () => {
-        // Native member launch resolves its own provider, not the configured orchestrator:
-        // the orchestrator-aware resolve answers the runtime CLI, and a team launch would
-        // then start the wrong binary.
-        const binary = await ClaudeBinaryResolver.resolveNative();
+        // A team member is started by the Agent Teams orchestrator CLI: it is the binary that
+        // understands the launch flags this path passes. The plain Claude CLI is only a
+        // fallback for a machine without a staged runtime, and it rejects those flags.
+        const binary =
+          (await ClaudeBinaryResolver.resolve()) ?? (await ClaudeBinaryResolver.resolveNative());
         if (!binary) throw new Error('Claude CLI is not available for team provisioning');
         return binary;
       },
@@ -2178,7 +2179,8 @@ async function initializeServices(): Promise<void> {
     intervals: new TeamTaskActivityIntervalService(),
     readLaunchState: (teamName) => provisioningLaunchState.read(teamName),
     readBootstrapLaunchSnapshot: (teamName) => provisioningLaunchState.read(teamName),
-    getTrackedRunId: (teamName) => provisioningRootRef?.runtime.registry.aliveRunId(teamName) ?? null,
+    getTrackedRunId: (teamName) =>
+      provisioningRootRef?.runtime.registry.aliveRunId(teamName) ?? null,
     hasRun: (runId) => Boolean(provisioningRootRef?.runtime.registry.findByRunId(runId)),
   });
   // A launch writes its owned attempt under the runtime root and gives isolated members
@@ -2202,7 +2204,10 @@ async function initializeServices(): Promise<void> {
     briefing: provisioningBriefing,
     invalidate: (teamName: string) => TeamConfigReader.invalidateTeam(teamName),
     contextInvalidationSignal: () => new AbortController().signal,
-    withExpectedContext: <T,>(expected: typeof provisioningConnectionContext, operation: () => Promise<T>) => {
+    withExpectedContext: <T>(
+      expected: typeof provisioningConnectionContext,
+      operation: () => Promise<T>
+    ) => {
       if (!externalAgentConnection) throw new Error('App connection is not available yet');
       return externalAgentConnection.withExpectedContext(expected, operation);
     },
@@ -2272,13 +2277,17 @@ async function initializeServices(): Promise<void> {
       };
     },
     resolveOpenCodeInboxAttachmentPayloads: (input) =>
-      resolveOpenCodeInboxAttachmentPayloads(input, { attachmentStore: provisioningAttachmentStore }),
+      resolveOpenCodeInboxAttachmentPayloads(input, {
+        attachmentStore: provisioningAttachmentStore,
+      }),
     hasAcceptedMemberWorkSyncReport: async (input) => {
       const checker = provisioningShell.getMemberWorkSyncAcceptedReportChecker();
       return checker ? checker(input) : false;
     },
     hasAcknowledgedInbound: async (input) =>
-      provisioningLateBindings.acknowledgedInbound ? provisioningLateBindings.acknowledgedInbound(input) : false,
+      provisioningLateBindings.acknowledgedInbound
+        ? provisioningLateBindings.acknowledgedInbound(input)
+        : false,
     permissionListingAdapter: () => provisioningShell.getOpenCodeRuntimePermissionListingAdapter(),
     syncToolApprovals: (input) =>
       provisioningApprovals.syncOpenCodeRuntimeToolApprovals(input as never),
@@ -2301,7 +2310,9 @@ async function initializeServices(): Promise<void> {
       }),
     invalidateRuntimeSnapshotCaches: () => undefined,
     logPromptDeliveryEvent: (event, record, extra) =>
-      logger.debug(`[OpenCode delivery] ${event} ${record.laneId ?? ''} ${JSON.stringify(extra ?? {})}`),
+      logger.debug(
+        `[OpenCode delivery] ${event} ${record.laneId ?? ''} ${JSON.stringify(extra ?? {})}`
+      ),
     logger: {
       info: (message, context) => logger.info(context ? `${message} ${context}` : message),
       warn: (message) => logger.warn(message),
@@ -2653,9 +2664,6 @@ async function initializeServices(): Promise<void> {
   skillsWatcherService.setEmitter((event) => {
     safeSendToRenderer(mainWindow, SKILLS_CHANGED, event);
   });
-
-
-
 
   recentProjectsFeature = createRecentProjectsFeature({
     getActiveContext: () => contextRegistry.getActive(),
