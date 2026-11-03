@@ -134,6 +134,11 @@ import { createTeamProvisioningEnvRuntimePorts } from '@main/services/team/provi
 import { readPersistedTeamProjectPath } from '@main/services/team/provisioning/TeamProvisioningPersistedTeamConfigAccess';
 import { resolveOpenCodeInboxAttachmentPayloads } from '@main/services/team/provisioning/TeamProvisioningOpenCodeAttachmentPayloads';
 import { buildProviderAwareCliEnv } from '@main/services/runtime/providerAwareCliEnv';
+import {
+  cleanupAnthropicTeamApiKeyHelperMaterial,
+  materializeAnthropicTeamApiKeyHelper,
+  verifyAnthropicTeamApiKeyHelperMaterial,
+} from '@main/services/runtime/anthropicTeamApiKeyHelper';
 import { execCli } from '@main/utils/childProcess';
 import {
   getAnthropicFastModeDefault,
@@ -2110,6 +2115,12 @@ async function initializeServices(): Promise<void> {
         ...provisioningEnvPorts.getProvisioningEnvBuilderPorts(),
         // The builder's own fallback is unreachable through a spread, so the step is named.
         buildProviderAwareCliEnv,
+        // Anthropic auth for members: without these the runtime refuses to start a turn
+        // ("ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN is required") and every member
+        // stays disconnected.
+        materializeAnthropicTeamApiKeyHelper,
+        verifyAnthropicTeamApiKeyHelperMaterial,
+        cleanupAnthropicTeamApiKeyHelperMaterial,
       },
       identity: {
         execCli,
