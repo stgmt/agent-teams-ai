@@ -90,12 +90,18 @@ function redactNativeBootstrapContextText(input: string): string {
     .replace(/Bearer\s+[A-Z0-9._-]+/gi, 'Bearer [REDACTED]');
 }
 
+const TRUNCATION_MARKER = '\n[truncated native bootstrap context]';
+
 function boundText(input: string, maxChars: number): string {
   const canonical = canonicalizeNativeBootstrapContextText(input);
   if (canonical.length <= maxChars) {
     return canonical;
   }
-  return `${canonical.slice(0, maxChars)}\n[truncated native bootstrap context]`;
+  // The marker is part of the text this function promises to bound: appending it after a
+  // full-length slice made every truncated value exceed the limit by the marker's length,
+  // and a caller enforcing the limit then rejected the whole briefing.
+  const room = Math.max(0, maxChars - TRUNCATION_MARKER.length);
+  return `${canonical.slice(0, room)}${TRUNCATION_MARKER}`;
 }
 
 function buildContextText(params: {

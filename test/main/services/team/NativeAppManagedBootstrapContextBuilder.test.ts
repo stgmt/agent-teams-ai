@@ -206,6 +206,11 @@ describe('NativeAppManagedBootstrapContextBuilder', () => {
     expect(firstContext).toContain('Startup rules:');
     expect(firstContext).toContain('Current task briefing:');
     expect(firstContext).toContain('[truncated native bootstrap context]');
+    // The published briefing is what a launch hashes and a caller bounds; a truncated
+    // value must stay inside the documented limit, marker included.
+    for (const briefing of result.briefings.values()) {
+      expect(briefing.length).toBeLessThanOrEqual(18_000);
+    }
   });
 
   it('keeps Codex MCP rules in compact native startup context', async () => {
