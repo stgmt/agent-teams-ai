@@ -3,6 +3,7 @@ import { mkdir } from 'node:fs/promises';
 import { getDesktopMcpChildEnvironment } from '@features/external-agent-connection/main';
 import { prepareAgentChildProcessWritableEnv } from '@main/services/runtime/agentChildProcessPreflight';
 import { applyAgentTeamsMcpAppContext } from '@main/services/runtime/agentTeamsMcpLaunchEnv';
+import { applyClaudeOauthTokenIfMissing } from '@main/services/runtime/claudeOauthToken';
 import { buildProviderAwareCliEnv } from '@main/services/runtime/providerAwareCliEnv';
 import {
   resolveTeamProviderId,
@@ -408,6 +409,13 @@ export async function buildProvisioningEnv({
     applyAgentTeamsMcpAppContext(providerEnv, resolvedClaudeBasePath, controlApiBaseUrl);
   }
   Object.assign(providerEnv, getDesktopMcpChildEnvironment());
+
+  // A teammate runs as its own process and does not inherit the desktop's Claude session.
+  // Without a credential the orchestrator refuses the first turn, so the subscription
+  // token the user already has on disk is handed to the member — an explicit key wins.
+  if (resolvedProviderId === 'anthropic') {
+    await applyClaudeOauthTokenIfMissing(providerEnv, resolvedClaudeBasePath);
+  }
 
   // SHELL is a Unix concept - only set it on non-Windows platforms.
   if (!isWindows) {
