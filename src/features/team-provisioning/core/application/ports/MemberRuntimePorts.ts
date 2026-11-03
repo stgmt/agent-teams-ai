@@ -67,7 +67,12 @@ export interface MemberRuntimeEvents {
   failed(error: string): void;
   releaseFailed(error: string): void;
   /** Process runtimes emit this before `released`; lane runtimes provide a no-op. */
-  exited(exit: { code: number | null; signal: string | null }): void;
+  /** `stderrTail` carries the member's own last words when it exits on its own. */
+  exited(exit: {
+    code: number | null;
+    signal: string | null;
+    stderrTail?: readonly string[];
+  }): void;
   /**
    * Terminal for the owned runtime. For a lane it is authoritative on its own:
    * the command clears a lane that never reported `laneLost` first.

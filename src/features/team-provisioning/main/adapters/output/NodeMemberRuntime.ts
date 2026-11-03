@@ -229,6 +229,15 @@ export class NodeMemberRuntime implements MemberRuntimePort {
       }
     };
     let lastConnection: Observation['kind'] | null = null;
+    // A member that dies on its own explains itself on stderr and nowhere else; without
+    // this tail the failure reaches the user as "no error" and the reason is lost.
+    const stderrTail: string[] = [];
+    const rememberStderr = (line: string): void => {
+      const text = line.trim();
+      if (!text) return;
+      stderrTail.push(text.length > 500 ? `${text.slice(0, 500)}…` : text);
+      if (stderrTail.length > 20) stderrTail.shift();
+    };
     const attachOutput = (stream: 'stdout' | 'stderr'): void => {
       const decoder = new StringDecoder('utf8');
       let carry = '';
@@ -236,6 +245,7 @@ export class NodeMemberRuntime implements MemberRuntimePort {
       const observeLine = (line: string): void => {
         // A terminal process observation cannot be undone by output still draining from a pipe.
         if (terminal || line.length > 1024 * 1024) return;
+        if (stream === 'stderr') rememberStderr(line);
         try {
           const observation = plan.observeOutput
             ? plan.observeOutput(line.replace(/\r$/, ''), stream)
@@ -279,7 +289,14 @@ export class NodeMemberRuntime implements MemberRuntimePort {
       processLifetime.abort();
       signal.removeEventListener('abort', forwardAbort);
       disconnect?.();
-      deliver({ kind: 'exit', code, signal: exitSignal });
+      // The member's last words travel with the exit; the owner decides whether they
+      // explain a failed run, so an intentional stop stays quiet.
+      deliver({
+        kind: 'exit',
+        code,
+        signal: exitSignal,
+        ...(stderrTail.length ? { stderrTail: [...stderrTail] } : {}),
+      });
       void registration
         .then(releaseResources)
         .catch(() => undefined)

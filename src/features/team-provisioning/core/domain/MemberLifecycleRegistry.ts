@@ -452,10 +452,17 @@ export class MemberLifecycleRegistry {
   observeExit(
     token: MemberProcessToken,
     process: OwnedProcessIdentity,
-    exit: { code: number | null; signal: string | null }
+    exit: { code: number | null; signal: string | null; stderrTail?: readonly string[] }
   ): boolean {
     const current = this.current(token);
     if (!current || !sameProcess(current.member.process, process)) return false;
+    // A process that died on its own explains itself on stderr; keeping the last lines is
+    // the difference between a diagnosable failure and "no error" in the interface.
+    if (!current.member.error && (exit.code !== 0 || exit.signal) && exit.stderrTail?.length) {
+      current.member.error = `runtime exited (code ${exit.code ?? 'none'}${
+        exit.signal ? `, signal ${exit.signal}` : ''
+      }): ${exit.stderrTail.join(' | ')}`;
+    }
     current.member.process = null;
     current.member.resources = 'releasing';
     current.member.phase =
