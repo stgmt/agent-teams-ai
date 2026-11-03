@@ -88,3 +88,4 @@ remotion/*
 /landing/public/announcements.tmp-*/
 release2/
 release3/
+.drift-cache/
