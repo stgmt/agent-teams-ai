@@ -3,6 +3,8 @@ import { buildNativeAppManagedBootstrapSpecsWithDiagnostics } from '@main/servic
 import type { ConfiguredMemberLaunch } from '../../core/application/ports/MemberRuntimePorts';
 import type { TeamMember } from '@shared/types';
 
+const MAX_BRIEFING_CHARS = 18_000;
+
 export interface NativeTeamBriefingSources {
   /** Members recorded for the team, including ones the config no longer lists. */
   readMembersMeta(teamName: string): Promise<readonly TeamMember[]>;
@@ -29,12 +31,14 @@ export function createNativeTeamBriefing(
       members: [...members],
     });
     const bootstrapped = built.briefings.get(settings.memberName);
-    if (bootstrapped) return bootstrapped;
+    if (bootstrapped) return bootstrapped.slice(0, MAX_BRIEFING_CHARS);
 
     const configured = settings.instructions?.trim();
     if (!configured) {
       throw new Error(`Member ${settings.memberName} has no briefing to launch with`);
     }
-    return configured;
+    // The launch artifacts accept at most this many characters; a long workflow or role
+    // text must not turn a valid member into an unlaunchable one.
+    return configured.slice(0, MAX_BRIEFING_CHARS);
   };
 }

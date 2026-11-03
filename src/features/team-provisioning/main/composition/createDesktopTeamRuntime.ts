@@ -171,7 +171,7 @@ export function createDesktopTeamRuntime(deps: DesktopTeamRuntimeDependencies): 
       onProgress(toTeamProvisioningProgress(snapshot, deps.now()));
       // A failed run must say why. Without this the interface shows "Team launch failed"
       // and the reason dies with the snapshot the user never sees.
-      if (FAILED_STATES.has(snapshot.state)) {
+      if (FAILED_STATES.has(snapshot.state) || snapshot.state === 'degraded') {
         const memberErrors = Object.values(snapshot.members)
           .filter((member) => member.error)
           .map((member) => `${member.memberName}: ${member.error}`);
