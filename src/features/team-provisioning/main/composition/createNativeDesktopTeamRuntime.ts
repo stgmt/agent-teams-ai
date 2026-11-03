@@ -35,6 +35,8 @@ export interface NativeDesktopTeamRuntimeDependencies {
   runtimeAdapterRegistry?: NativeTeamLifecycleDependencies['runtimeAdapterRegistry'];
   /** Where a failed launch reports why; the shell supplies its logger. */
   log?(message: string): void;
+  /** Refuse a member whose provider has no credential, so the launch says why. */
+  requireProviderAuth?: boolean;
   /** Non-owning OpenCode prompt ledger; enables lane lead delivery and member relay. */
   openCodeMemberDelivery?: NativeTeamLifecycleDependencies['openCodeLeadDelivery'];
   definitions: TeamLaunchRequestPersistence;
@@ -94,6 +96,7 @@ export function createNativeDesktopTeamRuntime(
     ...(deps.runtimeAdapterRegistry ? { runtimeAdapterRegistry: deps.runtimeAdapterRegistry } : {}),
     ...(deps.openCodeMemberDelivery ? { openCodeLeadDelivery: deps.openCodeMemberDelivery } : {}),
     ...(deps.relayIntervalMs ? { relayIntervalMs: deps.relayIntervalMs } : {}),
+    ...(deps.requireProviderAuth ? { requireProviderAuth: true } : {}),
   });
   const runtime = createDesktopTeamRuntime({
     currentContext: deps.currentContext,
