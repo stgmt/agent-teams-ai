@@ -68,6 +68,12 @@ export interface NativeClaudeLaunchPlannerPorts {
     token: Readonly<MemberProcessToken>,
     signal: AbortSignal
   ): Promise<NativeLaunchArtifacts>;
+  /**
+   * Whether a member is refused when the provider has no credential. Production turns
+   * this on so a launch fails with the missing-access message instead of a member that
+   * starts and silently never connects; planning-only callers leave it off.
+   */
+  requireProviderAuth?: boolean;
 }
 
 const RESERVED_FLAGS = new Set([
@@ -187,6 +193,19 @@ export class NativeClaudeLaunchPlanner implements NodeMemberLaunchPlanner {
     let artifacts: NativeLaunchArtifacts;
     try {
       signal.throwIfAborted();
+      // Without a credential the runtime starts and then refuses the first turn, which
+      // reaches the user as a member that silently never connects. Say it instead.
+      if (
+        this.ports.requireProviderAuth === true &&
+        settings.providerId === 'anthropic' &&
+        !provider.env.ANTHROPIC_API_KEY?.trim() &&
+        !provider.env.CLAUDE_CODE_OAUTH_TOKEN?.trim() &&
+        !provider.env.CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR?.trim()
+      ) {
+        throw new Error(
+          'Claude access is not configured for teammates: sign in to Claude Code on this machine or set ANTHROPIC_API_KEY'
+        );
+      }
       if (
         !provider.executable.trim() ||
         provider.args.some((arg) => RESERVED_FLAGS.has(arg.split('=')[0]))

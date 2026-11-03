@@ -85,7 +85,12 @@ describe('native launch artifact, registration and proof ownership integration',
     const planner = new NativeClaudeLaunchPlanner({
       prepareWorkspace: (launch) =>
         Promise.resolve({ ...launch, taskLedgerProjectDirectory: join(root, 'TEST-ledger') }),
-      prepareProvider: () => Promise.resolve({ executable: 'TEST-cli', args: [], env: {} }),
+      prepareProvider: () =>
+        Promise.resolve({
+          executable: 'TEST-cli',
+          args: [],
+          env: { CLAUDE_CODE_OAUTH_TOKEN: 'TEST-token' },
+        }),
       prepareArtifacts: (launch, attempt, signal) => artifacts.prepare(launch, attempt, signal),
     });
     const plan = await planner.prepare(settings, token, new AbortController().signal);

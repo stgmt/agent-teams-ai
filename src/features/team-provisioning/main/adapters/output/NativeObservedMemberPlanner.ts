@@ -1,3 +1,7 @@
+import { appendFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import type { NativeClaudeToolApprovals } from './NativeClaudeToolApprovals';
 import type { NativeLeadOutputStream } from './NativeLeadOutputStream';
 import type { NativeTeamLogStore } from './NativeTeamLogStore';
@@ -37,6 +41,16 @@ export function createObservedMemberPlanner(
             token.teamName,
             stream === 'stderr' ? `[stderr] ${line}` : line
           );
+          if (process.env.AGTS_CAPTURE_MEMBER_OUTPUT === '1') {
+            try {
+              appendFileSync(
+                join(tmpdir(), 'agts-member-output.txt'),
+                `${new Date().toISOString()} ${settings.memberName} ${stream} ${line}\n`
+              );
+            } catch {
+              // diagnostics only
+            }
+          }
           return plan.observeOutput?.(line, stream) ?? null;
         },
       };

@@ -89,6 +89,8 @@ export interface NativeTeamLifecycleDependencies {
   invalidate(teamName: string): void;
   /** Live lead text arrived; the cutover forwards this to the renderer/HTTP team-change feed. */
   onLeadMessage?(teamName: string, runId: string): void;
+  /** Refuse a member whose provider has no credential, so the launch says why. */
+  requireProviderAuth?: boolean;
   /**
    * A member's runtime reported a failure. The shell forwards it to the recovery
    * feature, which is the only owner of "restart the lead or let the team fail".
@@ -233,6 +235,9 @@ export function createNativeTeamLifecycle(
     prepareWorkspace: (launch, signal) => workspace.prepare(launch, signal),
     prepareProvider: (launch, signal) => provider.prepare(launch, signal),
     prepareArtifacts: (launch, token, signal) => artifacts.prepare(launch, token, signal),
+    // The application turns this on: a member whose provider has no credential must fail
+    // with that message instead of starting a process that silently never connects.
+    requireProviderAuth: deps.requireProviderAuth === true,
   });
   const logs = new NativeTeamLogStore({ teamsRoot: deps.teamsRoot });
   const toolApprovalSettings = new NativeToolApprovalSettings();

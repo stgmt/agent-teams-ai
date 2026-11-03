@@ -41,7 +41,7 @@ function setup() {
       briefingHash: 'TEST-briefing',
       boundaryMs: Date.now(),
     },
-    env: {},
+    env: { CLAUDE_CODE_OAUTH_TOKEN: 'TEST-token' },
     dispose: vi.fn(() => Promise.resolve()),
   };
   const prepareArtifacts = vi.fn(() => Promise.resolve(artifacts));
@@ -49,7 +49,7 @@ function setup() {
     (): Promise<NativeProviderLaunch> =>
       Promise.resolve({
         executable: 'TEST-claude.exe',
-        env: { TEST_AUTH: 'TEST-secret' },
+        env: { TEST_AUTH: 'TEST-secret', CLAUDE_CODE_OAUTH_TOKEN: 'TEST-token' },
         args: ['--model', 'TEST-model', '--effort', 'high'],
       })
   );
@@ -293,7 +293,10 @@ describe('native Claude launch planning with app-owned roster and scoped tools',
     prepareProvider.mockResolvedValueOnce({
       executable: 'TEST',
       args: [],
-      env: { CLAUDE_CODE_TASK_LEDGER_PROJECT_DIR: 'TEST-foreign-ledger' },
+      env: {
+        CLAUDE_CODE_TASK_LEDGER_PROJECT_DIR: 'TEST-foreign-ledger',
+        CLAUDE_CODE_OAUTH_TOKEN: 'TEST-token',
+      },
     });
     const plan = await planner.prepare(settings, token, new AbortController().signal);
     expect(plan.env.CLAUDE_CODE_TASK_LEDGER_PROJECT_DIR).toBe(
@@ -353,7 +356,11 @@ describe('native Claude launch planning with app-owned roster and scoped tools',
       ['--allowedTools', 'SendMessage'],
       ['--tools=SendMessage'],
     ]) {
-      prepareProvider.mockResolvedValueOnce({ executable: 'TEST', env: {}, args });
+      prepareProvider.mockResolvedValueOnce({
+        executable: 'TEST',
+        env: { CLAUDE_CODE_OAUTH_TOKEN: 'TEST-token' },
+        args,
+      });
       await expect(planner.prepare(settings, token, new AbortController().signal)).rejects.toThrow(
         'reserved'
       );
@@ -372,7 +379,10 @@ describe('native Claude launch planning with app-owned roster and scoped tools',
     expect(artifacts.dispose).toHaveBeenCalledOnce();
     prepareProvider.mockResolvedValueOnce({
       executable: 'TEST',
-      env: { AGENT_TEAMS_LEAD_START_CREDENTIAL: 'TEST-never-propagate' },
+      env: {
+        AGENT_TEAMS_LEAD_START_CREDENTIAL: 'TEST-never-propagate',
+        CLAUDE_CODE_OAUTH_TOKEN: 'TEST-token',
+      },
       args: [],
     });
     const plan = await planner.prepare(settings, token, new AbortController().signal);

@@ -2234,6 +2234,7 @@ async function initializeServices(): Promise<void> {
       detail: string;
     }) => provisioningLateBindings.observeLeadFailure?.(input as never),
     log: (message: string) => logger.error(message),
+    requireProviderAuth: true,
     launchAdmission: {
       assertAdmitted: () => {
         if (!externalAgentConnection) throw new Error('App connection is not available yet');
