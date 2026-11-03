@@ -1,3 +1,6 @@
+import { appendFile } from 'node:fs/promises';
+import { join } from 'node:path';
+
 import { memberIsLive } from '@features/team-provisioning';
 import { toTeamProvisioningProgress } from '@main/team-runtime/nativeTeamProgressProjection';
 import { toTeamRuntimeState } from '@main/team-runtime/nativeTeamRuntimeProjection';
@@ -48,6 +51,8 @@ export interface DesktopTeamRuntimeDependencies {
    * log instead of dying with a snapshot nobody reads.
    */
   log?(message: string): void;
+  /** Where a failed launch writes its reason beside the team it belongs to. */
+  teamsRootForFailureLog?: string;
   now(): string;
 }
 
@@ -170,6 +175,14 @@ export function createDesktopTeamRuntime(deps: DesktopTeamRuntimeDependencies): 
         const memberErrors = Object.values(snapshot.members)
           .filter((member) => member.error)
           .map((member) => `${member.memberName}: ${member.error}`);
+        const reason = `[${new Date().toISOString()}] ${snapshot.state}: ${
+          snapshot.error ?? 'no team error'
+        }${memberErrors.length ? ` | ${memberErrors.join(' | ')}` : ''}\n`;
+        if (deps.teamsRootForFailureLog)
+          void appendFile(
+            join(deps.teamsRootForFailureLog, snapshot.identity.teamName, 'launch-failure.txt'),
+            reason
+          ).catch(() => undefined);
         deps.log?.(
           `[${snapshot.identity.teamName}] launch ${snapshot.state}: ${
             snapshot.error ?? 'no team error'

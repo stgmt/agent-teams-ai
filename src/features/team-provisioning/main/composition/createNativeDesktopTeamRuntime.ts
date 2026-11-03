@@ -103,6 +103,7 @@ export function createNativeDesktopTeamRuntime(
     ...(deps.bootstrapRuntime ? { bootstrapRuntime: deps.bootstrapRuntime } : {}),
     ...(deps.launchAdmission ? { launchAdmission: deps.launchAdmission } : {}),
     ...(deps.log ? { log: deps.log } : {}),
+    teamsRootForFailureLog: deps.teamsRoot,
     now: deps.now ?? (() => new Date().toISOString()),
   });
   return {
