@@ -52,6 +52,7 @@ export type TeamModelRuntimeProviderStatus = Pick<
   | 'models'
   | 'modelCatalog'
   | 'modelCatalogRefreshState'
+  | 'localRouterModelIds'
   | 'modelAvailability'
   | 'modelVerificationState'
   | 'runtimeCapabilities'
@@ -335,7 +336,10 @@ export function isAnthropicCompatibleRuntime(
   return (
     hasAnthropicCompatibleRuntimeCatalog(providerStatus) ||
     providerStatus?.runtimeCapabilities?.modelCatalog?.source === 'anthropic-compatible-api' ||
-    providerStatus?.connection?.compatibleEndpoint?.enabled === true
+    providerStatus?.connection?.compatibleEndpoint?.enabled === true ||
+    // A detected loopback router serves Anthropic-shaped models the first-party catalog
+    // cannot describe, so the picker must treat them as compatible-runtime models.
+    (providerStatus?.localRouterModelIds?.length ?? 0) > 0
   );
 }
 
@@ -521,12 +525,17 @@ function getRuntimeSelectorModels(
     return [];
   }
 
+  const localRouterModelIds =
+    providerId === 'anthropic'
+      ? (providerStatus.localRouterModelIds ?? []).map((modelId) => modelId.trim()).filter(Boolean)
+      : [];
+
   const catalogModels = getRuntimeCatalogModels(providerId, providerStatus);
   if (catalogModels) {
     if (providerId === 'anthropic') {
       return sortTeamProviderModels(
         providerId,
-        catalogModels,
+        [...new Set([...catalogModels, ...localRouterModelIds])],
         providerStatus,
         includeRetiredMiniMaxModels
       );
@@ -546,7 +555,9 @@ function getRuntimeSelectorModels(
 
   return sortTeamProviderModels(
     providerId,
-    providerStatus.models,
+    providerId === 'anthropic'
+      ? [...new Set([...providerStatus.models, ...localRouterModelIds])]
+      : providerStatus.models,
     providerStatus,
     includeRetiredMiniMaxModels
   );

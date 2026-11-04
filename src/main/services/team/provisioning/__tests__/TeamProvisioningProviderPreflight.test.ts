@@ -198,6 +198,66 @@ describe('provider model verification normalization', () => {
     ]);
   });
 
+  it('accepts the provider-default check when the local router serves the resolved model', async () => {
+    const routerFacts = buildRuntimeFacts({
+      defaultModel: 'gpt-6.1-terra',
+      modelIds: new Set(['gpt-6.1-terra']),
+      localRouterModelIds: ['gpt-6.1-sol', 'gpt-6.1-terra'],
+    });
+
+    const result = await verifySelectedProviderModelsForProvisioning({
+      claudePath: '/fake/claude',
+      cwd: '/repo',
+      providerId: 'anthropic',
+      modelIds: ['gpt-6.1-terra', DEFAULT_PROVIDER_MODEL_SELECTION],
+      modelChecks: [
+        { modelId: DEFAULT_PROVIDER_MODEL_SELECTION, effort: 'high' },
+        { modelId: 'gpt-6.1-terra', effort: 'high' },
+      ],
+      limitContext: false,
+      ports: {
+        buildProvisioningEnv: vi.fn().mockResolvedValue({ env: { PATH: '/bin' } }),
+        readRuntimeProviderLaunchFacts: vi.fn().mockResolvedValue(routerFacts),
+        appendPreflightDebugLog: () => undefined,
+      },
+    });
+
+    expect(result.blockingMessages).toEqual([]);
+    expect(result.issues ?? []).toEqual([]);
+    expect(result.details).toEqual(
+      expect.arrayContaining([
+        `Selected model ${DEFAULT_PROVIDER_MODEL_SELECTION} runs through the local model router; effort "high" is carried by the router.`,
+        'Selected model gpt-6.1-terra runs through the local model router; effort "high" is carried by the router.',
+      ])
+    );
+  });
+
+  it('still blocks the provider-default check when no local router serves it', async () => {
+    const noRouterFacts = buildRuntimeFacts({
+      defaultModel: 'gpt-6.1-terra',
+      modelIds: new Set(['gpt-6.1-terra']),
+    });
+
+    const result = await verifySelectedProviderModelsForProvisioning({
+      claudePath: '/fake/claude',
+      cwd: '/repo',
+      providerId: 'anthropic',
+      modelIds: [DEFAULT_PROVIDER_MODEL_SELECTION],
+      modelChecks: [{ modelId: DEFAULT_PROVIDER_MODEL_SELECTION, effort: 'high' }],
+      limitContext: false,
+      ports: {
+        buildProvisioningEnv: vi.fn().mockResolvedValue({ env: { PATH: '/bin' } }),
+        readRuntimeProviderLaunchFacts: vi.fn().mockResolvedValue(noRouterFacts),
+        appendPreflightDebugLog: () => undefined,
+      },
+    });
+
+    expect(result.details).toEqual([]);
+    expect(result.blockingMessages).toEqual([
+      `Selected model ${DEFAULT_PROVIDER_MODEL_SELECTION} is unavailable. Anthropic runtime catalog was unavailable, so effort "high" for gpt-6.1-terra could not be verified.`,
+    ]);
+  });
+
   it('fails the model check when the deep ChatGPT probe reports the selection unsupported', async () => {
     const chatGptFacts = buildRuntimeFacts({
       defaultModel: 'gpt-5.6-sol',

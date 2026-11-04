@@ -31,6 +31,8 @@ import {
   mergeProviderStatusDisplayEvidence,
   sanitizeProviderStatusAuthority,
 } from '../services/runtime/providerStatusCheckContract';
+import { detectLocalModelRouter } from '../services/team/provisioning/localModelRouter';
+import { getHomeDir } from '../utils/pathDecoder';
 
 import type { CliInstallerService } from '../services';
 import type {
@@ -347,9 +349,19 @@ async function handleGetStatus(
     if (cached && Date.now() - cached.at < STATUS_CACHE_TTL_MS) {
       if (latestSnapshot && canUseStatusForCacheKey(cacheKey, latestSnapshot)) {
         cachedStatus.set(cacheKey, { value: latestSnapshot, at: Date.now() });
-        return { success: true, data: projectStatusAuthority(latestSnapshot, readNow()) };
+        return {
+          success: true,
+          data: await withLocalRouterProviderStatuses(
+            projectStatusAuthority(latestSnapshot, readNow())
+          ),
+        };
       }
-      return { success: true, data: projectStatusAuthority(cached.value, readNow()) };
+      return {
+        success: true,
+        data: await withLocalRouterProviderStatuses(
+          projectStatusAuthority(cached.value, readNow())
+        ),
+      };
     }
 
     if (!statusInFlight.has(cacheKey)) {
@@ -382,12 +394,73 @@ async function handleGetStatus(
     }
 
     const status = await statusInFlight.get(cacheKey)!;
-    return { success: true, data: projectStatusAuthority(status, readNow()) };
+    return {
+      success: true,
+      data: await withLocalRouterProviderStatuses(projectStatusAuthority(status, readNow())),
+    };
   } catch (error) {
     const msg = getErrorMessage(error);
     logger.error('Error in cliInstaller:getStatus:', msg);
     return { success: false, error: msg };
   }
+}
+
+const LOCAL_ROUTER_MODEL_IDS_TTL_MS = 60_000;
+let localRouterModelIdsCache: { models: readonly string[]; at: number } | null = null;
+
+async function readLocalRouterModelIds(): Promise<readonly string[]> {
+  const now = Date.now();
+  if (
+    localRouterModelIdsCache &&
+    now - localRouterModelIdsCache.at < LOCAL_ROUTER_MODEL_IDS_TTL_MS
+  ) {
+    return localRouterModelIdsCache.models;
+  }
+  let models: readonly string[] = [];
+  try {
+    const router = await detectLocalModelRouter({ homeDir: getHomeDir(), env: process.env });
+    models = router?.models ?? [];
+  } catch {
+    models = [];
+  }
+  localRouterModelIdsCache = { models, at: Date.now() };
+  return models;
+}
+
+/**
+ * Display evidence for the picker: a router-served Anthropic model is selectable even when
+ * the first-party catalog cannot describe it. Launch authority is still decided in main.
+ */
+async function withLocalRouterModels(
+  providerStatus: CliProviderStatus | null | undefined
+): Promise<CliProviderStatus | null> {
+  if (!providerStatus || providerStatus.providerId !== 'anthropic') {
+    return providerStatus ?? null;
+  }
+  const localRouterModelIds = await readLocalRouterModelIds();
+  return localRouterModelIds.length > 0
+    ? { ...providerStatus, localRouterModelIds: [...localRouterModelIds] }
+    : providerStatus;
+}
+
+async function withLocalRouterProviderStatuses(
+  status: CliInstallationStatus
+): Promise<CliInstallationStatus> {
+  if (!status.providers.some((provider) => provider.providerId === 'anthropic')) {
+    return status;
+  }
+  const localRouterModelIds = await readLocalRouterModelIds();
+  if (localRouterModelIds.length === 0) {
+    return status;
+  }
+  return {
+    ...status,
+    providers: status.providers.map((provider) =>
+      provider.providerId === 'anthropic'
+        ? { ...provider, localRouterModelIds: [...localRouterModelIds] }
+        : provider
+    ),
+  };
 }
 
 function patchCachedProviderStatus(providerStatus: CliProviderStatus | null): void {
@@ -445,7 +518,12 @@ async function handleGetProviderStatus(
     const inFlight = providerStatusInFlight.get(requestKey);
     if (inFlight) {
       const status = await inFlight;
-      return { success: true, data: status ? projectProviderAuthority(status, readNow()) : null };
+      return {
+        success: true,
+        data: await withLocalRouterModels(
+          status ? projectProviderAuthority(status, readNow()) : null
+        ),
+      };
     }
 
     const generation = statusCacheGeneration;
@@ -476,7 +554,9 @@ async function handleGetProviderStatus(
     const status = await request;
     return {
       success: true,
-      data: status ? projectProviderAuthority(status, readNow()) : null,
+      data: await withLocalRouterModels(
+        status ? projectProviderAuthority(status, readNow()) : null
+      ),
     };
   } catch (error) {
     const msg = getErrorMessage(error);
