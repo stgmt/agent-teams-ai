@@ -69,12 +69,24 @@ describe('local model router detection', () => {
   it('stays silent while the configured router is not listening', async () => {
     const root = await home();
     await writeSettings(root, { HTTPS_PROXY: 'http://127.0.0.1:8790' });
+    await writeRouterConfig(root, 8790);
     const isPortOpen = vi.fn(async () => false);
 
     await expect(
       detectLocalModelRouter({ homeDir: root, env: {}, isPortOpen })
     ).resolves.toBeNull();
     expect(isPortOpen).toHaveBeenCalledWith('127.0.0.1', 8790);
+  });
+
+  it('does not mistake another loopback proxy for the model router', async () => {
+    const root = await home();
+    await writeSettings(root, { HTTPS_PROXY: 'http://127.0.0.1:3128' });
+    const isPortOpen = vi.fn(async () => true);
+
+    await expect(
+      detectLocalModelRouter({ homeDir: root, env: {}, isPortOpen })
+    ).resolves.toBeNull();
+    expect(isPortOpen).not.toHaveBeenCalled();
   });
 
   it('never treats a remote proxy as the local model router', async () => {
@@ -104,6 +116,11 @@ describe('local model router environment', () => {
     expect(env.HTTP_PROXY).toBe('http://127.0.0.1:8790');
     expect(env.NO_PROXY).toBe('127.0.0.1,localhost,::1');
     expect(env.NODE_EXTRA_CA_CERTS).toBe('C:/TEST/ca.pem');
+  });
+
+  it('keeps the exclusions a user already had while adding loopback', () => {
+    const env = applyLocalModelRouterEnv({ NO_PROXY: 'example.com,localhost' }, router);
+    expect(env.NO_PROXY).toBe('example.com,localhost,127.0.0.1,::1');
   });
 
   it('supplies a marker credential only when no real one exists', () => {

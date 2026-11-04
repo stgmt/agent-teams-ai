@@ -1,4 +1,5 @@
 import { type ExecCliOptions } from '@main/utils/childProcess';
+import { getHomeDir } from '@main/utils/pathDecoder';
 import {
   type CliProviderModelCatalog,
   type CliProviderRuntimeCapabilities,
@@ -51,8 +52,6 @@ export interface ReadRuntimeProviderLaunchFactsInput {
   providerArgs?: string[];
   limitContext?: boolean;
 }
-
-import * as os from 'os';
 
 import { detectLocalModelRouter } from './localModelRouter';
 
@@ -251,7 +250,8 @@ async function withLocalRouterModels(
 ): Promise<RuntimeProviderLaunchFacts> {
   if (input.providerId !== 'anthropic') return facts;
   const router = await (ports.detectLocalModelRouter ?? detectLocalModelRouter)({
-    homeDir: os.homedir(),
+    // Electron's home path is the Unicode-safe one; os.homedir() can differ on Windows.
+    homeDir: getHomeDir(),
     env: input.env,
   });
   return router?.models.length ? { ...facts, localRouterModelIds: router.models } : facts;

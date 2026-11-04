@@ -93,12 +93,12 @@ async function readClaudeSettingsEnv(
 async function readRouterModels(
   homeDir: string,
   read: (filePath: string) => Promise<string | null>
-): Promise<{ models: string[]; listen: string | null }> {
+): Promise<{ models: string[]; listen: string | null; configured: boolean }> {
   const text = await read(path.join(homeDir, '.clauderipple', 'config.json'));
-  if (!text) return { models: [], listen: null };
+  if (!text) return { models: [], listen: null, configured: false };
   try {
     const config = record(JSON.parse(text));
-    if (!config) return { models: [], listen: null };
+    if (!config) return { models: [], listen: null, configured: false };
     const listen = record(config.listen);
     const host = typeof listen?.host === 'string' ? listen.host : null;
     const port = typeof listen?.port === 'number' ? listen.port : null;
@@ -115,9 +115,10 @@ async function readRouterModels(
     return {
       models: [...new Set(models)],
       listen: host && port ? `http://${host}:${port}` : null,
+      configured: true,
     };
   } catch {
-    return { models: [], listen: null };
+    return { models: [], listen: null, configured: false };
   }
 }
 
@@ -133,6 +134,9 @@ export async function detectLocalModelRouter(
   const env = input.env ?? process.env;
   const settings = await readClaudeSettingsEnv(input.homeDir, read);
   const router = await readRouterModels(input.homeDir, read);
+  // Any process can listen on loopback, so a proxy address alone proves nothing. The
+  // router's own configuration is the evidence that this egress belongs to it.
+  if (!router.configured) return null;
 
   const candidates = [settings.HTTPS_PROXY, env.HTTPS_PROXY, router.listen];
   for (const candidate of candidates) {
@@ -163,8 +167,18 @@ export function applyLocalModelRouterEnv(
   if (!env.HTTPS_PROXY?.trim()) env.HTTPS_PROXY = router.proxyUrl;
   if (!env.HTTP_PROXY?.trim()) env.HTTP_PROXY = router.proxyUrl;
   // The control API and the MCP bridge live on loopback; routing them through the
-  // router would break the very connection the launch depends on.
-  if (!env.NO_PROXY?.trim()) env.NO_PROXY = '127.0.0.1,localhost,::1';
+  // router would break the very connection the launch depends on. An existing list is
+  // kept and only extended, so a user's own exclusions survive.
+  const existingNoProxy = (env.NO_PROXY ?? '')
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  const loopback = ['127.0.0.1', 'localhost', '::1'];
+  const merged = [
+    ...existingNoProxy,
+    ...loopback.filter((entry) => !existingNoProxy.includes(entry)),
+  ];
+  env.NO_PROXY = merged.join(',');
   if (router.caPath && !env.NODE_EXTRA_CA_CERTS?.trim()) env.NODE_EXTRA_CA_CERTS = router.caPath;
   return env;
 }
