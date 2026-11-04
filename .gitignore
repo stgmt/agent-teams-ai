@@ -88,3 +88,6 @@ remotion/*
 /landing/public/announcements.tmp-*/
 release*/
 .drift-cache/
+
+# Per-workspace spec registry binding (machine-local, never committed).
+.omp-spec-kit/
