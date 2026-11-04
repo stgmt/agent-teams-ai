@@ -1,4 +1,6 @@
+import { clearStaleProcessRuntimeMetadataFromMember } from '@main/services/team/provisioning/StaleProcessRuntimeMetadataCleanup';
 import { validateMemberName } from '@main/services/team/TeamIdentifierValidation';
+import { inspectProcessByPid } from '@main/utils/processInspection';
 
 import { isNativeRuntimeProvider } from '../../infrastructure/nativeRuntimeProvider';
 import { NativeTeamConfigStore } from '../../infrastructure/NativeTeamConfigStore';
@@ -101,6 +103,41 @@ function assertReleased(members: NativeTeamConfig[]): void {
   }
 }
 
+/** A legacy PID is not ownership: it may be gone or reused by an unrelated process. */
+async function clearStaleLegacyProcessRows(
+  members: NativeTeamConfig[],
+  signal: AbortSignal
+): Promise<void> {
+  for (let index = 0; index < members.length; index++) {
+    signal.throwIfAborted();
+    const member = members[index];
+    if (
+      typeof member.runtimePid !== 'number' ||
+      member.runtimeProcessBirthId != null ||
+      member.runtimeOperationId != null
+    )
+      continue;
+    const cleaned = clearStaleProcessRuntimeMetadataFromMember(member, {
+      memberName: member.name as string,
+      runtimePid: member.runtimePid,
+      processPaneId: `process:${member.runtimePid}`,
+    });
+    if (!cleaned.changed) continue;
+    const inspection = await inspectProcessByPid(member.runtimePid);
+    signal.throwIfAborted();
+    // Windows shell fallbacks quote/caret-escape flag tokens. Any team marker
+    // is ambiguous ownership, not proof that a live PID belongs to someone else.
+    if (
+      inspection.status === 'not_found' ||
+      (inspection.status === 'found' &&
+        inspection.command.trim().length > 0 &&
+        !inspection.command.includes('--team-name') &&
+        !inspection.command.includes('--agent-id'))
+    )
+      members[index] = cleaned.member;
+  }
+}
+
 /** Materializes configured identities; runtime files are never a source of configured membership. */
 export class NodeNativeTeamConfig {
   private readonly store: NativeTeamConfigStore;
@@ -128,6 +165,7 @@ export class NodeNativeTeamConfig {
       }
       if (current?.appManagedRun != null) throw new Error('Native team config owner is invalid');
       const previous = rows(current);
+      await clearStaleLegacyProcessRows(previous, signal);
       assertReleased(previous);
       const leads = configured.members.filter(({ launch }) => launch.role === 'lead');
       if (leads.length !== 1) throw new Error('Native team config requires one configured lead');

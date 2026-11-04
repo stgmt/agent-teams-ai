@@ -3,10 +3,15 @@ import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { NodeNativeTeamConfig } from '../../../../src/features/team-provisioning/main/adapters/output/NodeNativeTeamConfig';
 import { NodeTeamLaunchSettings } from '../../../../src/features/team-provisioning/main/adapters/output/NodeTeamLaunchSettings';
+import { inspectProcessByPid } from '../../../../src/main/utils/processInspection';
+
+vi.mock('../../../../src/main/utils/processInspection', () => ({
+  inspectProcessByPid: vi.fn(),
+}));
 
 const directories: string[] = [];
 const run = {
@@ -18,6 +23,7 @@ const run = {
 };
 
 afterEach(async () => {
+  vi.resetAllMocks();
   await Promise.all(
     directories
       .splice(0)
@@ -240,6 +246,176 @@ describe('app-owned native team runtime configuration', () => {
       config.prepare({ ...run, runId: 'TEST-other' }, new AbortController().signal)
     ).rejects.toThrow();
     expect(await readFile(configPath, 'utf8')).toBe(before);
+  });
+
+  it.each([
+    { status: 'not_found' as const },
+    { status: 'found' as const, command: 'C:\\Windows\\SystemApps\\LockApp.exe' },
+  ])('launches a stopped legacy roster when its old process is $status', async (inspection) => {
+    const { config, configPath } = await setup();
+    vi.mocked(inspectProcessByPid).mockResolvedValue(inspection);
+    await writeFile(
+      configPath,
+      JSON.stringify({
+        name: run.teamName,
+        leadSessionId: 'TEST-old-session',
+        sessionHistory: ['TEST-history'],
+        members: [
+          {
+            name: 'builder',
+            agentId: `builder@${run.teamName}`,
+            provider: 'codex',
+            runtimePid: 4242,
+            tmuxPaneId: 'process:4242',
+            backendType: 'process',
+            bootstrapRunId: 'TEST-old-run',
+            customNote: 'TEST-retained',
+            subscriptions: ['TEST-topic'],
+          },
+        ],
+      })
+    );
+
+    await config.prepare(run, new AbortController().signal);
+
+    const saved = await readConfig(configPath);
+    expect(saved.appManagedRun.identity).toEqual(run);
+    expect(saved.sessionHistory).toEqual(['TEST-history']);
+    expect(
+      saved.members.find((member: { name: string }) => member.name === 'builder')
+    ).toMatchObject({
+      customNote: 'TEST-retained',
+      subscriptions: ['TEST-topic'],
+      provider: 'anthropic',
+    });
+    expect(saved.members[1].runtimePid).toBeUndefined();
+    expect(saved.members[1].bootstrapRunId).toBeUndefined();
+    expect(saved.members[1].tmuxPaneId).toBe('');
+  });
+
+  it.each([
+    { status: 'unreadable' as const, cause: 'TEST access denied' },
+    { status: 'found' as const, command: '' },
+    {
+      status: 'found' as const,
+      command: `claude-multimodel --team-name "${run.teamName}" --agent-id builder@${run.teamName}`,
+    },
+    {
+      status: 'found' as const,
+      command: `claude-multimodel --agent-id "builder@${run.teamName}"`,
+    },
+    {
+      status: 'found' as const,
+      command: 'claude-multimodel --team-name other-team --agent-id builder@other-team',
+    },
+  ])('preserves legacy process evidence when inspection is $status', async (inspection) => {
+    const { config, configPath } = await setup();
+    vi.mocked(inspectProcessByPid).mockResolvedValue(inspection);
+    const before = JSON.stringify({
+      name: run.teamName,
+      members: [{ name: 'builder', runtimePid: 4242, tmuxPaneId: 'process:4242' }],
+    });
+    await writeFile(configPath, before);
+
+    await expect(config.prepare(run, new AbortController().signal)).rejects.toThrow('unreleased');
+
+    expect(await readFile(configPath, 'utf8')).toBe(before);
+  });
+
+  it('keeps a live Windows shell-wrapper process whose ownership flags are caret-escaped', async () => {
+    const { config, configPath } = await setup();
+    vi.mocked(inspectProcessByPid).mockResolvedValue({
+      status: 'found',
+      command: `C:\\Windows\\System32\\cmd.exe /d /s /c "^"--team-name^" ^"${run.teamName}^" ^"--agent-id^" ^"builder@${run.teamName}^""`,
+    });
+    const before = JSON.stringify({
+      name: run.teamName,
+      members: [{ name: 'builder', runtimePid: 4242, tmuxPaneId: 'process:4242' }],
+    });
+    await writeFile(configPath, before);
+
+    await expect(config.prepare(run, new AbortController().signal)).rejects.toThrow('unreleased');
+
+    expect(await readFile(configPath, 'utf8')).toBe(before);
+  });
+
+  it('does not publish a partial cleanup when another legacy member is still alive', async () => {
+    const { config, configPath } = await setup();
+    vi.mocked(inspectProcessByPid)
+      .mockResolvedValueOnce({ status: 'not_found' })
+      .mockResolvedValueOnce({
+        status: 'found',
+        command: `claude-multimodel --team-name=${run.teamName} --agent-id other@${run.teamName}`,
+      });
+    const before = JSON.stringify({
+      name: run.teamName,
+      members: [
+        { name: 'builder', runtimePid: 4242, tmuxPaneId: 'process:4242' },
+        { name: 'other', runtimePid: 4243, tmuxPaneId: 'process:4243' },
+      ],
+    });
+    await writeFile(configPath, before);
+
+    await expect(config.prepare(run, new AbortController().signal)).rejects.toThrow('unreleased');
+
+    expect(await readFile(configPath, 'utf8')).toBe(before);
+  });
+
+  it.each([
+    { runtimeProcessBirthId: 'TEST-native-birth' },
+    { runtimeOperationId: 'TEST-native-operation' },
+    { laneId: 'TEST-opencode-lane' },
+    { provider: 'opencode' },
+  ])('does not recover non-legacy runtime identity %j', async (identity) => {
+    const { config, configPath } = await setup();
+    vi.mocked(inspectProcessByPid).mockResolvedValue({ status: 'not_found' });
+    const before = JSON.stringify({
+      name: run.teamName,
+      members: [{ name: 'builder', runtimePid: 4242, tmuxPaneId: 'process:4242', ...identity }],
+    });
+    await writeFile(configPath, before);
+
+    await expect(config.prepare(run, new AbortController().signal)).rejects.toThrow('unreleased');
+
+    expect(await readFile(configPath, 'utf8')).toBe(before);
+  });
+
+  it('preserves the config when cancellation arrives during process inspection', async () => {
+    const { config, configPath } = await setup();
+    const abort = new AbortController();
+    vi.mocked(inspectProcessByPid).mockImplementation(async () => {
+      abort.abort(new Error('TEST launch cancelled'));
+      return { status: 'not_found' };
+    });
+    const before = JSON.stringify({
+      name: run.teamName,
+      members: [{ name: 'builder', runtimePid: 4242, tmuxPaneId: 'process:4242' }],
+    });
+    await writeFile(configPath, before);
+
+    await expect(config.prepare(run, abort.signal)).rejects.toThrow('TEST launch cancelled');
+
+    expect(await readFile(configPath, 'utf8')).toBe(before);
+  });
+
+  it('preserves a concurrent config update made while the old process is inspected', async () => {
+    const { config, configPath } = await setup();
+    const original = {
+      name: run.teamName,
+      members: [{ name: 'builder', runtimePid: 4242, tmuxPaneId: 'process:4242' }],
+    };
+    const concurrent = JSON.stringify({ ...original, description: 'TEST external update' });
+    await writeFile(configPath, JSON.stringify(original));
+    vi.mocked(inspectProcessByPid).mockImplementation(async () => {
+      await writeFile(configPath, concurrent);
+      return { status: 'not_found' };
+    });
+
+    await expect(config.prepare(run, new AbortController().signal)).rejects.toThrow(
+      'config changed during publication'
+    );
+
+    expect(await readFile(configPath, 'utf8')).toBe(concurrent);
   });
 
   it('refuses an unowned process projection instead of probing or killing its PID', async () => {
