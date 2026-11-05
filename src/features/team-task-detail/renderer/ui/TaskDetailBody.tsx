@@ -224,6 +224,26 @@ export const TaskDetailBody = ({
           completed={currentTask.status === 'completed'}
           canMutate={sessionController.canEditNow}
           onUpdate={actions.updateTaskArtifact}
+          outcomeUnknown={sessionController.session.artifactOutcomeUnknown === true}
+          outcomeChecked={sessionController.session.artifactOutcomeChecked === true}
+          writeInFlight={Boolean(sessionController.session.artifactWriteId)}
+          guardStatus={sessionController.taskWriteGuard.status}
+          guardReason={sessionController.taskWriteGuard.reason}
+          otherOperation={Boolean(
+            sessionController.taskWriteGuard.operation &&
+            sessionController.taskWriteGuard.operation !== 'artifact'
+          )}
+          onOutcomeUnknown={sessionController.markArtifactOutcomeUnknown}
+          onCheckOutcome={sessionController.checkArtifactOutcome}
+          onConfirmOutcome={sessionController.confirmArtifactOutcome}
+          onDownload={(attachmentId) =>
+            actions.getTaskAttachmentData(
+              teamName,
+              currentTask.id,
+              attachmentId,
+              'application/octet-stream'
+            )
+          }
         />
         <TaskAttachments
           teamName={teamName}

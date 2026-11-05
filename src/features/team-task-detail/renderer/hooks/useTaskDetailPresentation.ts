@@ -143,7 +143,6 @@ export function useTaskDetailPresentation(input: TaskDetailPresentationInput): {
     return () => setResourceDemand(surfaceId, resourceIdentity, 'detail', false);
   }, [resourceIdentity, resourceVisible, setResourceDemand, surfaceId]);
   const getTaskAttachmentData = useStore((state) => state.getTaskAttachmentData);
-  const updateTaskFields = useStore((state) => state.updateTaskFields);
   const setTaskNeedsClarification = useStore((state) => state.setTaskNeedsClarification);
   const handoffIntentRef = useRef(false);
   const [rootElement, setRootElement] = useState<HTMLElement | null>(null);
@@ -329,7 +328,7 @@ export function useTaskDetailPresentation(input: TaskDetailPresentationInput): {
       },
       flushCommentRead: viewport.flush,
       getTaskAttachmentData,
-      updateTaskArtifact: (fields) => updateTaskFields(teamName, currentTask.id, fields),
+      updateTaskArtifact: sessionController.updateTaskArtifact,
       handleDependencyClick,
       handleReply: (author, text) =>
         sessionController.setReply({ taskId: currentTask.id, author, text }),

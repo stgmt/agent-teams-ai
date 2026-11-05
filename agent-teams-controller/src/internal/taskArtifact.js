@@ -157,7 +157,7 @@ function updateTaskFields(context, taskId, fields) {
   });
 }
 
-function verifyTask(context, task) {
+function verifyTask(context, task, includeData = false) {
   const requirement = task.artifactRequirement;
   if (!requirement?.required) return null;
   const proof = requirement.proof;
@@ -175,12 +175,14 @@ function verifyTask(context, task) {
         throw new Error('Artifact is not a regular file within the 20 MiB limit');
       const hash = crypto.createHash('sha256');
       const buffer = Buffer.allocUnsafe(1024 * 1024);
+      const chunks = includeData ? [] : null;
       let size = 0,
         bytes;
       while ((bytes = fs.readSync(fd, buffer, 0, buffer.length, null)) > 0) {
         size += bytes;
         if (size > MAX_ARTIFACT_BYTES) throw new Error('Artifact exceeds the 20 MiB limit');
         hash.update(buffer.subarray(0, bytes));
+        if (chunks) chunks.push(Buffer.from(buffer.subarray(0, bytes)));
       }
       const after = fs.fstatSync(fd);
       const current = fs.statSync(file);
@@ -200,7 +202,10 @@ function verifyTask(context, task) {
       const sha256 = hash.digest('hex');
       if (sha256 !== proof.sha256 || size !== proof.size)
         throw new Error('Artifact has changed; attach it again');
-      return { attachmentId: proof.attachmentId, sha256, size };
+      const checked = { attachmentId: proof.attachmentId, sha256, size };
+      return chunks
+        ? { proof: checked, base64Data: Buffer.concat(chunks, size).toString('base64') }
+        : checked;
     } finally {
       fs.closeSync(fd);
     }
@@ -213,6 +218,24 @@ function verifyTaskArtifact(context, taskId) {
   return withTeamBoardLock(context.paths, () =>
     verifyTask(context, taskStore.readTask(context.paths, taskId))
   );
+}
+
+function readTaskArtifactData(context, taskId, attachmentId) {
+  return withTeamBoardLock(context.paths, () => {
+    let task;
+    try {
+      task = taskStore.readTask(context.paths, taskId);
+    } catch (error) {
+      if (error.code === 'TASK_NOT_FOUND') return null;
+      throw error;
+    }
+    if (
+      !task.artifactRequirement?.required ||
+      task.artifactRequirement.proof?.attachmentId !== attachmentId
+    )
+      return null;
+    return verifyTask(context, task, true).base64Data;
+  });
 }
 
 function setTaskArtifactFile(context, taskId, file, actor) {
@@ -232,4 +255,10 @@ function setTaskArtifactFile(context, taskId, file, actor) {
   });
 }
 
-module.exports = { updateTaskFields, verifyTask, verifyTaskArtifact, setTaskArtifactFile };
+module.exports = {
+  updateTaskFields,
+  verifyTask,
+  verifyTaskArtifact,
+  readTaskArtifactData,
+  setTaskArtifactFile,
+};

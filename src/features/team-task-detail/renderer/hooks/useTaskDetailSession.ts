@@ -24,25 +24,52 @@ import {
 } from '../../core/domain';
 import { taskDraftStorage } from '../adapters/taskDraftStorage';
 
+import { useTaskWriteGuard } from './useTaskWriteGuard';
+
 import type {
   PendingAttachment,
   TaskDetailIdentity,
   TaskDetailReplyDraft,
   TaskDetailSavePart,
   TaskDetailSession,
+  TaskWriteOperation,
 } from '../../contracts';
-import type { CommentAttachmentPayload, TeamTaskWithKanban } from '@shared/types';
+import type { AppConnectionContext } from '@features/external-agent-connection/contracts';
+import type { CommentAttachmentPayload, TaskFieldUpdates, TeamTaskWithKanban } from '@shared/types';
 import type { InlineChip } from '@shared/types/inlineChip';
 
 const MAX_ATTACHMENTS = 5;
 const MAX_FILE_SIZE = 20 * 1024 * 1024;
-
 export interface TaskDetailSessionController {
   identity: TaskDetailIdentity;
   surfaceId: string;
   session: TaskDetailSession;
   isOwner: boolean;
   canEditNow: () => boolean;
+  markArtifactOutcomeUnknown: () => void;
+  checkArtifactOutcome: () => Promise<void>;
+  confirmArtifactOutcome: () => Promise<void>;
+  updateTaskArtifact: (fields: TaskFieldUpdates) => Promise<void>;
+  taskWriteGuard: {
+    status: 'loading' | 'ready' | 'unavailable';
+    reason: 'unsupported' | 'unavailable' | null;
+    activeId: string | null;
+    markerId: string | null;
+    operation: TaskWriteOperation | null;
+    unknown: boolean;
+    checked: boolean;
+    expectedContext: AppConnectionContext | null;
+  };
+  beginGuardedTaskWrite: (
+    operation: TaskWriteOperation
+  ) => Promise<{ token: string; expectedContext: AppConnectionContext }>;
+  settleGuardedTaskWrite: (
+    token: string,
+    operation: TaskWriteOperation,
+    outcome: 'confirmed' | 'unknown'
+  ) => Promise<boolean>;
+  checkGuardedTaskWriteOutcome: (operation: TaskWriteOperation) => Promise<void>;
+  confirmGuardedTaskWriteOutcome: (token: string, operation: TaskWriteOperation) => Promise<void>;
   isOriginCurrent: () => boolean;
   canSubmit: boolean;
   isDraftSaved: boolean;
@@ -235,6 +262,14 @@ export function useTaskDetailSession({
       currentTaskState.status !== 'deleted'
     );
   }, [identity, identityKey, isOriginCurrent, scope, session.ownerRevision, surfaceId]);
+
+  const taskWrite = useTaskWriteGuard({
+    identity,
+    identityKey,
+    session,
+    isOriginCurrent,
+    requireOwner,
+  });
 
   const persistDraft = useCallback(
     (value: { text?: string; commentChips?: InlineChip[] }) => {
@@ -524,6 +559,7 @@ export function useTaskDetailSession({
       session,
       isOwner,
       canEditNow: requireOwner,
+      ...taskWrite,
       isOriginCurrent,
       canSubmit:
         isOwner && !session.submitPending && session.pendingAttachmentPreparationIds.length === 0,
@@ -575,6 +611,7 @@ export function useTaskDetailSession({
       startEditSubject,
       submitComment,
       surfaceId,
+      taskWrite,
     ]
   );
 }

@@ -11,6 +11,7 @@ import type {
   NativeAttachmentDeliveryEnvelope,
   NativeMemberCapability,
 } from '@features/agent-attachments/contracts';
+import type { AppConnectionContext } from '@features/external-agent-connection/contracts';
 import type { GroupChatEnvelope } from '@features/team-group-chats/contracts';
 import type { TeamManagementCommittedChange } from '@features/team-prompt-management/contracts';
 
@@ -911,6 +912,7 @@ export interface TaskFieldUpdates {
   artifactRequired?: boolean;
   artifactExpectedFilename?: string;
   artifactFile?: TaskArtifactFile;
+  artifactExpectedContext?: AppConnectionContext;
 }
 
 export interface CreateTaskRequest {

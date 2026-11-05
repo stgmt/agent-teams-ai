@@ -11,6 +11,7 @@ import { MAX_TEXT_LENGTH } from '@shared/constants/teamLimits';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { createRequire } from 'node:module';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ElectronAPI } from '@shared/types/api';
@@ -385,6 +386,19 @@ const TEAM_HANDLER_KEYS = [
 ] as const;
 
 describe('ipc teams handlers', () => {
+  const artifactContext = {
+    appInstanceId: 'test-app',
+    dataRootFingerprint: 'a'.repeat(64),
+    connectionGeneration: 1,
+  };
+  const artifactAdmission = async <T>(
+    expected: typeof artifactContext,
+    operation: () => Promise<T>
+  ): Promise<T> => {
+    if (JSON.stringify(expected) !== JSON.stringify(artifactContext))
+      throw new Error('APP_CONTEXT_MISMATCH');
+    return operation();
+  };
   const handlers = new Map<string, (...args: unknown[]) => Promise<unknown>>();
   const ipcMain = {
     handle: vi.fn((channel: string, fn: (...args: unknown[]) => Promise<unknown>) => {
@@ -483,6 +497,7 @@ describe('ipc teams handlers', () => {
   };
 
   const service = {
+    readTaskArtifactData: vi.fn(() => resolved(null as string | null)),
     updateTaskFields: vi.fn(() => resolvedUndefined()),
     runConfigurationOperation: vi.fn(
       async <T>(teamName: string, operation: () => Promise<T>): Promise<T> => {
@@ -971,7 +986,9 @@ describe('ipc teams handlers', () => {
       launchIoGovernor,
       permanentDeletionLifecycle,
       undefined,
-      resolveInputDeclaration
+      resolveInputDeclaration,
+      undefined,
+      artifactAdmission
     );
     registerTeamHandlers(ipcMain as never);
   });
@@ -982,7 +999,12 @@ describe('ipc teams handlers', () => {
     vi.useRealTimers();
     setClaudeBasePathOverride(null);
     setAppDataBasePath(null);
-    fs.rmSync(attachmentTestRoot, { recursive: true, force: true });
+    fs.rmSync(attachmentTestRoot, {
+      recursive: true,
+      force: true,
+      maxRetries: 20,
+      retryDelay: 250,
+    });
   });
 
   it('registers all expected handlers', () => {
@@ -996,6 +1018,7 @@ describe('ipc teams handlers', () => {
       artifactRequired: true,
       artifactExpectedFilename: 'result.mp4',
       artifactFile: { filename: 'result.mp4', base64Data: 'YWJj' },
+      artifactExpectedContext: artifactContext,
       artifactRequirement: { required: false, proof: { sha256: 'forged' } },
     });
     expect(result).toEqual({ success: true, data: undefined });
@@ -1012,7 +1035,9 @@ describe('ipc teams handlers', () => {
     const result = await handler({}, 'my-team', 'task-1', 'completed');
     expect(result).toMatchObject({ success: false, error: 'Required task artifact has changed' });
     expect(service.updateTaskStatus).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(console.error).mock.calls[0]?.join(' ')).toContain('Required task artifact has changed');
+    expect(vi.mocked(console.error).mock.calls[0]?.join(' ')).toContain(
+      'Required task artifact has changed'
+    );
     vi.mocked(console.error).mockClear();
   });
 
@@ -1022,10 +1047,123 @@ describe('ipc teams handlers', () => {
       success: false,
       error: 'artifactRequired must be a boolean',
     });
-    expect(await handler({}, 'my-team', 'task-1', { artifactProjectPath: 'outputs/secret' })).toMatchObject({
+    expect(
+      await handler({}, 'my-team', 'task-1', { artifactProjectPath: 'outputs/secret' })
+    ).toMatchObject({
       success: false,
     });
     expect(service.updateTaskFields).not.toHaveBeenCalled();
+  });
+
+  it('rejects an artifact update bound to a stale root before it writes', async () => {
+    const handler = handlers.get(TEAM_UPDATE_TASK_FIELDS)!;
+    const result = await handler({}, 'my-team', 'task-1', {
+      artifactRequired: true,
+      artifactExpectedContext: { ...artifactContext, dataRootFingerprint: 'b'.repeat(64) },
+    });
+    expect(result).toMatchObject({ success: false, error: 'APP_CONTEXT_MISMATCH' });
+    expect(service.updateTaskFields).not.toHaveBeenCalled();
+    vi.mocked(console.error).mockClear();
+  });
+
+  it('returns the verified controller artifact before a colliding appData attachment', async () => {
+    const taskId = 'task-artifact';
+    const attachmentId = 'artifact-1';
+    const attachmentDir = path.join(getAppDataPath(), 'task-attachments', 'my-team', taskId);
+    fs.mkdirSync(attachmentDir, { recursive: true });
+    fs.writeFileSync(path.join(attachmentDir, `${attachmentId}--other.bin`), 'wrong bytes');
+    service.readTaskArtifactData.mockResolvedValueOnce(
+      Buffer.from('verified bytes').toString('base64')
+    );
+    const result = await handlers.get(TEAM_GET_TASK_ATTACHMENT)!(
+      {},
+      'my-team',
+      taskId,
+      attachmentId,
+      'application/octet-stream'
+    );
+    expect(result).toEqual({
+      success: true,
+      data: Buffer.from('verified bytes').toString('base64'),
+    });
+    expect(service.readTaskArtifactData).toHaveBeenCalledWith('my-team', taskId, attachmentId);
+  });
+
+  it('does not fall back to an appData collision when artifact verification fails', async () => {
+    const taskId = 'task-artifact';
+    const attachmentId = 'artifact-1';
+    const attachmentDir = path.join(getAppDataPath(), 'task-attachments', 'my-team', taskId);
+    fs.mkdirSync(attachmentDir, { recursive: true });
+    fs.writeFileSync(path.join(attachmentDir, `${attachmentId}--other.bin`), 'wrong bytes');
+    service.readTaskArtifactData.mockRejectedValueOnce(
+      new Error('Required task artifact has changed')
+    );
+    const result = await handlers.get(TEAM_GET_TASK_ATTACHMENT)!(
+      {},
+      'my-team',
+      taskId,
+      attachmentId,
+      'application/octet-stream'
+    );
+    expect(result).toMatchObject({ success: false, error: 'Required task artifact has changed' });
+    expect(vi.mocked(console.error).mock.calls[0]?.join(' ')).toContain(
+      'Required task artifact has changed'
+    );
+    vi.mocked(console.error).mockClear();
+  });
+
+  it('round-trips a real controller artifact through the user IPC handlers', async () => {
+    const teamDir = path.join(attachmentTestRoot, 'teams', 'my-team');
+    fs.mkdirSync(teamDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(teamDir, 'config.json'),
+      JSON.stringify({
+        name: 'my-team',
+        members: [{ name: 'worker', role: 'developer' }],
+      })
+    );
+    const { createController } = createRequire(import.meta.url)(
+      '../../../agent-teams-controller/src/index.js'
+    );
+    const board = createController({
+      teamName: 'my-team',
+      claudeDir: attachmentTestRoot,
+    }).taskBoard;
+    const task = board.createTask({ subject: 'Fixture artifact', owner: 'worker' });
+    const fields = {
+      artifactRequired: true,
+      artifactFile: { filename: 'result.txt', base64Data: 'YWJj' },
+    };
+    service.updateTaskFields.mockImplementationOnce(() => {
+      board.updateTaskFields(task.id, fields);
+      return Promise.resolve();
+    });
+    const updated = await handlers.get(TEAM_UPDATE_TASK_FIELDS)!({}, 'my-team', task.id, {
+      ...fields,
+      artifactExpectedContext: artifactContext,
+    });
+    expect(updated).toEqual({ success: true, data: undefined });
+    expect(service.updateTaskFields).toHaveBeenCalledWith('my-team', task.id, fields);
+    const proof = board.verifyTaskArtifact(task.id);
+    service.readTaskArtifactData.mockImplementationOnce(() =>
+      Promise.resolve(board.readTaskArtifactData(task.id, proof.attachmentId))
+    );
+    const read = handlers.get(TEAM_GET_TASK_ATTACHMENT)!;
+    expect(
+      await read({}, 'my-team', task.id, proof.attachmentId, 'application/octet-stream')
+    ).toEqual({ success: true, data: 'YWJj' });
+    const stored = board
+      .getTask(task.id)
+      .attachments.find((item: { id: string }) => item.id === proof.attachmentId);
+    fs.writeFileSync(stored.filePath, 'bad');
+    service.readTaskArtifactData.mockImplementationOnce(() =>
+      Promise.resolve(board.readTaskArtifactData(task.id, proof.attachmentId))
+    );
+    expect(
+      await read({}, 'my-team', task.id, proof.attachmentId, 'application/octet-stream')
+    ).toMatchObject({ success: false });
+    expect(vi.mocked(console.error).mock.calls[0]?.join(' ')).toContain('Artifact has changed');
+    vi.mocked(console.error).mockClear();
   });
 
   // The exact inverse of the HTTP diagnostics tripwire: the IPC path owns the

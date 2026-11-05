@@ -266,6 +266,7 @@ import { isTeamInternalControlMessageEnvelope } from '@shared/utils/teamInternal
 import { mkdirSync } from 'node:fs';
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
 import { AnnouncementsLifecycle } from './announcementsLifecycle';
+import { createIpcContextCallbacks } from './createIpcContextCallbacks';
 import {
   bindMemberWorkSyncProvisioningRuntime,
   createDeferredWorkSyncStallObservation,
