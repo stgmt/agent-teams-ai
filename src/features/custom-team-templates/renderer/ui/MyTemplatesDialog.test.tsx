@@ -281,6 +281,40 @@ describe('MyTemplatesDialog', () => {
     expect(duplicateTemplate).toHaveBeenCalledTimes(1);
   });
 
+  it('offers an explicit external-check decision for an incomplete library without retrying', async () => {
+    duplicateTemplate.mockResolvedValueOnce({ status: 'unresolvedWriteOutcome', templateId: '' });
+    await render();
+    await act(async () =>
+      host
+        .querySelector<HTMLButtonElement>('[data-testid="duplicate-template-template-1"]')
+        ?.click()
+    );
+    await act(async () => button('customTemplates.duplicate.action').click());
+    await act(async () => button('actions.cancel').click());
+    listTemplates.mockResolvedValue({
+      status: 'hasUnreadableRecords',
+      templates,
+      unreadableRecords: [{ templateId: 'broken', reason: 'unreadableRecord' }],
+    });
+    await act(async () => button('customTemplates.actions.recheck').click());
+    expect(host.textContent).toContain('customTemplates.states.partialSnapshotWarning');
+    expect(host.querySelector('[data-testid="template-library-unresolved"]')).not.toBeNull();
+    expect(duplicateTemplate).toHaveBeenCalledTimes(1);
+
+    await act(async () => button('customTemplates.actions.keepChangesBlocked').click());
+    expect(host.querySelector('[data-testid="template-library-unresolved"]')).not.toBeNull();
+    expect(
+      host.querySelector<HTMLButtonElement>('[data-testid="duplicate-template-template-1"]')
+        ?.disabled
+    ).toBe(true);
+    expect(host.textContent).not.toContain('customTemplates.actions.allowAfterExternalCheck');
+
+    await act(async () => button('customTemplates.actions.recheck').click());
+    await act(async () => button('customTemplates.actions.allowAfterExternalCheck').click());
+    expect(host.querySelector('[data-testid="template-library-unresolved"]')).toBeNull();
+    expect(duplicateTemplate).toHaveBeenCalledTimes(1);
+  });
+
   it('shows every pending operation in this profile and keeps newer markers after a read', async () => {
     await render();
     await act(async () => {

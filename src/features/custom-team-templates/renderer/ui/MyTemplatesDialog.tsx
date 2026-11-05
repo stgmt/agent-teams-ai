@@ -58,9 +58,10 @@ export const MyTemplatesDialog = ({ open, onClose }: MyTemplatesDialogProps): Re
   const pendingMutation = pendingMutations.length > 0;
   const mutationsDisabled = pendingMutation || !storageAvailable;
   const [checkingMutation, setCheckingMutation] = useState(false);
-  const [reviewedMutations, setReviewedMutations] = useState<
-    readonly PendingTemplateMutation[] | null
-  >(null);
+  const [reviewed, setReviewed] = useState<{
+    operations: readonly PendingTemplateMutation[];
+    completeness: 'complete' | 'partial';
+  } | null>(null);
   const [tab, setTab] = useState<TemplateLibraryTab>('my-templates');
 
   const [editingTemplate, setEditingTemplate] = useState<CustomTeamTemplateV1 | null>(null);
@@ -82,11 +83,12 @@ export const MyTemplatesDialog = ({ open, onClose }: MyTemplatesDialogProps): Re
     const pending = getPendingTemplateMutations();
     if (!pending.length) return;
     setCheckingMutation(true);
+    setReviewed(null);
     try {
-      const complete = await reload();
+      const completeness = await reload();
       // A read is only a snapshot. It never proves the earlier writer stopped.
-      if (complete && getPendingTemplateMutations() === pending) {
-        setReviewedMutations(pending);
+      if (completeness !== 'failed' && getPendingTemplateMutations() === pending) {
+        setReviewed({ operations: pending, completeness });
       }
     } finally {
       setCheckingMutation(false);
@@ -162,20 +164,31 @@ export const MyTemplatesDialog = ({ open, onClose }: MyTemplatesDialogProps): Re
             >
               {t('customTemplates.actions.recheck')}
             </Button>
-            {reviewedMutations === pendingMutations ? (
+            {reviewed?.operations === pendingMutations ? (
               <div className="space-y-2">
                 <p>{t('customTemplates.states.snapshotWarning')}</p>
+                {reviewed.completeness === 'partial' ? (
+                  <p role="alert">{t('customTemplates.states.partialSnapshotWarning')}</p>
+                ) : null}
                 <Button
                   type="button"
                   variant="outline"
                   onClick={() => {
-                    if (getPendingTemplateMutations() === reviewedMutations) {
-                      for (const operation of reviewedMutations) finishTemplateMutation(operation);
-                      setReviewedMutations(null);
+                    if (getPendingTemplateMutations() === reviewed.operations) {
+                      for (const operation of reviewed.operations)
+                        finishTemplateMutation(operation);
+                      setReviewed(null);
                     }
                   }}
                 >
-                  {t('customTemplates.actions.allowNewChanges')}
+                  {t(
+                    reviewed.completeness === 'partial'
+                      ? 'customTemplates.actions.allowAfterExternalCheck'
+                      : 'customTemplates.actions.allowNewChanges'
+                  )}
+                </Button>
+                <Button type="button" variant="outline" onClick={() => setReviewed(null)}>
+                  {t('customTemplates.actions.keepChangesBlocked')}
                 </Button>
               </div>
             ) : null}

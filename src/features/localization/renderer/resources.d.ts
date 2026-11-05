@@ -4007,6 +4007,8 @@ export default interface Resources {
         "edit": "Edit",
         "export": "Export",
         "allowNewChanges": "I understand; allow new changes",
+        "allowAfterExternalCheck": "I checked externally; allow new changes",
+        "keepChangesBlocked": "Keep changes blocked",
         "myTemplates": "My Templates",
         "recheck": "Re-check outcome",
         "removeMember": "Remove member",
@@ -4220,9 +4222,10 @@ export default interface Resources {
         "unresolvedImportBody": "The import could not be confirmed, so nothing was retried automatically. Check My Templates before trying again — the template may already have been imported.",
         "unresolvedMutationBody": "The change could not be confirmed, so nothing was retried automatically. Check My Templates before trying again — the change may already have been applied.",
         "pendingProfileBody": "These changes in this browser or app profile may still be running or have an unconfirmed outcome. Nothing was retried automatically. Other profiles have separate records.",
-        "pendingSaveHelp": "Close this dialog, open Templates, and select My Templates. Select Re-check outcome, then choose I understand; allow new changes.",
+        "pendingSaveHelp": "Close this dialog, open Templates, and select My Templates. Select Re-check outcome, then choose whether to allow new changes. If the list is incomplete, check outside the list first.",
         "mutationStorageUnavailable": "New changes are blocked because this profile cannot store the recovery record. Enable local storage and reopen the library.",
         "snapshotWarning": "This list is a snapshot. The previous change could still complete later. Continue only if you accept this uncertainty.",
+        "partialSnapshotWarning": "The list is incomplete and the outcome is unknown. Confirm only after checking outside this list, or keep changes blocked.",
         "unresolvedTitle": "Outcome not confirmed"
       },
       "warnings": {
