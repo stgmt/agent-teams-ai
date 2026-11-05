@@ -55,6 +55,7 @@ import type {
   TeamProvisioningProgress,
   TeamRuntimeState,
   TeamSummary,
+  TeamTask,
   TeamViewSnapshot,
   ToolApprovalSettings,
 } from '@shared/types/team';
@@ -402,6 +403,30 @@ describe('TeamProvisioning API binders', () => {
         newTeamName: string
       ): Promise<void> {
         this.renamedDraft = `${oldTeamName}->${newTeamName}-${this.suffix}`;
+        return Promise.resolve();
+      },
+      getTasks(): Promise<TeamTask[]> {
+        return Promise.resolve([]);
+      },
+      getTask(): Promise<TeamTask | null> {
+        return Promise.resolve(null);
+      },
+      createTask(): Promise<TeamTask> {
+        return Promise.resolve({ id: '1', subject: 'bound task', status: 'pending' });
+      },
+      updateTaskStatus(): Promise<void> {
+        return Promise.resolve();
+      },
+      updateTaskOwner(): Promise<void> {
+        return Promise.resolve();
+      },
+      updateTaskFields(): Promise<void> {
+        return Promise.resolve();
+      },
+      addTaskRelationship(): Promise<void> {
+        return Promise.resolve();
+      },
+      removeTaskRelationship(): Promise<void> {
         return Promise.resolve();
       },
     };

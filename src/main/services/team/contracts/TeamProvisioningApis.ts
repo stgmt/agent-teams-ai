@@ -11,6 +11,7 @@ import type { TeamProvisioningStatusApi as FeatureTeamProvisioningStatusApi } fr
 import type {
   AgentActionMode,
   AttachmentPayload,
+  CreateTaskRequest,
   InboxMessage,
   LeadActivitySnapshot,
   LeadContextUsageSnapshot,
@@ -18,6 +19,7 @@ import type {
   OpenCodeRuntimeDeliveryStatus,
   OpenCodeRuntimeDeliveryUserVisibleImpact,
   RetryFailedOpenCodeSecondaryLanesResult,
+  TaskFieldUpdates,
   TaskRef,
   TeamAgentRuntimeSnapshot,
   TeamClaudeLogsQuery,
@@ -34,6 +36,8 @@ import type {
   TeamProvisioningProgress,
   TeamRuntimeState,
   TeamSummary,
+  TeamTask,
+  TeamTaskStatus,
   TeamViewSnapshot,
   ToolApprovalSettings,
 } from '@shared/types/team';
@@ -126,6 +130,8 @@ export interface TeamHttpRuntimeApi {
   getAliveTeams(): string[];
 }
 
+export type TeamHttpTaskRelationshipType = 'blockedBy' | 'blocks' | 'related';
+
 export interface TeamHttpDataApi {
   listTeams(): Promise<TeamSummary[]>;
   getTeamData(teamName: string): Promise<TeamViewSnapshot>;
@@ -135,6 +141,35 @@ export interface TeamHttpDataApi {
     oldTeamName: string,
     newTeamName: string,
     afterRename?: () => Promise<void>
+  ): Promise<void>;
+  /**
+   * Task surface of the HTTP sidecar. The MCP child process has no access to
+   * the registry token or the task files, so it reads and writes tasks through
+   * these methods; each one keeps the service's registry/file routing
+   * (`specProject` + `specSlug` in the team config), never a second source.
+   */
+  getTasks(teamName: string): Promise<TeamTask[]>;
+  getTask(teamName: string, taskId: string): Promise<TeamTask | null>;
+  createTask(teamName: string, request: CreateTaskRequest): Promise<TeamTask>;
+  updateTaskStatus(
+    teamName: string,
+    taskId: string,
+    status: TeamTaskStatus,
+    actor?: string
+  ): Promise<void>;
+  updateTaskOwner(teamName: string, taskId: string, owner: string | null): Promise<void>;
+  updateTaskFields(teamName: string, taskId: string, fields: TaskFieldUpdates): Promise<void>;
+  addTaskRelationship(
+    teamName: string,
+    taskId: string,
+    targetId: string,
+    type: TeamHttpTaskRelationshipType
+  ): Promise<void>;
+  removeTaskRelationship(
+    teamName: string,
+    taskId: string,
+    targetId: string,
+    type: TeamHttpTaskRelationshipType
   ): Promise<void>;
 }
 
@@ -552,6 +587,14 @@ export function bindTeamHttpDataApi(source: TeamHttpDataApi): TeamHttpDataApi {
     getSavedRequest: source.getSavedRequest.bind(source),
     createTeamConfig: source.createTeamConfig.bind(source),
     renameDraftTeam: source.renameDraftTeam.bind(source),
+    getTasks: source.getTasks.bind(source),
+    getTask: source.getTask.bind(source),
+    createTask: source.createTask.bind(source),
+    updateTaskStatus: source.updateTaskStatus.bind(source),
+    updateTaskOwner: source.updateTaskOwner.bind(source),
+    updateTaskFields: source.updateTaskFields.bind(source),
+    addTaskRelationship: source.addTaskRelationship.bind(source),
+    removeTaskRelationship: source.removeTaskRelationship.bind(source),
   };
 }
 

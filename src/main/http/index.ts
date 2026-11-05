@@ -23,6 +23,7 @@ import {
 } from '@features/workspace-trust/main';
 import { createLogger } from '@shared/utils/logger';
 
+import { registerTeamTaskRoutes } from './teams/teamTaskRoutes';
 import { registerConfigRoutes } from './config';
 import { registerEventRoutes } from './events';
 import { registerNotificationRoutes } from './notifications';
@@ -93,6 +94,7 @@ export function registerHttpRoutes(
   if (services.teamDataApi || services.teamApis) {
     registerTeamRoutes(app, services);
   }
+  registerTeamTaskRoutes(app, services);
   registerNotificationRoutes(app);
   registerConfigRoutes(app, services.externalAgentConnection?.updateRoot);
   registerValidationRoutes(app);

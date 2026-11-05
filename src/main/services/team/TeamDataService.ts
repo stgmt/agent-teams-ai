@@ -939,6 +939,16 @@ export class TeamDataService {
     };
   }
 
+  /**
+   * Canonical task list of the team. Same routing the renderer snapshot uses:
+   * the spec registry when the team config carries a `specProject`/`specSlug`
+   * binding, the local task files otherwise. HTTP callers (the MCP child) have
+   * no other way to read the board.
+   */
+  async getTasks(teamName: string): Promise<TeamTask[]> {
+    return this.readTeamTasks(teamName);
+  }
+
   async getTask(teamName: string, taskId: string): Promise<TeamTaskWithKanban | null> {
     const registryTask = await this.registryTaskProvider.getTask(teamName, taskId);
     let task: TeamTask | null;
