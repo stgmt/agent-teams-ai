@@ -649,8 +649,8 @@ export function useTaskWriteGuard({
       )
         throw new Error('Task outcome changed during the check');
       if (outcome?.resolved) {
-        // The exact attempt has a durable explicit or confirmed receipt. No
-        // marker is deleted here; future writes still acquire atomically.
+        // The exact attempt has a durable receipt. No marker is deleted here;
+        // future writes still acquire atomically.
         latest.updateTaskDetailSession(identity, {
           artifactOutcomeUnknown: false,
           artifactOutcomeChecked: false,

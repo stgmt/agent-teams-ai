@@ -395,8 +395,9 @@ describe('VerifiedActionPanel', () => {
       )
     );
     mocks.list.mockClear();
+    guard.readGuardedTaskDecisionIds.mockResolvedValueOnce([action.id]);
     await act(async () => button(host, 'verifiedAction.guardCheck').click());
-    expect(mocks.list).not.toHaveBeenCalled();
+    expect(mocks.list).toHaveBeenCalledOnce();
     expect(guard.markGuardedDecisionFenceSent).not.toHaveBeenCalled();
     expect(mocks.fenceDecision).not.toHaveBeenCalled();
     expect(mocks.decide).not.toHaveBeenCalled();
@@ -404,6 +405,75 @@ describe('VerifiedActionPanel', () => {
     expect(host.textContent).not.toContain('verifiedAction.question');
     await act(async () => root.unmount());
   });
+
+  it.each([false, true])(
+    'keeps the disabled panel reachable if reading a resolved result fails (stale question: %s)',
+    async (staleQuestion) => {
+      vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+      const stale = {
+        ...guard,
+        taskWriteGuard: {
+          ...guard.taskWriteGuard,
+          markerId: 'decision-token',
+          operation: 'manifest' as const,
+          unknown: true,
+        },
+      };
+      let rejectRead!: (reason: Error) => void;
+      mocks.list
+        .mockReset()
+        .mockResolvedValueOnce(
+          staleQuestion ? [{ ...action, status: 'question', attempts: 1 }] : []
+        )
+        .mockImplementationOnce(
+          () =>
+            new Promise((_resolve, reject) => {
+              rejectRead = reject;
+            })
+        );
+      guard.checkGuardedTaskWriteOutcome.mockResolvedValueOnce({
+        expectedContext: expected,
+        expectedRootFingerprint,
+        manifest: { markerId: 'decision-token', decision: null, resolved: true },
+      });
+      const host = document.createElement('div');
+      document.body.append(host);
+      const root = createRoot(host);
+      const render = (value: typeof guard | typeof stale) =>
+        root.render(
+          <VerifiedActionPanel
+            contextId="local"
+            teamName="team"
+            taskId="task"
+            enabled={false}
+            canMutate={() => true}
+            guard={value}
+          />
+        );
+      await act(async () => render(stale));
+      await act(async () => {
+        button(host, 'verifiedAction.guardCheck').click();
+      });
+      expect(mocks.list).toHaveBeenCalledTimes(2);
+      await act(async () => render(guard));
+      expect(button(host, 'verifiedAction.refresh').disabled).toBe(true);
+      await act(async () => {
+        rejectRead(new Error('read failed'));
+      });
+      expect(host.textContent).toContain('verifiedAction.refreshFailed');
+      expect(host.textContent).not.toContain('verifiedAction.question');
+      expect(button(host, 'verifiedAction.refresh').disabled).toBe(false);
+      mocks.list.mockResolvedValueOnce([
+        { ...action, status: 'completed', completion: 'user_attested' },
+      ]);
+      await act(async () => button(host, 'verifiedAction.refresh').click());
+      expect(host.textContent).toContain('verifiedAction.attested');
+      expect(mocks.fenceDecision).not.toHaveBeenCalled();
+      expect(mocks.decide).not.toHaveBeenCalled();
+      expect(mocks.prepare).not.toHaveBeenCalled();
+      await act(async () => root.unmount());
+    }
+  );
 
   it('uses the freshly synchronized decision during this check rather than a stale render', async () => {
     vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);

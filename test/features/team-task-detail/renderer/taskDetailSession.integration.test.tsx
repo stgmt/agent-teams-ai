@@ -293,6 +293,66 @@ describe('task session surface and origin integration', () => {
     }
   );
 
+  it.each([
+    { operation: 'artifact' as const, newGeneration: false },
+    { operation: 'artifact' as const, newGeneration: true },
+    { operation: 'manifest' as const, newGeneration: false },
+    { operation: 'manifest' as const, newGeneration: true },
+  ])(
+    'adopts only the matching pre-dispatch $operation cancellation (new generation: $newGeneration)',
+    async ({ operation, newGeneration }) => {
+      const guardIdentity = { ...identity, dataRootFingerprint: guardContext.dataRootFingerprint };
+      const marker = { version: 1 as const, attemptId: 'cancelled-attempt', operation };
+      await taskWriteGuardStorage.acquire(guardIdentity, marker);
+      let controller!: TaskDetailSessionController;
+      let surface!: ReturnType<typeof createRoot>;
+      await act(async () => {
+        surface = mount('other-window', (value) => {
+          controller = value;
+        });
+      });
+      await waitForGuard();
+      expect(controller.taskWriteGuard).toMatchObject({
+        markerId: marker.attemptId,
+        unknown: true,
+      });
+      await taskWriteGuardStorage.release(guardIdentity, marker);
+      expect(await taskWriteGuardStorage.readDecision(guardIdentity, marker)).toEqual({
+        explicitlyResolved: false,
+        cancelled: true,
+        marker: null,
+      });
+      apiMock.externalAgentConnection.getConnectionInfo.mockResolvedValue({
+        context: { ...guardContext, connectionGeneration: newGeneration ? 2 : 1 },
+        taskWriteRootFingerprint: guardIdentity.dataRootFingerprint,
+      });
+      apiMock.teams.getTask.mockResolvedValue({ ...task });
+      const write = vi.fn();
+      useStore.setState({ updateTaskFields: write });
+      let binding!: Awaited<
+        ReturnType<TaskDetailSessionController['checkGuardedTaskWriteOutcome']>
+      >;
+      await act(async () => {
+        binding = await controller.checkGuardedTaskWriteOutcome(operation);
+      });
+      expect(binding.resolution).toBe('cancelled');
+      expect(controller.taskWriteGuard).toMatchObject({ markerId: null, unknown: false });
+      expect(write).not.toHaveBeenCalled();
+      await act(async () => {
+        surface.unmount();
+      });
+      roots.splice(roots.indexOf(surface), 1);
+      await act(async () => {
+        mount('reopened-window', (value) => {
+          controller = value;
+        });
+      });
+      await waitForGuard();
+      expect(controller.taskWriteGuard.unknown).toBe(false);
+      expect(write).not.toHaveBeenCalled();
+    }
+  );
+
   it.each(['artifact', 'manifest'] as const)(
     'adopts a confirmed %s receipt from another window without asking again',
     async (operation) => {
@@ -613,7 +673,7 @@ describe('task session surface and origin integration', () => {
     spy.mockRestore();
   });
 
-  it.each(['explicit', 'confirmed'] as const)(
+  it.each(['explicit', 'confirmed', 'cancelled'] as const)(
     'cannot start a new action when another marker appears after the %s snapshot',
     async (resolution) => {
       const guardIdentity = { ...identity, dataRootFingerprint: guardContext.dataRootFingerprint };
@@ -627,9 +687,10 @@ describe('task session surface and origin integration', () => {
         version: 1 as const,
         attemptId: 'resolved-attempt',
         operation: 'manifest' as const,
-        decision,
+        ...(resolution === 'cancelled' ? {} : { decision }),
       };
-      await taskWriteGuardStorage.beginDecision(guardIdentity, null, marker);
+      if (resolution === 'cancelled') await taskWriteGuardStorage.acquire(guardIdentity, marker);
+      else await taskWriteGuardStorage.beginDecision(guardIdentity, null, marker);
       let controller!: TaskDetailSessionController;
       await act(async () => {
         mount('other-window', (value) => {
@@ -639,6 +700,8 @@ describe('task session surface and origin integration', () => {
       await waitForGuard();
       if (resolution === 'explicit')
         await taskWriteGuardStorage.release(guardIdentity, marker, { explicitDecision: true });
+      else if (resolution === 'cancelled')
+        await taskWriteGuardStorage.release(guardIdentity, marker);
       else await taskWriteGuardStorage.confirm(guardIdentity, marker);
       apiMock.teams.getTask.mockResolvedValue({ ...task });
       let releaseRead!: () => void;
@@ -782,7 +845,16 @@ describe('task session surface and origin integration', () => {
           outcomes: [],
           chosenActions: [decision],
         });
-      } else if (changed !== 'missing') {
+      } else if (changed === 'missing') {
+        // Missing without a receipt is not evidence of a pre-dispatch cancellation.
+        await set(taskWriteGuardKey(guardIdentity), {
+          version: 2,
+          marker: null,
+          decisions: [],
+          outcomes: [],
+          chosenActions: [decision],
+        });
+      } else {
         await taskWriteGuardStorage.acquire(guardIdentity, replacement);
       }
       apiMock.teams.getTask.mockResolvedValue({ ...task });
@@ -931,11 +1003,8 @@ describe('task session surface and origin integration', () => {
     });
     const token = await makeUnknown(controller);
     const guardIdentity = { ...identity, dataRootFingerprint: guardContext.dataRootFingerprint };
-    await taskWriteGuardStorage.release(guardIdentity, {
-      version: 1,
-      attemptId: token,
-      operation: 'artifact',
-    });
+    // Simulate an absent marker with no cancellation or outcome receipt.
+    await del(taskWriteGuardKey(guardIdentity));
     apiMock.teams.getTask.mockResolvedValueOnce({ ...task });
     await act(async () => {
       await controller.checkGuardedTaskWriteOutcome('artifact');

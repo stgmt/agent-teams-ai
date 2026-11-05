@@ -74,6 +74,7 @@ describe('durable task write guard', () => {
     expect(await store.read(identity)).toEqual(manifest);
     expect(await createTaskWriteGuardStorage().readDecision(identity, artifact)).toEqual({
       explicitlyResolved: true,
+      cancelled: true,
       marker: manifest,
     });
     expect(await store.readDecision(identity, { ...artifact, operation: 'manifest' })).toEqual({
@@ -154,6 +155,19 @@ describe('durable task write guard', () => {
     await store.acquire(identity, artifact);
     await store.release(identity, artifact);
     expect(await store.readDecision(identity, artifact)).toEqual({
+      explicitlyResolved: false,
+      cancelled: true,
+      marker: null,
+    });
+    expect(await store.readDecision(otherRoot, artifact)).toEqual({
+      explicitlyResolved: false,
+      marker: null,
+    });
+    expect(await store.readDecision(identity, { ...artifact, attemptId: 'other' })).toEqual({
+      explicitlyResolved: false,
+      marker: null,
+    });
+    expect(await store.readDecision(identity, { ...artifact, operation: 'manifest' })).toEqual({
       explicitlyResolved: false,
       marker: null,
     });

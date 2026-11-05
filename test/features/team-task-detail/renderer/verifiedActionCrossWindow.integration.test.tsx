@@ -116,15 +116,17 @@ afterEach(async () => {
 });
 
 it.each([
-  { newGeneration: false, explicitlyResolved: false, confirmed: false },
-  { newGeneration: true, explicitlyResolved: false, confirmed: false },
-  { newGeneration: false, explicitlyResolved: true, confirmed: false },
-  { newGeneration: true, explicitlyResolved: true, confirmed: false },
-  { newGeneration: false, explicitlyResolved: false, confirmed: true },
-  { newGeneration: true, explicitlyResolved: false, confirmed: true },
+  { newGeneration: false, explicitlyResolved: false, confirmed: false, enabled: true },
+  { newGeneration: true, explicitlyResolved: false, confirmed: false, enabled: true },
+  { newGeneration: false, explicitlyResolved: true, confirmed: false, enabled: true },
+  { newGeneration: true, explicitlyResolved: true, confirmed: false, enabled: true },
+  { newGeneration: false, explicitlyResolved: false, confirmed: true, enabled: true },
+  { newGeneration: true, explicitlyResolved: false, confirmed: true, enabled: true },
+  { newGeneration: false, explicitlyResolved: false, confirmed: true, enabled: false },
+  { newGeneration: true, explicitlyResolved: false, confirmed: true, enabled: false },
 ])(
-  'checks another window with real IPC (new generation: $newGeneration, explicit: $explicitlyResolved, confirmed: $confirmed)',
-  async ({ newGeneration, explicitlyResolved, confirmed }) => {
+  'checks another window with real IPC (new generation: $newGeneration, explicit: $explicitlyResolved, confirmed: $confirmed, enabled: $enabled)',
+  async ({ newGeneration, explicitlyResolved, confirmed, enabled }) => {
     vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
     const temp = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'verified-cross-window-'));
     tempRoots.push(temp);
@@ -247,7 +249,7 @@ it.each([
           contextId="local"
           teamName={identity.teamName}
           taskId={identity.taskId}
-          enabled
+          enabled={enabled}
           canMutate={() => true}
           guard={value}
         />
@@ -326,6 +328,9 @@ it.each([
         decisionReceipt: { id: decisionId, decision: 'completed' },
       });
       expect(host.textContent).not.toContain('verifiedAction.question');
+      await vi.waitFor(() => expect(host.textContent).toContain('verifiedAction.attested'));
+      expect(host.querySelector('section')).not.toBeNull();
+      if (!enabled) expect(host.textContent).not.toContain('verifiedAction.prepare');
     } else if (explicitlyResolved) {
       expect(mocks.verifiedAction.fenceDecision).not.toHaveBeenCalled();
       expect(result).toMatchObject({ status: 'question', attempts: 1 });

@@ -125,8 +125,8 @@ export function useTaskWriteFence({
       decision: TaskWriteDecision | null,
       revision: number
     ) => {
-      // The marker and its explicit-resolution receipt must be one durable
-      // snapshot. A missing marker by itself never proves that the user acted.
+      // Read the marker and its receipts in one durable snapshot. A missing
+      // marker alone does not prove success, cancellation, or a user decision.
       const snapshot = await withDeadline(
         taskWriteGuardStorage.readDecision(
           { ...identity, dataRootFingerprint: rootFingerprint },
@@ -134,14 +134,20 @@ export function useTaskWriteFence({
         )
       );
       const stored = snapshot.marker;
+      const resolution = snapshot.confirmed
+        ? 'confirmed'
+        : snapshot.cancelled
+          ? 'cancelled'
+          : snapshot.explicitlyResolved
+            ? 'explicit'
+            : undefined;
       if (
         stored
-          ? snapshot.explicitlyResolved ||
-            snapshot.confirmed ||
+          ? resolution ||
             stored.attemptId !== token ||
             stored.operation !== operation ||
             !sameDecision(stored.decision, decision)
-          : !snapshot.explicitlyResolved && !snapshot.confirmed && operation !== 'artifact'
+          : !resolution && operation !== 'artifact'
       )
         throw new Error('Task outcome changed during the check');
       const state = useStore.getState();
@@ -158,13 +164,13 @@ export function useTaskWriteFence({
       )
         throw new Error('Task outcome changed during the check');
       if (!stored) {
-        if (snapshot.confirmed || snapshot.explicitlyResolved)
+        if (resolution)
           return {
             markerId: token,
             decision: null,
-            resolved: true as const,
-            resolution: snapshot.confirmed ? ('confirmed' as const) : ('explicit' as const),
-          };
+            resolved: true,
+            resolution,
+          } as const;
         // A missing artifact marker without a receipt remains unknown; the
         // user may still inspect and explicitly confirm it as before.
         return { markerId: token, decision: null };

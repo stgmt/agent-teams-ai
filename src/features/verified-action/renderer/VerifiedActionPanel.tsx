@@ -227,12 +227,9 @@ export const VerifiedActionPanel = ({
       if (!binding.manifest || binding.manifest.markerId !== guardState.markerId)
         throw new Error('Task outcome changed during the check');
       if (binding.manifest.resolved) {
-        // Another window has recorded this user's explicit resolution. Do not
-        // dispatch another fence or repeat the action from the stale view.
+        // A stale question must not reappear if the read of its outcome fails.
         setActions(null);
-        setUncertain(false);
-        setError(null);
-        return;
+        setUncertain(true);
       }
       const [actions, decided] = await Promise.all([
         withDeadline(
@@ -247,6 +244,14 @@ export const VerifiedActionPanel = ({
         readGuardedTaskDecisionIds(),
       ]);
       if (!isCurrent()) return;
+      if (binding.manifest.resolved) {
+        // Show the durable outcome without dispatching another action or fence.
+        setActions(actions);
+        setDecidedActionIds(decided);
+        setUncertain(false);
+        setError(null);
+        return;
+      }
       let nextActions = actions;
       const decision = binding.manifest.decision;
       if (decision) {
@@ -343,7 +348,7 @@ export const VerifiedActionPanel = ({
   if (
     contextId !== 'local' ||
     !bridge ||
-    (!enabled && (!actions || actions.length === 0) && !hasManifestMarker)
+    (!enabled && (!actions || actions.length === 0) && !hasManifestMarker && !busy && !error)
   )
     return null;
   const pending = actions?.some((item) =>

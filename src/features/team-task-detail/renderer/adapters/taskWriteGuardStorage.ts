@@ -175,6 +175,7 @@ export function createTaskWriteGuardStorage(
     ): Promise<{
       explicitlyResolved: boolean;
       confirmed?: true;
+      cancelled?: true;
       marker: TaskWriteGuardMarker | null;
     }> {
       const state = parseState(await backend.get(taskWriteGuardKey(identity)));
@@ -189,6 +190,14 @@ export function createTaskWriteGuardStorage(
             entry.kind === 'confirmed'
         )
           ? { confirmed: true as const }
+          : {}),
+        ...(state.outcomes.some(
+          (entry) =>
+            entry.attemptId === marker.attemptId &&
+            entry.operation === marker.operation &&
+            entry.kind === 'cancelled'
+        )
+          ? { cancelled: true as const }
           : {}),
         marker: state.marker,
       };
