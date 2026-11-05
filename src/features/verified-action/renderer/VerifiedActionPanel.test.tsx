@@ -223,6 +223,109 @@ describe('VerifiedActionPanel', () => {
     await act(async () => root.unmount());
   });
 
+  it('sends the claimed recovery fence once even when the artifact changes before dispatch', async () => {
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+    const decisionId = '11111111-1111-4111-8111-111111111111';
+    const question = { ...action, status: 'question' as const, attempts: 1 };
+    const pending = {
+      ...guard,
+      taskWriteGuard: {
+        ...guard.taskWriteGuard,
+        markerId: 'decision-token',
+        operation: 'manifest' as const,
+        unknown: true,
+        decision: {
+          actionId: action.id,
+          decisionId,
+          decision: 'retry_once' as const,
+          stage: 'decision' as const,
+        },
+      },
+    };
+    let finishClaim!: (claimed: boolean) => void;
+    guard.markGuardedDecisionFenceSent.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishClaim = resolve;
+        })
+    );
+    mocks.list.mockReset().mockResolvedValue([question]);
+    mocks.fenceDecision
+      .mockReset()
+      .mockResolvedValue({
+        ...question,
+        status: 'manual',
+        decisionReceipt: { id: decisionId, decision: 'retry_once' },
+      });
+    const host = document.createElement('div');
+    document.body.append(host);
+    const root = createRoot(host);
+    const render = (artifactRevision: string) =>
+      root.render(
+        <VerifiedActionPanel
+          contextId="local"
+          teamName="team"
+          taskId="task"
+          enabled
+          artifactRevision={artifactRevision}
+          canMutate={() => true}
+          guard={pending}
+        />
+      );
+    await act(async () => render('original'));
+    await act(async () => button(host, 'verifiedAction.guardCheck').click());
+    expect(guard.markGuardedDecisionFenceSent).toHaveBeenCalledOnce();
+    await act(async () => render('replacement'));
+    await act(async () => finishClaim(true));
+    expect(mocks.fenceDecision).toHaveBeenCalledExactlyOnceWith(
+      'local',
+      expected,
+      expectedRootFingerprint,
+      action.id,
+      'retry_once',
+      decisionId
+    );
+    expect(mocks.decide).not.toHaveBeenCalled();
+    expect(mocks.prepare).not.toHaveBeenCalled();
+    expect(mocks.approve).not.toHaveBeenCalled();
+    expect(guard.confirmGuardedTaskWriteOutcome).not.toHaveBeenCalled();
+    mocks.list.mockResolvedValue([
+      {
+        ...question,
+        status: 'manual',
+        decisionReceipt: { id: decisionId, decision: 'retry_once' },
+      },
+    ]);
+    const recovered = {
+      ...pending,
+      taskWriteGuard: {
+        ...pending.taskWriteGuard,
+        decision: { ...pending.taskWriteGuard.decision, stage: 'fenceSent' as const },
+      },
+    };
+    await act(async () =>
+      root.render(
+        <VerifiedActionPanel
+          contextId="local"
+          teamName="team"
+          taskId="task"
+          enabled
+          artifactRevision="replacement"
+          canMutate={() => true}
+          guard={recovered}
+        />
+      )
+    );
+    await act(async () => button(host, 'verifiedAction.guardCheck').click());
+    expect(guard.confirmGuardedTaskWriteOutcome).toHaveBeenCalledExactlyOnceWith(
+      'decision-token',
+      'manifest'
+    );
+    expect(mocks.fenceDecision).toHaveBeenCalledOnce();
+    expect(mocks.decide).not.toHaveBeenCalled();
+    await act(async () => root.unmount());
+  });
+
   it('ignores a late confirmed binding after switching to another physical root', async () => {
     vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
     const pending = {

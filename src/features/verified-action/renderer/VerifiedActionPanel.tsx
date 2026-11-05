@@ -246,7 +246,9 @@ export const VerifiedActionPanel = ({
           (target.status === 'manual' || target.status === 'completed');
         if (!matches() && target?.status === 'question' && decision.stage === 'decision') {
           if (await guard.markGuardedDecisionFenceSent(guardState.markerId)) {
-            if (!isCurrent()) return;
+            // The claim is durable and permits one fence dispatch. A changed
+            // view must not strand it before dispatch; IPC still checks the
+            // captured context and physical root before touching the action.
             target = await withDeadline(
               bridge.fenceDecision(
                 contextId,

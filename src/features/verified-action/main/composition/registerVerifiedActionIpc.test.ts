@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   VERIFIED_ACTION_APPROVE,
+  VERIFIED_ACTION_FENCE_DECISION,
   VERIFIED_ACTION_LIST,
   VERIFIED_ACTION_PREPARE,
 } from '../../contracts';
@@ -93,6 +94,70 @@ describe('verified-action IPC context boundary', () => {
     expect(() => list({}, 'local', expected, 'c'.repeat(64), 'team', 'task')).toThrow(
       /root identity changed/
     );
+  });
+
+  it('does not apply a claimed fence to a switched root or stale generation', async () => {
+    const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'verified-action-ipc-'));
+    roots.push(root);
+    paths.appData = root;
+    paths.claude = path.join(root, 'claude');
+    const bound = new BoundControlContext('test-app', paths.claude);
+    const expected = bound.snapshot();
+    let activeRoot = 'b'.repeat(64);
+    const previousRoot = activeRoot;
+    const actionId = 'a'.repeat(64);
+    const decisionId = '11111111-1111-4111-8111-111111111111';
+    const store = new FileVerifiedActionStore(path.join(root, 'verified-actions'));
+    await store.transaction(async (tx) =>
+      tx.write([
+        {
+          id: actionId,
+          scope: previousRoot,
+          teamName: 'team',
+          taskId: 'task',
+          proof: { attachmentId: 'report', sha256: 'c'.repeat(64), size: 23 },
+          status: 'question',
+          attempts: 1,
+          createdAt: 'now',
+          updatedAt: 'now',
+        },
+      ])
+    );
+    const handlers = new Map<string, (...args: unknown[]) => unknown>();
+    const ipc = {
+      handle: (channel: string, handler: (...args: unknown[]) => unknown) =>
+        handlers.set(channel, handler),
+    } as unknown as IpcMain;
+    registerVerifiedActionIpc(ipc, {
+      getActiveContextId: () => 'local',
+      isLocal: () => true,
+      getRootFingerprint: () => activeRoot,
+      withAdmission: async (context, _root, operation) => {
+        const release = bound.admit(context);
+        try {
+          return await operation();
+        } finally {
+          release();
+        }
+      },
+    });
+    const fence = handlers.get(VERIFIED_ACTION_FENCE_DECISION)!;
+    await bound.closeAdmission();
+    bound.rebind(path.join(root, 'other'));
+    activeRoot = 'd'.repeat(64);
+    expect(() =>
+      fence({}, 'local', expected, previousRoot, actionId, 'retry_once', decisionId)
+    ).toThrow(/root identity changed/);
+    await bound.closeAdmission();
+    bound.rebind(paths.claude);
+    activeRoot = previousRoot;
+    await expect(
+      fence({}, 'local', expected, previousRoot, actionId, 'retry_once', decisionId)
+    ).rejects.toThrow(/APP_CONTEXT_MISMATCH/);
+    const stored = await store.transaction(async (tx) => tx.read());
+    expect(stored).toHaveLength(1);
+    expect(stored[0]).toMatchObject({ id: actionId, status: 'question' });
+    expect(stored[0].decisionReceipt).toBeUndefined();
   });
 
   it('holds context admission while waiting for the file lock and until the read finishes', async () => {
