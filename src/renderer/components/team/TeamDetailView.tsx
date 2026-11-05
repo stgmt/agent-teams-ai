@@ -121,9 +121,11 @@ import { useTeamTaskFilters } from './kanban/useTeamTaskFilters';
 import { MemberDetailDialog } from './members/MemberDetailDialog';
 import { type MemberActivityFilter, type MemberDetailTab } from './members/memberDetailTypes';
 import { deriveMetrics } from './context-metric-alias';
+import { runTeamTaskAction } from './runTeamTaskAction';
 import { showTeamDeleteError } from './teamDeleteErrorDialog';
 import { resolvePinnedTeamActionTop } from './teamDetailLayout';
-import { TeamReviewActionError } from './TeamReviewActionError';
+import { TeamKanbanActionError } from './TeamKanbanActionError';
+import { TeamReviewRecovery } from './TeamReviewRecovery';
 import { TeamStatusBadge } from './TeamStatusBadge';
 import { useTeamStopControl } from './useTeamStopControl';
 
@@ -2172,13 +2174,7 @@ export const TeamDetailView = memo(function TeamDetailView({
 
   const handleTaskOwnerChange = useCallback(
     (taskId: string, owner: string | null) => {
-      void (async () => {
-        try {
-          await updateTaskOwner(teamName, taskId, owner);
-        } catch {
-          // error via store
-        }
-      })();
+      runTeamTaskAction(teamName, taskId, () => updateTaskOwner(teamName, taskId, owner));
     },
     [teamName, updateTaskOwner]
   );
@@ -2215,7 +2211,7 @@ export const TeamDetailView = memo(function TeamDetailView({
     await teamStopControl.stopTeam(teamName, {
       refresh: () => refreshTeamData(teamName),
       onOutcome: (outcome, error) => {
-        const success = outcome === 'stopped' || outcome === 'stopped_after_transport_error';
+        const success = outcome === 'stopped';
         recordTeamStop({
           source: 'detail',
           success,
@@ -2303,7 +2299,7 @@ export const TeamDetailView = memo(function TeamDetailView({
 
   const handleDeleteTask = useCallback(
     (taskId: string) => {
-      void (async () => {
+      runTeamTaskAction(teamName, taskId, async (isCurrent) => {
         const confirmed = await confirm({
           title: t('tasks.deleteConfirm.title'),
           message: t('tasks.deleteConfirm.message', { taskId: deriveTaskDisplayId(taskId) }),
@@ -2311,14 +2307,8 @@ export const TeamDetailView = memo(function TeamDetailView({
           cancelLabel: t('tasks.deleteConfirm.cancelLabel'),
           variant: 'danger',
         });
-        if (confirmed) {
-          try {
-            await softDeleteTask(teamName, taskId);
-          } catch {
-            // error via store
-          }
-        }
-      })();
+        if (confirmed && isCurrent()) await softDeleteTask(teamName, taskId);
+      });
     },
     [teamName, softDeleteTask, t]
   );
@@ -2350,29 +2340,21 @@ export const TeamDetailView = memo(function TeamDetailView({
 
   const handleRequestReview = useCallback(
     (taskId: string) => {
-      void (async () => {
-        try {
-          await requestReview(teamName, taskId);
-        } catch {
-          // error via store
-        }
-      })();
+      runTeamTaskAction(teamName, taskId, async () => {
+        await requestReview(teamName, taskId);
+      });
     },
     [requestReview, teamName]
   );
 
   const handleApproveTask = useCallback(
     (taskId: string) => {
-      void (async () => {
-        try {
-          await updateKanban(teamName, taskId, {
-            op: 'set_column',
-            column: 'approved',
-          });
-        } catch {
-          // error via store
-        }
-      })();
+      runTeamTaskAction(teamName, taskId, async () => {
+        await updateKanban(teamName, taskId, {
+          op: 'set_column',
+          column: 'approved',
+        });
+      });
     },
     [teamName, updateKanban]
   );
@@ -2383,101 +2365,86 @@ export const TeamDetailView = memo(function TeamDetailView({
 
   const handleMoveBackToDone = useCallback(
     (taskId: string) => {
-      void (async () => {
-        try {
-          await updateKanban(teamName, taskId, { op: 'remove' });
-          await updateTaskStatus(teamName, taskId, 'completed');
-        } catch {
-          // error via store
-        }
-      })();
+      runTeamTaskAction(teamName, taskId, async (isCurrent) => {
+        await updateKanban(teamName, taskId, { op: 'remove' });
+        if (!isCurrent()) return;
+        await updateTaskStatus(teamName, taskId, 'completed');
+      });
     },
     [teamName, updateKanban, updateTaskStatus]
   );
 
   const handleStartTask = useCallback(
     (taskId: string) => {
-      void (async () => {
-        try {
-          const result = await startTaskByUser(teamName, taskId);
-          if (data?.isAlive) {
-            const task = taskMapRef.current.get(taskId);
-            try {
-              if (result.notifiedOwner && task?.owner) {
-                await api.teams.processSend(
-                  teamName,
-                  `Task ${formatTaskDisplayLabel(task)} "${task.subject}" has started. Please begin working on it.`
-                );
-              } else if (!result.notifiedOwner) {
-                const desc = task?.description?.trim()
-                  ? `\nDescription: ${task.description.trim()}`
-                  : '';
-                await api.teams.processSend(
-                  teamName,
-                  `Task #${deriveTaskDisplayId(taskId)} "${task?.subject ?? ''}" has been moved to IN PROGRESS but has no assignee.${desc}\nPlease assign it to an available team member, or take it yourself if everyone is busy.`
-                );
-              }
-            } catch {
-              // best-effort
+      runTeamTaskAction(teamName, taskId, async (isCurrent) => {
+        const result = await startTaskByUser(teamName, taskId);
+        if (data?.isAlive && isCurrent()) {
+          const task = taskMapRef.current.get(taskId);
+          try {
+            if (result.notifiedOwner && task?.owner) {
+              await api.teams.processSend(
+                teamName,
+                `Task ${formatTaskDisplayLabel(task)} "${task.subject}" has started. Please begin working on it.`
+              );
+            } else if (!result.notifiedOwner) {
+              const desc = task?.description?.trim()
+                ? `\nDescription: ${task.description.trim()}`
+                : '';
+              await api.teams.processSend(
+                teamName,
+                `Task #${deriveTaskDisplayId(taskId)} "${task?.subject ?? ''}" has been moved to IN PROGRESS but has no assignee.${desc}\nPlease assign it to an available team member, or take it yourself if everyone is busy.`
+              );
             }
+          } catch {
+            // best-effort
           }
-        } catch {
-          // error via store
         }
-      })();
+      });
     },
     [data?.isAlive, startTaskByUser, teamName]
   );
 
   const handleCompleteTask = useCallback(
     (taskId: string) => {
-      void (async () => {
-        try {
-          await updateTaskStatus(teamName, taskId, 'completed');
-        } catch {
-          // error via store
-        }
-      })();
+      runTeamTaskAction(teamName, taskId, async () => {
+        await updateTaskStatus(teamName, taskId, 'completed');
+      });
     },
     [teamName, updateTaskStatus]
   );
 
   const handleCancelTask = useCallback(
     (taskId: string) => {
-      void (async () => {
-        try {
-          const task = taskMapRef.current.get(taskId);
-          await updateTaskStatus(teamName, taskId, 'pending');
+      runTeamTaskAction(teamName, taskId, async (isCurrent) => {
+        const task = taskMapRef.current.get(taskId);
+        await updateTaskStatus(teamName, taskId, 'pending');
 
-          // Notify assignee directly via inbox - they'll see it immediately
-          if (task?.owner) {
-            try {
-              await api.teams.sendMessage(teamName, {
-                member: task.owner,
-                text: `Task ${formatTaskDisplayLabel(task)} "${task.subject}" has been CANCELLED by the user and moved back to TODO. Stop working on it immediately.`,
-                summary: `Task ${formatTaskDisplayLabel(task)} cancelled`,
-              });
-            } catch {
-              // best-effort
-            }
+        // Notify assignee directly via inbox - they'll see it immediately
+        if (task?.owner && isCurrent()) {
+          try {
+            await api.teams.sendMessage(teamName, {
+              member: task.owner,
+              text: `Task ${formatTaskDisplayLabel(task)} "${task.subject}" has been CANCELLED by the user and moved back to TODO. Stop working on it immediately.`,
+              summary: `Task ${formatTaskDisplayLabel(task)} cancelled`,
+            });
+          } catch {
+            // best-effort
           }
-
-          // Also notify team lead so they can reassign/coordinate
-          if (data?.isAlive) {
-            try {
-              const ownerSuffix = task?.owner ? ` ${task.owner} has been notified to stop.` : '';
-              await api.teams.processSend(
-                teamName,
-                `Task #${deriveTaskDisplayId(taskId)} "${task?.subject ?? ''}" has been cancelled and moved back to TODO.${ownerSuffix}`
-              );
-            } catch {
-              // best-effort
-            }
-          }
-        } catch {
-          // error via store
         }
-      })();
+
+        // Also notify team lead so they can reassign/coordinate
+        if (data?.isAlive && isCurrent()) {
+          try {
+            const ownerSuffix = task?.owner ? ` ${task.owner} has been notified to stop.` : '';
+            await api.teams.processSend(
+              teamName,
+              `Task #${deriveTaskDisplayId(taskId)} "${task?.subject ?? ''}" has been cancelled and moved back to TODO.${ownerSuffix}`
+            );
+          } catch {
+            // best-effort
+          }
+        }
+      });
     },
     [data?.isAlive, teamName, updateTaskStatus]
   );
@@ -2735,12 +2702,11 @@ export const TeamDetailView = memo(function TeamDetailView({
 
     if (error) {
       return (
-        <div className="flex size-full items-center justify-center p-6">
-          <div className="text-center">
-            <p className="text-sm font-medium text-red-400">{t('detail.loadFailed')}</p>
-            <p className="mt-2 text-xs text-[var(--color-text-muted)]">{error}</p>
-          </div>
-        </div>
+        <TeamReviewRecovery
+          teamName={teamName}
+          error={error}
+          onRecovered={() => void selectTeam(teamName)}
+        />
       );
     }
 
@@ -3128,7 +3094,7 @@ export const TeamDetailView = memo(function TeamDetailView({
                   </Button>
                 }
               >
-                <TeamReviewActionError error={reviewActionError} />
+                <TeamKanbanActionError teamName={teamName} error={reviewActionError} />
                 <TeamKanbanBoardBridge
                   tasks={kanbanDisplayTasks}
                   teamName={teamName}
@@ -3245,18 +3211,14 @@ export const TeamDetailView = memo(function TeamDetailView({
                     if (!requestChangesTaskId) {
                       return;
                     }
-                    void (async () => {
-                      try {
-                        await updateKanban(teamName, requestChangesTaskId, {
-                          op: 'request_changes',
-                          comment,
-                          taskRefs,
-                        });
-                        setRequestChangesTaskId(null);
-                      } catch {
-                        // error state is handled in the store and shown in the view
-                      }
-                    })();
+                    runTeamTaskAction(teamName, requestChangesTaskId, async (isCurrent) => {
+                      await updateKanban(teamName, requestChangesTaskId, {
+                        op: 'request_changes',
+                        comment,
+                        taskRefs,
+                      });
+                      if (isCurrent()) setRequestChangesTaskId(null);
+                    });
                   }}
                 />
               )}

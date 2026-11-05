@@ -10,6 +10,7 @@
 
 import { getTeamsBasePath } from '@main/utils/pathDecoder';
 import { isProcessAlive } from '@main/utils/processHealth';
+import { TaskActivityStopError } from '@shared/utils/teamStopErrors';
 import * as fs from 'fs';
 
 import {
@@ -37,13 +38,13 @@ const DEFAULT_STOP_TIMEOUT_MS = 15_000;
 /** How often the flow re-reads how many recorded runtime hosts are still alive. */
 export const RUNTIME_HOSTS_POLL_INTERVAL_MS = 1_000;
 /**
- * Budget for the regular stop before the force-stop cleanup takes over.
+ * Budget for the regular stop before its outcome is reported as unknown.
  *
  * Measured per-lane orchestrator stops run 17-48s - a full capability probe
  * plus a registry lock per command - so any budget inside that range escalates
  * a stop that was about to succeed: a 45s budget cut off a lane that confirmed
- * at 47.6s. `countLiveRuntimeHosts` ends the wait the moment the hosts are
- * gone, so a healthy stop never spends this budget and it only bounds a hang.
+ * at 47.6s. A healthy stop returns when its own promise settles; process
+ * liveness alone cannot confirm that its task-clock writes also finished.
  * A stop attempt settles within the stop command budget plus one transport
  * watchdog grace: every bridge call it makes, recovery included, draws from one
  * deadline, and only a watchdog kill - which ends the attempt - overruns it.
@@ -91,12 +92,11 @@ export interface TeamForceStopFlowPorts {
   /**
    * How many of the team's recorded runtime host processes are still running.
    * The orchestrator's stop takes 17-48s per lane, so the stop budget has to be
-   * generous; this lets the flow finish as soon as the hosts are actually gone
-   * instead of waiting the budget out. Omitted - or zero live hosts at the
-   * first sample - and the flow waits for the stop or the timeout as before.
+   * generous. A transition to zero is diagnostic only: the flow still waits
+   * for the original stop or its timeout.
    *
    * `null` means the probe could not answer. It is not zero: only a count the
-   * probe actually established may end the stop early.
+   * probe actually established reports that hosts are gone.
    */
   countLiveRuntimeHosts?(teamName: string): Promise<number | null>;
   /**
@@ -105,7 +105,7 @@ export interface TeamForceStopFlowPorts {
    * team the user stopped. Optional so a caller that only wants the process
    * cleanup - a diagnostic sweep, say - leaves the publication alone.
    */
-  markTeamStopped?(teamName: string, authority: TeamLaunchStopAuthority): Promise<void>;
+  markTeamStopped?(teamName: string, authority: TeamLaunchStopAuthority): Promise<boolean | void>;
   /**
    * Runs once the team is down, on both paths: after a stop that confirmed on
    * its own, and after the force path finished killing. A running team
@@ -144,18 +144,8 @@ export async function runTeamForceStopFlow(
 }
 
 /**
- * The regular Stop, with an escape hatch. The orchestrator's stop gets a
- * bounded budget and, only when it rejects or runs out of it, the force-stop
- * cleanup runs: the same hard-cleanup attempt and the same run-fenced delivery
- * cancellation. A stop that confirms cancels nothing and reaches nothing else -
- * the user asked for a stop, not for a sweep, and the escalation exists because
- * the stop sometimes cannot deliver what the user asked for.
- *
- * The force stop persists its cancellation before the stop, so a stop that
- * removes the lane index cannot strand the ledger. A regular Stop cannot: it
- * does not yet know whether it will have to escalate, so its cancellation runs
- * after the stop, on the lane scope read before it, and under the same
- * "the stop did not confirm" decision that gates the cleanup step.
+ * Wait for the regular stop within its budget. A rejection or timeout does
+ * not prove what the runtime did, so do not automatically launch force cleanup.
  */
 export async function stopTeamWithEscalation(
   teamName: string,
@@ -299,8 +289,10 @@ async function runTeamStopFlow(
   const cleanupIsUnconditional = options.cleanup === 'always';
   const diagnostics: string[] = [];
   const stopStartedAtMs = Date.now();
+  let publicationAdmissionFailed = false;
   const publicationAuthority = ports.markTeamStopped
     ? await new TeamLaunchStateStore().beginStop(teamName).catch((error: unknown) => {
+        publicationAdmissionFailed = true;
         ports.logWarning(`[${teamName}] Stopped-state admission failed: ${String(error)}`);
         diagnostics.push(`Stopped-state admission failed: ${String(error)}`);
         return undefined;
@@ -351,6 +343,7 @@ async function runTeamStopFlow(
   let timer: ReturnType<typeof setTimeout> | null = null;
   let stopOutcome: TeamForceStopResult['stopOutcome'];
   let causalFailure: TeamForceStopResult['causalFailure'];
+  let activityFailure: TaskActivityStopError | undefined;
   let timedOut = false;
   let runtimeHostsGone: { promise: Promise<'runtime_already_down'>; cancel(): void } | null = null;
   try {
@@ -358,23 +351,25 @@ async function runTeamStopFlow(
       () => {
         if (timedOut) {
           ports.logWarning(
-            `[${teamName}] Regular stop finished ${Date.now() - stopStartedAtMs}ms after it started, after the force stop cleanup had already run.`
+            `[${teamName}] Regular stop finished ${Date.now() - stopStartedAtMs}ms after it started, after its deadline.`
           );
         }
         return 'stopped' as const;
       },
       (error: unknown) => {
         const message = error instanceof Error ? error.message : String(error);
+        if (error instanceof TaskActivityStopError && !timedOut) {
+          activityFailure = error;
+          diagnostics.push(error.message);
+          return 'stopped' as const;
+        }
         if (timedOut) {
-          // Expected once the hard kill already removed the hosts the
-          // orchestrator was still trying to stop: the failure describes a
-          // process that is gone, not a stop this flow still owes the user.
           ports.logWarning(
-            `[${teamName}] Regular stop failed ${Date.now() - stopStartedAtMs}ms after it started, after the force stop cleanup had already run: ${message}`
+            `[${teamName}] Regular stop failed ${Date.now() - stopStartedAtMs}ms after it started, after its deadline: ${message}`
           );
         } else {
           ports.logWarning(
-            `[${teamName}] Regular stop failed before force stop cleanup: ${message}`
+            `[${teamName}] Regular stop failed without confirming its outcome: ${message}`
           );
           if (error instanceof OpenCodeRuntimeStopUnconfirmedError) {
             causalFailure = error.causalFailure;
@@ -395,25 +390,23 @@ async function runTeamStopFlow(
     runtimeHostsGone = ownedLaneIds?.length
       ? { promise: new Promise<'runtime_already_down'>(() => {}), cancel() {} }
       : watchRuntimeHostsGone(teamName, ports);
-    stopOutcome = await Promise.race([
-      stopAttempt,
-      runtimeHostsGone.promise,
-      new Promise<'timed_out'>((resolve) => {
-        timer = setTimeout(() => resolve('timed_out'), timeoutMs);
-        timer.unref?.();
-      }),
-    ]);
+    const deadline = new Promise<'timed_out'>((resolve) => {
+      timer = setTimeout(() => resolve('timed_out'), timeoutMs);
+      timer.unref?.();
+    });
+    stopOutcome = await Promise.race([stopAttempt, runtimeHostsGone.promise, deadline]);
+    if (stopOutcome === 'runtime_already_down') {
+      // Process liveness says nothing about the final task-clock write. Wait
+      // for the same stop attempt, never dispatch another one automatically.
+      diagnostics.push('Runtime hosts are gone; waiting for the original stop outcome');
+      stopOutcome = await Promise.race([stopAttempt, deadline]);
+    }
     if (stopOutcome === 'timed_out') {
       timedOut = true;
       ports.logWarning(
-        `[${teamName}] Regular stop did not finish within ${timeoutMs}ms; continuing with force stop cleanup.`
+        `[${teamName}] Regular stop did not finish within ${timeoutMs}ms; its outcome is unknown.`
       );
       diagnostics.push(`Regular stop timed out after ${timeoutMs}ms`);
-    } else if (stopOutcome === 'runtime_already_down') {
-      timedOut = true;
-      diagnostics.push(
-        `Runtime hosts were gone ${Date.now() - stopStartedAtMs}ms into the stop; finished without waiting for the orchestrator acknowledgement`
-      );
     }
   } finally {
     if (timer) {
@@ -422,6 +415,19 @@ async function runTeamStopFlow(
     // Cancelled here rather than after the race so a throw between them - or
     // any later exit from this block - cannot leave the poller running.
     runtimeHostsGone?.cancel();
+  }
+
+  // A failed or timed-out request does not establish the runtime outcome.
+  // Only an explicit force-stop request authorizes the separate cleanup.
+  if (stopOutcome !== 'stopped' && !cleanupIsUnconditional) {
+    return {
+      stopOutcome,
+      ...(causalFailure ? { causalFailure } : {}),
+      cleanupOutcome: 'incomplete',
+      killedRuntimePids: [],
+      clearedPendingDeliveries,
+      diagnostics,
+    };
   }
 
   let killedRuntimePids: number[] = [];
@@ -469,12 +475,22 @@ async function runTeamStopFlow(
   // After the kills, never before them: a startup lock a live host still holds
   // open cannot be unlinked, so it is the kill that turns it into an orphan.
   await releaseSharedRuntimeResources(teamName, ports, diagnostics);
-  const cleanupOutcome =
-    stopOutcome === 'stopped' && !cleanupIncomplete ? 'completed' : 'incomplete';
+  let cleanupOutcome: TeamForceStopResult['cleanupOutcome'] =
+    stopOutcome === 'stopped' && !cleanupIncomplete && !publicationAdmissionFailed
+      ? 'completed'
+      : 'incomplete';
   // Withdrawing launch ownership is a claim that the whole stop completed.
   // Unknown authority or surviving processes must keep that evidence retryable.
   if (cleanupOutcome === 'completed') {
-    await markStopped(teamName, ports, diagnostics, publicationAuthority);
+    if (!(await markStopped(teamName, ports, diagnostics, publicationAuthority))) {
+      cleanupOutcome = 'incomplete';
+    }
+  }
+  if (activityFailure) {
+    if (cleanupOutcome === 'incomplete') {
+      throw new TaskActivityStopError(activityFailure.pendingTransition, true);
+    }
+    throw activityFailure;
   }
   return {
     stopOutcome,
@@ -539,16 +555,19 @@ async function markStopped(
   ports: TeamForceStopFlowPorts,
   diagnostics: string[],
   authority: TeamLaunchStopAuthority | undefined
-): Promise<void> {
-  if (!ports.markTeamStopped || !authority) {
-    return;
-  }
+): Promise<boolean> {
+  if (!ports.markTeamStopped) return true;
+  if (!authority) return false;
   try {
-    await ports.markTeamStopped(teamName, authority);
+    const published = await ports.markTeamStopped(teamName, authority);
+    if (published === false)
+      diagnostics.push('Stopped-state publication superseded by a newer run');
+    return published !== false;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     ports.logWarning(`[${teamName}] Could not persist stopped launch state: ${message}`);
     diagnostics.push(`Stopped-state persistence failed: ${message}`);
+    return false;
   }
 }
 

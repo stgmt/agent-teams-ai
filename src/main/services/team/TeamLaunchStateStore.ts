@@ -8,6 +8,7 @@ import * as path from 'path';
 
 import { getAdmittedTeamPublicationAuthority } from './provisioning/TeamProvisioningRequestAdmissionContext';
 import { atomicWriteAsync } from './atomicWrite';
+import { withLaunchPublicationFileLock } from './launchPublicationLock';
 import {
   captureOpenCodeTranscriptBindings,
   getTeamLaunchFreshnessPath,
@@ -163,7 +164,9 @@ function throwPublicationRevocationFailure(
 
 function enqueuePublication<T>(teamName: string, operation: () => Promise<T>): Promise<T> {
   const previous = publicationQueueByTeam.get(teamName);
-  const queued = (previous ?? Promise.resolve()).catch(() => undefined).then(operation);
+  const queued = (previous ?? Promise.resolve())
+    .catch(() => undefined)
+    .then(() => withLaunchPublicationFileLock(teamName, operation));
   publicationQueueByTeam.set(teamName, queued);
   return queued.finally(() => {
     if (publicationQueueByTeam.get(teamName) === queued) {
@@ -439,10 +442,10 @@ export class TeamLaunchStateStore {
   }
 
   /** A cleanup tail retains its admission; it cannot stop a successor publication. */
-  async markStopped(teamName: string, authority?: TeamLaunchStopAuthority): Promise<void> {
+  async markStopped(teamName: string, authority?: TeamLaunchStopAuthority): Promise<boolean> {
     const stopIntent = authority?.stopIntent ?? (stopIntentByTeam.get(teamName) ?? 0) + 1;
     if (!authority) stopIntentByTeam.set(teamName, stopIntent);
-    await enqueuePublication(teamName, async () => {
+    return await enqueuePublication(teamName, async () => {
       const previous = await readTeamLaunchFreshness(teamName);
       const admitted: TeamLaunchStopAuthority = authority ?? {
         teamName,
@@ -454,7 +457,7 @@ export class TeamLaunchStateStore {
         admitted.stopIntent !== stopIntentByTeam.get(teamName) ||
         JSON.stringify(previous) !== JSON.stringify(admitted.freshness)
       )
-        return;
+        return false;
       const revocations = await Promise.allSettled([
         fs.promises.rm(getTeamLaunchStatePath(teamName), { force: true }),
         fs.promises.rm(getTeamLaunchSummaryPath(teamName), { force: true }),
@@ -481,7 +484,7 @@ export class TeamLaunchStateStore {
         );
       } catch (error) {
         if (await isMissingTeamDirectoryWriteRace(markerPath, error)) {
-          return;
+          return false;
         }
         throw error;
       }
@@ -491,6 +494,7 @@ export class TeamLaunchStateStore {
       // state and not from the marker, so a snapshot that could not be removed
       // is still served to the UI. The caller reports it as a stop diagnostic.
       throwPublicationRevocationFailure(teamName, revocations);
+      return true;
     });
   }
 

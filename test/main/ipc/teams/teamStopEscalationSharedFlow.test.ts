@@ -23,7 +23,7 @@ vi.mock('@main/services/team/TeamDataWorkerClient', () => ({
 
 const stopFlowMocks = vi.hoisted(() => ({
   stopTeamWithEscalation: vi.fn(
-    (): Promise<TeamForceStopResult> =>
+    (_teamName: string, _ports: TeamForceStopFlowPorts): Promise<TeamForceStopResult> =>
       Promise.resolve({
         stopOutcome: 'stopped' as const,
         cleanupOutcome: 'completed' as const,
@@ -86,6 +86,8 @@ vi.mock('@main/services/team/TeamLaunchStateStore', async (importOriginal) => ({
 }));
 
 import { registerTeamRoutes } from '@main/http/teams';
+import { runTeamStopAction } from '@renderer/components/team/teamStopAction';
+import { TaskActivityStopError } from '@shared/utils/teamStopErrors';
 import Fastify from 'fastify';
 
 import {
@@ -188,25 +190,112 @@ describe('the escalated stop shares one fenced flow between the IPC handler and 
     const response = await app.inject({ method: 'POST', url: '/api/teams/fixteam/stop' });
     // The HTTP stop claims the in-app semantics: an unconfirmed stop is a
     // failure there too, and it does not hand back runtime state to trust.
-    expect(response.statusCode).toBe(500);
+    expect(response.statusCode).toBe(504);
     expect(getRuntimeState).not.toHaveBeenCalled();
-    const errorLog = vi.mocked(console.error).mock.calls.flat().join(' ');
-    expect(errorLog).toContain('team_stop_unconfirmed:timed_out:opencode_stop_deadline');
-    expect(errorLog).not.toContain('SECRET-provider-body');
-    vi.mocked(console.error).mockClear();
-    expect(vi.mocked(console.warn).mock.calls.flat().join(' ')).toContain(
-      'Regular stop timed_out'
-    );
+    expect(response.json()).toEqual({
+      error: 'team_stop_unconfirmed:timed_out:opencode_stop_deadline',
+    });
+    expect(response.body).not.toContain('SECRET-provider-body');
+    expect(vi.mocked(console.warn).mock.calls.flat().join(' ')).toContain('Regular stop timed_out');
     vi.mocked(console.warn).mockClear();
     await app.close();
   });
 
-  it('keeps the runtime-already-down outcome a finished stop on both entry points', async () => {
-    // A team with no owned OpenCode lane ids whose recorded hosts exit before
-    // the orchestrator acknowledges: the flow deliberately answers
-    // `runtime_already_down` after its force cleanup and both entry points
-    // describe it as having finished the stop. It is a successful, idempotent
-    // stop - not an unconfirmed-stop failure to report.
+  it.each([
+    [true, false],
+    [false, false],
+    [true, true],
+    [false, true],
+  ])(
+    'preserves the task-clock outcome across IPC and HTTP (pending=%s, cleanup=%s)',
+    async (pending, cleanupUnconfirmed) => {
+      const error = new TaskActivityStopError(pending, cleanupUnconfirmed);
+      stopFlowMocks.stopTeamWithEscalation.mockRejectedValueOnce(error);
+      initializeTeamHandlers(
+        { getTeamData: vi.fn(() => Promise.resolve({ members: [] })) } as never,
+        { runtime: { stopTeam, getAliveTeams, isTeamAlive: () => false } } as never
+      );
+      registerTeamHandlers(ipcMain as never);
+      await expect(handlers.get(TEAM_STOP)!({} as never, 'fixteam')).resolves.toMatchObject({
+        success: false,
+        error: error.message,
+      });
+      vi.mocked(console.error).mockClear();
+
+      stopFlowMocks.stopTeamWithEscalation.mockRejectedValueOnce(error);
+      const getRuntimeState = vi.fn();
+      const app = Fastify();
+      registerTeamRoutes(app, {
+        teamApis: { runtime: { stopTeam, getAliveTeams, getRuntimeState } },
+      } as unknown as HttpServices);
+      await app.ready();
+      const response = await app.inject({ method: 'POST', url: '/api/teams/fixteam/stop' });
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toEqual({ error: error.message });
+      expect(getRuntimeState).not.toHaveBeenCalled();
+      await app.close();
+    }
+  );
+
+  it.each([false, true])(
+    'delivers the real escalation failure through IPC (cleanup=%s)',
+    async (cleanupUnconfirmed) => {
+      const realFlow = await vi.importActual<
+        typeof import('@main/services/team/lifecycle/teamForceStopFlow')
+      >('@main/services/team/lifecycle/teamForceStopFlow');
+      stopFlowMocks.stopTeamWithEscalation.mockImplementationOnce((name, ports) =>
+        realFlow.stopTeamWithEscalation(name, {
+          ...ports,
+          markTeamStopped: undefined,
+          reapOwnedLeadProcessTrees: cleanupUnconfirmed
+            ? async () => ({ killedPids: [], diagnostics: [], incomplete: true })
+            : undefined,
+          releaseSharedRuntimeResources: undefined,
+        })
+      );
+      const error = new TaskActivityStopError(true);
+      stopTeam.mockRejectedValueOnce(error);
+      initializeTeamHandlers(
+        { getTeamData: vi.fn(() => Promise.resolve({ members: [] })) } as never,
+        { runtime: { stopTeam, getAliveTeams, isTeamAlive: () => false } } as never
+      );
+      registerTeamHandlers(ipcMain as never);
+
+      const reportFailure = vi.fn();
+      const processAlive = vi.fn(() => Promise.resolve(false));
+      const outcome = await runTeamStopAction({
+        teamName: 'fixteam',
+        stop: async (name) => {
+          const result = (await handlers.get(TEAM_STOP)!({} as never, name)) as {
+            success: boolean;
+            error?: string;
+          };
+          if (!result.success) throw new Error(result.error);
+        },
+        processAlive,
+        refresh: vi.fn(async () => undefined),
+        setBusy: vi.fn(),
+        reportFailure,
+        logError: vi.fn(),
+        logRefreshError: vi.fn(),
+      });
+
+      expect(outcome).toBe(
+        cleanupUnconfirmed ? 'activity_and_cleanup_unconfirmed' : 'stopped_activity_review_pending'
+      );
+      expect(reportFailure).toHaveBeenCalledExactlyOnceWith(
+        outcome,
+        cleanupUnconfirmed ? new TaskActivityStopError(true, true).message : error.message
+      );
+      expect(stopTeam).toHaveBeenCalledTimes(1);
+      expect(processAlive).not.toHaveBeenCalled();
+      expect(stopFlowMocks.killRetainedOpenCodeRuntimeProcessesForTeam).not.toHaveBeenCalled();
+      expect(stopFlowMocks.clearPendingOpenCodePromptDeliveriesForTeam).not.toHaveBeenCalled();
+      vi.mocked(console.error).mockClear();
+    }
+  );
+
+  it('does not present process exit as a completed stop on either entry point', async () => {
     const alreadyDown = {
       stopOutcome: 'runtime_already_down' as const,
       cleanupOutcome: 'incomplete' as const,
@@ -223,8 +312,10 @@ describe('the escalated stop shares one fenced flow between the IPC handler and 
     );
     registerTeamHandlers(ipcMain as never);
     await expect(handlers.get(TEAM_STOP)!({} as never, 'fixteam')).resolves.toMatchObject({
-      success: true,
+      success: false,
+      error: 'team_stop_unconfirmed:runtime_already_down',
     });
+    vi.mocked(console.error).mockClear();
 
     stopFlowMocks.stopTeamWithEscalation.mockResolvedValueOnce({ ...alreadyDown });
     const getRuntimeState = vi.fn(() => Promise.resolve({ state: 'stopped' }));
@@ -237,8 +328,13 @@ describe('the escalated stop shares one fenced flow between the IPC handler and 
     registerTeamRoutes(app, services);
     await app.ready();
     const response = await app.inject({ method: 'POST', url: '/api/teams/fixteam/stop' });
-    expect(response.statusCode).toBe(200);
-    expect(getRuntimeState).toHaveBeenCalled();
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toEqual({ error: 'team_stop_unconfirmed:runtime_already_down' });
+    expect(getRuntimeState).not.toHaveBeenCalled();
+    expect(vi.mocked(console.warn).mock.calls.flat().join(' ')).toContain(
+      'Regular stop runtime_already_down; outcome is unconfirmed'
+    );
+    vi.mocked(console.warn).mockClear();
     await app.close();
   });
 

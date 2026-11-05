@@ -1417,6 +1417,7 @@ describe('teamSlice actions', () => {
 
   it('maps task status verify failure in updateKanban and rethrows', async () => {
     const store = createSliceStore();
+    store.setState({ selectedTeamName: 'my-team' });
     hoisted.updateKanban.mockRejectedValue(new Error('Task status update verification failed: 12'));
 
     await expect(
@@ -1430,6 +1431,7 @@ describe('teamSlice actions', () => {
 
   it('maps task status verify failure in requestReview and rethrows', async () => {
     const store = createSliceStore();
+    store.setState({ selectedTeamName: 'my-team' });
     hoisted.requestReview.mockRejectedValue(
       new Error('Task status update verification failed: 22')
     );
@@ -1440,6 +1442,78 @@ describe('teamSlice actions', () => {
     expect(store.getState().reviewActionError).toBe(
       'Failed to update task status (possible agent conflict).'
     );
+  });
+
+  it.each(['requestReview', 'updateKanban'] as const)(
+    'does not replace another team’s error when %s rejects in the background',
+    async (action) => {
+      const store = createSliceStore();
+      store.setState({ selectedTeamName: 'team-a', reviewActionError: 'team-a error' });
+      const pending = createDeferredPromise<void>();
+      if (action === 'requestReview') hoisted.requestReview.mockReturnValueOnce(pending.promise);
+      else hoisted.updateKanban.mockReturnValueOnce(pending.promise);
+      const operation = action === 'requestReview'
+        ? store.getState().requestReview('team-b', '12')
+        : store.getState().updateKanban('team-b', '12', { op: 'set_column', column: 'approved' });
+      expect(store.getState().reviewActionError).toBe('team-a error');
+      pending.reject(new Error('team-b failure'));
+      await expect(operation).rejects.toThrow('team-b failure');
+      expect(store.getState().reviewActionError).toBe('team-a error');
+    }
+  );
+
+  it.each(['requestReview', 'updateKanban'] as const)(
+    'does not publish an outdated %s rejection after a context switch',
+    async (action) => {
+      const store = createSliceStore();
+      store.setState({ selectedTeamName: 'team-a', reviewActionError: null });
+      const pending = createDeferredPromise<void>();
+      if (action === 'requestReview') hoisted.requestReview.mockReturnValueOnce(pending.promise);
+      else hoisted.updateKanban.mockReturnValueOnce(pending.promise);
+      const operation = action === 'requestReview'
+        ? store.getState().requestReview('team-a', '12')
+        : store.getState().updateKanban('team-a', '12', { op: 'set_column', column: 'approved' });
+      store.setState({ activeContextId: 'other' });
+      pending.reject(new Error('late failure'));
+      await expect(operation).rejects.toThrow('late failure');
+      expect(store.getState().reviewActionError).toBeNull();
+    }
+  );
+
+  it.each(['selectTeam', 'refreshTeamData'] as const)(
+    'removes a cached board and exposes an uncertain transition on %s',
+    async (action) => {
+      const store = createSliceStore();
+      const snapshot = createTeamSnapshot();
+      const message =
+        'KANBAN_TRANSITION_UNCERTAIN: Review transition for task 12 has an unknown outcome';
+      store.setState({
+        selectedTeamName: 'my-team',
+        selectedTeamData: snapshot,
+        teamDataCacheByName: { 'my-team': snapshot },
+      });
+      hoisted.getData.mockRejectedValueOnce(new Error(message));
+      await store.getState()[action]('my-team');
+      expect(store.getState().selectedTeamError).toBe(message);
+      expect(store.getState().selectedTeamData).toBeNull();
+      expect(store.getState().teamDataCacheByName['my-team']).toBeUndefined();
+    }
+  );
+
+  it('drops cached data when the board changed during a read', async () => {
+    const store = createSliceStore();
+    const snapshot = createTeamSnapshot();
+    const message = 'KANBAN_SNAPSHOT_CHANGED: Kanban changed while being read';
+    store.setState({
+      selectedTeamName: 'my-team',
+      selectedTeamData: snapshot,
+      teamDataCacheByName: { 'my-team': snapshot },
+    });
+    hoisted.getData.mockRejectedValueOnce(new Error(message));
+    await store.getState().selectTeam('my-team');
+    expect(store.getState().selectedTeamError).toBe(message);
+    expect(store.getState().selectedTeamData).toBeNull();
+    expect(store.getState().teamDataCacheByName['my-team']).toBeUndefined();
   });
 
   it.each([

@@ -1,4 +1,5 @@
-import type { ResolveOpenCodeInputDeclaration } from '@features/agent-attachments/contracts';
+import { createRequire } from 'node:module';
+
 import { TeamReadFailureError } from '@features/team-read-recovery/main';
 import { bindTeamProvisioningStartApi } from '@main/services/team/contracts/TeamProvisioningApis';
 import {
@@ -11,9 +12,9 @@ import { MAX_TEXT_LENGTH } from '@shared/constants/teamLimits';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { createRequire } from 'node:module';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import type { ResolveOpenCodeInputDeclaration } from '@features/agent-attachments/contracts';
 import type { ElectronAPI } from '@shared/types/api';
 import type {
   BoardTaskActivityDetailResult,
@@ -3107,6 +3108,43 @@ describe('ipc teams handlers', () => {
       op: 'set_column',
       column: 'approved',
     });
+  });
+
+  it('returns the recovery inspection and accepts only a bounded explicit confirmation', async () => {
+    const snapshot = {
+      taskId: '12',
+      contextHash: 'c'.repeat(64),
+      transitionId: '12345678-1234-1234-1234-123456789abc',
+      column: 'review',
+      mode: 'publish',
+      snapshotHash: 'a'.repeat(64),
+    };
+    service.updateKanban.mockResolvedValueOnce(snapshot as never);
+    const inspection = await handlers.get(TEAM_UPDATE_KANBAN)!({} as never, 'my-team', '12', {
+      op: 'inspect_pending',
+    });
+    expect(inspection).toMatchObject({ success: true, data: snapshot });
+    const confirmation = {
+      op: 'resolve_pending',
+      transitionId: snapshot.transitionId,
+      snapshotHash: snapshot.snapshotHash,
+      mode: 'publish',
+      contextHash: snapshot.contextHash,
+    };
+    const resolved = await handlers.get(TEAM_UPDATE_KANBAN)!(
+      {} as never,
+      'my-team',
+      '12',
+      confirmation
+    );
+    expect(resolved).toMatchObject({ success: true });
+    expect(service.updateKanban).toHaveBeenLastCalledWith('my-team', '12', confirmation);
+    const invalid = await handlers.get(TEAM_UPDATE_KANBAN)!({} as never, 'my-team', '12', {
+      ...confirmation,
+      mode: 'conflict',
+    });
+    expect(invalid).toMatchObject({ success: false });
+    expect(service.updateKanban).toHaveBeenCalledTimes(2);
   });
 
   it('marks created teams engaged before provisioning writes startup artifacts', async () => {

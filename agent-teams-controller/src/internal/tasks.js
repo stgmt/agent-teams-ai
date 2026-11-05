@@ -1,5 +1,6 @@
 const taskStore = require('./taskStore.js');
 const taskArtifact = require('./taskArtifact.js');
+const { readTaskConsistent, listTasksConsistent } = require('./pendingKanbanGuard.js');
 const runtimeHelpers = require('./runtimeHelpers.js');
 const messages = require('./messages.js');
 const messageStore = require('./messageStore.js');
@@ -322,7 +323,7 @@ function assertTaskCreationCommandScope(context, input) {
 }
 
 function getTask(context, taskId) {
-    return taskStore.readTask(context.paths, taskId, { includeDeleted: true });
+    return readTaskConsistent(context, taskStore, kanbanStore, taskId);
 }
 
 function getTaskComment(context, taskId, commentId) {
@@ -354,7 +355,7 @@ function getTaskComment(context, taskId, commentId) {
 }
 
 function listTasks(context) {
-    return taskStore.listTasks(context.paths);
+    return listTasksConsistent(context, taskStore, kanbanStore);
 }
 
 function listDeletedTasks(context) {
@@ -384,13 +385,11 @@ function setTaskStatus(context, taskId, status, actor, options = {}) {
             assertDependenciesResolved(context, before, normalizedStatus);
             if (normalizedStatus === 'completed') taskArtifact.verifyTask(context, before);
         }
+        const state = ['deleted', 'in_progress', 'pending'].includes(normalizedStatus) ? kanbanStore.readKanbanState(context.paths, context.teamName) : null;
         let task = taskStore.setTaskStatus(context.paths, taskId, status, actorForWrite);
-        if (normalizedStatus === 'deleted' || normalizedStatus === 'in_progress' || normalizedStatus === 'pending') {
-            const state = kanbanStore.readKanbanState(context.paths, context.teamName);
-            if (hasKanbanReference(state, task.id)) {
-                kanbanStore.clearKanban(context.paths, context.teamName, task.id, { nextReviewState: 'none' });
-                task = taskStore.readTask(context.paths, task.id, { includeDeleted: true });
-            }
+        if (state && hasKanbanReference(state, task.id)) {
+            kanbanStore.clearKanban(context.paths, context.teamName, task.id, { nextReviewState: 'none' });
+            task = taskStore.readTask(context.paths, task.id, { includeDeleted: true });
         }
         return { task, becameDeleted: before.status !== 'deleted' && task.status === 'deleted' };
     });
@@ -546,9 +545,10 @@ function notifyUnblockedOwners(context, resolvedTask, options = {}) {
  * the board itself rather than from anyone's good behaviour.
  */
 function notifyLeadWhenBoardCompleted(context, completedTask) {
+    return withTeamBoardLock(context.paths, () => {
     let tasks;
     try {
-        tasks = taskStore.listTasks(context.paths);
+        tasks = listTasksConsistent(context, taskStore, kanbanStore);
     } catch {
         return;
     }
@@ -592,6 +592,7 @@ function notifyLeadWhenBoardCompleted(context, completedTask) {
     } catch (error) {
         warnNonCritical(`[tasks] board-completion notice failed for task ${completedTask.id}`, error);
     }
+    });
 }
 
 function runCompletedTaskFollowUps(context, task) {

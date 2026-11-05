@@ -11,6 +11,7 @@ import type { CliInstallerAPI, OpenCodeRuntimeAPI } from './cliInstaller';
 import type { TelemetryAPI, WindowsElevationStatus } from './desktopShell';
 import type { EditorAPI, EditorFileChangeEvent, ProjectAPI } from './editor';
 import type { ApiKeysAPI, McpCatalogAPI, PluginCatalogAPI, SkillsCatalogAPI } from './extensions';
+import type { PendingKanbanTransitionSnapshot } from './kanbanRecovery';
 import type {
   AppConfig,
   DetectedError,
@@ -489,6 +490,15 @@ export interface TeamsAPI extends TeamMemberSettingsApi, TeamReadLegacyApi {
   getTask: (teamName: string, taskId: string) => Promise<TeamTaskWithKanban | null>;
   requestReview: (teamName: string, taskId: string) => Promise<void>;
   updateKanban: (teamName: string, taskId: string, patch: UpdateKanbanPatch) => Promise<void>;
+  inspectPendingKanbanTransition: (
+    teamName: string,
+    taskId: string
+  ) => Promise<PendingKanbanTransitionSnapshot>;
+  resolvePendingKanbanTransition: (
+    teamName: string,
+    taskId: string,
+    snapshot: PendingKanbanTransitionSnapshot
+  ) => Promise<void>;
   updateKanbanColumnOrder: (
     teamName: string,
     columnId: KanbanColumnId,

@@ -1,4 +1,5 @@
 const { unreadableTaskAnomaly, taskNotFound, assertReadableTaskRef } = require('./taskReadErrors.js');
+const { assertNoPendingKanbanTransition, assertTaskRefsWritable } = require('./pendingKanbanGuard.js');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
@@ -311,10 +312,10 @@ function scanTaskRows(paths) {
 }
 
 function invalidateTaskScanSnapshot(paths) {
-  const snapshotKey = path.resolve(paths.tasksDir);
-  unlockedTaskScanSnapshots.delete(snapshotKey);
+  // A write invalidates every snapshot, including those read through another root junction.
+  unlockedTaskScanSnapshots.clear();
   const lockContext = getTeamBoardLockContext(paths);
-  lockContext?.get(TASK_SCAN_SNAPSHOTS)?.delete(snapshotKey);
+  lockContext?.get(TASK_SCAN_SNAPSHOTS)?.clear();
 }
 
 // Standalone reads may share a full directory scan for at most 250 ms by default. The hard
@@ -576,7 +577,8 @@ function wouldCreateBlockCycle(paths, sourceId, targetId) {
   return false;
 }
 
-function writeTask(paths, task) {
+function writeTask(paths, task, options = {}) {
+  assertNoPendingKanbanTransition(task, options.allowPendingKanbanTransition);
   const storageIdentity = task[TASK_STORAGE_IDENTITY];
   const canonicalTaskId = storageIdentity?.canonicalTaskId || String(task.id);
   const persistedTaskId = storageIdentity?.persistedTaskId || canonicalTaskId;
@@ -622,6 +624,7 @@ function createTask(paths, input = {}) {
 
   const blockedByIds = parseRelationshipList(paths, input['blocked-by'] ?? input.blockedBy);
   const relatedIds = parseRelationshipList(paths, input.related);
+  assertTaskRefsWritable(paths, [...blockedByIds, ...relatedIds], readTask);
   const owner =
     typeof input.owner === 'string' && input.owner.trim() ? input.owner.trim() : undefined;
   const createdBy =
@@ -785,6 +788,7 @@ function reconcileTaskCreation(paths, input = {}) {
 }
 
 function ensureTaskCreationBacklinks(paths, taskId, blockedByIds, relatedIds) {
+  assertTaskRefsWritable(paths, [...blockedByIds, ...relatedIds], readTask);
   for (const dependencyId of blockedByIds) {
     const dependency = readTask(paths, dependencyId, { includeDeleted: true });
     const blocks = Array.isArray(dependency.blocks) ? dependency.blocks : [];
@@ -821,6 +825,7 @@ function assertLegacyTaskMatchesCreationInput(task, input) {
 
 function updateTask(paths, taskRef, updater, options = {}) {
   const existingTask = readTask(paths, taskRef, { includeDeleted: true });
+  assertNoPendingKanbanTransition(existingTask, options.allowPendingKanbanTransition);
   const updatedTask = updater({ ...existingTask }) || existingTask;
   if (String(updatedTask.id) !== existingTask.id) {
     throw new Error(
@@ -833,7 +838,7 @@ function updateTask(paths, taskRef, updater, options = {}) {
     attachTaskStorageIdentity(nextTask, storageIdentity);
   }
   nextTask.updatedAt = nowIso();
-  writeTask(paths, nextTask);
+  writeTask(paths, nextTask, { allowPendingKanbanTransition: nextTask.pendingKanbanTransition?.id });
   return nextTask;
 }
 
@@ -1049,14 +1054,17 @@ function linkTask(paths, taskRef, targetRef, relationship) {
   if (relationship === 'blocks') {
     return linkTask(paths, targetId, sourceId, 'blocked-by');
   }
-
+  if (relationship !== 'blocked-by' && relationship !== 'related') {
+    throw new Error(`Unsupported relationship: ${String(relationship)}`);
+  }
+  const sourceTask = readTask(paths, sourceId, { includeDeleted: true });
+  const targetTask = readTask(paths, targetId, { includeDeleted: true });
+  [sourceTask, targetTask].forEach((task) => assertNoPendingKanbanTransition(task));
   if (relationship === 'blocked-by') {
     if (wouldCreateBlockCycle(paths, sourceId, targetId)) {
       throw new Error(`Circular dependency: ${targetId} already depends on ${sourceId}`);
     }
 
-    const sourceTask = readTask(paths, sourceId, { includeDeleted: true });
-    const targetTask = readTask(paths, targetId, { includeDeleted: true });
     if (!(sourceTask.blockedBy || []).includes(targetId)) {
       sourceTask.blockedBy = [...(sourceTask.blockedBy || []), targetId];
       writeTask(paths, sourceTask);
@@ -1068,12 +1076,6 @@ function linkTask(paths, taskRef, targetRef, relationship) {
     return readTask(paths, sourceId, { includeDeleted: true });
   }
 
-  if (relationship !== 'related') {
-    throw new Error(`Unsupported relationship: ${String(relationship)}`);
-  }
-
-  const sourceTask = readTask(paths, sourceId, { includeDeleted: true });
-  const targetTask = readTask(paths, targetId, { includeDeleted: true });
   if (!(sourceTask.related || []).includes(targetId)) {
     sourceTask.related = [...(sourceTask.related || []), targetId];
     writeTask(paths, sourceTask);
@@ -1094,6 +1096,8 @@ function unlinkTask(paths, taskRef, targetRef, relationship) {
   }
 
   const sourceTask = readTask(paths, sourceId, { includeDeleted: true });
+  assertNoPendingKanbanTransition(sourceTask);
+  assertTaskRefsWritable(paths, [targetId], readTask, true);
   if (relationship === 'blocked-by') {
     sourceTask.blockedBy = (sourceTask.blockedBy || []).filter((entry) => entry !== targetId);
     writeTask(paths, sourceTask);

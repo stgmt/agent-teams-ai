@@ -37,6 +37,7 @@ export interface TeamGraphOverlayProps {
   sidebarVisible?: boolean;
   onToggleSidebar?: () => void;
   messagesPanelEnabled?: boolean;
+  interactions?: ReturnType<typeof useGraphSurfaceInteractions>;
 }
 
 export const TeamGraphOverlay = ({
@@ -46,6 +47,7 @@ export const TeamGraphOverlay = ({
   sidebarVisible,
   onToggleSidebar,
   messagesPanelEnabled = true,
+  interactions: sharedInteractions,
 }: TeamGraphOverlayProps): React.JSX.Element => {
   const graphData = useTeamGraphAdapter(teamName);
   const {
@@ -56,7 +58,8 @@ export const TeamGraphOverlay = ({
   } = useTeamGraphSurfaceActions(teamName);
   const { sidebarVisible: persistedSidebarVisible, toggleSidebarVisible } =
     useGraphSidebarVisibility();
-  const interactions = useGraphSurfaceInteractions(teamName);
+  const ownInteractions = useGraphSurfaceInteractions(teamName);
+  const interactions = sharedInteractions ?? ownInteractions;
   const [messagesPanelMountPoint, setMessagesPanelMountPoint] = useState<HTMLDivElement | null>(
     null
   );

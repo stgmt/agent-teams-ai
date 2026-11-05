@@ -1164,6 +1164,12 @@ export class HttpAPIClient implements ElectronAPI {
     ): Promise<void> => {
       throw new Error('Team kanban is not available in browser mode');
     },
+    inspectPendingKanbanTransition: async () => {
+      throw new Error('Kanban recovery is available in the desktop app');
+    },
+    resolvePendingKanbanTransition: async () => {
+      throw new Error('Kanban recovery is available in the desktop app');
+    },
     updateKanbanColumnOrder: async (
       _teamName: string,
       _columnId: KanbanColumnId,

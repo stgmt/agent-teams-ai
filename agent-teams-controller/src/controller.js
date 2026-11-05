@@ -1,4 +1,5 @@
 const { boundControllerOptions } = require('./internal/desktopControlBinding.js');
+const boardLocks = require('./internal/boardLock.js');
 const { createControllerContext } = require('./internal/context.js');
 const tasks = require('./internal/tasks.js');
 const kanban = require('./internal/kanban.js');
@@ -46,6 +47,10 @@ function createController(options) {
 }
 
 module.exports = {
+  boardLocks: {
+    withTeamBoardLock: boardLocks.withTeamBoardLock,
+    tryWithTeamBoardLock: boardLocks.tryWithTeamBoardLock,
+  },
   createController,
   createControllerContext,
   agentBlocks,

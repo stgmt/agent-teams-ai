@@ -3562,7 +3562,11 @@ controller.messages.sendMessage({
     expect(briefing).toContain('more board anomaly item(s) omitted');
     expect(briefing).not.toContain('x'.repeat(1000));
 
-    const inventoryRow = controller.tasks.listTaskInventory({ owner: 'bob' })[0];
+    expect(() => controller.tasks.listTaskInventory({ owner: 'bob' })).toThrow(/Cannot verify task/);
+    const cleanDir = makeClaudeDir();
+    const clean = createController({ teamName: 'my-team', claudeDir: cleanDir });
+    clean.tasks.createTask({ subject: longSubject, owner: 'bob', notifyOwner: false });
+    const inventoryRow = clean.tasks.listTaskInventory({ owner: 'bob' })[0];
     expect(inventoryRow.subject).toContain('[truncated]');
     expect(inventoryRow.subject.length).toBeLessThan(300);
   });

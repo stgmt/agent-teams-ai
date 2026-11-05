@@ -4,21 +4,19 @@ import { createLogger } from '@shared/utils/logger';
 import * as fs from 'fs';
 import * as path from 'path';
 
+import { tryTeamBoardOperation } from './boardLock';
 import { estimateCachedValueBytes } from './cacheMemoryEstimate';
-import { withFileLockSync } from './fileLock';
+import { isFileLockActive } from './fileLock';
+import { skipPendingActivity } from './pendingActivity';
 import { TeamTaskReader } from './TeamTaskReader';
 
+import type { ActivityIntervalResult } from './pendingActivity';
 import type {
   PersistedTeamLaunchMemberState,
   PersistedTeamLaunchSnapshot,
   TaskReviewInterval,
   TeamTask,
 } from '@shared/types';
-
-interface ActivityIntervalResult {
-  changedTasks: number;
-  failed?: boolean;
-}
 
 interface TaskDirectorySignature {
   key: string;
@@ -502,9 +500,8 @@ export class TeamTaskActivityIntervalService {
     teamName: string,
     run: () => ActivityIntervalResult
   ): ActivityIntervalResult {
-    const lockScope = path.join(getTeamsBasePath(), teamName, 'board-state');
     try {
-      return withFileLockSync(lockScope, run);
+      return tryTeamBoardOperation(teamName, run, { changedTasks: 0, failed: true });
     } catch (error) {
       logger.warn(
         `[${teamName}] Failed to update task activity intervals: ${
@@ -541,7 +538,7 @@ export class TeamTaskActivityIntervalService {
       if (
         beforeLockSignature &&
         beforeLockSignature.key === cachedSignatureKey &&
-        !fs.existsSync(this.getBoardStateLockPath(teamName))
+        !isFileLockActive(this.getBoardStateLockPath(teamName))
       ) {
         return { changedTasks: 0 };
       }
@@ -590,21 +587,22 @@ export class TeamTaskActivityIntervalService {
     }
 
     let changedTasks = 0;
+    const pending = { blocked: false };
     for (const fileName of entries) {
       if (!fileName.endsWith('.json') || fileName.startsWith('.')) continue;
       const filePath = path.join(tasksDir, fileName);
       const task = this.readTaskFile(filePath);
-      if (!task) continue;
+      if (!task || skipPendingActivity(task, mutate, pending)) continue;
       if (!mutate(task)) continue;
       writeTaskFile(filePath, task);
       this.cacheWrittenTaskFile(filePath, task);
       changedTasks += 1;
     }
 
-    if (changedTasks > 0) {
-      TeamTaskReader.invalidateAllTasksCache();
-    }
-    return { changedTasks };
+    if (changedTasks > 0) TeamTaskReader.invalidateAllTasksCache();
+    return pending.blocked
+      ? { changedTasks, failed: true, pendingTransition: true }
+      : { changedTasks };
   }
 
   private readTaskDirectorySignature(teamName: string): TaskDirectorySignature | null {
@@ -643,13 +641,14 @@ export class TeamTaskActivityIntervalService {
     teamName: string,
     at = new Date().toISOString()
   ): ActivityIntervalResult {
-    return this.mutateTeamTasks(teamName, (task) => {
+    const pause = (task: MutableTeamTask): boolean => {
       const changedWork = closeOpenWorkIntervals(task, at);
       const changedReview = closeOpenReviewIntervals(task, at);
       const materializedWork = materializePausedWorkInterval(task, at);
       const materializedReview = materializePausedReviewInterval(task, at);
       return changedWork || changedReview || materializedWork || materializedReview;
-    });
+    };
+    return this.mutateTeamTasks(teamName, pause);
   }
 
   pauseActiveIntervalsForMember(
@@ -744,7 +743,7 @@ export class TeamTaskActivityIntervalService {
       if (
         beforeLockSignature &&
         cachedBeforeLock.signatureKey === beforeLockSignature.key &&
-        !fs.existsSync(this.getBoardStateLockPath(teamName))
+        !isFileLockActive(this.getBoardStateLockPath(teamName))
       ) {
         return { changedTasks: 0 };
       }

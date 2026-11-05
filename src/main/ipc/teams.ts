@@ -201,6 +201,7 @@ import { TeamTaskAttachmentStore } from '../services/team/TeamTaskAttachmentStor
 import { TeamWorktreeGitService } from '../services/team/TeamWorktreeGitService';
 
 import * as artifactWrite from './teams/artifactBoundAdmission';
+import { isKanbanRecoveryPatch } from './teams/kanbanRecoveryValidation';
 import { waitForOpenCodeRuntimeRelayForUi } from './teams/openCodeRuntimeDeliveryRelayUi';
 import { validateTaskArtifactFields } from './teams/taskArtifactFields';
 import { teamMessageNotificationScanner } from './teams/teamMessageNotificationScanner';
@@ -2616,6 +2617,7 @@ function isUpdateKanbanPatch(value: unknown): value is UpdateKanbanPatch {
   }
 
   const patch = value as Partial<UpdateKanbanPatch> & { op?: unknown; column?: unknown };
+  if (isKanbanRecoveryPatch(patch)) return true;
   if (patch.op === 'remove') {
     return true;
   }
@@ -3330,7 +3332,7 @@ async function handleUpdateKanban(
   teamName: unknown,
   taskId: unknown,
   patch: unknown
-): Promise<IpcResult<void>> {
+): Promise<IpcResult<unknown>> {
   const validatedTeamName = validateTeamName(teamName);
   if (!validatedTeamName.valid) {
     return { success: false, error: validatedTeamName.error ?? 'Invalid teamName' };
@@ -3345,13 +3347,9 @@ async function handleUpdateKanban(
     return { success: false, error: 'Invalid kanban patch' };
   }
 
-  return wrapTeamHandler('updateKanban', async () => {
-    await getTeamDataService().updateKanban(
-      validatedTeamName.value!,
-      validatedTaskId.value!,
-      patch
-    );
-  });
+  return wrapTeamHandler('updateKanban', () =>
+    getTeamDataService().updateKanban(validatedTeamName.value!, validatedTaskId.value!, patch)
+  );
 }
 
 function validateKanbanColumnId(
@@ -4035,13 +4033,9 @@ async function handleStopTeam(
             releaseLoopbackRuntimesReservedByTeam(getTeamsBasePath(), name),
         }),
     });
-    if (result.stopOutcome === 'runtime_already_down') {
-      logger.info(
-        `[${tn}] Runtime hosts were already down; finished the stop without the orchestrator acknowledgement (killed ${result.killedRuntimePids.length} runtime pid(s), cancelled ${result.clearedPendingDeliveries} pending deliveries)`
-      );
-    } else if (result.stopOutcome !== 'stopped') {
+    if (result.stopOutcome !== 'stopped') {
       logger.warn(
-        `[${tn}] Regular stop ${result.stopOutcome}; escalated to force stop (killed ${result.killedRuntimePids.length} runtime pid(s), cancelled ${result.clearedPendingDeliveries} pending deliveries)`
+        `[${tn}] Regular stop ${result.stopOutcome}; outcome is unconfirmed`
       );
     }
     assertEscalatedStopConfirmed(result);

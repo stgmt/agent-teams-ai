@@ -80,8 +80,10 @@ import {
 } from '../team/teamDataRequestKeys';
 import { selectTeamDataForName } from '../team/teamDataSelectors';
 import {
+  dropUncertainTeamSnapshot,
   mapReviewError,
   mapSendMessageError,
+  runScopedReviewAction,
   shouldInvalidateCachedTeamDataForError,
 } from '../team/teamErrorPolicies';
 import {
@@ -3176,13 +3178,8 @@ export const createTeamSlice: StateCreator<AppState, [], [], TeamSlice> = (set, 
         return;
       }
 
-      const message =
-        error instanceof IpcError
-          ? error.message
-          : error instanceof Error
-            ? error.message
-            : 'Failed to fetch team data';
-      if (existingSelectedTeamData) {
+      const message = error instanceof Error ? error.message : 'Failed to fetch team data';
+      if (existingSelectedTeamData && !shouldInvalidateCachedTeamDataForError(teamName, message)) {
         set({
           selectedTeamLoading: false,
           selectedTeamData: existingSelectedTeamData,
@@ -3194,6 +3191,7 @@ export const createTeamSlice: StateCreator<AppState, [], [], TeamSlice> = (set, 
         selectedTeamLoading: false,
         selectedTeamData: null,
         selectedTeamError: message,
+        ...dropUncertainTeamSnapshot(get().teamDataCacheByName, teamName, message),
       });
     } finally {
       settleLatchedSelectTeamLoad(
@@ -3563,15 +3561,14 @@ export const createTeamSlice: StateCreator<AppState, [], [], TeamSlice> = (set, 
   },
 
   updateKanban: async (teamName: string, taskId: string, patch: UpdateKanbanPatch) => {
-    try {
-      set({ reviewActionError: null });
-      await unwrapIpc('team:updateKanban', () => api.teams.updateKanban(teamName, taskId, patch));
+    const requestScope = captureTeamRequestScope(get, teamName);
+    await runScopedReviewAction(
+      () => get().selectedTeamName === teamName && isTeamRequestScopeCurrent(get, teamName, requestScope),
+      (message) => set({ reviewActionError: message }),
+      () => unwrapIpc('team:updateKanban', () => api.teams.updateKanban(teamName, taskId, patch))
+    );
+    if (isTeamRequestScopeCurrent(get, teamName, requestScope)) {
       await get().refreshTeamData(teamName);
-    } catch (error) {
-      set({
-        reviewActionError: mapReviewError(error),
-      });
-      throw error;
     }
   },
 
@@ -3763,19 +3760,15 @@ export const createTeamSlice: StateCreator<AppState, [], [], TeamSlice> = (set, 
   },
   requestReview: async (teamName: string, taskId: string) => {
     const requestScope = captureTeamRequestScope(get, teamName);
-    try {
-      set({ reviewActionError: null });
-      await unwrapIpc('team:requestReview', () => api.teams.requestReview(teamName, taskId));
-      invalidateAcceptedTaskDetailMutation(get, teamName, taskId, requestScope);
-      if (isTeamRequestScopeCurrent(get, teamName, requestScope)) {
-        await get().refreshTeamData(teamName);
-        void refreshTaskChangePresenceForUpdatedTask(get, teamName, taskId);
-      }
-    } catch (error) {
-      set({
-        reviewActionError: mapReviewError(error),
-      });
-      throw error;
+    await runScopedReviewAction(
+      () => get().selectedTeamName === teamName && isTeamRequestScopeCurrent(get, teamName, requestScope),
+      (message) => set({ reviewActionError: message }),
+      () => unwrapIpc('team:requestReview', () => api.teams.requestReview(teamName, taskId))
+    );
+    invalidateAcceptedTaskDetailMutation(get, teamName, taskId, requestScope);
+    if (isTeamRequestScopeCurrent(get, teamName, requestScope)) {
+      await get().refreshTeamData(teamName);
+      void refreshTaskChangePresenceForUpdatedTask(get, teamName, taskId);
     }
   },
 

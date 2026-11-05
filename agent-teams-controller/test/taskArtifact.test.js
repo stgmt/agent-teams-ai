@@ -4,6 +4,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { createController } = require('../src/index.js');
 const taskStore = require('../src/internal/taskStore.js');
+const { readBoardCompletionEpoch } = require('../src/internal/messageStore.js');
 
 const file = (filename, text) => ({ filename, base64Data: Buffer.from(text).toString('base64') });
 
@@ -117,6 +118,7 @@ describe('required task artifacts', () => {
         artifactFile: file('result.txt', 'verified'),
       });
       desktop.completeTask(task.id, 'worker');
+      desktop.addReviewer('lead');
       if (operation !== 'requestReview')
         desktop.requestReview(task.id, { from: 'worker', reviewer: 'lead' });
       if (operation === 'approveReview') desktop.startReview(task.id, { from: 'lead' });
@@ -143,7 +145,92 @@ describe('required task artifacts', () => {
     }
   );
 
-  it('keeps a board transition if the failed task call already committed', () => {
+  it('fails on a board read error without losing another task', () => {
+    const other = desktop.createTask({ subject: 'Other task', owner: 'worker' });
+    desktop.completeTask(other.id, 'worker');
+    desktop.requestReview(other.id, { from: 'worker' });
+    desktop.completeTask(task.id, 'worker');
+    const boardPath = path.join(dir, 'teams', 'fixture', 'kanban-state.json');
+    const before = fs.readFileSync(boardPath, 'utf8');
+    const read = fs.readFileSync;
+    let injected = false;
+    const spy = vi.spyOn(fs, 'readFileSync').mockImplementation((target, ...args) => {
+      if (
+        !injected &&
+        typeof target === 'string' &&
+        path.resolve(target) === boardPath &&
+        new Error().stack.includes('at Object.setKanbanColumn')
+      ) {
+        injected = true;
+        throw Object.assign(new Error('board read EIO'), { code: 'EIO' });
+      }
+      return read(target, ...args);
+    });
+    try {
+      expect(() => desktop.requestReview(task.id, { from: 'worker' })).toThrow(/board read EIO/);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(injected).toBe(true);
+    expect(fs.readFileSync(boardPath, 'utf8')).toBe(before);
+    expect(desktop.getKanbanState().tasks[other.id].column).toBe('review');
+  });
+
+  it('does not write the board when task publication fails under sustained EIO', () => {
+    desktop.completeTask(task.id, 'worker');
+    desktop.addReviewer('lead');
+    const teamDir = path.join(dir, 'teams', 'fixture');
+    const boardPath = path.join(teamDir, 'kanban-state.json');
+    const tasksDir = path.join(dir, 'tasks', 'fixture');
+    const beforeTask = fs.readFileSync(path.join(tasksDir, `${task.id}.json`), 'utf8');
+    const beforeBoard = fs.existsSync(boardPath) ? fs.readFileSync(boardPath, 'utf8') : null;
+    const write = fs.writeFileSync;
+    let boardWrites = 0;
+    const spy = vi.spyOn(fs, 'writeFileSync').mockImplementation((target, ...args) => {
+      if (typeof target === 'string' && path.basename(target).startsWith('.tmp.')) {
+        if (path.dirname(target) === teamDir) boardWrites += 1;
+        if (path.dirname(target) === teamDir || path.dirname(target) === tasksDir) {
+          throw Object.assign(new Error('persistent disk EIO'), { code: 'EIO' });
+        }
+      }
+      return write(target, ...args);
+    });
+    try {
+      expect(() => desktop.requestReview(task.id, { from: 'worker' })).toThrow(
+        /persistent disk EIO/
+      );
+    } finally {
+      spy.mockRestore();
+    }
+    expect(boardWrites).toBe(0);
+    expect(fs.readFileSync(path.join(tasksDir, `${task.id}.json`), 'utf8')).toBe(beforeTask);
+    expect(fs.existsSync(boardPath) ? fs.readFileSync(boardPath, 'utf8') : null).toBe(beforeBoard);
+  });
+
+  it('preserves task history when same-directory task rename reports EXDEV', () => {
+    desktop.completeTask(task.id, 'worker');
+    const taskPath = path.join(dir, 'tasks', 'fixture', `${task.id}.json`);
+    const before = fs.readFileSync(taskPath, 'utf8');
+    const rename = fs.renameSync;
+    const renameSpy = vi.spyOn(fs, 'renameSync').mockImplementation((source, destination) => {
+      if (path.resolve(String(destination)) === taskPath) {
+        throw Object.assign(new Error('task EXDEV'), { code: 'EXDEV' });
+      }
+      return rename(source, destination);
+    });
+    const copySpy = vi.spyOn(fs, 'copyFileSync');
+    try {
+      expect(() => desktop.requestReview(task.id, { from: 'worker' })).toThrow(/task EXDEV/);
+    } finally {
+      renameSpy.mockRestore();
+      copySpy.mockRestore();
+    }
+    expect(copySpy).not.toHaveBeenCalled();
+    expect(fs.readFileSync(taskPath, 'utf8')).toBe(before);
+    expect(desktop.getKanbanState().tasks[task.id]).toBeUndefined();
+  });
+
+  it('marks the transition uncertain if the task call committed but then failed', () => {
     desktop.completeTask(task.id, 'worker');
     const original = taskStore.updateTask;
     const spy = vi.spyOn(taskStore, 'updateTask').mockImplementationOnce((...args) => {
@@ -157,12 +244,16 @@ describe('required task artifacts', () => {
     } finally {
       spy.mockRestore();
     }
-    expect(desktop.getKanbanState().tasks[task.id].column).toBe('review');
-    expect(desktop.getTask(task.id).reviewState).toBe('review');
-    expect(desktop.getTask(task.id).historyEvents.at(-1).type).toBe('review_requested');
+    expect(() => desktop.getKanbanState()).toThrow(/unknown outcome/);
+    expect(() => desktop.getTask(task.id)).toThrow(/unknown outcome/);
+    const saved = JSON.parse(
+      fs.readFileSync(path.join(dir, 'tasks', 'fixture', `${task.id}.json`), 'utf8')
+    );
+    expect(saved.reviewState).toBe('review');
+    expect(saved.historyEvents.at(-1).type).toBe('review_requested');
   });
 
-  it('does not restore the board after an already committed review event even when the review state was unchanged', () => {
+  it('marks a committed review event uncertain even when the review state was unchanged', () => {
     desktop.completeTask(task.id, 'worker');
     desktop.requestReview(task.id, { from: 'worker', reviewer: 'lead' });
     const before = desktop.getTask(task.id);
@@ -176,9 +267,439 @@ describe('required task artifacts', () => {
     } finally {
       spy.mockRestore();
     }
-    expect(desktop.getTask(task.id).historyEvents).toHaveLength(before.historyEvents.length + 1);
-    expect(desktop.getTask(task.id).historyEvents.at(-1).type).toBe('review_started');
+    const saved = JSON.parse(
+      fs.readFileSync(path.join(dir, 'tasks', 'fixture', `${task.id}.json`), 'utf8')
+    );
+    expect(saved.historyEvents).toHaveLength(before.historyEvents.length + 1);
+    expect(saved.historyEvents.at(-1).type).toBe('review_started');
+    expect(() => desktop.getKanbanState()).toThrow(/unknown outcome/);
+  });
+
+  it('survives an EIO writing the board without retrying or hiding uncertainty after restart', () => {
+    desktop.completeTask(task.id, 'worker');
+    desktop.addReviewer('lead');
+    const teamDir = path.join(dir, 'teams', 'fixture');
+    const boardPath = path.join(teamDir, 'kanban-state.json');
+    const other = desktop.createTask({ subject: 'Another task', owner: 'worker' });
+    const beforeBoard = fs.existsSync(boardPath) ? fs.readFileSync(boardPath, 'utf8') : null;
+    const write = fs.writeFileSync;
+    let boardAttempts = 0;
+    const spy = vi.spyOn(fs, 'writeFileSync').mockImplementation((target, ...args) => {
+      if (
+        typeof target === 'string' &&
+        path.dirname(target) === teamDir &&
+        path.basename(target).startsWith('.tmp.')
+      ) {
+        boardAttempts += 1;
+        throw Object.assign(new Error('persistent board EIO'), { code: 'EIO' });
+      }
+      return write(target, ...args);
+    });
+    try {
+      expect(() => desktop.requestReview(task.id, { from: 'worker', reviewer: 'lead' })).toThrow(
+        /may have completed/
+      );
+    } finally {
+      spy.mockRestore();
+    }
+    expect(boardAttempts).toBe(1);
+    expect(fs.existsSync(boardPath) ? fs.readFileSync(boardPath, 'utf8') : null).toBe(beforeBoard);
+    expect(
+      JSON.parse(fs.readFileSync(path.join(dir, 'tasks', 'fixture', `${task.id}.json`), 'utf8'))
+        .pendingKanbanTransition
+    ).toBeDefined();
+    expect(() => desktop.getKanbanState()).toThrow(/unknown outcome/);
+    expect(() => desktop.updateTaskFields(task.id, { description: 'must not overwrite' })).toThrow(
+      /unknown outcome/
+    );
+    expect(
+      desktop.updateTaskFields(other.id, { description: 'unrelated writer' }).description
+    ).toBe('unrelated writer');
+    const reopened = createController({ teamName: 'fixture', claudeDir: dir }).taskBoard;
+    expect(() => reopened.getKanbanState()).toThrow(/unknown outcome/);
+  });
+
+  it('checks an unchanged pending transition and publishes it only after explicit confirmation', () => {
+    desktop.completeTask(task.id, 'worker');
+    desktop.addReviewer('lead');
+    const teamDir = path.join(dir, 'teams', 'fixture');
+    const boardPath = path.join(teamDir, 'kanban-state.json');
+    const write = fs.writeFileSync;
+    const spy = vi.spyOn(fs, 'writeFileSync').mockImplementation((target, ...args) => {
+      if (
+        typeof target === 'string' &&
+        path.dirname(target) === teamDir &&
+        path.basename(target).startsWith('.tmp.')
+      ) {
+        throw Object.assign(new Error('board EIO'), { code: 'EIO' });
+      }
+      return write(target, ...args);
+    });
+    try {
+      expect(() => desktop.requestReview(task.id, { from: 'worker', reviewer: 'lead' })).toThrow(
+        /may have completed/
+      );
+    } finally {
+      spy.mockRestore();
+    }
+    const taskPath = path.join(dir, 'tasks', 'fixture', `${task.id}.json`);
+    const taskBefore = fs.readFileSync(taskPath, 'utf8');
+    const boardBefore = fs.readFileSync(boardPath, 'utf8');
+    const api = createController({ teamName: 'fixture', claudeDir: dir }).kanban;
+    const checked = api.inspectPendingTransition(task.id);
+    expect(checked).toMatchObject({ taskId: task.id, column: 'review', mode: 'publish' });
+    expect(fs.readFileSync(taskPath, 'utf8')).toBe(taskBefore);
+    expect(fs.readFileSync(boardPath, 'utf8')).toBe(boardBefore);
+    expect(() =>
+      api.resolvePendingTransition(
+        task.id,
+        checked.transitionId,
+        checked.snapshotHash,
+        checked.mode,
+        '0'.repeat(64)
+      )
+    ).toThrow(/context changed/);
+    expect(fs.readFileSync(taskPath, 'utf8')).toBe(taskBefore);
+    expect(fs.readFileSync(boardPath, 'utf8')).toBe(boardBefore);
+    api.resolvePendingTransition(
+      task.id,
+      checked.transitionId,
+      checked.snapshotHash,
+      checked.mode,
+      checked.contextHash
+    );
     expect(desktop.getKanbanState().tasks[task.id].column).toBe('review');
+    const after = desktop.getTask(task.id);
+    expect(after.pendingKanbanTransition).toBeUndefined();
+    expect(after.historyEvents.filter((event) => event.type === 'review_requested')).toHaveLength(
+      1
+    );
+  });
+
+  it.each(['missing', 'changed'])(
+    'refuses recovery if the required artifact became %s after inspection',
+    (condition) => {
+      desktop.updateTaskFields(task.id, {
+        artifactRequired: true,
+        artifactFile: file('result.txt', 'first'),
+      });
+      const artifactPath = stored();
+      desktop.completeTask(task.id, 'worker');
+      desktop.addReviewer('lead');
+      const original = taskStore.updateTask;
+      const spy = vi.spyOn(taskStore, 'updateTask').mockImplementationOnce((...args) => {
+        original(...args);
+        throw Object.assign(new Error('lost task response'), { code: 'EIO' });
+      });
+      try {
+        expect(() => desktop.requestReview(task.id, { from: 'worker' })).toThrow(/unknown outcome/);
+      } finally {
+        spy.mockRestore();
+      }
+      const api = createController({ teamName: 'fixture', claudeDir: dir }).kanban;
+      const checked = api.inspectPendingTransition(task.id);
+      expect(checked.mode).toBe('publish');
+      if (condition === 'missing') fs.unlinkSync(artifactPath);
+      else fs.writeFileSync(artifactPath, 'other');
+      const boardPath = path.join(dir, 'teams', 'fixture', 'kanban-state.json');
+      const boardBefore = fs.readFileSync(boardPath, 'utf8');
+      expect(api.inspectPendingTransition(task.id)).toMatchObject({
+        mode: 'conflict',
+        reason: 'artifact_invalid',
+      });
+      expect(() =>
+        api.resolvePendingTransition(
+          task.id,
+          checked.transitionId,
+          checked.snapshotHash,
+          checked.mode,
+          checked.contextHash
+        )
+      ).toThrow(/cannot be verified/);
+      expect(fs.readFileSync(boardPath, 'utf8')).toBe(boardBefore);
+    }
+  );
+
+  it('rejects recovery if another writer removes the artifact requirement after inspection', () => {
+    desktop.updateTaskFields(task.id, {
+      artifactRequired: true,
+      artifactFile: file('result.txt', 'first'),
+    });
+    desktop.completeTask(task.id, 'worker');
+    desktop.addReviewer('lead');
+    const original = taskStore.updateTask;
+    const spy = vi.spyOn(taskStore, 'updateTask').mockImplementationOnce((...args) => {
+      original(...args);
+      throw Object.assign(new Error('lost task response'), { code: 'EIO' });
+    });
+    try {
+      expect(() => desktop.requestReview(task.id, { from: 'worker' })).toThrow(/unknown outcome/);
+    } finally {
+      spy.mockRestore();
+    }
+    const api = createController({ teamName: 'fixture', claudeDir: dir }).kanban;
+    const checked = api.inspectPendingTransition(task.id);
+    expect(checked.mode).toBe('publish');
+    const taskPath = path.join(dir, 'tasks', 'fixture', `${task.id}.json`);
+    const altered = JSON.parse(fs.readFileSync(taskPath, 'utf8'));
+    altered.artifactRequirement = { required: false };
+    fs.writeFileSync(taskPath, JSON.stringify(altered));
+    const boardPath = path.join(dir, 'teams', 'fixture', 'kanban-state.json');
+    const boardBefore = fs.readFileSync(boardPath, 'utf8');
+    expect(api.inspectPendingTransition(task.id).mode).toBe('conflict');
+    expect(() =>
+      api.resolvePendingTransition(
+        task.id,
+        checked.transitionId,
+        checked.snapshotHash,
+        checked.mode,
+        checked.contextHash
+      )
+    ).toThrow(/changed/);
+    expect(fs.readFileSync(boardPath, 'utf8')).toBe(boardBefore);
+  });
+
+  it('blocks board readers and writers while a task file may hide a pending marker', () => {
+    desktop.completeTask(task.id, 'worker');
+    desktop.addReviewer('lead');
+    const original = taskStore.updateTask;
+    const spy = vi.spyOn(taskStore, 'updateTask').mockImplementationOnce((...args) => {
+      original(...args);
+      throw Object.assign(new Error('response lost'), { code: 'EIO' });
+    });
+    try {
+      expect(() => desktop.requestReview(task.id, { from: 'worker' })).toThrow(/unknown outcome/);
+    } finally {
+      spy.mockRestore();
+    }
+    const api = createController({ teamName: 'fixture', claudeDir: dir }).kanban;
+    expect(api.inspectPendingTransition(task.id).mode).toBe('publish');
+    const taskPath = path.join(dir, 'tasks', 'fixture', `${task.id}.json`);
+    const complete = fs.readFileSync(taskPath, 'utf8');
+    const boardPath = path.join(dir, 'teams', 'fixture', 'kanban-state.json');
+    const beforeBoard = fs.readFileSync(boardPath, 'utf8');
+    fs.writeFileSync(taskPath, complete.slice(0, 24));
+    expect(() => desktop.getKanbanState()).toThrow(/Cannot verify task/);
+    expect(() => desktop.addReviewer('worker')).toThrow(/Cannot verify task/);
+    expect(fs.readFileSync(boardPath, 'utf8')).toBe(beforeBoard);
+    fs.writeFileSync(taskPath, complete);
+    expect(api.inspectPendingTransition(task.id).mode).toBe('publish');
+  });
+
+  it.each(['intact', 'malformed'])(
+    'does not announce a completed board while an %s transition outcome is unknown',
+    (condition) => {
+      const other = desktop.createTask({ subject: 'Other task', owner: 'worker' });
+      desktop.completeTask(task.id, 'worker');
+      desktop.addReviewer('lead');
+      desktop.requestReview(task.id, { from: 'worker', reviewer: 'lead' });
+      const teamDir = path.join(dir, 'teams', 'fixture');
+      const write = fs.writeFileSync;
+      const spy = vi.spyOn(fs, 'writeFileSync').mockImplementation((target, ...args) => {
+        if (typeof target === 'string' && path.dirname(target) === teamDir && path.basename(target).startsWith('.tmp.')) {
+          throw Object.assign(new Error('board EIO'), { code: 'EIO' });
+        }
+        return write(target, ...args);
+      });
+      try {
+        expect(() => desktop.approveReview(task.id, { from: 'lead' })).toThrow(/unknown outcome/);
+      } finally {
+        spy.mockRestore();
+      }
+      if (condition === 'malformed') {
+        const taskPath = path.join(dir, 'tasks', 'fixture', `${task.id}.json`);
+        fs.writeFileSync(taskPath, fs.readFileSync(taskPath, 'utf8').slice(0, 24));
+      }
+      desktop.completeTask(other.id, 'worker');
+      const inboxPath = path.join(teamDir, 'inboxes', 'lead.json');
+      const inbox = fs.existsSync(inboxPath) ? JSON.parse(fs.readFileSync(inboxPath, 'utf8')) : [];
+      expect(inbox.some((row) => String(row.messageId || '').startsWith('board-complete:'))).toBe(false);
+      const context = createController({ teamName: 'fixture', claudeDir: dir }).context;
+      expect(() => readBoardCompletionEpoch(context.paths)).toThrow(/KANBAN_TRANSITION_UNCERTAIN/);
+    }
+  );
+
+  it.each(['same-card', 'other-card'])(
+    'refuses to resolve after a newer %s board write without changing either file',
+    (change) => {
+      desktop.completeTask(task.id, 'worker');
+      desktop.addReviewer('lead');
+      const original = taskStore.updateTask;
+      const spy = vi.spyOn(taskStore, 'updateTask').mockImplementationOnce((...args) => {
+        original(...args);
+        throw Object.assign(new Error('response lost'), { code: 'EIO' });
+      });
+      try {
+        expect(() => desktop.requestReview(task.id, { from: 'worker' })).toThrow(
+          /may have completed/
+        );
+      } finally {
+        spy.mockRestore();
+      }
+      const api = createController({ teamName: 'fixture', claudeDir: dir }).kanban;
+      const checked = api.inspectPendingTransition(task.id);
+      expect(checked.mode).toBe('publish');
+      const boardPath = path.join(dir, 'teams', 'fixture', 'kanban-state.json');
+      const state = JSON.parse(fs.readFileSync(boardPath, 'utf8'));
+      state.tasks[change === 'same-card' ? task.id : 'another-task'] = {
+        column: 'approved',
+        movedAt: new Date().toISOString(),
+        transitionId: crypto.randomUUID(),
+      };
+      state.revision = crypto.randomUUID();
+      fs.writeFileSync(boardPath, JSON.stringify(state));
+      const boardBefore = fs.readFileSync(boardPath, 'utf8');
+      const taskPath = path.join(dir, 'tasks', 'fixture', `${task.id}.json`);
+      const taskBefore = fs.readFileSync(taskPath, 'utf8');
+      expect(api.inspectPendingTransition(task.id).mode).toBe('conflict');
+      expect(() =>
+        api.resolvePendingTransition(
+          task.id,
+          checked.transitionId,
+          checked.snapshotHash,
+          checked.mode,
+          checked.contextHash
+        )
+      ).toThrow(/changed/);
+      expect(fs.readFileSync(boardPath, 'utf8')).toBe(boardBefore);
+      expect(fs.readFileSync(taskPath, 'utf8')).toBe(taskBefore);
+    }
+  );
+
+  it('refuses ABA restoration of identical board bytes after inspection', () => {
+    desktop.completeTask(task.id, 'worker');
+    desktop.addReviewer('lead');
+    const original = taskStore.updateTask;
+    const spy = vi.spyOn(taskStore, 'updateTask').mockImplementationOnce((...args) => {
+      original(...args);
+      throw Object.assign(new Error('response lost'), { code: 'EIO' });
+    });
+    try {
+      expect(() => desktop.requestReview(task.id, { from: 'worker' })).toThrow(/unknown outcome/);
+    } finally {
+      spy.mockRestore();
+    }
+    const api = createController({ teamName: 'fixture', claudeDir: dir }).kanban;
+    const checked = api.inspectPendingTransition(task.id);
+    expect(checked.mode).toBe('publish');
+    const boardPath = path.join(dir, 'teams', 'fixture', 'kanban-state.json');
+    const identical = fs.readFileSync(boardPath);
+    const replacement = path.join(path.dirname(boardPath), 'fixture-replacement.json');
+    fs.writeFileSync(replacement, identical);
+    fs.renameSync(replacement, boardPath);
+    expect(fs.readFileSync(boardPath)).toEqual(identical);
+    expect(api.inspectPendingTransition(task.id).mode).toBe('conflict');
+    expect(() =>
+      api.resolvePendingTransition(
+        task.id,
+        checked.transitionId,
+        checked.snapshotHash,
+        checked.mode,
+        checked.contextHash
+      )
+    ).toThrow(/changed/);
+  });
+
+  it('allows explicit acknowledgement when board publication succeeded but marker cleanup failed', () => {
+    desktop.completeTask(task.id, 'worker');
+    desktop.addReviewer('lead');
+    const original = taskStore.updateTask;
+    let calls = 0;
+    const spy = vi.spyOn(taskStore, 'updateTask').mockImplementation((...args) => {
+      calls += 1;
+      if (calls === 2) throw Object.assign(new Error('cleanup EIO'), { code: 'EIO' });
+      return original(...args);
+    });
+    try {
+      expect(() => desktop.requestReview(task.id, { from: 'worker' })).toThrow(/unknown outcome/);
+    } finally {
+      spy.mockRestore();
+    }
+    const api = createController({ teamName: 'fixture', claudeDir: dir }).kanban;
+    const checked = api.inspectPendingTransition(task.id);
+    expect(checked.mode).toBe('clear');
+    const boardPath = path.join(dir, 'teams', 'fixture', 'kanban-state.json');
+    const before = fs.readFileSync(boardPath, 'utf8');
+    api.resolvePendingTransition(
+      task.id,
+      checked.transitionId,
+      checked.snapshotHash,
+      checked.mode,
+      checked.contextHash
+    );
+    expect(fs.readFileSync(boardPath, 'utf8')).toBe(before);
+    expect(desktop.getTask(task.id).pendingKanbanTransition).toBeUndefined();
+  });
+
+  it('does not repeat recovery when the board write commits but reports an error', () => {
+    desktop.completeTask(task.id, 'worker');
+    desktop.addReviewer('lead');
+    const originalUpdate = taskStore.updateTask;
+    const failed = vi.spyOn(taskStore, 'updateTask').mockImplementationOnce((...args) => {
+      originalUpdate(...args);
+      throw Object.assign(new Error('lost task response'), { code: 'EIO' });
+    });
+    try {
+      expect(() => desktop.requestReview(task.id, { from: 'worker' })).toThrow(/unknown outcome/);
+    } finally {
+      failed.mockRestore();
+    }
+    const api = createController({ teamName: 'fixture', claudeDir: dir }).kanban;
+    const checked = api.inspectPendingTransition(task.id);
+    const boardPath = path.join(dir, 'teams', 'fixture', 'kanban-state.json');
+    const rename = fs.renameSync;
+    let attempts = 0;
+    const spy = vi.spyOn(fs, 'renameSync').mockImplementation((source, destination) => {
+      const result = rename(source, destination);
+      if (path.resolve(String(destination)) === boardPath) {
+        attempts += 1;
+        throw Object.assign(new Error('lost board response'), { code: 'EIO' });
+      }
+      return result;
+    });
+    try {
+      expect(() =>
+        api.resolvePendingTransition(
+          task.id,
+          checked.transitionId,
+          checked.snapshotHash,
+          checked.mode,
+          checked.contextHash
+        )
+      ).toThrow(/lost board response/);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(attempts).toBe(1);
+    expect(api.inspectPendingTransition(task.id).mode).toBe('clear');
+    expect(() => desktop.getKanbanState()).toThrow(/unknown outcome/);
+  });
+
+  it('leaves later board writes untouched and reports uncertainty for both the same and another card', () => {
+    desktop.completeTask(task.id, 'worker');
+    const original = taskStore.updateTask;
+    const spy = vi.spyOn(taskStore, 'updateTask').mockImplementationOnce((...args) => {
+      original(...args);
+      throw Object.assign(new Error('response lost after task commit'), { code: 'EIO' });
+    });
+    expect(() => desktop.requestReview(task.id, { from: 'worker', reviewer: 'lead' })).toThrow(
+      /may have completed/
+    );
+    spy.mockRestore();
+    const boardPath = path.join(dir, 'teams', 'fixture', 'kanban-state.json');
+    const later = {
+      teamName: 'fixture',
+      reviewers: [],
+      tasks: {
+        [task.id]: { column: 'approved', movedAt: new Date().toISOString() },
+        'other-writer-task': { column: 'review', movedAt: new Date().toISOString() },
+      },
+    };
+    fs.writeFileSync(boardPath, JSON.stringify(later));
+    const bytes = fs.readFileSync(boardPath, 'utf8');
+    expect(() => desktop.getKanbanState()).toThrow(/unknown outcome/);
+    expect(() => desktop.requestReview(task.id, { from: 'worker' })).toThrow(/unknown outcome/);
+    expect(fs.readFileSync(boardPath, 'utf8')).toBe(bytes);
   });
 
   it.each(['desktop', 'agent'])(

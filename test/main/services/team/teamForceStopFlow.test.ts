@@ -45,6 +45,7 @@ import {
   TeamLaunchStateStore,
 } from '@main/services/team/TeamLaunchStateStore';
 import * as pathDecoder from '@main/utils/pathDecoder';
+import { TaskActivityStopError } from '@shared/utils/teamStopErrors';
 
 import type { TeamForceStopFlowPorts } from '@main/services/team/lifecycle/teamForceStopFlow';
 import type {
@@ -440,7 +441,8 @@ describe('runTeamForceStopFlow', () => {
     'preserves durable launch ownership and no stopped marker after %s cleanup',
     async (failure) => {
       const base = fs.mkdtempSync(path.join(os.tmpdir(), 'TEST-force-stop-truthful-'));
-      const directory = vi.spyOn(pathDecoder, 'getTeamsBasePath').mockReturnValue(base);
+      const teams = path.join(base, 'teams');
+      const directory = vi.spyOn(pathDecoder, 'getTeamsBasePath').mockReturnValue(teams);
       try {
         const store = new TeamLaunchStateStore();
         const snapshot = createPersistedLaunchSnapshot({
@@ -463,7 +465,7 @@ describe('runTeamForceStopFlow', () => {
           },
           updatedAt: '2026-10-24T00:00:00.000Z',
         });
-        fs.mkdirSync(path.join(base, 'truthful'));
+        fs.mkdirSync(path.join(teams, 'truthful'), { recursive: true });
         expect(await store.write('truthful', snapshot)).toBe(true);
         const publication = [
           getTeamLaunchStatePath('truthful'),
@@ -501,17 +503,18 @@ describe('runTeamForceStopFlow', () => {
         expect(() => assertEscalatedStopConfirmed(result)).toThrow('team_stop_unconfirmed');
       } finally {
         directory.mockRestore();
-        fs.rmSync(base, { recursive: true, force: true });
+        fs.rmSync(base, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
       }
     }
   );
 
   it('keeps live secondary UI evidence retryable without a persisted launch or tracked primary', async () => {
     const base = fs.mkdtempSync(path.join(os.tmpdir(), 'TEST-force-stop-live-secondary-'));
-    const directory = vi.spyOn(pathDecoder, 'getTeamsBasePath').mockReturnValue(base);
+    const teams = path.join(base, 'teams');
+    const directory = vi.spyOn(pathDecoder, 'getTeamsBasePath').mockReturnValue(teams);
     try {
       const teamName = 'secondary-only';
-      fs.mkdirSync(path.join(base, teamName));
+      fs.mkdirSync(path.join(teams, teamName), { recursive: true });
       // Finished clean_success intentionally clears launch-state.json while
       // retaining launch freshness. Primary Stop has already removed its maps.
       fs.writeFileSync(
@@ -590,7 +593,7 @@ describe('runTeamForceStopFlow', () => {
       expect(ports.stopTeam).toHaveBeenCalledTimes(2);
     } finally {
       directory.mockRestore();
-      fs.rmSync(base, { recursive: true, force: true });
+      fs.rmSync(base, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
     }
   });
 
@@ -612,6 +615,49 @@ describe('runTeamForceStopFlow', () => {
 });
 
 describe('stopTeamWithEscalation', () => {
+  it('reports both an unfinished timer and an unconfirmed stop publication', async () => {
+    const ports = createPorts({
+      stopTeam: vi.fn(() => Promise.reject(new TaskActivityStopError(true))),
+      markTeamStopped: vi.fn(() => Promise.resolve(false)),
+    });
+    await expect(stopTeamWithEscalation('fixteam', ports)).rejects.toMatchObject({
+      code: 'task_activity_interval_pause_failed_after_stop',
+      pendingTransition: true,
+      cleanupUnconfirmed: true,
+    });
+    expect(ports.stopTeam).toHaveBeenCalledTimes(1);
+    expect(ports.killRetainedRuntimeProcesses).not.toHaveBeenCalled();
+    expect(ports.clearPendingPromptDeliveries).not.toHaveBeenCalled();
+  });
+
+  it.each(['admission', 'publication', 'superseded'] as const)(
+    'reports incomplete stopped-state publication on %s without repeating stop',
+    async (failure) => {
+      const admission = vi.spyOn(TeamLaunchStateStore.prototype, 'beginStop');
+      if (failure === 'admission') {
+        admission.mockRejectedValue(new Error('File lock timeout: launch publication'));
+      }
+      const publish = vi.fn(() => {
+        if (failure === 'publication')
+          return Promise.reject(new Error('File lock timeout: publish'));
+        return Promise.resolve(failure !== 'superseded');
+      });
+      const ports = createPorts({ markTeamStopped: publish });
+      try {
+        const result = await stopTeamWithEscalation('fixteam', ports);
+        expect(result.stopOutcome).toBe('stopped');
+        expect(result.cleanupOutcome).toBe('incomplete');
+        expect(() => assertEscalatedStopConfirmed(result)).toThrow(/team_stop_unconfirmed/);
+        expect(ports.stopTeam).toHaveBeenCalledTimes(1);
+        expect(ports.killRetainedRuntimeProcesses).not.toHaveBeenCalled();
+        expect(ports.clearPendingPromptDeliveries).not.toHaveBeenCalled();
+        expect(publish).toHaveBeenCalledTimes(failure === 'admission' ? 0 : 1);
+      } finally {
+        admission.mockRestore();
+      }
+    }
+  );
+
   it('touches no other process when the regular stop confirms', async () => {
     const ports = createPorts({ markTeamStopped: vi.fn(() => Promise.resolve()) });
 
@@ -649,7 +695,7 @@ describe('stopTeamWithEscalation', () => {
     expect(forcing.clearPendingPromptDeliveries).toHaveBeenCalled();
   });
 
-  it('escalates to the force-stop cleanup when the regular stop rejects', async () => {
+  it('does not start force cleanup when the regular stop rejects without confirmation', async () => {
     const ports = createPorts({
       stopTeam: vi.fn(() =>
         Promise.reject(new Error('did not confirm stop; retaining runtime ownership'))
@@ -659,11 +705,13 @@ describe('stopTeamWithEscalation', () => {
     const result = await stopTeamWithEscalation('fixteam', ports);
 
     expect(result.stopOutcome).toBe('stop_failed');
-    expect(result.killedRuntimePids).toEqual([4242]);
-    expect(result.clearedPendingDeliveries).toBe(2);
+    expect(result.cleanupOutcome).toBe('incomplete');
+    expect(ports.stopTeam).toHaveBeenCalledTimes(1);
+    expect(ports.killRetainedRuntimeProcesses).not.toHaveBeenCalled();
+    expect(ports.clearPendingPromptDeliveries).not.toHaveBeenCalled();
   });
 
-  it('escalates to the force-stop cleanup when the regular stop runs out of budget', async () => {
+  it('leaves a timed-out regular stop alone because it may still be running', async () => {
     const ports = createPorts({
       stopTeam: vi.fn(() => new Promise<void>(() => undefined)),
     });
@@ -671,19 +719,13 @@ describe('stopTeamWithEscalation', () => {
     const result = await stopTeamWithEscalation('fixteam', ports);
 
     expect(result.stopOutcome).toBe('timed_out');
-    expect(ports.killRetainedRuntimeProcesses).toHaveBeenCalledWith('fixteam', {
-      requestedAtMs: expect.any(Number),
-    });
-    // The escalated cleanup carries the same run fence the force stop does:
-    // a relaunch started inside the stop budget keeps its deliveries.
-    expect(ports.clearPendingPromptDeliveries).toHaveBeenCalledWith('fixteam', {
-      requestedAtMs: expect.any(Number),
-      ownedRunIds: ['run-a'],
-    });
-    expect(ports.clearPendingPromptDeliveries).toHaveBeenCalledTimes(1);
+    expect(result.cleanupOutcome).toBe('incomplete');
+    expect(ports.stopTeam).toHaveBeenCalledTimes(1);
+    expect(ports.killRetainedRuntimeProcesses).not.toHaveBeenCalled();
+    expect(ports.clearPendingPromptDeliveries).not.toHaveBeenCalled();
   });
 
-  it('scopes the escalated cancellation to the lanes read before the stop', async () => {
+  it('does not cancel even known lanes after an unconfirmed regular stop', async () => {
     const ports = createPorts({
       observeOwnedRuntimeLaneIds: () => Promise.resolve(['primary']),
       stopTeam: vi.fn(() => Promise.reject(new Error('did not confirm stop'))),
@@ -691,11 +733,7 @@ describe('stopTeamWithEscalation', () => {
 
     await stopTeamWithEscalation('fixteam', ports);
 
-    expect(ports.clearPendingPromptDeliveries).toHaveBeenCalledWith('fixteam', {
-      requestedAtMs: expect.any(Number),
-      ownedRunIds: ['run-a'],
-      ownedLaneIds: ['primary'],
-    });
+    expect(ports.clearPendingPromptDeliveries).not.toHaveBeenCalled();
   });
 });
 
@@ -746,42 +784,81 @@ describe('stopTeamWithEscalation runtime-host evidence', () => {
     });
   });
 
-  it('finishes the moment the recorded hosts are gone instead of waiting out the budget', async () => {
+  it('waits for the original stop after recorded hosts disappear and delivers the clock error', async () => {
     let liveHosts = 2;
+    let failStop!: (error: Error) => void;
     const ports = createPorts({
-      stopTeam: vi.fn(() => new Promise<void>(() => undefined)),
+      stopTeam: vi.fn(
+        () =>
+          new Promise<void>((_resolve, reject) => {
+            failStop = reject;
+          })
+      ),
       stopTimeoutMs: STOP_ESCALATION_TIMEOUT_MS,
       countLiveRuntimeHosts: vi.fn(() => Promise.resolve(liveHosts)),
     });
 
     const stopping = stopTeamWithEscalation('fixteam', ports);
+    let settled = false;
+    void stopping.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      }
+    );
     await advanceThroughSamples(2);
     liveHosts = 0;
     await advanceThroughSamples(2);
-    const result = await stopping;
-
-    expect(result.stopOutcome).toBe('runtime_already_down');
-    expect(result.diagnostics.join('\n')).toContain('Runtime hosts were gone');
-    // The team is down but the cleanup still runs: startup locks and pending
-    // deliveries outlive the hosts.
-    expect(ports.killRetainedRuntimeProcesses).toHaveBeenCalledWith('fixteam', {
-      requestedAtMs: expect.any(Number),
-    });
-    expect(ports.clearPendingPromptDeliveries).toHaveBeenCalledWith('fixteam', {
-      requestedAtMs: expect.any(Number),
-      ownedRunIds: ['run-a'],
-    });
+    expect(settled).toBe(false);
+    const error = new TaskActivityStopError(true);
+    failStop(error);
+    await expect(stopping).rejects.toBe(error);
+    expect(ports.stopTeam).toHaveBeenCalledTimes(1);
+    expect(ports.killRetainedRuntimeProcesses).not.toHaveBeenCalled();
+    expect(ports.clearPendingPromptDeliveries).not.toHaveBeenCalled();
   });
 
-  it('samples the hosts on their own evidence after the force stop cancelled deliveries up front', async () => {
+  it('keeps the timeout unconfirmed when the original stop fails late', async () => {
+    let failStop!: (error: Error) => void;
+    const ports = createPorts({
+      stopTeam: vi.fn(
+        () =>
+          new Promise<void>((_resolve, reject) => {
+            failStop = reject;
+          })
+      ),
+      stopTimeoutMs: 5_000,
+    });
+    const stopping = stopTeamWithEscalation('fixteam', ports);
+    await vi.advanceTimersByTimeAsync(5_000);
+    const result = await stopping;
+    expect(result).toMatchObject({ stopOutcome: 'timed_out', cleanupOutcome: 'incomplete' });
+
+    failStop(new TaskActivityStopError(true));
+    await vi.advanceTimersByTimeAsync(1);
+    expect(result.stopOutcome).toBe('timed_out');
+    expect(ports.stopTeam).toHaveBeenCalledTimes(1);
+    expect(ports.killRetainedRuntimeProcesses).not.toHaveBeenCalled();
+    expect(ports.clearPendingPromptDeliveries).not.toHaveBeenCalled();
+  });
+
+  it('explicit force stop still waits for the original stop after hosts disappear', async () => {
     // The force stop persists the cancellation before it asks for the stop.
     // That write reaches the delivery ledger, never the launch state the poll
     // reads, so the poll must still end the wait on host evidence alone and a
     // lane must not read as down merely because its records were cancelled.
     const order: string[] = [];
     let liveHosts = 1;
+    let finishStop!: () => void;
     const ports = createPorts({
-      stopTeam: vi.fn(() => new Promise<void>(() => undefined)),
+      stopTeam: vi.fn(
+        () =>
+          new Promise<void>((resolve) => {
+            finishStop = resolve;
+          })
+      ),
       stopTimeoutMs: STOP_ESCALATION_TIMEOUT_MS,
       clearPendingPromptDeliveries: vi.fn(() => {
         order.push('cancel');
@@ -799,7 +876,14 @@ describe('stopTeamWithEscalation runtime-host evidence', () => {
     liveHosts = 0;
     await advanceThroughSamples(1);
 
-    await expect(stopping).resolves.toMatchObject({ stopOutcome: 'runtime_already_down' });
+    let settled = false;
+    void stopping.then(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    finishStop();
+    await expect(stopping).resolves.toMatchObject({ stopOutcome: 'stopped' });
   });
 
   it('keeps the previous fixed budget when no host counter is supplied', async () => {

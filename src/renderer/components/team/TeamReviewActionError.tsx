@@ -8,11 +8,14 @@ export const TeamReviewActionError = ({
   const { t } = useAppTranslation('team');
   if (!error) return null;
 
-  const message = error.includes('A required task artifact has not been attached')
-    ? t('artifact.actionMissing')
-    : error.includes('Required task artifact cannot be verified')
-      ? t('artifact.actionInvalid')
-      : error;
+  const message =
+    error.includes('Review transition for task') && error.includes('unknown outcome')
+      ? t('artifact.recoveryActionHint')
+      : error.includes('A required task artifact has not been attached')
+        ? t('artifact.actionMissing')
+        : error.includes('Required task artifact cannot be verified')
+          ? t('artifact.actionInvalid')
+          : error;
   return (
     <div
       role="alert"

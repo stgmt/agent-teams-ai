@@ -7464,6 +7464,24 @@ describe('TeamDataService', () => {
     expect(harness.listProcessesSpy).not.toHaveBeenCalled();
   });
 
+  it('does not replace an uncertain Kanban transition with an empty successful snapshot', async () => {
+    const harness = createGetTeamDataHarness();
+    const error = Object.assign(new Error('Review transition has an unknown outcome'), {
+      code: 'KANBAN_TRANSITION_UNCERTAIN',
+    });
+    harness.kanbanManager.getState.mockRejectedValue(error);
+    await expect(harness.service.getTeamData('my-team')).rejects.toBe(error);
+  });
+
+  it('does not replace a Kanban snapshot that changed during reading with an empty one', async () => {
+    const harness = createGetTeamDataHarness();
+    const error = Object.assign(new Error('Kanban changed while being read'), {
+      code: 'KANBAN_SNAPSHOT_CHANGED',
+    });
+    harness.kanbanManager.getState.mockRejectedValue(error);
+    await expect(harness.service.getTeamData('my-team')).rejects.toBe(error);
+  });
+
   it('uses snapshot config reads for UI team data snapshots', async () => {
     const harness = createGetTeamDataHarness();
 
@@ -8111,34 +8129,23 @@ describe('TeamDataService', () => {
   });
 
   it('keeps warning order deterministic even when read failures settle out of order', async () => {
-    const tasksDeferred = createDeferred<TeamTask[]>();
     const inboxDeferred = createDeferred<string[]>();
     const metaDeferred = createDeferred<TeamConfig['members']>();
-    const kanbanDeferred = createDeferred<KanbanState>();
 
     const harness = createGetTeamDataHarness({
-      getTasks: async () => tasksDeferred.promise,
       listInboxNames: async () => inboxDeferred.promise,
       getMembers: async () => metaDeferred.promise,
-      getState: async () => kanbanDeferred.promise,
     });
 
     const pending = harness.service.getTeamData('my-team');
     await flushMicrotasks();
 
-    kanbanDeferred.reject(new Error('kanban failed'));
-    tasksDeferred.reject(new Error('tasks failed'));
     metaDeferred.reject(new Error('meta failed'));
     inboxDeferred.reject(new Error('inbox failed'));
 
     const data = await pending;
 
-    expect(data.warnings).toEqual([
-      'Tasks failed to load',
-      'Inboxes failed to load',
-      'Member metadata failed to load',
-      'Kanban state failed to load',
-    ]);
+    expect(data.warnings).toEqual(['Inboxes failed to load', 'Member metadata failed to load']);
   });
 
   it('preserves message assembly order across inbox, lead texts, and sent messages', async () => {
@@ -8204,9 +8211,6 @@ describe('TeamDataService', () => {
         throw new Error('messages failed');
       },
       getMembers: async () => metaMembers,
-      getState: async () => {
-        throw new Error('kanban failed');
-      },
       readMessages: async () => [
         {
           from: 'user',
@@ -8236,7 +8240,7 @@ describe('TeamDataService', () => {
     const data = await harness.service.getTeamData('my-team');
     const feed = await harness.service.getMessageFeed('my-team');
 
-    expect(data.warnings).toEqual(expect.arrayContaining(['Kanban state failed to load']));
+    expect(data.tasks).toEqual(expect.arrayContaining([expect.objectContaining({ id: 'task-1' })]));
     expect(feed.messages.map((message) => message.messageId)).toEqual(['sent-1', 'lead-1']);
     expect(resolveMembersSpy).toHaveBeenCalledWith(
       buildDefaultTeamConfig(),
@@ -8262,7 +8266,7 @@ describe('TeamDataService', () => {
     );
   });
 
-  it('keeps task assembly safe when kanban loading fails', async () => {
+  it('rejects the snapshot when kanban loading fails', async () => {
     const harness = createGetTeamDataHarness({
       getTasks: async () => [
         {
@@ -8276,21 +8280,20 @@ describe('TeamDataService', () => {
       },
     });
 
-    const data = await harness.service.getTeamData('my-team');
-
-    expect(data.tasks).toEqual([
-      expect.objectContaining({
-        id: 'task-1',
-        subject: 'Investigate rollout',
-        status: 'pending',
-      }),
-    ]);
-    expect(data.kanbanState).toEqual({
-      teamName: 'my-team',
-      reviewers: [],
-      tasks: {},
+    await expect(harness.service.getTeamData('my-team')).rejects.toMatchObject({
+      code: 'KANBAN_SNAPSHOT_CHANGED',
     });
-    expect(data.warnings).toEqual(expect.arrayContaining(['Kanban state failed to load']));
+  });
+
+  it('rejects the snapshot when task reading fails before the final board check', async () => {
+    const harness = createGetTeamDataHarness({
+      getTasks: async () => {
+        throw new Error('task read failed');
+      },
+    });
+    await expect(harness.service.getTeamData('my-team')).rejects.toMatchObject({
+      code: 'KANBAN_SNAPSHOT_CHANGED',
+    });
   });
 
   it('degrades a queued heavy sync throw to warning and still completes the snapshot', async () => {

@@ -1,4 +1,5 @@
 const kanbanStore = require('./kanbanStore.js');
+const taskStore = require('./taskStore.js');
 const tasks = require('./tasks.js');
 const reviewStateHelpers = require('./reviewState.js');
 const runtimeHelpers = require('./runtimeHelpers.js');
@@ -57,7 +58,34 @@ function assertKanbanColumnAllowed(context, task, column, options = {}) {
 }
 
 function getKanbanState(context) {
+  return withTeamBoardLock(context.paths, () => readKanbanStateAlreadyLocked(context));
+}
+
+function readKanbanStateAlreadyLocked(context) {
   return kanbanStore.readKanbanState(context.paths, context.teamName);
+}
+
+function assertKanbanStateConsistent(context, state) {
+  return kanbanStore.assertKanbanStateConsistent(context.paths, state);
+}
+
+function inspectPendingTransition(context, taskId) {
+  return withTeamBoardLock(context.paths, () => {
+    const snapshot = kanbanStore.inspectPendingTransition(context.paths, context.teamName, taskId);
+    try {
+      require('./taskArtifact.js').verifyTask(context, taskStore.readTask(context.paths, taskId));
+      return snapshot;
+    } catch {
+      return { ...snapshot, mode: 'conflict', reason: 'artifact_invalid' };
+    }
+  });
+}
+
+function resolvePendingTransition(context, taskId, transitionId, snapshotHash, mode, contextHash) {
+  return withTeamBoardLock(context.paths, () => {
+    require('./taskArtifact.js').verifyTask(context, taskStore.readTask(context.paths, taskId));
+    return kanbanStore.resolvePendingTransition(context.paths, context.teamName, taskId, transitionId, snapshotHash, mode, contextHash);
+  });
 }
 
 function setKanbanColumn(context, taskId, column, options = {}) {
@@ -152,6 +180,10 @@ function updateColumnOrder(context, columnId, orderedTaskIds) {
 }
 
 module.exports = {
+  assertKanbanStateConsistent,
+  readKanbanStateAlreadyLocked,
+  inspectPendingTransition,
+  resolvePendingTransition,
   getKanbanState,
   setKanbanColumn,
   clearKanban,
