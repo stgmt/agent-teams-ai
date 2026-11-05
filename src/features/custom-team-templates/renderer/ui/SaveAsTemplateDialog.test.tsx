@@ -1,6 +1,7 @@
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 
+import enTeam from '@features/localization/renderer/locales/en/team.json';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const preparePreview = vi.hoisted(() => vi.fn());
@@ -15,11 +16,13 @@ vi.mock('@renderer/api', () => ({
 vi.mock('@features/localization/renderer', () => ({
   useAppTranslation: () => ({
     t: (key: string, values?: Record<string, unknown>) =>
-      values
-        ? `${key}|${Object.entries(values)
-            .map(([name, value]) => `${name}=${String(value)}`)
-            .join(';')}`
-        : key,
+      key === 'customTemplates.states.pendingSaveHelp'
+        ? enTeam.customTemplates.states.pendingSaveHelp
+        : values
+          ? `${key}|${Object.entries(values)
+              .map(([name, value]) => `${name}=${String(value)}`)
+              .join(';')}`
+          : key,
   }),
 }));
 vi.mock('@renderer/components/ui/dialog', () => ({
@@ -286,6 +289,11 @@ describe('SaveAsTemplateDialog save', () => {
     setPendingTemplateMutation({ kind: 'duplicate', label: 'Uncertain copy' });
     await render();
     expect(host.querySelector('[data-testid="template-library-unresolved"]')).not.toBeNull();
+    expect(
+      host.querySelector('[data-testid="template-library-unresolved"]')?.textContent
+    ).toContain(
+      'Close this dialog and open My Templates. Select Re-check outcome, then choose I understand; allow new changes.'
+    );
     expect(saveButton().disabled).toBe(true);
     await act(async () => saveButton().click());
     expect(saveTemplate).not.toHaveBeenCalled();

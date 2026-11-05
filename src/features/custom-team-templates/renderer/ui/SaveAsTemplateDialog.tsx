@@ -231,6 +231,9 @@ export const SaveAsTemplateDialog = ({
               {mutationStorageAvailable
                 ? t('customTemplates.states.pendingProfileBody')
                 : t('customTemplates.states.mutationStorageUnavailable')}
+              {mutationStorageAvailable ? (
+                <p>{t('customTemplates.states.pendingSaveHelp')}</p>
+              ) : null}
             </div>
           ) : null}
           {noticeBox ? (
