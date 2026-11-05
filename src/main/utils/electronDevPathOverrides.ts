@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
+import { getLegacyElectronUserDataCandidates } from './electronUserDataMigration';
 import { setAppDataBasePath, setClaudeBasePathOverride } from './pathDecoder';
 
 export const AGENT_TEAMS_ELECTRON_USER_DATA_DIR_ENV = 'AGENT_TEAMS_ELECTRON_USER_DATA_DIR';
@@ -47,7 +48,7 @@ function resolveExistingAncestor(dirPath: string): string {
   const suffix: string[] = [];
   for (;;) {
     try {
-      return path.join(fs.realpathSync(current), ...suffix.reverse());
+      return path.join(fs.realpathSync.native(current), ...suffix.reverse());
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
       const parent = path.dirname(current);
@@ -129,8 +130,21 @@ export function applyElectronDevPathOverrides(
     // ancestor must not redirect an explicit dev profile into the regular one.
     const requestedRealPath = resolveExistingAncestor(userDataDir);
     if (app.getPath) {
-      for (const name of ['userData', 'sessionData', 'logs', 'crashDumps']) {
-        const regularPath = resolveExistingAncestor(app.getPath(name));
+      const getPath = app.getPath.bind(app);
+      const userDataPath = getPath('userData');
+      const regularPaths: [string, string][] = [
+        ['userData', userDataPath],
+        ...['sessionData', 'logs', 'crashDumps'].map((name): [string, string] => [
+          name,
+          getPath(name),
+        ]),
+        ...getLegacyElectronUserDataCandidates(userDataPath).map((candidate): [string, string] => [
+          'legacy userData',
+          candidate,
+        ]),
+      ];
+      for (const [name, candidate] of regularPaths) {
+        const regularPath = resolveExistingAncestor(candidate);
         if (pathsOverlap(requestedRealPath, regularPath)) {
           throw new Error(`Electron isolated userData overlaps regular ${name}`);
         }
@@ -162,9 +176,9 @@ export function applyElectronDevPathOverrides(
         throw new Error(warnings[warnings.length - 1]);
       }
     }
-    const realUserDataDir = fs.realpathSync(userDataDir);
+    const realUserDataDir = fs.realpathSync.native(userDataDir);
     for (const [name, directory] of isolatedPaths.slice(2)) {
-      const relative = path.relative(realUserDataDir, fs.realpathSync(directory));
+      const relative = path.relative(realUserDataDir, fs.realpathSync.native(directory));
       if (
         fs.lstatSync(directory).isSymbolicLink() ||
         !relative ||

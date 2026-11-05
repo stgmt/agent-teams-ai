@@ -11,6 +11,7 @@ import {
   applyElectronDevClaudeRootOverrideForWorker,
   applyElectronDevPathOverrides,
 } from './electronDevPathOverrides';
+import { migrateElectronUserDataDirectory } from './electronUserDataMigration';
 import { getClaudeBasePath, setAppDataBasePath, setClaudeBasePathOverride } from './pathDecoder';
 
 describe('applyElectronDevPathOverrides', () => {
@@ -19,8 +20,15 @@ describe('applyElectronDevPathOverrides', () => {
   afterEach(() => {
     setClaudeBasePathOverride(null);
     setAppDataBasePath(null);
+    const scratchParent = fs.realpathSync.native(os.tmpdir());
     for (const dir of tempDirs.splice(0)) {
-      fs.rmSync(dir, { recursive: true, force: true });
+      if (!fs.existsSync(dir)) continue;
+      const target = fs.realpathSync.native(dir);
+      const relative = path.relative(scratchParent, target);
+      if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
+        throw new Error('Refusing to remove a fixture outside the temporary directory');
+      }
+      fs.rmSync(target, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
     }
   });
 
@@ -99,6 +107,77 @@ describe('applyElectronDevPathOverrides', () => {
     ).toThrow(/overlaps regular userData/);
     expect(setPath).not.toHaveBeenCalled();
     expect(fs.existsSync(path.join(regular, 'nested'))).toBe(false);
+  });
+
+  it('uses the native canonical path to reject an alternate name for the regular profile', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-teams-path-native-alias-'));
+    tempDirs.push(tempRoot);
+    const regular = path.join(tempRoot, 'regular profile');
+    const alternateName = path.join(tempRoot, 'REGULA~1');
+    fs.mkdirSync(regular);
+    const actualNative = fs.realpathSync.native;
+    const nativeSpy = vi
+      .spyOn(fs.realpathSync, 'native')
+      .mockImplementation(((value: fs.PathLike) =>
+        path.resolve(String(value)) === alternateName
+          ? actualNative(regular)
+          : actualNative(value)) as typeof fs.realpathSync.native);
+    const setPath = vi.fn();
+    try {
+      expect(() =>
+        applyElectronDevPathOverrides(
+          { setPath, getPath: () => regular },
+          { [AGENT_TEAMS_ELECTRON_USER_DATA_DIR_ENV]: alternateName }
+        )
+      ).toThrow(/overlaps regular userData/);
+      expect(setPath).not.toHaveBeenCalled();
+      expect(nativeSpy).toHaveBeenCalled();
+      expect(fs.existsSync(alternateName)).toBe(false);
+    } finally {
+      nativeSpy.mockRestore();
+    }
+  });
+
+  it('rejects the legacy profile normal startup can reuse, including before it exists', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-teams-path-legacy-'));
+    tempDirs.push(tempRoot);
+    const current = path.join(tempRoot, 'Agent Teams AI');
+    const preferred = path.join(tempRoot, 'agent-teams-ai');
+    fs.mkdirSync(current);
+    const setPath = vi.fn();
+    const app = {
+      setPath,
+      getPath: (name: string) =>
+        name === 'userData' || name === 'sessionData' ? current : path.join(current, name),
+    };
+    const env = { [AGENT_TEAMS_ELECTRON_USER_DATA_DIR_ENV]: preferred };
+
+    expect(() => applyElectronDevPathOverrides(app, env)).toThrow(
+      /overlaps regular legacy userData/
+    );
+    expect(fs.existsSync(preferred)).toBe(false);
+    expect(setPath).not.toHaveBeenCalled();
+
+    fs.mkdirSync(path.join(preferred, 'data'), { recursive: true });
+    fs.writeFileSync(path.join(preferred, 'data', 'fixture.txt'), 'fixture');
+    const normalPaths = new Map<string, string>();
+    const normal = migrateElectronUserDataDirectory({
+      getPath: () => current,
+      setPath: (name, value) => normalPaths.set(name, value),
+    });
+    expect(normal.reason).toBe('legacy-reused');
+    expect(normalPaths.get('userData')).toBe(preferred);
+    expect(() => applyElectronDevPathOverrides(app, env)).toThrow(
+      /overlaps regular legacy userData/
+    );
+    expect(setPath).not.toHaveBeenCalled();
+
+    const independent = path.join(tempRoot, 'isolated-profile');
+    expect(
+      applyElectronDevPathOverrides(app, { [AGENT_TEAMS_ELECTRON_USER_DATA_DIR_ENV]: independent })
+        .userDataDir
+    ).toBe(independent);
+    expect(setPath).toHaveBeenCalledTimes(4);
   });
 
   it('rejects a junction used as the dev profile root', () => {
