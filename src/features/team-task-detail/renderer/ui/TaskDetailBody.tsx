@@ -237,10 +237,7 @@ export const TaskDetailBody = ({
           contextId={sessionController.identity.contextId}
           teamName={teamName}
           taskId={currentTask.id}
-          enabled={Boolean(
-            (currentTask as typeof currentTask & { artifactRequirement?: { required?: boolean } })
-              .artifactRequirement?.required
-          )}
+          enabled={currentTask.artifactRequirement?.required === true}
           canMutate={sessionController.canEditNow}
         />
         {commentImageAttachments.length > 0 ? (

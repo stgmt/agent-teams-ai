@@ -61,10 +61,16 @@ describe('verified artifact action', () => {
     ) as typeof import('agent-teams-controller');
     const board = controller.createController({ teamName: 'fixture', claudeDir: root }).taskBoard;
     const task = board.createTask({ subject: 'result', owner: 'worker' }) as { id: string };
-    board.updateTaskFields(task.id, { artifactRequired: true });
-    const file = path.join(project, 'result.txt');
-    await fs.promises.writeFile(file, 'verified');
-    board.updateTaskFields(task.id, { artifactProjectPath: 'result.txt' });
+    board.updateTaskFields(task.id, {
+      artifactRequired: true,
+      artifactFile: {
+        filename: 'result.txt',
+        base64Data: Buffer.from('verified').toString('base64'),
+      },
+    });
+    const proof = board.verifyTaskArtifact(task.id)!;
+    const snapshot = board.getTask(task.id) as { attachments: { id: string; filePath: string }[] };
+    const file = snapshot.attachments.find((item) => item.id === proof.attachmentId)!.filePath;
     const service = new VerifiedActionService({
       store,
       verify: async () => board.verifyTaskArtifact(task.id),
