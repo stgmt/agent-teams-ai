@@ -22,11 +22,6 @@ export function createIpcContextCallbacks(input: {
       expected: AppConnectionContext,
       operation: () => Promise<T>
     ): Promise<T> => connection().withExpectedContext(expected, operation),
-    withLocalAdmission: async <T>(operation: () => Promise<T>): Promise<T> => {
-      const current = connection();
-      const expected = (await current.getConnectionInfo()).context;
-      return current.withExpectedContext(expected, operation);
-    },
     onAgentLanguageUpdated: (language: string): void => {
       void input.notifyLanguageChange(language);
     },

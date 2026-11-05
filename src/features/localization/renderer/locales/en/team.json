@@ -40,7 +40,13 @@
     "running": "Checking action status…",
     "refresh": "Refresh status",
     "refreshFailed": "Status could not be read. Refresh before taking another action.",
-    "resultUnknown": "The result could not be confirmed. Refresh status before taking another action; it will not be retried automatically."
+    "resultUnknown": "The result could not be confirmed. Refresh status before taking another action; it will not be retried automatically.",
+    "guardBlocked": "Another task change is in progress, unresolved, or its safety storage is unavailable.",
+    "guardUnavailable": "The task safety guard could not start this change. No new action was sent.",
+    "guardUnknown": "The previous manifest action may have completed or may still complete. Check the current status before deciding.",
+    "guardCheck": "Check current status",
+    "guardChecked": "This is a snapshot; the previous action may still complete later.",
+    "guardAllow": "I checked; allow changes"
   },
   "activity": {
     "chatVisualization": {

@@ -26,7 +26,6 @@ import {
   composeExternalAgentConnection,
   refreshDesktopBridgeEnvironment,
 } from './startExternalAgentConnection';
-import { createIpcContextCallbacks } from './createIpcContextCallbacks';
 import {
   assertStartupActive,
   createStartupStage,

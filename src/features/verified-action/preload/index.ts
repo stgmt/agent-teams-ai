@@ -6,23 +6,48 @@ import {
 } from '../contracts';
 
 import type { VerifiedAction, VerifiedActionDecision } from '../contracts';
+import type { AppConnectionContext } from '@features/external-agent-connection/contracts';
 import type { IpcRenderer } from 'electron';
 
 export interface VerifiedActionElectronApi {
-  list(contextId: string, teamName: string, taskId: string): Promise<VerifiedAction[]>;
-  prepare(contextId: string, teamName: string, taskId: string): Promise<VerifiedAction>;
-  approve(contextId: string, id: string): Promise<VerifiedAction>;
-  decide(contextId: string, id: string, decision: VerifiedActionDecision): Promise<VerifiedAction>;
+  list(
+    contextId: string,
+    expected: AppConnectionContext,
+    expectedRootFingerprint: string,
+    teamName: string,
+    taskId: string
+  ): Promise<VerifiedAction[]>;
+  prepare(
+    contextId: string,
+    expected: AppConnectionContext,
+    expectedRootFingerprint: string,
+    teamName: string,
+    taskId: string
+  ): Promise<VerifiedAction>;
+  approve(
+    contextId: string,
+    expected: AppConnectionContext,
+    expectedRootFingerprint: string,
+    id: string
+  ): Promise<VerifiedAction>;
+  decide(
+    contextId: string,
+    expected: AppConnectionContext,
+    expectedRootFingerprint: string,
+    id: string,
+    decision: VerifiedActionDecision
+  ): Promise<VerifiedAction>;
 }
 
 export function createVerifiedActionBridge(ipc: IpcRenderer): VerifiedActionElectronApi {
   return {
-    list: (contextId, teamName, taskId) =>
-      ipc.invoke(VERIFIED_ACTION_LIST, contextId, teamName, taskId),
-    prepare: (contextId, teamName, taskId) =>
-      ipc.invoke(VERIFIED_ACTION_PREPARE, contextId, teamName, taskId),
-    approve: (contextId, id) => ipc.invoke(VERIFIED_ACTION_APPROVE, contextId, id),
-    decide: (contextId, id, decision) =>
-      ipc.invoke(VERIFIED_ACTION_DECIDE, contextId, id, decision),
+    list: (contextId, expected, root, teamName, taskId) =>
+      ipc.invoke(VERIFIED_ACTION_LIST, contextId, expected, root, teamName, taskId),
+    prepare: (contextId, expected, root, teamName, taskId) =>
+      ipc.invoke(VERIFIED_ACTION_PREPARE, contextId, expected, root, teamName, taskId),
+    approve: (contextId, expected, root, id) =>
+      ipc.invoke(VERIFIED_ACTION_APPROVE, contextId, expected, root, id),
+    decide: (contextId, expected, root, id, decision) =>
+      ipc.invoke(VERIFIED_ACTION_DECIDE, contextId, expected, root, id, decision),
   };
 }

@@ -1,7 +1,6 @@
 import { validateTaskId, validateTeamName } from '@main/ipc/guards';
 import { getAppDataPath, getClaudeBasePath } from '@main/utils/pathDecoder';
 import * as controllerModule from 'agent-teams-controller';
-import { createHash } from 'crypto';
 import * as path from 'path';
 
 import {
@@ -14,6 +13,7 @@ import { VerifiedActionService } from '../application/VerifiedActionService';
 import { FileVerifiedActionStore } from '../infrastructure/FileVerifiedActionStore';
 
 import type { VerifiedActionDecision } from '../../contracts';
+import type { AppConnectionContext } from '@features/external-agent-connection/contracts';
 import type { IpcMain } from 'electron';
 
 const channels = [
@@ -38,12 +38,32 @@ function requireId(value: unknown): string {
   return value;
 }
 
+function requireExpectedContext(value: unknown): AppConnectionContext {
+  if (!value || typeof value !== 'object') throw new Error('Expected app context is required');
+  const context = value as Partial<AppConnectionContext>;
+  if (
+    typeof context.appInstanceId !== 'string' ||
+    !context.appInstanceId ||
+    typeof context.dataRootFingerprint !== 'string' ||
+    !/^[a-f0-9]{64}$/i.test(context.dataRootFingerprint) ||
+    !Number.isSafeInteger(context.connectionGeneration) ||
+    (context.connectionGeneration ?? 0) < 1
+  )
+    throw new Error('Expected app context is invalid');
+  return context as AppConnectionContext;
+}
+
 export function registerVerifiedActionIpc(
   ipc: IpcMain,
   context: {
     getActiveContextId(): string;
     isLocal(): boolean;
-    withAdmission<T>(operation: () => Promise<T>): Promise<T>;
+    getRootFingerprint(): string | null;
+    withAdmission<T>(
+      expected: AppConnectionContext,
+      expectedRootFingerprint: string,
+      operation: () => Promise<T>
+    ): Promise<T>;
   }
 ): void {
   const currentScope = (expectedContext: unknown): string => {
@@ -54,12 +74,22 @@ export function registerVerifiedActionIpc(
     ) {
       throw new Error('Verified actions are available only in the active local context');
     }
-    return createHash('sha256').update(path.resolve(getClaudeBasePath())).digest('hex');
+    const fingerprint = context.getRootFingerprint();
+    if (!fingerprint || !/^[a-f0-9]{64}$/i.test(fingerprint))
+      throw new Error('Task root identity is unavailable');
+    return fingerprint;
   };
   const store = new FileVerifiedActionStore(path.join(getAppDataPath(), 'verified-actions'));
-  const run = <T>(contextId: unknown, operation: (scope: string) => Promise<T>): Promise<T> => {
+  const run = <T>(
+    contextId: unknown,
+    expected: unknown,
+    root: unknown,
+    operation: (scope: string) => Promise<T>
+  ): Promise<T> => {
     const expectedScope = currentScope(contextId);
-    return context.withAdmission(async () => {
+    if (typeof root !== 'string' || root !== expectedScope)
+      throw new Error('Task root identity changed');
+    return context.withAdmission(requireExpectedContext(expected), root, async () => {
       if (currentScope(contextId) !== expectedScope) throw new Error('The active context changed');
       return operation(expectedScope);
     });
@@ -82,24 +112,47 @@ export function registerVerifiedActionIpc(
 
   ipc.handle(
     VERIFIED_ACTION_LIST,
-    (_event, contextId: unknown, teamName: unknown, taskId: unknown) => {
+    (
+      _event,
+      contextId: unknown,
+      expected: unknown,
+      root: unknown,
+      teamName: unknown,
+      taskId: unknown
+    ) => {
       const [team, task] = requireTask(teamName, taskId);
-      return run(contextId, (scope) => service.list(scope, team, task));
+      return run(contextId, expected, root, (scope) => service.list(scope, team, task));
     }
   );
   ipc.handle(
     VERIFIED_ACTION_PREPARE,
-    (_event, contextId: unknown, teamName: unknown, taskId: unknown) => {
+    (
+      _event,
+      contextId: unknown,
+      expected: unknown,
+      root: unknown,
+      teamName: unknown,
+      taskId: unknown
+    ) => {
       const [team, task] = requireTask(teamName, taskId);
-      return run(contextId, (scope) => service.prepare(scope, team, task));
+      return run(contextId, expected, root, (scope) => service.prepare(scope, team, task));
     }
   );
-  ipc.handle(VERIFIED_ACTION_APPROVE, (_event, contextId: unknown, id: unknown) =>
-    run(contextId, (scope) => service.approve(scope, requireId(id)))
+  ipc.handle(
+    VERIFIED_ACTION_APPROVE,
+    (_event, contextId: unknown, expected: unknown, root: unknown, id: unknown) =>
+      run(contextId, expected, root, (scope) => service.approve(scope, requireId(id)))
   );
   ipc.handle(
     VERIFIED_ACTION_DECIDE,
-    (_event, contextId: unknown, id: unknown, decision: unknown) => {
+    (
+      _event,
+      contextId: unknown,
+      expected: unknown,
+      root: unknown,
+      id: unknown,
+      decision: unknown
+    ) => {
       if (
         decision !== 'completed' &&
         decision !== 'retry_once' &&
@@ -107,7 +160,7 @@ export function registerVerifiedActionIpc(
       ) {
         throw new Error('Invalid action decision');
       }
-      return run(contextId, (scope) =>
+      return run(contextId, expected, root, (scope) =>
         service.decide(scope, requireId(id), decision as VerifiedActionDecision)
       );
     }

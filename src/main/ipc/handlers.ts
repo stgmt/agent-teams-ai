@@ -14,7 +14,9 @@
  * - httpServer.ts: HTTP sidecar server control
  */
 
+import { getTaskWriteRootFingerprint } from '@features/external-agent-connection/main';
 import { registerVerifiedActionIpc, removeVerifiedActionIpc } from '@features/verified-action/main';
+import { getClaudeBasePath } from '@main/utils/pathDecoder';
 import { createLogger } from '@shared/utils/logger';
 import { ipcMain } from 'electron';
 
@@ -162,9 +164,13 @@ export function initializeIpcHandlers(
     full: (context: ServiceContext) => void;
     updateClaudeRoot: (applyConfig: () => void) => Promise<void>;
     changeContext?: (operation: () => Promise<void> | void) => Promise<void>;
-    withLocalAdmission?<T>(operation: () => Promise<T>): Promise<T>;
     withExpectedContext?<T>(
       expected: AppConnectionContext,
+      operation: () => Promise<T>
+    ): Promise<T>;
+    withExpectedTaskWriteContext?<T>(
+      expected: AppConnectionContext,
+      expectedRootFingerprint: string,
       operation: () => Promise<T>
     ): Promise<T>;
     onAgentLanguageUpdated: (newLangCode: string) => Promise<void> | void;
@@ -310,9 +316,11 @@ export function initializeIpcHandlers(
   registerVerifiedActionIpc(ipcMain, {
     getActiveContextId: () => registry.getActiveContextId(),
     isLocal: () => registry.getActive().type === 'local' && !sshManager.isRemote(),
-    withAdmission: (operation) => {
-      if (!contextCallbacks.withLocalAdmission) throw new Error('Local context admission is unavailable');
-      return contextCallbacks.withLocalAdmission(operation);
+    getRootFingerprint: () => getTaskWriteRootFingerprint(getClaudeBasePath()),
+    withAdmission: (expected, root, operation) => {
+      if (!contextCallbacks.withExpectedTaskWriteContext)
+        throw new Error('Local context admission is unavailable');
+      return contextCallbacks.withExpectedTaskWriteContext(expected, root, operation);
     },
   });
   registerReviewHandlers(ipcMain);

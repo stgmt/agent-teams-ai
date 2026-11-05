@@ -254,6 +254,7 @@ export const TaskDetailBody = ({
           canMutate={sessionController.canEditNow}
         />
         <VerifiedActionPanel
+          guard={sessionController}
           contextId={sessionController.identity.contextId}
           teamName={teamName}
           taskId={currentTask.id}

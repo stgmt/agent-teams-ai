@@ -47,6 +47,12 @@ describe('verified-action IPC context boundary', () => {
     paths.claude = path.join(root, 'claude');
     let active = 'local';
     let local = true;
+    const expected = {
+      appInstanceId: 'app',
+      dataRootFingerprint: 'a'.repeat(64),
+      connectionGeneration: 1,
+    };
+    const rootFingerprint = 'b'.repeat(64);
     const handlers = new Map<string, (...args: unknown[]) => unknown>();
     const ipc = {
       handle: (channel: string, handler: (...args: unknown[]) => unknown) =>
@@ -55,21 +61,38 @@ describe('verified-action IPC context boundary', () => {
     registerVerifiedActionIpc(ipc, {
       getActiveContextId: () => active,
       isLocal: () => local,
-      withAdmission: (operation) => operation(),
+      getRootFingerprint: () => rootFingerprint,
+      withAdmission: (_expected, _root, operation) => operation(),
     });
     const list = handlers.get(VERIFIED_ACTION_LIST)!;
     const prepare = handlers.get(VERIFIED_ACTION_PREPARE)!;
     const approve = handlers.get(VERIFIED_ACTION_APPROVE)!;
-    expect(await list({}, 'local', 'team', 'task')).toEqual([]);
+    expect(await list({}, 'local', expected, rootFingerprint, 'team', 'task')).toEqual([]);
     active = 'ssh:host';
     local = false;
-    expect(() => list({}, 'ssh:host', 'team', 'task')).toThrow(/active local context/);
-    expect(() => prepare({}, 'local', 'team', 'task')).toThrow(/active local context/);
-    expect(() => approve({}, 'local', 'a'.repeat(64))).toThrow(/active local context/);
+    expect(() => list({}, 'ssh:host', expected, rootFingerprint, 'team', 'task')).toThrow(
+      /active local context/
+    );
+    expect(() => prepare({}, 'local', expected, rootFingerprint, 'team', 'task')).toThrow(
+      /active local context/
+    );
+    expect(() => approve({}, 'local', expected, rootFingerprint, 'a'.repeat(64))).toThrow(
+      /active local context/
+    );
     active = 'local';
-    expect(() => list({}, 'local', 'team', 'task')).toThrow(/active local context/);
+    expect(() => list({}, 'local', expected, rootFingerprint, 'team', 'task')).toThrow(
+      /active local context/
+    );
     local = true;
-    expect(() => list({}, 'ssh:host', 'team', 'task')).toThrow(/active local context/);
+    expect(() => list({}, 'ssh:host', expected, rootFingerprint, 'team', 'task')).toThrow(
+      /active local context/
+    );
+    expect(() => list({}, 'local', null, rootFingerprint, 'team', 'task')).toThrow(
+      /Expected app context/
+    );
+    expect(() => list({}, 'local', expected, 'c'.repeat(64), 'team', 'task')).toThrow(
+      /root identity changed/
+    );
   });
 
   it('holds context admission while waiting for the file lock and until the read finishes', async () => {
@@ -79,27 +102,51 @@ describe('verified-action IPC context boundary', () => {
     paths.claude = path.join(root, 'claude');
     const store = new FileVerifiedActionStore(path.join(root, 'verified-actions'));
     const bound = new BoundControlContext('test-app', paths.claude);
+    const rootFingerprint = 'b'.repeat(64);
     let releaseLock!: () => void;
     let locked!: () => void;
-    const lockedSignal = new Promise<void>((resolve) => { locked = resolve; });
-    const lockGate = new Promise<void>((resolve) => { releaseLock = resolve; });
-    const holder = store.transaction(async () => { locked(); await lockGate; });
+    const lockedSignal = new Promise<void>((resolve) => {
+      locked = resolve;
+    });
+    const lockGate = new Promise<void>((resolve) => {
+      releaseLock = resolve;
+    });
+    const holder = store.transaction(async () => {
+      locked();
+      await lockGate;
+    });
     await lockedSignal;
     const handlers = new Map<string, (...args: unknown[]) => unknown>();
     const ipc = {
-      handle: (channel: string, handler: (...args: unknown[]) => unknown) => handlers.set(channel, handler),
+      handle: (channel: string, handler: (...args: unknown[]) => unknown) =>
+        handlers.set(channel, handler),
     } as unknown as IpcMain;
     registerVerifiedActionIpc(ipc, {
       getActiveContextId: () => 'local',
       isLocal: () => true,
-      withAdmission: async (operation) => {
-        const release = bound.admit(bound.snapshot());
-        try { return await operation(); } finally { release(); }
+      getRootFingerprint: () => rootFingerprint,
+      withAdmission: async (expected, _root, operation) => {
+        const release = bound.admit(expected);
+        try {
+          return await operation();
+        } finally {
+          release();
+        }
       },
     });
-    const request = handlers.get(VERIFIED_ACTION_LIST)!({}, 'local', 'team', 'task') as Promise<unknown>;
+    const expected = bound.snapshot();
+    const request = handlers.get(VERIFIED_ACTION_LIST)!(
+      {},
+      'local',
+      expected,
+      rootFingerprint,
+      'team',
+      'task'
+    ) as Promise<unknown>;
     let closed = false;
-    const close = bound.closeAdmission().then(() => { closed = true; });
+    const close = bound.closeAdmission().then(() => {
+      closed = true;
+    });
     await Promise.resolve();
     expect(closed).toBe(false);
     releaseLock();
@@ -107,5 +154,8 @@ describe('verified-action IPC context boundary', () => {
     expect(await request).toEqual([]);
     await close;
     expect(closed).toBe(true);
+    await expect(
+      handlers.get(VERIFIED_ACTION_LIST)!({}, 'local', expected, rootFingerprint, 'team', 'task')
+    ).rejects.toThrow(/APP_CONTEXT_MISMATCH/);
   });
 });

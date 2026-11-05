@@ -32,8 +32,37 @@ const action: VerifiedAction = {
   updatedAt: 'now',
 };
 
+const expected = {
+  appInstanceId: 'app',
+  dataRootFingerprint: 'a'.repeat(64),
+  connectionGeneration: 1,
+};
+const expectedRootFingerprint = 'c'.repeat(64);
+const guard = {
+  taskWriteGuard: {
+    status: 'ready' as const,
+    reason: null,
+    activeId: null,
+    markerId: null,
+    operation: null,
+    unknown: false,
+    checked: false,
+    expectedContext: expected,
+    expectedRootFingerprint,
+  },
+  beginGuardedTaskWrite: vi.fn(async () => ({
+    token: 'guard-token',
+    expectedContext: expected,
+    expectedRootFingerprint,
+  })),
+  settleGuardedTaskWrite: vi.fn(async () => true),
+  checkGuardedTaskWriteOutcome: vi.fn(async () => undefined),
+  confirmGuardedTaskWriteOutcome: vi.fn(async () => undefined),
+};
+
 afterEach(() => {
   vi.clearAllMocks();
+  vi.useRealTimers();
   document.body.innerHTML = '';
 });
 
@@ -61,6 +90,7 @@ describe('VerifiedActionPanel', () => {
           taskId="task"
           enabled
           canMutate={() => true}
+          guard={guard}
         />
       );
     });
@@ -96,6 +126,7 @@ describe('VerifiedActionPanel', () => {
           taskId="task"
           enabled
           canMutate={() => true}
+          guard={guard}
         />
       );
     });
@@ -104,7 +135,13 @@ describe('VerifiedActionPanel', () => {
       button(host, 'verifiedAction.retry').click();
     });
     expect(mocks.decide).toHaveBeenCalledOnce();
-    expect(mocks.decide).toHaveBeenCalledWith('local', action.id, 'retry_once');
+    expect(mocks.decide).toHaveBeenCalledWith(
+      'local',
+      expected,
+      expectedRootFingerprint,
+      action.id,
+      'retry_once'
+    );
     expect(host.textContent).toContain('verifiedAction.manual');
     expect(host.textContent).not.toContain('verifiedAction.question');
     await act(async () => {
@@ -135,6 +172,7 @@ describe('VerifiedActionPanel', () => {
           taskId="task"
           enabled
           canMutate={() => true}
+          guard={guard}
         />
       );
     });
@@ -146,6 +184,7 @@ describe('VerifiedActionPanel', () => {
           taskId="next"
           enabled
           canMutate={() => true}
+          guard={guard}
         />
       );
     });
@@ -173,6 +212,7 @@ describe('VerifiedActionPanel', () => {
           taskId="task"
           enabled={false}
           canMutate={() => true}
+          guard={guard}
         />
       );
     });
@@ -196,6 +236,7 @@ describe('VerifiedActionPanel', () => {
           taskId="task"
           enabled
           canMutate={() => true}
+          guard={guard}
         />
       );
     });
@@ -204,5 +245,148 @@ describe('VerifiedActionPanel', () => {
     await act(async () => {
       root.unmount();
     });
+  });
+
+  it('does not start a manifest while an artifact write holds the shared guard', async () => {
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+    mocks.list.mockResolvedValueOnce([action]);
+    const occupied = {
+      ...guard,
+      taskWriteGuard: {
+        ...guard.taskWriteGuard,
+        activeId: 'artifact-write',
+        operation: 'artifact' as const,
+      },
+    };
+    const host = document.createElement('div');
+    document.body.append(host);
+    const root = createRoot(host);
+    await act(async () => {
+      root.render(
+        <VerifiedActionPanel
+          contextId="local"
+          teamName="team"
+          taskId="task"
+          enabled
+          canMutate={() => true}
+          guard={occupied}
+        />
+      );
+    });
+    expect(button(host, 'verifiedAction.approve').disabled).toBe(true);
+    expect(host.textContent).toContain('verifiedAction.guardBlocked');
+    expect(guard.beginGuardedTaskWrite).not.toHaveBeenCalled();
+    expect(mocks.approve).not.toHaveBeenCalled();
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it('checks a restored manifest marker before an explicit retry and never retries on its own', async () => {
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+    const pending = {
+      ...guard,
+      taskWriteGuard: {
+        ...guard.taskWriteGuard,
+        markerId: 'old-token',
+        operation: 'manifest' as const,
+        unknown: true,
+      },
+    };
+    const checked = { ...pending, taskWriteGuard: { ...pending.taskWriteGuard, checked: true } };
+    mocks.list.mockResolvedValue([{ ...action, status: 'question', attempts: 1 }]);
+    mocks.decide.mockResolvedValueOnce({
+      ...action,
+      status: 'completed',
+      completion: 'queued',
+      attempts: 2,
+    });
+    const host = document.createElement('div');
+    document.body.append(host);
+    const root = createRoot(host);
+    const render = (value: typeof pending) =>
+      root.render(
+        <VerifiedActionPanel
+          contextId="local"
+          teamName="team"
+          taskId="task"
+          enabled
+          canMutate={() => true}
+          guard={value}
+        />
+      );
+    await act(async () => {
+      render(pending);
+    });
+    expect(button(host, 'verifiedAction.retry').disabled).toBe(true);
+    expect(mocks.decide).not.toHaveBeenCalled();
+    await act(async () => {
+      button(host, 'verifiedAction.guardCheck').click();
+    });
+    expect(guard.checkGuardedTaskWriteOutcome).toHaveBeenCalledWith('manifest');
+    expect(mocks.decide).not.toHaveBeenCalled();
+    await act(async () => {
+      render(checked);
+    });
+    await act(async () => {
+      button(host, 'verifiedAction.retry').click();
+    });
+    expect(guard.confirmGuardedTaskWriteOutcome).toHaveBeenCalledWith('old-token', 'manifest');
+    expect(guard.beginGuardedTaskWrite).toHaveBeenCalledWith('manifest');
+    expect(mocks.decide).toHaveBeenCalledOnce();
+    expect(mocks.decide).toHaveBeenCalledWith(
+      'local',
+      expected,
+      expectedRootFingerprint,
+      action.id,
+      'retry_once'
+    );
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it('keeps a timed-out write unknown when its response arrives late', async () => {
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+    vi.useFakeTimers();
+    mocks.list.mockResolvedValueOnce([action]);
+    let resolveWrite!: (value: VerifiedAction) => void;
+    mocks.approve.mockReturnValueOnce(
+      new Promise<VerifiedAction>((resolve) => {
+        resolveWrite = resolve;
+      })
+    );
+    const host = document.createElement('div');
+    document.body.append(host);
+    const root = createRoot(host);
+    await act(async () => {
+      root.render(
+        <VerifiedActionPanel
+          contextId="local"
+          teamName="team"
+          taskId="task"
+          enabled
+          canMutate={() => true}
+          guard={guard}
+        />
+      );
+    });
+    await act(async () => {
+      button(host, 'verifiedAction.approve').click();
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+    expect(guard.settleGuardedTaskWrite).toHaveBeenCalledWith('guard-token', 'manifest', 'unknown');
+    expect(host.textContent).toContain('verifiedAction.resultUnknown');
+    await act(async () => {
+      resolveWrite({ ...action, status: 'completed', completion: 'queued', attempts: 1 });
+    });
+    expect(guard.settleGuardedTaskWrite).toHaveBeenCalledTimes(1);
+    expect(host.textContent).toContain('verifiedAction.resultUnknown');
+    await act(async () => {
+      root.unmount();
+    });
+    vi.useRealTimers();
   });
 });
