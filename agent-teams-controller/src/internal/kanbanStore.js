@@ -101,12 +101,19 @@ function appendTaskToColumnOrder(state, column, taskId) {
   state.columnOrder = nextColumnOrder;
 }
 
-function setKanbanColumn(paths, teamName, taskId, column) {
+function setKanbanColumn(paths, teamName, taskId, column, updateTask) {
   if (column !== 'review' && column !== 'approved') {
     throw new Error(`Invalid kanban column: ${String(column)}`);
   }
 
-  const state = readKanbanState(paths, teamName);
+  const previousState = readKanbanState(paths, teamName);
+  // Preserve the prior column and ordering if task synchronization fails.
+  const state = {
+    ...previousState,
+    tasks: { ...previousState.tasks },
+    ...(previousState.columnOrder ? { columnOrder: { ...previousState.columnOrder } } : {}),
+  };
+  const previousTask = taskStore.readTask(paths, String(taskId), { includeDeleted: true });
   const hadColumnOrder = Boolean(state.columnOrder && Object.keys(state.columnOrder).length > 0);
   removeTaskFromColumnOrder(state, taskId);
   if (hadColumnOrder && !state.columnOrder) {
@@ -117,11 +124,25 @@ function setKanbanColumn(paths, teamName, taskId, column) {
       ? { column: 'review', reviewer: null, movedAt: nowIso() }
       : { column: 'approved', movedAt: nowIso() };
   appendTaskToColumnOrder(state, column, taskId);
-  writeKanbanState(paths, teamName, state);
-  taskStore.updateTask(paths, String(taskId), (task) => ({
-    ...task,
-    reviewState: column,
-  }));
+  try {
+    writeKanbanState(paths, teamName, state);
+    taskStore.updateTask(paths, String(taskId), (task) => {
+      const next = { ...task, reviewState: column };
+      return updateTask ? updateTask(next) : next;
+    });
+  } catch (error) {
+    // A thrown write can have committed already. Restore the board only when
+    // the task can still be read and proves its persisted metadata did not change.
+    try {
+      const currentTask = taskStore.readTask(paths, String(taskId), { includeDeleted: true });
+      if (JSON.stringify(currentTask) === JSON.stringify(previousTask)) {
+        writeKanbanState(paths, teamName, previousState);
+      }
+    } catch (rollbackError) {
+      console.warn(`[kanban] Could not restore board after task update: ${rollbackError.message}`);
+    }
+    throw error;
+  }
   return state;
 }
 

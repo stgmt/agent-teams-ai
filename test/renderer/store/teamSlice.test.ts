@@ -71,6 +71,7 @@ const hoisted = vi.hoisted(() => ({
   skipMemberForLaunch: vi.fn(),
   requestReview: vi.fn(),
   updateKanban: vi.fn(),
+  updateTaskStatus: vi.fn(),
   updateToolApprovalSettings: vi.fn(),
   invalidateTaskChangeSummaries: vi.fn(),
   getDeletedTasks: vi.fn(),
@@ -115,6 +116,7 @@ vi.mock('@renderer/api', () => ({
       skipMemberForLaunch: hoisted.skipMemberForLaunch,
       requestReview: hoisted.requestReview,
       updateKanban: hoisted.updateKanban,
+      updateTaskStatus: hoisted.updateTaskStatus,
       updateToolApprovalSettings: hoisted.updateToolApprovalSettings,
       getDeletedTasks: hoisted.getDeletedTasks,
       onProvisioningProgress: hoisted.onProvisioningProgress,
@@ -559,6 +561,7 @@ describe('teamSlice actions', () => {
     });
     hoisted.requestReview.mockResolvedValue(undefined);
     hoisted.updateKanban.mockResolvedValue(undefined);
+    hoisted.updateTaskStatus.mockResolvedValue(undefined);
     hoisted.updateToolApprovalSettings.mockResolvedValue(undefined);
     hoisted.getDeletedTasks.mockResolvedValue([]);
     hoisted.createTeam.mockResolvedValue({ runId: 'run-1' });
@@ -1437,6 +1440,39 @@ describe('teamSlice actions', () => {
     expect(store.getState().reviewActionError).toBe(
       'Failed to update task status (possible agent conflict).'
     );
+  });
+
+  it.each([
+    'A required task artifact has not been attached',
+    'Required task artifact cannot be verified: checksum changed',
+  ])('shows the completion rejection once: %s', async (message) => {
+    const store = createSliceStore();
+    store.setState({ selectedTeamName: 'my-team' });
+    hoisted.updateTaskStatus.mockRejectedValueOnce(new Error(message));
+
+    await expect(store.getState().updateTaskStatus('my-team', '12', 'completed')).rejects.toThrow(
+      message
+    );
+    expect(store.getState().reviewActionError).toBe(message);
+    expect(hoisted.updateTaskStatus).toHaveBeenCalledTimes(1);
+    expect(hoisted.getData).not.toHaveBeenCalled();
+
+    await store.getState().updateTaskStatus('my-team', '12', 'pending');
+    expect(store.getState().reviewActionError).toBeNull();
+  });
+
+  it('does not display an outdated completion rejection after switching teams', async () => {
+    const store = createSliceStore();
+    store.setState({ selectedTeamName: 'my-team' });
+    const pending = createDeferredPromise<void>();
+    hoisted.updateTaskStatus.mockReturnValueOnce(pending.promise);
+    const action = store.getState().updateTaskStatus('my-team', '12', 'completed');
+    store.setState({ selectedTeamName: 'other-team' });
+    pending.reject(new Error('A required task artifact has not been attached'));
+
+    await expect(action).rejects.toThrow('A required task artifact has not been attached');
+    expect(store.getState().reviewActionError).toBeNull();
+    expect(hoisted.updateTaskStatus).toHaveBeenCalledTimes(1);
   });
 
   it('does not warm task-change summaries on team open', async () => {

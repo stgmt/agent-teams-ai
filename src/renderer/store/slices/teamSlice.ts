@@ -3833,9 +3833,18 @@ export const createTeamSlice: StateCreator<AppState, [], [], TeamSlice> = (set, 
 
   updateTaskStatus: async (teamName: string, taskId: string, status: TeamTaskStatus) => {
     const requestScope = captureTeamRequestScope(get, teamName);
+    if (get().selectedTeamName === teamName) set({ reviewActionError: null });
     await unwrapIpc('team:updateTaskStatus', () =>
       api.teams.updateTaskStatus(teamName, taskId, status)
-    );
+    ).catch((error: unknown) => {
+      if (
+        isTeamRequestScopeCurrent(get, teamName, requestScope) &&
+        get().selectedTeamName === teamName
+      ) {
+        set({ reviewActionError: mapReviewError(error) });
+      }
+      throw error;
+    });
     invalidateAcceptedTaskDetailMutation(get, teamName, taskId, requestScope);
     if (isTeamRequestScopeCurrent(get, teamName, requestScope)) {
       await get().refreshTeamData(teamName);

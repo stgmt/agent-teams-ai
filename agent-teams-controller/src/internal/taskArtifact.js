@@ -55,7 +55,29 @@ function storeArtifact(context, task, file) {
   const dir = runtimeHelpers.getTaskAttachmentsDir(context.paths, task.id);
   fs.mkdirSync(dir, { recursive: true });
   const filePath = artifactPath(context, task, attachmentId);
-  fs.writeFileSync(filePath, data, { flag: 'wx' });
+  let fd;
+  try {
+    // Keep track of exclusive creation so a failed write never deletes a file
+    // that existed before this attempt.
+    fd = fs.openSync(filePath, 'wx', 0o600);
+    fs.writeFileSync(fd, data);
+    fs.closeSync(fd);
+    fd = undefined;
+  } catch (error) {
+    if (fd !== undefined) {
+      try {
+        fs.closeSync(fd);
+      } catch {
+        /* best effort */
+      }
+      try {
+        fs.unlinkSync(filePath);
+      } catch {
+        /* best effort */
+      }
+    }
+    throw error;
+  }
   return {
     proof: {
       attachmentId,
@@ -143,17 +165,44 @@ function removePrevious(context, previous, updated) {
   }
 }
 
+function commitPreparedUpdate(context, task, fields) {
+  const prepared = prepareUpdate(context, task, fields);
+  const stagedId =
+    fields.artifactFile !== undefined
+      ? prepared.artifactRequirement?.proof?.attachmentId
+      : undefined;
+  let updated;
+  try {
+    updated = taskStore.updateTaskFields(context.paths, task.id, prepared);
+  } catch (error) {
+    if (stagedId && stagedId !== task.artifactRequirement?.proof?.attachmentId) {
+      try {
+        // A failed write can have committed before reporting an error. Only
+        // remove this newly created copy if fresh task metadata proves that it
+        // is not referenced; an unreadable task leaves the outcome unknown.
+        const current = taskStore.readTask(context.paths, task.id, { includeDeleted: true });
+        const referenced =
+          current.artifactRequirement?.proof?.attachmentId === stagedId ||
+          current.attachments?.some((entry) => entry.id === stagedId);
+        if (!referenced) fs.unlinkSync(artifactPath(context, task, stagedId));
+      } catch (cleanupError) {
+        if (cleanupError.code !== 'ENOENT')
+          console.warn(
+            `[artifact] Could not confirm or remove unreferenced file: ${cleanupError.message}`
+          );
+      }
+    }
+    throw error;
+  }
+  removePrevious(context, task, updated);
+  return updated;
+}
+
 function updateTaskFields(context, taskId, fields) {
   return withTeamBoardLock(context.paths, () => {
     const task = taskStore.readTask(context.paths, taskId, { includeDeleted: true });
     assertTaskNotDeleted(task, 'updating task fields');
-    const updated = taskStore.updateTaskFields(
-      context.paths,
-      taskId,
-      prepareUpdate(context, task, fields)
-    );
-    removePrevious(context, task, updated);
-    return updated;
+    return commitPreparedUpdate(context, task, fields);
   });
 }
 
@@ -245,13 +294,9 @@ function setTaskArtifactFile(context, taskId, file, actor) {
     assertTaskOwnerMutation(context, task, actor, 'attach an artifact');
     if (!task.artifactRequirement?.required)
       throw new Error('This task does not require an artifact');
-    const updated = taskStore.updateTaskFields(
-      context.paths,
-      taskId,
-      prepareUpdate({ ...context, allowUserMessageSender: true }, task, { artifactFile: file })
-    );
-    removePrevious(context, task, updated);
-    return updated;
+    return commitPreparedUpdate({ ...context, allowUserMessageSender: true }, task, {
+      artifactFile: file,
+    });
   });
 }
 

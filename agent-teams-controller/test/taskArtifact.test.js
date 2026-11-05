@@ -3,6 +3,7 @@ const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 const { createController } = require('../src/index.js');
+const taskStore = require('../src/internal/taskStore.js');
 
 const file = (filename, text) => ({ filename, base64Data: Buffer.from(text).toString('base64') });
 
@@ -106,6 +107,153 @@ describe('required task artifacts', () => {
     desktop.startReview(task.id, { from: 'lead' });
     fs.writeFileSync(stored(), 'after');
     expect(() => desktop.approveReview(task.id, { from: 'lead' })).toThrow(/has changed/);
+  });
+
+  it.each(['requestReview', 'startReview', 'approveReview'])(
+    'restores the previous board when %s fails while synchronizing the task',
+    (operation) => {
+      desktop.updateTaskFields(task.id, {
+        artifactRequired: true,
+        artifactFile: file('result.txt', 'verified'),
+      });
+      desktop.completeTask(task.id, 'worker');
+      if (operation !== 'requestReview')
+        desktop.requestReview(task.id, { from: 'worker', reviewer: 'lead' });
+      if (operation === 'approveReview') desktop.startReview(task.id, { from: 'lead' });
+      const beforeTask = desktop.getTask(task.id);
+      const beforeBoard = desktop.getKanbanState();
+      const original = taskStore.updateTask;
+      const spy = vi.spyOn(taskStore, 'updateTask').mockImplementationOnce(() => {
+        throw Object.assign(new Error('injected task write failure'), { code: 'EIO' });
+      });
+      try {
+        expect(() =>
+          operation === 'requestReview'
+            ? desktop.requestReview(task.id, { from: 'worker', reviewer: 'lead' })
+            : operation === 'startReview'
+              ? desktop.startReview(task.id, { from: 'lead' })
+              : desktop.approveReview(task.id, { from: 'lead' })
+        ).toThrow(/injected task write failure/);
+      } finally {
+        spy.mockRestore();
+      }
+      expect(taskStore.updateTask).toBe(original);
+      expect(desktop.getKanbanState()).toEqual(beforeBoard);
+      expect(desktop.getTask(task.id)).toEqual(beforeTask);
+    }
+  );
+
+  it('keeps a board transition if the failed task call already committed', () => {
+    desktop.completeTask(task.id, 'worker');
+    const original = taskStore.updateTask;
+    const spy = vi.spyOn(taskStore, 'updateTask').mockImplementationOnce((...args) => {
+      original(...args);
+      throw Object.assign(new Error('response lost after commit'), { code: 'EIO' });
+    });
+    try {
+      expect(() => desktop.requestReview(task.id, { from: 'worker', reviewer: 'lead' })).toThrow(
+        /response lost after commit/
+      );
+    } finally {
+      spy.mockRestore();
+    }
+    expect(desktop.getKanbanState().tasks[task.id].column).toBe('review');
+    expect(desktop.getTask(task.id).reviewState).toBe('review');
+    expect(desktop.getTask(task.id).historyEvents.at(-1).type).toBe('review_requested');
+  });
+
+  it('does not restore the board after an already committed review event even when the review state was unchanged', () => {
+    desktop.completeTask(task.id, 'worker');
+    desktop.requestReview(task.id, { from: 'worker', reviewer: 'lead' });
+    const before = desktop.getTask(task.id);
+    const original = taskStore.updateTask;
+    const spy = vi.spyOn(taskStore, 'updateTask').mockImplementationOnce((...args) => {
+      original(...args);
+      throw Object.assign(new Error('response lost after commit'), { code: 'EIO' });
+    });
+    try {
+      expect(() => desktop.startReview(task.id, { from: 'lead' })).toThrow(/response lost/);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(desktop.getTask(task.id).historyEvents).toHaveLength(before.historyEvents.length + 1);
+    expect(desktop.getTask(task.id).historyEvents.at(-1).type).toBe('review_started');
+    expect(desktop.getKanbanState().tasks[task.id].column).toBe('review');
+  });
+
+  it.each(['desktop', 'agent'])(
+    'removes only the new artifact when an %s metadata write fails',
+    (caller) => {
+      desktop.updateTaskFields(task.id, {
+        artifactRequired: true,
+        artifactFile: file('result.txt', 'old'),
+      });
+      const before = desktop.verifyTaskArtifact(task.id);
+      const beforePath = stored();
+      const directory = path.dirname(beforePath);
+      const spy = vi.spyOn(taskStore, 'updateTaskFields').mockImplementationOnce(() => {
+        throw Object.assign(new Error('injected metadata failure'), { code: 'EIO' });
+      });
+      try {
+        expect(() =>
+          caller === 'desktop'
+            ? desktop.updateTaskFields(task.id, { artifactFile: file('result.txt', 'new') })
+            : agent.setTaskArtifactFile(task.id, file('result.txt', 'new'), 'worker')
+        ).toThrow(/injected metadata failure/);
+      } finally {
+        spy.mockRestore();
+      }
+      expect(desktop.verifyTaskArtifact(task.id)).toEqual(before);
+      expect(fs.readdirSync(directory)).toEqual([path.basename(beforePath)]);
+      expect(fs.readFileSync(beforePath, 'utf8')).toBe('old');
+    }
+  );
+
+  it('keeps the new file when a metadata error follows a committed write', () => {
+    desktop.updateTaskFields(task.id, { artifactRequired: true });
+    const original = taskStore.updateTaskFields;
+    const spy = vi.spyOn(taskStore, 'updateTaskFields').mockImplementationOnce((...args) => {
+      original(...args);
+      throw Object.assign(new Error('response lost after metadata commit'), { code: 'EIO' });
+    });
+    try {
+      expect(() =>
+        desktop.updateTaskFields(task.id, { artifactFile: file('result.txt', 'new') })
+      ).toThrow(/response lost after metadata commit/);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(desktop.verifyTaskArtifact(task.id).size).toBe(3);
+    expect(fs.readFileSync(stored(), 'utf8')).toBe('new');
+  });
+
+  it('keeps a new file if persisted task metadata cannot be read after an error', () => {
+    desktop.updateTaskFields(task.id, { artifactRequired: true });
+    let writing = false;
+    const originalRead = taskStore.readTask;
+    const write = vi.spyOn(taskStore, 'updateTaskFields').mockImplementationOnce(() => {
+      writing = true;
+      throw Object.assign(new Error('injected metadata failure'), { code: 'EIO' });
+    });
+    const read = vi.spyOn(taskStore, 'readTask').mockImplementation((...args) => {
+      if (writing) throw Object.assign(new Error('injected read failure'), { code: 'EIO' });
+      return originalRead(...args);
+    });
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(() =>
+        desktop.updateTaskFields(task.id, { artifactFile: file('result.txt', 'new') })
+      ).toThrow(/injected metadata failure/);
+    } finally {
+      write.mockRestore();
+      read.mockRestore();
+      warning.mockRestore();
+    }
+    const directory = path.join(dir, 'teams', 'fixture', 'task-attachments', task.id);
+    const files = fs.readdirSync(directory);
+    expect(files).toHaveLength(1);
+    expect(fs.readFileSync(path.join(directory, files[0]), 'utf8')).toBe('new');
+    expect(desktop.getTask(task.id).artifactRequirement.proof).toBeUndefined();
   });
 
   it.each(['completed', 'approved'])(

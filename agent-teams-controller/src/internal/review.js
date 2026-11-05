@@ -318,26 +318,31 @@ function startReview(context, taskId, flags = {}) {
           `Task #${task.displayId || task.id} review is already started by ${existingActor}`
         );
       }
-      kanban.setKanbanColumn(context, task.id, 'review', { transition: 'start_review' });
       if (!existingActorValid || !existingMatchesAssigned) {
         const repairedActor = requestedActor || getReviewStartActor(context, task, flags);
         const timestamp = new Date().toISOString();
-        tasks.updateTask(context, task.id, (t) => {
-          openReviewInterval(t, repairedActor, timestamp);
-          t.historyEvents = tasks.appendHistoryEvent(t.historyEvents, {
-            type: 'review_started',
-            from: prevReviewState,
-            to: 'review',
-            actor: repairedActor,
-            timestamp,
-          });
-          t.reviewState = 'review';
-          return t;
+        kanban.setKanbanColumn(context, task.id, 'review', {
+          transition: 'start_review',
+          updateTask: (t) => {
+            openReviewInterval(t, repairedActor, timestamp);
+            t.historyEvents = tasks.appendHistoryEvent(t.historyEvents, {
+              type: 'review_started',
+              from: prevReviewState,
+              to: 'review',
+              actor: repairedActor,
+              timestamp,
+            });
+            t.reviewState = 'review';
+            return t;
+          },
         });
       } else {
-        tasks.updateTask(context, task.id, (t) => {
-          openReviewInterval(t, existingActor, latestReviewEvent.timestamp);
-          return t;
+        kanban.setKanbanColumn(context, task.id, 'review', {
+          transition: 'start_review',
+          updateTask: (t) => {
+            openReviewInterval(t, existingActor, latestReviewEvent.timestamp);
+            return t;
+          },
         });
       }
       return { ok: true, taskId: task.id, displayId: task.displayId, column: 'review' };
@@ -347,9 +352,9 @@ function startReview(context, taskId, flags = {}) {
     const from = getReviewStartActor(context, task, flags);
     const timestamp = new Date().toISOString();
 
-    kanban.setKanbanColumn(context, task.id, 'review', { transition: 'start_review' });
-    try {
-      tasks.updateTask(context, task.id, (t) => {
+    kanban.setKanbanColumn(context, task.id, 'review', {
+      transition: 'start_review',
+      updateTask: (t) => {
         openReviewInterval(t, from, timestamp);
         t.historyEvents = tasks.appendHistoryEvent(t.historyEvents, {
           type: 'review_started',
@@ -360,19 +365,9 @@ function startReview(context, taskId, flags = {}) {
         });
         t.reviewState = 'review';
         return t;
-      });
-      return { ok: true, taskId: task.id, displayId: task.displayId, column: 'review' };
-    } catch (error) {
-      try {
-        kanban.clearKanban(context, task.id, { transition: 'rollback' });
-      } catch (rollbackError) {
-        warnNonCritical(
-          `[review] rollback failed while starting review for ${task.id}`,
-          rollbackError
-        );
-      }
-      throw error;
-    }
+      },
+    });
+    return { ok: true, taskId: task.id, displayId: task.displayId, column: 'review' };
   });
 }
 
@@ -399,9 +394,9 @@ function requestReview(context, taskId, flags = {}) {
       );
     }
 
-    kanban.setKanbanColumn(context, currentTask.id, 'review', { transition: 'request_review' });
-    try {
-      tasks.updateTask(context, currentTask.id, (t) => {
+    kanban.setKanbanColumn(context, currentTask.id, 'review', {
+      transition: 'request_review',
+      updateTask: (t) => {
         t.historyEvents = tasks.appendHistoryEvent(t.historyEvents, {
           type: 'review_requested',
           from: prevReviewState,
@@ -411,18 +406,8 @@ function requestReview(context, taskId, flags = {}) {
         });
         t.reviewState = 'review';
         return t;
-      });
-    } catch (error) {
-      try {
-        kanban.clearKanban(context, currentTask.id, { transition: 'rollback' });
-      } catch (rollbackError) {
-        warnNonCritical(
-          `[review] rollback failed while requesting review for ${currentTask.id}`,
-          rollbackError
-        );
-      }
-      throw error;
-    }
+      },
+    });
 
     return {
       task: tasks.getTask(context, currentTask.id),
@@ -487,19 +472,21 @@ function approveReview(context, taskId, flags = {}) {
     assertReviewTransitionAllowed(context, currentTask, 'approval');
     const timestamp = new Date().toISOString();
 
-    kanban.setKanbanColumn(context, currentTask.id, 'approved', { transition: 'approve_review' });
-    tasks.updateTask(context, currentTask.id, (t) => {
-      closeReviewIntervals(t, timestamp);
-      t.historyEvents = tasks.appendHistoryEvent(t.historyEvents, {
-        type: 'review_approved',
-        from: prevReviewState,
-        to: 'approved',
-        ...(nextNote ? { note: nextNote } : {}),
-        actor: nextFrom,
-        timestamp,
-      });
-      t.reviewState = 'approved';
-      return t;
+    kanban.setKanbanColumn(context, currentTask.id, 'approved', {
+      transition: 'approve_review',
+      updateTask: (t) => {
+        closeReviewIntervals(t, timestamp);
+        t.historyEvents = tasks.appendHistoryEvent(t.historyEvents, {
+          type: 'review_approved',
+          from: prevReviewState,
+          to: 'approved',
+          ...(nextNote ? { note: nextNote } : {}),
+          actor: nextFrom,
+          timestamp,
+        });
+        t.reviewState = 'approved';
+        return t;
+      },
     });
 
     if (!suppressTaskComment) {

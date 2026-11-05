@@ -123,6 +123,7 @@ import { type MemberActivityFilter, type MemberDetailTab } from './members/membe
 import { deriveMetrics } from './context-metric-alias';
 import { showTeamDeleteError } from './teamDeleteErrorDialog';
 import { resolvePinnedTeamActionTop } from './teamDetailLayout';
+import { TeamReviewActionError } from './TeamReviewActionError';
 import { TeamStatusBadge } from './TeamStatusBadge';
 import { useTeamStopControl } from './useTeamStopControl';
 
@@ -3025,12 +3026,6 @@ export const TeamDetailView = memo(function TeamDetailView({
                   {t('detail.kanbanSafeData')}
                 </div>
               ) : null}
-              {reviewActionError ? (
-                <div className="mb-3 rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-[var(--step-error-text)]">
-                  {reviewActionError}
-                </div>
-              ) : null}
-
               <div className="runtime-telemetry-hover-scope">
                 <CollapsibleTeamSection
                   sectionId="team"
@@ -3133,6 +3128,7 @@ export const TeamDetailView = memo(function TeamDetailView({
                   </Button>
                 }
               >
+                <TeamReviewActionError error={reviewActionError} />
                 <TeamKanbanBoardBridge
                   tasks={kanbanDisplayTasks}
                   teamName={teamName}
