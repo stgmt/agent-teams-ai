@@ -479,4 +479,145 @@ describe('MCP task creation idempotency', () => {
     expect(legacyDocsReplay.id).toBe(legacyDocs.id);
     expect(taskFiles(claudeDir, teamName)).toHaveLength(4);
   });
+
+  // Both tools converge on the file store's createTask entry; capture the flags
+  // there so the assertion covers the payload the store actually receives.
+  function captureTaskCreatePayloads(teamName: string): Array<Record<string, unknown>> {
+    const original = controllerModule.getController;
+    const captured: Array<Record<string, unknown>> = [];
+    vi.spyOn(controllerModule, 'getController').mockImplementation((team, dir) => {
+      const controller = original(team, dir);
+      if (team !== teamName) return controller;
+      const createTask = controller.taskBoard.createTask.bind(controller.taskBoard);
+      controller.taskBoard.createTask = (flags: Record<string, unknown>) => {
+        captured.push(flags);
+        return createTask(flags);
+      };
+      return controller;
+    });
+    return captured;
+  }
+
+  it('forwards deduplicated requirements through both create paths and omits them when absent', async () => {
+    const teamName = 'requirements-forward';
+    const claudeDir = makeTeam(teamName);
+    fs.writeFileSync(
+      path.join(claudeDir, 'teams', teamName, 'sentMessages.json'),
+      JSON.stringify([
+        {
+          messageId: 'msg-requirements-1',
+          from: 'user',
+          to: 'lead',
+          text: 'Implement the requirement trace',
+          timestamp: '2026-11-05T10:00:00.000Z',
+          source: 'user_sent',
+        },
+      ])
+    );
+    const captured = captureTaskCreatePayloads(teamName);
+    const tools = collectTools();
+
+    const created = parseJsonToolResult(
+      await tools.get('task_create')!.execute({
+        teamName,
+        claudeDir,
+        subject: 'Implement FR-3',
+        requirements: ['FR-1', ' FR-3 ', 'FR-1'],
+      })
+    );
+    expect(created.subject).toBe('Implement FR-3');
+    expect(captured[0]!.requirements).toEqual(['FR-1', 'FR-3']);
+
+    const fromMessage = parseJsonToolResult(
+      await tools.get('task_create_from_message')!.execute({
+        teamName,
+        claudeDir,
+        messageId: 'msg-requirements-1',
+        subject: 'Implement AC-2',
+        requirements: ['AC-2'],
+      })
+    );
+    expect(fromMessage.subject).toBe('Implement AC-2');
+    expect(captured[1]!.requirements).toEqual(['AC-2']);
+
+    const legacy = parseJsonToolResult(
+      await tools.get('task_create')!.execute({
+        teamName,
+        claudeDir,
+        subject: 'Task without requirements',
+      })
+    );
+    expect(legacy.subject).toBe('Task without requirements');
+    expect(captured[2]).toMatchObject({ subject: 'Task without requirements' });
+    expect(captured[2]).not.toHaveProperty('requirements');
+
+    const legacyFromMessage = parseJsonToolResult(
+      await tools.get('task_create_from_message')!.execute({
+        teamName,
+        claudeDir,
+        messageId: 'msg-requirements-1',
+        subject: 'Message task without requirements',
+      })
+    );
+    expect(legacyFromMessage.subject).toBe('Message task without requirements');
+    expect(captured[3]).not.toHaveProperty('requirements');
+  });
+
+  it('keeps requirements optional for file-backed teams and rejects malformed values', async () => {
+    const teamName = 'requirements-validation';
+    const claudeDir = makeTeam(teamName);
+    fs.mkdirSync(path.join(claudeDir, 'tasks', teamName), { recursive: true });
+    const tools = collectTools();
+    const create = tools.get('task_create')!;
+
+    await expect(
+      create.execute({ teamName, claudeDir, subject: 'Wrong type', requirements: 'FR-1' })
+    ).rejects.toThrow('INVALID_REQUIREMENTS');
+    await expect(
+      create.execute({ teamName, claudeDir, subject: 'Blank entry', requirements: ['FR-1', '  '] })
+    ).rejects.toThrow('INVALID_REQUIREMENTS');
+    await expect(
+      create.execute({
+        teamName,
+        claudeDir,
+        subject: 'Non-string entry',
+        requirements: ['FR-1', 1] as unknown as string[],
+      })
+    ).rejects.toThrow('INVALID_REQUIREMENTS');
+    expect(taskFiles(claudeDir, teamName)).toEqual([]);
+
+    const legacy = parseJsonToolResult(
+      await create.execute({ teamName, claudeDir, subject: 'Legacy task without requirements' })
+    );
+    expect(legacy.subject).toBe('Legacy task without requirements');
+    expect(legacy.requirements).toBeUndefined();
+    expect(taskFiles(claudeDir, teamName)).toHaveLength(1);
+
+    expect(
+      create.parameters?.safeParse({ teamName, subject: 'Schema', requirements: ['FR-1'] }).success
+    ).toBe(true);
+    expect(
+      create.parameters?.safeParse({ teamName, subject: 'Schema', requirements: 'FR-1' }).success
+    ).toBe(false);
+    expect(
+      create.parameters?.safeParse({ teamName, subject: 'Schema', requirements: [''] }).success
+    ).toBe(false);
+    const fromMessage = tools.get('task_create_from_message')!;
+    expect(
+      fromMessage.parameters?.safeParse({
+        teamName,
+        messageId: 'msg-1',
+        subject: 'Schema',
+        requirements: ['FR-1'],
+      }).success
+    ).toBe(true);
+    expect(
+      fromMessage.parameters?.safeParse({
+        teamName,
+        messageId: 'msg-1',
+        subject: 'Schema',
+        requirements: 'FR-1',
+      }).success
+    ).toBe(false);
+  });
 });

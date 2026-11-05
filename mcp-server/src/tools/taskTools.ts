@@ -84,6 +84,12 @@ export function registerTaskTools(server: Pick<FastMCP, 'addTool'>) {
         .describe('Legacy actor/sender alternative, used only when createdBy is omitted.'),
       blockedBy: z.array(z.string().min(1)).optional(),
       related: z.array(z.string().min(1)).optional(),
+      requirements: z
+        .array(z.string().trim().min(1))
+        .optional()
+        .describe(
+          'Requirement ids this task implements, for example ["FR-1", "AC-2"]. Required for spec-registry-backed teams: the registry rejects a task that names no requirements.'
+        ),
       prompt: z.string().optional(),
       descriptionTaskRefs: z.array(taskRefSchema).optional(),
       promptTaskRefs: z.array(taskRefSchema).optional(),
@@ -117,6 +123,7 @@ export function registerTaskTools(server: Pick<FastMCP, 'addTool'>) {
       from,
       blockedBy,
       related,
+      requirements,
       prompt,
       descriptionTaskRefs,
       promptTaskRefs,
@@ -136,6 +143,7 @@ export function registerTaskTools(server: Pick<FastMCP, 'addTool'>) {
         ...taskActor,
         blockedBy,
         related,
+        requirements,
         prompt,
         descriptionTaskRefs,
         promptTaskRefs,
@@ -199,6 +207,12 @@ export function registerTaskTools(server: Pick<FastMCP, 'addTool'>) {
       createdBy: z.string().optional(),
       blockedBy: z.array(z.string().min(1)).optional(),
       related: z.array(z.string().min(1)).optional(),
+      requirements: z
+        .array(z.string().trim().min(1))
+        .optional()
+        .describe(
+          'Requirement ids this task implements, for example ["FR-1", "AC-2"]. Required for spec-registry-backed teams: the registry rejects a task that names no requirements.'
+        ),
       prompt: z.string().optional(),
       descriptionTaskRefs: z.array(taskRefSchema).optional(),
       promptTaskRefs: z.array(taskRefSchema).optional(),
@@ -224,6 +238,7 @@ export function registerTaskTools(server: Pick<FastMCP, 'addTool'>) {
       createdBy,
       blockedBy,
       related,
+      requirements,
       prompt,
       descriptionTaskRefs,
       promptTaskRefs,
@@ -285,6 +300,7 @@ export function registerTaskTools(server: Pick<FastMCP, 'addTool'>) {
         ...taskActor,
         blockedBy,
         related,
+        requirements,
         prompt,
         descriptionTaskRefs,
         promptTaskRefs,
