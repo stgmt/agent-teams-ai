@@ -292,7 +292,7 @@ describe('SaveAsTemplateDialog save', () => {
     expect(
       host.querySelector('[data-testid="template-library-unresolved"]')?.textContent
     ).toContain(
-      'Close this dialog and open My Templates. Select Re-check outcome, then choose I understand; allow new changes.'
+      'Close this dialog, open Templates, and select My Templates. Select Re-check outcome, then choose I understand; allow new changes.'
     );
     expect(saveButton().disabled).toBe(true);
     await act(async () => saveButton().click());
