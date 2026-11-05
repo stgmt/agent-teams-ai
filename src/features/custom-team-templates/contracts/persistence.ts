@@ -76,12 +76,13 @@ export type CreateCustomTeamTemplateRecordResult =
 export interface ListCustomTeamTemplateRecordsResult {
   templates: readonly CustomTeamTemplateV1[];
   unreadableRecords: readonly CustomTeamTemplateUnreadableRecord[];
-  /** The database was rebuilt after corruption; the old library needs manual recovery. */
+  /** Database recovery needs manual attention; no rebuild is implied. */
   recoveryRequired?: {
     kind: 'damaged' | 'interrupted';
     storageDirectory: string;
     markerPath: string;
     interruptedMarkerPath: string;
+    markerWriteFailed?: true;
   };
 }
 

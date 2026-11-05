@@ -67,6 +67,16 @@ describe('InternalStorageBackendSelector', () => {
     expect(selector.getBackendKind()).toBe('json-fallback');
   });
 
+  it('blocks storage when the recovery marker cannot be inspected', async () => {
+    const ping = vi.fn(() => Promise.resolve(backendInfo));
+    const selector = new InternalStorageBackendSelector(ping, () => {
+      throw Object.assign(new Error('marker access denied'), { code: 'EACCES' });
+    });
+    expect(await selector.probe()).toBe('verification-required');
+    await expect(selector.select('sqlite-store', 'json-store')).rejects.toThrow(/verif/i);
+    expect(ping).not.toHaveBeenCalled();
+  });
+
   it('refuses JSON fallback when corruption is known but the marker could not be written', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const error = Object.assign(new Error('recovery marker could not be created'), {
@@ -103,7 +113,13 @@ describe('createInternalStorageFeature', () => {
   afterEach(async () => {
     setClaudeBasePathOverride(null);
     if (tmpDir) {
-      await fs.rm(tmpDir, { recursive: true, force: true });
+      const parent = await fs.realpath(os.tmpdir());
+      const target = await fs.realpath(tmpDir);
+      const relative = path.relative(parent, target);
+      if (!relative.startsWith('internal-storage-feature-') || relative.includes(path.sep)) {
+        throw new Error('Refusing to remove a path outside the test scratch parent');
+      }
+      await fs.rm(target, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
       tmpDir = null;
     }
   });

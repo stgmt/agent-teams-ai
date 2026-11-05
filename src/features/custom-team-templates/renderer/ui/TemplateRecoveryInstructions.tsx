@@ -5,11 +5,13 @@ export const TemplateRecoveryInstructions = ({
   storageDirectory,
   markerPath,
   interruptedMarkerPath,
+  markerWriteFailed,
   interrupted,
 }: {
   storageDirectory: string;
   markerPath: string;
   interruptedMarkerPath: string;
+  markerWriteFailed?: true;
   interrupted: boolean;
 }): React.JSX.Element => {
   const { t } = useAppTranslation('team');
@@ -22,6 +24,7 @@ export const TemplateRecoveryInstructions = ({
             : 'customTemplates.library.recoveryRequired'
         )}
       </p>
+      {markerWriteFailed && <p>{t('customTemplates.library.recoveryMarkerWriteFailed')}</p>}
       <p>{t('customTemplates.library.recoveryStopAndPreserve')}</p>
       <p>
         {t('customTemplates.library.recoveryStorageDirectory')}{' '}

@@ -25,7 +25,8 @@ export class InternalStorageBackendSelector {
 
   constructor(
     private readonly ping: () => Promise<InternalStorageBackendInfo>,
-    private readonly recoveryRequired: () => boolean = () => false
+    private readonly recoveryRequired: () => boolean = () => false,
+    private readonly fallbackMayDiverge: () => boolean = () => false
   ) {}
 
   /**
@@ -34,8 +35,22 @@ export class InternalStorageBackendSelector {
    * a synchronization primitive.
    */
   getBackendKind(): InternalStorageBackendKind {
-    if (this.recoveryRequired()) this.backendKind = 'recovery-required';
+    if (this.backendKind === 'recovery-required') return this.backendKind;
+    const marker = this.inspectRecoveryMarker();
+    if (marker === 'present') this.backendKind = 'recovery-required';
+    else if (marker === 'unknown') this.backendKind = 'verification-required';
+    else if (this.backendKind === 'json-fallback' && this.fallbackMayDiverge())
+      this.backendKind = 'verification-required';
     return this.backendKind;
+  }
+
+  private inspectRecoveryMarker(): 'present' | 'absent' | 'unknown' {
+    try {
+      return this.recoveryRequired() ? 'present' : 'absent';
+    } catch {
+      // An unreadable marker must never make a fallback look safe.
+      return 'unknown';
+    }
   }
 
   getBackendInfo(): InternalStorageBackendInfo | null {
@@ -45,17 +60,18 @@ export class InternalStorageBackendSelector {
   async select<T>(sqliteBackend: T, jsonBackend: T): Promise<T> {
     const kind = await this.probe();
     if (kind === 'recovery-required') throw new Error('Internal storage requires manual recovery');
+    if (kind === 'verification-required')
+      throw new Error('Internal storage cannot be verified; JSON fallback is blocked');
     return kind === 'sqlite' ? sqliteBackend : jsonBackend;
   }
 
   /** Refuses both backends once recovery is observed, including after fallback. */
   async probe(): Promise<InternalStorageBackendKind> {
-    if (this.backendKind === 'recovery-required' || this.recoveryRequired()) {
-      this.backendKind = 'recovery-required';
-      return this.backendKind;
-    }
+    const safety = this.getBackendKind();
+    if (safety === 'recovery-required' || safety === 'verification-required') return safety;
     const kind = await this.resolve();
-    if (this.getBackendKind() === 'recovery-required') return 'recovery-required';
+    const current = this.getBackendKind();
+    if (current === 'recovery-required' || current === 'verification-required') return current;
     return kind;
   }
 
@@ -73,10 +89,19 @@ export class InternalStorageBackendSelector {
           return 'sqlite';
         })
         .catch((error: unknown): InternalStorageBackendKind => {
-          if (isInternalStorageRecoveryRequiredError(error) || this.recoveryRequired()) {
+          const marker = this.inspectRecoveryMarker();
+          if (isInternalStorageRecoveryRequiredError(error) || marker === 'present') {
             this.backendKind = 'recovery-required';
             logger.error(
               'internal-storage requires manual recovery; both SQLite and JSON are blocked',
+              error
+            );
+            return this.backendKind;
+          }
+          if (marker === 'unknown' || this.fallbackMayDiverge()) {
+            this.backendKind = 'verification-required';
+            logger.error(
+              'internal-storage could not verify an existing database; JSON fallback is blocked',
               error
             );
             return this.backendKind;

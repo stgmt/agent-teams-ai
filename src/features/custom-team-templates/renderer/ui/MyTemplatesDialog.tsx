@@ -373,6 +373,7 @@ export const MyTemplatesDialog = ({ open, onClose }: MyTemplatesDialogProps): Re
                       storageDirectory={state.storageDirectory}
                       markerPath={state.markerPath}
                       interruptedMarkerPath={state.interruptedMarkerPath}
+                      markerWriteFailed={state.markerWriteFailed}
                       interrupted={state.status === 'recoveryInterrupted'}
                     />
                   ) : (

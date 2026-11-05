@@ -57,7 +57,12 @@ SQLite connection open. A leftover `app.db.recovery-in-progress` marker from an
 interrupted earlier recovery is reported separately. The library shows both
 marker paths and the storage directory even when SQLite cannot open. Selector-backed
 storage operations refuse both SQLite and JSON while either marker is present;
-already-running operations cannot be cancelled retroactively.
+already-running operations cannot be cancelled retroactively. If writing the marker
+fails, the worker remembers the confirmed damage and shows the paths with a separate
+warning. It does not retry the marker write. Stop every instance before inspecting
+files. If the worker cannot be reached and an existing SQLite database or journal
+cannot be verified, selector-backed stores refuse JSON fallback even without a
+marker. A new profile without database files retains the ordinary JSON fallback.
 
 Stop all app and server instances before copying the entire storage directory,
 including `app.db`, its `-wal`/`-shm` files and any existing `app.db.corrupt-*`

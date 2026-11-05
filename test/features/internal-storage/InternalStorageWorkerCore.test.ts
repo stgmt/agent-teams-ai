@@ -62,7 +62,13 @@ describe('InternalStorageWorkerCore', () => {
       }
     }
     if (tmpDir) {
-      await fs.rm(tmpDir, { recursive: true, force: true });
+      const parent = await fs.realpath(os.tmpdir());
+      const target = await fs.realpath(tmpDir);
+      const relative = path.relative(parent, target);
+      if (!relative.startsWith('internal-storage-') || relative.includes(path.sep)) {
+        throw new Error('Refusing to remove a path outside the test scratch parent');
+      }
+      await fs.rm(target, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
       tmpDir = null;
     }
   });

@@ -4181,6 +4181,7 @@ export default interface Resources {
         "recoveryInterruptedMarkerPath": "Interrupted recovery marker:",
         "recoveryMarkerInstructions": "After inspecting the files and deciding how to restore the database or start over, remove these marker files if present, then restart the app or server:",
         "recoveryMarkerPath": "Marker file:",
+        "recoveryMarkerWriteFailed": "The recovery marker could not be confirmed as saved. Do not start another app or server instance until the files have been inspected.",
         "recoveryOtherStores": "New storage operations in this app session are blocked while recovery is required; they do not switch to JSON automatically.",
         "recoveryRequired": "Database damage was detected or an earlier recovery left a marker. Changes are blocked until the files are inspected.",
         "recoveryStopAndPreserve": "Stop all app and server instances using this database, then copy the entire storage directory. Include app.db, its -wal and -shm files, and any app.db.corrupt-* entries if present.",

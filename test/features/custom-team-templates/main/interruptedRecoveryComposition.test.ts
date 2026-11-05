@@ -22,6 +22,20 @@ import type { ListCustomTeamTemplateRecordsResult } from '@features/custom-team-
 import type { InternalStorageBackendInfo } from '@features/internal-storage/contracts/internalStorageContracts';
 import type { IpcMain } from 'electron';
 
+async function cleanup(root: string): Promise<void> {
+  const parent = await fs.realpath(os.tmpdir());
+  const target = await fs.realpath(root);
+  const relative = path.relative(parent, target);
+  if (
+    (!relative.startsWith('interrupted-storage-composition-') &&
+      !relative.startsWith('corrupt-storage-composition-')) ||
+    relative.includes(path.sep)
+  ) {
+    throw new Error('Refusing to remove a path outside the test scratch parent');
+  }
+  await fs.rm(target, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
+}
+
 it('exposes interrupted recovery through real composition, IPC and HTTP after JSON fallback and restart', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'interrupted-storage-composition-'));
   const directory = path.join(root, 'storage');
@@ -115,7 +129,7 @@ it('exposes interrupted recovery through real composition, IPC and HTTP after JS
   } finally {
     core.close();
     vi.restoreAllMocks();
-    await fs.rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
+    await cleanup(root);
   }
 });
 
@@ -163,6 +177,6 @@ it('blocks both storage backends after ping detects real database corruption', a
     await storage.dispose();
     core.close();
     vi.restoreAllMocks();
-    await fs.rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
+    await cleanup(root);
   }
 });

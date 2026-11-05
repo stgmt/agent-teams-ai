@@ -3490,6 +3490,7 @@
       "noMembers": "Prompt-only template — no members recorded",
       "recoveryRequired": "Database damage was detected or an earlier recovery left a marker. Changes are blocked until the files are inspected.",
       "recoveryInterrupted": "A previous database recovery was interrupted. Its outcome is unknown; changes are blocked until the files are inspected.",
+      "recoveryMarkerWriteFailed": "The recovery marker could not be confirmed as saved. Do not start another app or server instance until the files have been inspected.",
       "recoveryStopAndPreserve": "Stop all app and server instances using this database, then copy the entire storage directory. Include app.db, its -wal and -shm files, and any app.db.corrupt-* entries if present.",
       "recoveryStorageDirectory": "Storage directory:",
       "recoveryBackupWarning": "A usable backup may not exist. Restoring an older database or starting over can replace newer data belonging to other features.",

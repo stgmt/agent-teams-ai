@@ -6,6 +6,7 @@ import { drizzle } from 'drizzle-orm/better-sqlite3';
 
 import {
   getInternalStorageRecoveryDetails,
+  internalStorageRecoveryPaths,
   InternalStorageRecoveryRequiredError,
 } from '../internalStorageRecoveryState';
 
@@ -87,6 +88,7 @@ interface OpenState {
  */
 export class InternalStorageWorkerCore {
   private state: OpenState | null = null;
+  private markerWriteFailure: ReturnType<typeof getInternalStorageRecoveryDetails> = null;
   private readonly applicationCommandLedgerOps = new ApplicationCommandLedgerWorkerOps(
     () => this.open().orm
   );
@@ -143,12 +145,15 @@ export class InternalStorageWorkerCore {
         if (typeof op === 'string' && op.startsWith('customTemplate.')) {
           // The list is a diagnostic and must work even when ping/open is
           // blocked by a damaged or previously interrupted database.
-          let recovery = getInternalStorageRecoveryDetails(this.options.databasePath);
+          let recovery =
+            this.markerWriteFailure ?? getInternalStorageRecoveryDetails(this.options.databasePath);
           if (!recovery) {
             try {
               this.open();
             } catch (error) {
-              recovery = getInternalStorageRecoveryDetails(this.options.databasePath);
+              recovery =
+                this.markerWriteFailure ??
+                getInternalStorageRecoveryDetails(this.options.databasePath);
               if (!recovery || op !== 'customTemplate.list') throw error;
             }
             recovery ??= getInternalStorageRecoveryDetails(this.options.databasePath);
@@ -285,7 +290,7 @@ export class InternalStorageWorkerCore {
   }
 
   private open(): OpenState {
-    if (getInternalStorageRecoveryDetails(this.options.databasePath)) {
+    if (this.markerWriteFailure || getInternalStorageRecoveryDetails(this.options.databasePath)) {
       throw new InternalStorageRecoveryRequiredError('Internal storage requires manual recovery');
     }
     if (this.state) {
@@ -302,6 +307,13 @@ export class InternalStorageWorkerCore {
       try {
         this.markTemplateRecoveryRequired();
       } catch (markerError) {
+        // Keep the known result in this worker even if the marker write could
+        // not be confirmed. Listing is diagnostic and never retries the write.
+        this.markerWriteFailure = {
+          kind: 'damaged',
+          ...internalStorageRecoveryPaths(this.options.databasePath),
+          markerWriteFailed: true,
+        };
         throw new InternalStorageRecoveryRequiredError(
           'Internal storage is damaged and its recovery marker could not be created; manual recovery is required',
           { cause: markerError }

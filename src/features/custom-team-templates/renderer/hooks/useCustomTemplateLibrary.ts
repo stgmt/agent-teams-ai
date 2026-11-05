@@ -25,6 +25,7 @@ export type TemplateLibraryState =
       storageDirectory: string;
       markerPath: string;
       interruptedMarkerPath: string;
+      markerWriteFailed?: true;
     }
   | { status: 'ready'; templates: readonly CustomTeamTemplateV1[] }
   | {

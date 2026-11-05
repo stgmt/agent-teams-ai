@@ -24,7 +24,10 @@ import {
   resolveStallJournalRecordConflict,
 } from '../adapters/output/stallJournalEntryRecordMapper';
 import { StallJournalLegacyJsonSource } from '../adapters/output/StallJournalLegacyJsonSource';
-import { getInternalStorageRecoveryDetails } from '../infrastructure/internalStorageRecoveryState';
+import {
+  getInternalStorageRecoveryDetails,
+  mightHaveInternalStorageFiles,
+} from '../infrastructure/internalStorageRecoveryState';
 import { InternalStorageWorkerClient } from '../infrastructure/InternalStorageWorkerClient';
 
 import { BackendSelectingTaskCommentNotificationJournalStore } from './BackendSelectingTaskCommentNotificationJournalStore';
@@ -104,8 +107,9 @@ export function createInternalStorageFeature(
   const databasePath = getInternalStorageDatabasePath(deps.userDataPath);
   // Replica ownership is per team/store. A missing replica means that store was
   // never touched through SQLite; a dirty replica fails closed on its own.
-  // App-wide database existence cannot be used here because a healthy database
-  // may contain other teams/stores while this one is legitimately fresh.
+  // A healthy app-wide database can contain other teams/stores while this one
+  // is fresh. The selector separately blocks JSON when that database cannot be
+  // verified at all, to avoid splitting state after a failed corruption marker.
   const fallbackRequiresReplica = false;
   const client = new InternalStorageWorkerClient({ databasePath });
   const workerAvailable = client.isAvailable();
@@ -125,7 +129,8 @@ export function createInternalStorageFeature(
       workerAvailable
         ? client.ping()
         : Promise.reject(new Error('internal-storage worker bundle is unavailable')),
-    () => getInternalStorageRecoveryDetails(databasePath) !== null
+    () => getInternalStorageRecoveryDetails(databasePath) !== null,
+    () => mightHaveInternalStorageFiles(databasePath)
   );
 
   const stallImporter = new ImportLegacyJsonStoreUseCase({

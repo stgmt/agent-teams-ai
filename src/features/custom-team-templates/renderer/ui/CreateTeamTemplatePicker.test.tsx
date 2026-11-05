@@ -172,6 +172,23 @@ describe('CreateTeamTemplatePicker', () => {
     expect(optionBuiltin('research')).not.toBeNull();
   });
 
+  it('warns when the recovery marker write could not be confirmed', async () => {
+    listTemplates.mockResolvedValueOnce({
+      status: 'recoveryRequired',
+      storageDirectory: '/server/storage',
+      markerPath: '/server/storage/app.db.templates-recovery-required',
+      interruptedMarkerPath: '/server/storage/app.db.recovery-in-progress',
+      markerWriteFailed: true,
+    });
+    renderPicker(true);
+    await flush();
+    expect(host.textContent).toContain('customTemplates.library.recoveryMarkerWriteFailed');
+    expect(host.querySelector('[data-testid="template-recovery-directory"]')?.textContent).toBe(
+      '/server/storage'
+    );
+    expect(host.querySelector('[data-testid="create-template-custom-empty"]')).toBeNull();
+  });
+
   it('shows library failures with a working retry', async () => {
     listTemplates.mockRejectedValueOnce(new Error('offline'));
     renderPicker(true);

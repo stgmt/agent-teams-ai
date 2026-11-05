@@ -670,6 +670,26 @@ describe('MyTemplatesDialog', () => {
     expect(importButton === null || importButton.disabled).toBe(true);
   });
 
+  it('warns when the recovery marker write could not be confirmed', async () => {
+    listTemplates.mockResolvedValue({
+      status: 'recoveryRequired',
+      storageDirectory: '/server/storage',
+      markerPath: '/server/storage/app.db.templates-recovery-required',
+      interruptedMarkerPath: '/server/storage/app.db.recovery-in-progress',
+      markerWriteFailed: true,
+    } satisfies ListCustomTeamTemplatesResult);
+    await render();
+    expect(host.textContent).toContain('customTemplates.library.recoveryMarkerWriteFailed');
+    expect(host.querySelector('[data-testid="template-recovery-directory"]')?.textContent).toBe(
+      '/server/storage'
+    );
+    expect(host.textContent).not.toContain('customTemplates.library.empty');
+    const importButton = host.querySelector<HTMLButtonElement>(
+      '[data-testid="import-template-button"]'
+    );
+    expect(importButton === null || importButton.disabled).toBe(true);
+  });
+
   it('shows interrupted recovery instructions without claiming a rebuilt database', async () => {
     listTemplates.mockResolvedValue({
       status: 'recoveryInterrupted',
