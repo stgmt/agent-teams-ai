@@ -9,7 +9,12 @@ const MAX_BASE64_CHARS = Math.ceil((20 * 1024 * 1024) / 3) * 4;
 export function validateTaskArtifactFields(
   input: Record<string, unknown>
 ):
-  | { valid: true; value: ArtifactFields; expectedContext: unknown }
+  | {
+      valid: true;
+      value: ArtifactFields;
+      expectedContext: unknown;
+      expectedRootFingerprint: unknown;
+    }
   | { valid: false; error: string } {
   const { artifactRequired, artifactExpectedFilename, artifactFile } = input;
   if (input.artifactProjectPath !== undefined) {
@@ -43,6 +48,7 @@ export function validateTaskArtifactFields(
   return {
     valid: true,
     expectedContext: input.artifactExpectedContext,
+    expectedRootFingerprint: input.artifactExpectedRootFingerprint,
     value: {
       ...(artifactRequired !== undefined ? { artifactRequired } : {}),
       ...(artifactExpectedFilename !== undefined ? { artifactExpectedFilename } : {}),

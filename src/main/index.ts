@@ -3295,6 +3295,7 @@ async function initializeServices(): Promise<void> {
       rewire: rewireContextEvents,
       full: onContextSwitched,
       connection: () => externalAgentConnection,
+      getTaskWriteRoot: getClaudeBasePath,
       notifyLanguageChange: (language) => teamProvisioningService.notifyLanguageChange(language),
     }),
     {

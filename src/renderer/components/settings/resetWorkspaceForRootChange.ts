@@ -7,6 +7,7 @@ import {
 
 export function resetWorkspaceForRootChange(): void {
   invalidateContextScopedRequestEpoch();
+  useStore.getState().retireTaskDetailSessionWork();
   useStore.setState({
     projects: [],
     repositoryGroups: [],

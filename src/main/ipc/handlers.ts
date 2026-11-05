@@ -255,7 +255,7 @@ export function initializeIpcHandlers(
     }),
     resolveOpenCodeInputDeclaration,
     retireGatewayBindings,
-    contextCallbacks.withExpectedContext
+    contextCallbacks.withExpectedTaskWriteContext
   );
   initializeConfigHandlers({
     updateClaudeRoot: contextCallbacks.updateClaudeRoot,

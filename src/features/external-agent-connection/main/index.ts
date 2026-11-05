@@ -19,3 +19,7 @@ export {
   registerExternalAgentConnectionIpc,
   removeExternalAgentConnectionIpc,
 } from './registerExternalAgentConnectionIpc';
+export {
+  assertTaskWriteRootFingerprint,
+  getTaskWriteRootFingerprint,
+} from './taskWriteRootIdentity';

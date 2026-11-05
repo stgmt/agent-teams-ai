@@ -59,10 +59,15 @@ export interface TaskDetailSessionController {
     unknown: boolean;
     checked: boolean;
     expectedContext: AppConnectionContext | null;
+    expectedRootFingerprint: string | null;
   };
   beginGuardedTaskWrite: (
     operation: TaskWriteOperation
-  ) => Promise<{ token: string; expectedContext: AppConnectionContext }>;
+  ) => Promise<{
+    token: string;
+    expectedContext: AppConnectionContext;
+    expectedRootFingerprint: string;
+  }>;
   settleGuardedTaskWrite: (
     token: string,
     operation: TaskWriteOperation,

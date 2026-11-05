@@ -3,6 +3,7 @@ import type { TaskFieldUpdates } from '@shared/types';
 
 export type ArtifactAdmission = <T>(
   expected: AppConnectionContext,
+  expectedRootFingerprint: string,
   operation: () => Promise<T>
 ) => Promise<T>;
 let admission: ArtifactAdmission | undefined;
@@ -21,10 +22,11 @@ export function configureArtifactAdmission(value?: ArtifactAdmission): void {
 
 export async function runArtifactBoundUpdate(
   fields: TaskFieldUpdates,
-  expected: unknown,
+  binding: { expectedContext: unknown; expectedRootFingerprint: unknown },
   operation: () => Promise<void>
 ): Promise<void> {
   if (!hasArtifactFields(fields)) return operation();
+  const expected = binding.expectedContext;
   if (!expected || typeof expected !== 'object')
     throw new Error('Artifact update requires the expected app context');
   const context = expected as Partial<AppConnectionContext>;
@@ -39,5 +41,10 @@ export async function runArtifactBoundUpdate(
     throw new Error('Artifact update requires a valid expected app context');
   }
   if (!admission) throw new Error('Artifact context admission is unavailable');
-  return admission(context as AppConnectionContext, operation);
+  if (
+    typeof binding.expectedRootFingerprint !== 'string' ||
+    !/^[a-f0-9]{64}$/i.test(binding.expectedRootFingerprint)
+  )
+    throw new Error('Artifact update requires a valid physical root fingerprint');
+  return admission(context as AppConnectionContext, binding.expectedRootFingerprint, operation);
 }

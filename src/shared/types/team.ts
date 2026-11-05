@@ -913,6 +913,7 @@ export interface TaskFieldUpdates {
   artifactExpectedFilename?: string;
   artifactFile?: TaskArtifactFile;
   artifactExpectedContext?: AppConnectionContext;
+  artifactExpectedRootFingerprint?: string;
 }
 
 export interface CreateTaskRequest {

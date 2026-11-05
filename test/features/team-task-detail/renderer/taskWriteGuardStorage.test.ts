@@ -59,6 +59,21 @@ describe('durable task write guard', () => {
     );
   });
 
+  it('allows an already-cleared marker only after a decision and never removes a newer marker', async () => {
+    const store = createTaskWriteGuardStorage();
+    await store.acquire(identity, artifact);
+    await store.release(identity, artifact);
+    await expect(store.release(identity, artifact)).rejects.toThrow(/changed/);
+    await expect(
+      store.release(identity, artifact, { allowMissingAfterDecision: true })
+    ).resolves.toBeUndefined();
+    await store.acquire(identity, manifest);
+    await expect(
+      store.release(identity, artifact, { allowMissingAfterDecision: true })
+    ).rejects.toThrow(/changed/);
+    expect(await store.read(identity)).toEqual(manifest);
+  });
+
   it('propagates unavailable storage and never grants admission', async () => {
     const backend = {
       get: vi.fn(async () => {

@@ -338,12 +338,17 @@ export function retireTaskDetailSessionWork(
 ): TaskDetailSession {
   const savingSubject = session.savedPartRevisionByPart.subject !== null;
   const savingDescription = session.savedPartRevisionByPart.description !== null;
+  const hasTaskWriteGuard =
+    session.taskWriteGuardState !== undefined ||
+    session.artifactWriteId != null ||
+    session.artifactOutcomeUnknown === true;
   if (
     session.ownerSurfaceId === null &&
     !session.submitPending &&
     !savingSubject &&
     !savingDescription &&
-    session.pendingAttachmentPreparationIds.length === 0
+    session.pendingAttachmentPreparationIds.length === 0 &&
+    !hasTaskWriteGuard
   )
     return session;
   return {
@@ -358,6 +363,21 @@ export function retireTaskDetailSessionWork(
       description: session.saveRevisionByPart.description + (savingDescription ? 1 : 0),
     },
     savedPartRevisionByPart: { subject: null, description: null },
+    ...(hasTaskWriteGuard
+      ? {
+          artifactWriteId: null,
+          artifactOutcomeUnknown: false,
+          artifactOutcomeChecked: false,
+          artifactOutcomeRevision: (session.artifactOutcomeRevision ?? 0) + 1,
+          taskWriteGuardState: undefined,
+          taskWriteGuardReason: null,
+          taskWriteMarkerId: null,
+          taskWriteOperation: null,
+          taskWriteHydrationId: null,
+          taskWriteRootFingerprint: null,
+          taskWriteExpectedContext: null,
+        }
+      : {}),
     pendingAttachments: preservePendingAttachmentPreparation
       ? session.pendingAttachments
       : session.pendingAttachments.filter(

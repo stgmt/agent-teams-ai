@@ -12,6 +12,7 @@ import {
   taskWriteGuardKey,
   taskWriteGuardStorage,
 } from '@features/team-task-detail/renderer/adapters/taskWriteGuardStorage';
+import { resetWorkspaceForRootChange } from '@renderer/components/settings/resetWorkspaceForRootChange';
 import { useStore } from '@renderer/store';
 import { __resetTeamSliceModuleStateForTests } from '@renderer/store/slices/teamSlice';
 import {
@@ -139,7 +140,10 @@ describe('task session surface and origin integration', () => {
     );
     vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
     vi.clearAllMocks();
-    apiMock.externalAgentConnection.getConnectionInfo.mockResolvedValue({ context: guardContext });
+    apiMock.externalAgentConnection.getConnectionInfo.mockResolvedValue({
+      context: guardContext,
+      taskWriteRootFingerprint: guardContext.dataRootFingerprint,
+    });
     __resetTeamSliceModuleStateForTests();
     useStore.setState(
       {
@@ -219,6 +223,32 @@ describe('task session surface and origin integration', () => {
       await controller.confirmArtifactOutcome();
     });
     expect(useStore.getState().taskDetailSessionById[key].artifactOutcomeUnknown).toBe(false);
+  });
+
+  it('accepts an explicit decision if another renderer has already cleared the same marker', async () => {
+    let controller!: TaskDetailSessionController;
+    await act(async () => {
+      mount('dialog', (value) => {
+        controller = value;
+      });
+    });
+    const token = await makeUnknown(controller);
+    const guardIdentity = { ...identity, dataRootFingerprint: guardContext.dataRootFingerprint };
+    await taskWriteGuardStorage.release(guardIdentity, {
+      version: 1,
+      attemptId: token,
+      operation: 'artifact',
+    });
+    apiMock.teams.getTask.mockResolvedValueOnce({ ...task });
+    await act(async () => {
+      await controller.checkGuardedTaskWriteOutcome('artifact');
+      await controller.confirmGuardedTaskWriteOutcome(token, 'artifact');
+    });
+    expect(controller.taskWriteGuard).toMatchObject({
+      unknown: false,
+      markerId: null,
+      status: 'ready',
+    });
   });
 
   it('keeps an unknown artifact outcome when the fresh task read fails', async () => {
@@ -371,11 +401,101 @@ describe('task session surface and origin integration', () => {
     await waitForGuard();
     apiMock.externalAgentConnection.getConnectionInfo.mockResolvedValue({
       context: { ...guardContext, dataRootFingerprint: 'b'.repeat(64), connectionGeneration: 2 },
+      taskWriteRootFingerprint: 'b'.repeat(64),
     });
     await expect(controller.checkGuardedTaskWriteOutcome('artifact')).rejects.toThrow(
       /root changed/
     );
     expect(await taskWriteGuardStorage.read(guardIdentity)).toEqual(marker);
+  });
+
+  it('rehydrates independent markers when the same task id moves between roots and back', async () => {
+    const rootB = { ...guardContext, dataRootFingerprint: 'b'.repeat(64), connectionGeneration: 3 };
+    const identityA = { ...identity, dataRootFingerprint: guardContext.dataRootFingerprint };
+    const identityB = { ...identity, dataRootFingerprint: rootB.dataRootFingerprint };
+    await del(taskWriteGuardKey(identityB));
+    let controller!: TaskDetailSessionController;
+    let surface!: ReturnType<typeof createRoot>;
+    await act(async () => {
+      surface = mount('root-a', (value) => {
+        controller = value;
+      });
+    });
+    const tokenA = await makeUnknown(controller);
+
+    const switchRoot = async (
+      context: typeof guardContext,
+      physicalRoot = context.dataRootFingerprint
+    ): Promise<void> => {
+      await act(async () => {
+        surface.unmount();
+        roots.splice(roots.indexOf(surface), 1);
+        apiMock.externalAgentConnection.getConnectionInfo.mockResolvedValue({
+          context,
+          taskWriteRootFingerprint: physicalRoot,
+        });
+        resetWorkspaceForRootChange();
+        useStore.setState({
+          taskDetailById: {
+            [key]: {
+              ...createTaskDetailReadEntry(identity),
+              phase: 'ready',
+              full: task,
+              loading: false,
+            },
+          },
+          teamByName: { [identity.teamName]: teamSummary },
+          teamDataCacheByName: { [identity.teamName]: teamSnapshot },
+        });
+        acceptLiveTeamSnapshotFixture(identity.teamName);
+        surface = mount(`root-${context.connectionGeneration}`, (value) => {
+          controller = value;
+        });
+      });
+      await act(async () => {
+        await waitForGuard();
+      });
+    };
+
+    await switchRoot(
+      { ...guardContext, dataRootFingerprint: 'c'.repeat(64), connectionGeneration: 2 },
+      identityA.dataRootFingerprint
+    );
+    expect(controller.taskWriteGuard).toMatchObject({
+      unknown: true,
+      markerId: tokenA,
+      expectedRootFingerprint: identityA.dataRootFingerprint,
+    });
+
+    await switchRoot(rootB);
+    expect(controller.taskWriteGuard).toMatchObject({
+      status: 'ready',
+      unknown: false,
+      markerId: null,
+      expectedRootFingerprint: identityB.dataRootFingerprint,
+    });
+    let tokenB = '';
+    await act(async () => {
+      const attempt = await controller.beginGuardedTaskWrite('artifact');
+      tokenB = attempt.token;
+      expect(attempt.expectedRootFingerprint).toBe(identityB.dataRootFingerprint);
+      await controller.settleGuardedTaskWrite(tokenB, 'artifact', 'unknown');
+    });
+    expect((await taskWriteGuardStorage.read(identityA))?.attemptId).toBe(tokenA);
+    expect((await taskWriteGuardStorage.read(identityB))?.attemptId).toBe(tokenB);
+
+    await switchRoot({ ...guardContext, connectionGeneration: 4 });
+    expect(controller.taskWriteGuard).toMatchObject({ unknown: true, markerId: tokenA });
+    apiMock.teams.getTask.mockResolvedValueOnce({ ...task });
+    await act(async () => {
+      await controller.checkGuardedTaskWriteOutcome('artifact');
+      await controller.confirmGuardedTaskWriteOutcome(tokenA, 'artifact');
+    });
+    expect(await taskWriteGuardStorage.read(identityA)).toBeNull();
+    expect((await taskWriteGuardStorage.read(identityB))?.attemptId).toBe(tokenB);
+    await switchRoot({ ...rootB, connectionGeneration: 5 });
+    expect(controller.taskWriteGuard).toMatchObject({ unknown: true, markerId: tokenB });
+    await del(taskWriteGuardKey(identityB));
   });
 
   it('does not confirm a newer unknown outcome with an older in-flight read', async () => {

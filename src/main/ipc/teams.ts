@@ -4771,7 +4771,7 @@ async function handleUpdateTaskFields(
   }
   return wrapTeamHandler('updateTaskFields', async () => {
     const tn = vTeam.value!;
-    await artifactWrite.runArtifactBoundUpdate(validFields, artifactFields.expectedContext, () =>
+    await artifactWrite.runArtifactBoundUpdate(validFields, artifactFields, () =>
       getTeamDataService().updateTaskFields(tn, tid, validFields)
     );
     // Notify the lead about updated task fields
