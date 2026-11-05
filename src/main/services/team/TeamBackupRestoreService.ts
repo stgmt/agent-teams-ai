@@ -453,6 +453,9 @@ export class TeamBackupRestoreService {
     try {
       const freshness = await readTeamLaunchFreshness(teamName);
       if (freshness?.kind === 'stop') return true;
+      // Native admission atomically supersedes an older marker without deleting
+      // it. Only this explicit current authority proves that marker is stale.
+      if (freshness?.kind === 'launch' && freshness.native) return false;
       if (backupFiles.includes(TEAM_LAUNCH_STOPPED_MARKER_FILE) && !freshness) return true;
     } catch {
       return true;

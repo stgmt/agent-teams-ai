@@ -1,8 +1,9 @@
 function assertNoPendingKanbanTransition(task, allowedId) {
   if (task.pendingKanbanTransition && task.pendingKanbanTransition.id !== allowedId) {
+    const transition = task.pendingKanbanTransition.kind === 'status' ? 'Task status' : 'Review';
     throw Object.assign(
       new Error(
-        `KANBAN_TRANSITION_UNCERTAIN: Review transition for task ${task.id} has an unknown outcome; inspect the task and board before further changes.`
+        `KANBAN_TRANSITION_UNCERTAIN: ${transition} transition for task ${task.id} has an unknown outcome; inspect the task and board before further changes.`
       ),
       { code: 'KANBAN_TRANSITION_UNCERTAIN', taskId: task.id }
     );

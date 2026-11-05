@@ -473,6 +473,7 @@ describe('TeamProvisioning API binders', () => {
       getAliveTeams: () => ['team-http'],
       isTeamAlive: () => true,
       getCurrentRunId: () => 'run-http',
+      getStopTargetRunId: () => 'run-http',
       recordOpenCodeRuntimeBootstrapCheckin: (): Promise<OpenCodeRuntimeControlAck> =>
         Promise.resolve(ack),
       deliverOpenCodeRuntimeMessage: (): Promise<OpenCodeRuntimeControlAck> =>
@@ -519,7 +520,12 @@ describe('TeamProvisioning API binders', () => {
       'runtimeControl',
       'taskActivity',
     ]);
-    expect(Object.keys(runtime).sort()).toEqual(['getAliveTeams', 'getRuntimeState', 'stopTeam']);
+    expect(Object.keys(runtime).sort()).toEqual([
+      'getAliveTeams',
+      'getRuntimeState',
+      'getStopTargetRunId',
+      'stopTeam',
+    ]);
     // Contract lock: the HTTP member diagnostics facade exposes the write-free
     // reads and nothing else, so quietly re-pointing it at the mutating getters
     // is a CI failure rather than a silent behaviour change.
@@ -585,6 +591,9 @@ describe('TeamProvisioning API binders', () => {
         return [this.teamName];
       },
       getCurrentRunId(): string {
+        return 'run-bound';
+      },
+      getStopTargetRunId(): string {
         return 'run-bound';
       },
       recordOpenCodeRuntimeBootstrapCheckin(
@@ -666,6 +675,7 @@ describe('TeamProvisioning API binders', () => {
       isTeamAlive: () => true,
       getAliveTeams: () => ['team-bound'],
       getCurrentRunId: () => 'run-bound',
+      getStopTargetRunId: () => 'run-bound',
     };
     const runtimeControlSource: TeamRuntimeControlCompatibilityApi = {
       recordOpenCodeRuntimeBootstrapCheckin: () => Promise.resolve(ack),
@@ -704,12 +714,14 @@ describe('TeamProvisioning API binders', () => {
       'getAliveTeams',
       'getCurrentRunId',
       'getRuntimeState',
+      'getStopTargetRunId',
       'isTeamAlive',
       'stopTeam',
     ]);
     expect(Object.keys(httpRuntimeApi).sort()).toEqual([
       'getAliveTeams',
       'getRuntimeState',
+      'getStopTargetRunId',
       'stopTeam',
     ]);
     expect(Object.keys(runtimeControlApi).sort()).toEqual([

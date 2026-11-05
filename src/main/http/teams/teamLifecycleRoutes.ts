@@ -79,7 +79,8 @@ export function registerTeamLifecycleRoutes(
         // bounded budget, and only if it does not deliver does the force-stop
         // cleanup guarantee the team is down.
         const result = await stopTeamWithEscalation(teamName, {
-          stopTeam: (name) => teamRuntimeApi.stopTeam(name),
+          stopTeam: (name, expectedRunId) => teamRuntimeApi.stopTeam(name, expectedRunId),
+          getStopTargetRunId: (name) => teamRuntimeApi.getStopTargetRunId(name),
           observeOwnedRuntimeRunIds: (name) =>
             readOwnedOpenCodeRuntimeRunIdsForTeam({ teamName: name }),
           observeOwnedRuntimeLaneIds: (name) =>
@@ -165,7 +166,8 @@ export function registerTeamLifecycleRoutes(
         const teamName = validatedTeamName.value!;
         const teamRuntimeApi = getTeamRuntimeApi(services);
         const result = await runTeamForceStopFlow(teamName, {
-          stopTeam: (name) => teamRuntimeApi.stopTeam(name),
+          stopTeam: (name, expectedRunId) => teamRuntimeApi.stopTeam(name, expectedRunId),
+          getStopTargetRunId: (name) => teamRuntimeApi.getStopTargetRunId(name),
           observeOwnedRuntimeRunIds: (name) =>
             readOwnedOpenCodeRuntimeRunIdsForTeam({ teamName: name }),
           observeOwnedRuntimeLaneIds: (name) =>

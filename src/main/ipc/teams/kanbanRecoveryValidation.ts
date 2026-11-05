@@ -12,6 +12,6 @@ export function isKanbanRecoveryPatch(value: unknown): value is KanbanRecoveryPa
     /^[0-9a-f]{64}$/i.test(patch.snapshotHash) &&
     typeof patch.contextHash === 'string' &&
     /^[0-9a-f]{64}$/i.test(patch.contextHash) &&
-    (patch.mode === 'publish' || patch.mode === 'clear')
+    (patch.mode === 'cancel' || patch.mode === 'publish' || patch.mode === 'clear')
   );
 }

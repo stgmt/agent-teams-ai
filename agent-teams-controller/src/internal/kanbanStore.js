@@ -99,9 +99,10 @@ function assertKanbanStateConsistent(paths, state, options = {}) {
     }
     const pending = task?.pendingKanbanTransition;
     if (pending) {
+      const transition = pending.kind === 'status' ? 'Task status' : 'Review';
       throw Object.assign(
         new Error(
-          `KANBAN_TRANSITION_UNCERTAIN: Review transition for task ${taskId} has an unknown outcome; inspect the task and board before further changes.`
+          `KANBAN_TRANSITION_UNCERTAIN: ${transition} transition for task ${taskId} has an unknown outcome; inspect the task and board before further changes.`
         ),
         { code: 'KANBAN_TRANSITION_UNCERTAIN', taskId }
       );
@@ -121,7 +122,7 @@ function writeKanbanState(paths, teamName, state) {
   return next;
 }
 
-function readBoardSnapshot(paths, teamName) {
+function readBoardSnapshot(paths, teamName, options = {}) {
   const before = fs.statSync(paths.kanbanPath, { bigint: true });
   const raw = fs.readFileSync(paths.kanbanPath, 'utf8');
   const after = fs.statSync(paths.kanbanPath, { bigint: true });
@@ -135,11 +136,11 @@ function readBoardSnapshot(paths, teamName) {
     !board ||
     typeof board !== 'object' ||
     Array.isArray(board) ||
-    !board.tasks ||
-    typeof board.tasks !== 'object' ||
+    (!board.tasks && !options.allowLegacy) ||
+    (board.tasks !== undefined && typeof board.tasks !== 'object') ||
     Array.isArray(board.tasks) ||
-    board.teamName !== teamName ||
-    typeof board.revision !== 'string'
+    (board.teamName !== teamName && !(options.allowLegacy && board.teamName === undefined)) ||
+    (typeof board.revision !== 'string' && !(options.allowLegacy && board.revision === undefined))
   ) {
     throw new Error('Kanban state cannot be safely inspected');
   }
@@ -182,6 +183,78 @@ function taskTransitionHash(task) {
     .digest('hex');
 }
 
+function statusTaskHash(task) {
+  const { pendingKanbanTransition, updatedAt, ...content } = task;
+  return createHash('sha256').update(JSON.stringify(content)).digest('hex');
+}
+
+function statusBoardAfter(snapshot, teamName, taskId, transitionId) {
+  const state = sanitizeState(teamName, { ...snapshot.board, revision: transitionId });
+  delete state.tasks[String(taskId)];
+  removeTaskFromColumnOrder(state, taskId);
+  return state;
+}
+
+function boardHash(state) {
+  return createHash('sha256').update(JSON.stringify(state, null, 2)).digest('hex');
+}
+
+function statusPendingValid(pending) {
+  return (
+    /^[0-9a-f-]{36}$/i.test(pending.id) &&
+    pending.column === 'none' &&
+    ['status', 'clear', 'request_changes'].includes(pending.operation) &&
+    ['prepared', 'applied'].includes(pending.phase) &&
+    ['pending', 'in_progress', 'completed', 'deleted'].includes(pending.targetStatus) &&
+    ['pending', 'in_progress', 'completed', 'deleted'].includes(pending.previousStatus) &&
+    typeof pending.movedAt === 'string' && Number.isFinite(Date.parse(pending.movedAt)) &&
+    (pending.previousRevision === null || typeof pending.previousRevision === 'string') &&
+    Array.isArray(pending.previousIdentity) && pending.previousIdentity.length === 5 &&
+    pending.previousIdentity.every((value) => typeof value === 'string') &&
+    [pending.previousHash, pending.expectedBoardHash, pending.taskHash].every(
+      (value) => typeof value === 'string' && /^[0-9a-f]{64}$/i.test(value)
+    )
+  );
+}
+
+function inspectStatusTransition(paths, teamName, task, pending) {
+  const base = {
+    taskId: task.id,
+    contextHash: contextHash(paths),
+    transitionId: pending.id,
+    column: 'none',
+    targetStatus: pending.targetStatus,
+    phase: pending.phase,
+    operation: pending.operation,
+  };
+  if (!statusPendingValid(pending)) return { ...base, mode: 'conflict' };
+  let snapshot;
+  try {
+    snapshot = readBoardSnapshot(paths, teamName, { allowLegacy: true });
+  } catch {
+    return { ...base, mode: 'conflict' };
+  }
+  const current = snapshot.board.tasks?.[task.id] ?? null;
+  const matchesTask = statusTaskHash(task) === pending.taskHash &&
+    task.status === (pending.phase === 'prepared' ? pending.previousStatus : pending.targetStatus);
+  const unchanged = snapshot.hash === pending.previousHash &&
+    (snapshot.board.revision ?? null) === pending.previousRevision &&
+    isDeepStrictEqual(snapshot.identity, pending.previousIdentity) &&
+    isDeepStrictEqual(current, pending.previousEntry);
+  const expectedMatches = unchanged &&
+    boardHash(statusBoardAfter(snapshot, teamName, task.id, pending.id)) === pending.expectedBoardHash;
+  const stillOrdered = Object.values(snapshot.board.columnOrder || {}).some(
+    (ids) => Array.isArray(ids) && ids.some((id) => String(id) === String(task.id))
+  );
+  let mode = 'conflict';
+  if (matchesTask && pending.phase === 'prepared' && expectedMatches) mode = 'cancel';
+  else if (matchesTask && pending.phase === 'applied' && expectedMatches) mode = 'publish';
+  else if (matchesTask && pending.phase === 'applied' &&
+    snapshot.board.revision === pending.id && snapshot.hash === pending.expectedBoardHash &&
+    current === null && !stillOrdered) mode = 'clear';
+  return { ...base, currentColumn: current?.column ?? null, mode, snapshotHash: snapshot.hash };
+}
+
 function contextHash(paths) {
   return createHash('sha256').update(fs.realpathSync(paths.claudeDir)).digest('hex');
 }
@@ -190,6 +263,7 @@ function inspectPendingTransition(paths, teamName, taskId) {
   const task = taskStore.readTask(paths, taskId, { includeDeleted: true });
   const pending = task.pendingKanbanTransition;
   if (!pending || typeof pending.id !== 'string') throw new Error('No pending Kanban transition');
+  if (pending.kind === 'status') return inspectStatusTransition(paths, teamName, task, pending);
   if (
     !/^[0-9a-f-]{36}$/i.test(pending.id) ||
     !['review', 'approved'].includes(pending.column) ||
@@ -278,6 +352,24 @@ function resolvePendingTransition(
   }
   const task = taskStore.readTask(paths, taskId, { includeDeleted: true });
   const pending = task.pendingKanbanTransition;
+  if (pending.kind === 'status') {
+    if (inspected.mode === 'publish') {
+      const snapshot = readBoardSnapshot(paths, teamName, { allowLegacy: true });
+      if (snapshot.hash !== expectedHash || !isDeepStrictEqual(snapshot.identity, pending.previousIdentity)) {
+        throw new Error('Kanban changed since inspection; no changes were made.');
+      }
+      const next = statusBoardAfter(snapshot, teamName, task.id, pending.id);
+      if (boardHash(next) !== pending.expectedBoardHash) {
+        throw new Error('Kanban changed since inspection; no changes were made.');
+      }
+      writeJson(paths.kanbanPath, next);
+    }
+    taskStore.updateTask(paths, task.id, (current) => {
+      delete current.pendingKanbanTransition;
+      return current;
+    }, { allowPendingKanbanTransition: transitionId, preserveUpdatedAt: true });
+    return;
+  }
   if (inspected.mode === 'publish') {
     const snapshot = readBoardSnapshot(paths, teamName);
     if (
@@ -431,19 +523,65 @@ function setKanbanColumn(paths, teamName, taskId, column, updateTask) {
   return state;
 }
 
-function clearKanban(paths, teamName, taskId, options = {}) {
-  const state = readKanbanState(paths, teamName);
-  delete state.tasks[String(taskId)];
-  removeTaskFromColumnOrder(state, taskId);
-  writeKanbanState(paths, teamName, state);
-  const nextReviewState =
-    typeof options.nextReviewState === 'string' ? options.nextReviewState : 'none';
-  taskStore.updateTask(paths, String(taskId), (task) => ({
-    ...task,
-    reviewState: nextReviewState,
-    pendingKanbanTransition: undefined,
-  }));
-  return state;
+/** Persist a status change and board removal as a recoverable transaction. */
+function clearKanbanWithTaskTransition(paths, teamName, taskId, options = {}) {
+  const before = readBoardSnapshot(paths, teamName, { allowLegacy: true });
+  const initial = taskStore.readTask(paths, taskId, { includeDeleted: true });
+  const id = randomUUID();
+  const targetStatus = options.targetStatus ?? initial.status;
+  const next = statusBoardAfter(before, teamName, taskId, id);
+  const marker = {
+    kind: 'status',
+    operation: options.operation ?? 'status',
+    column: 'none',
+    phase: 'prepared',
+    id,
+    movedAt: nowIso(),
+    previousStatus: initial.status,
+    targetStatus,
+    previousEntry: before.board.tasks?.[String(taskId)] ?? null,
+    previousRevision: before.board.revision ?? null,
+    previousIdentity: before.identity,
+    previousHash: before.hash,
+    expectedBoardHash: boardHash(next),
+  };
+  try {
+    taskStore.updateTask(paths, taskId, (task) => {
+      task.pendingKanbanTransition = { ...marker, taskHash: statusTaskHash(task) };
+      return task;
+    }, { preserveUpdatedAt: true });
+    const afterStatus = (task) => {
+      if (options.nextReviewState !== undefined) task.reviewState = options.nextReviewState;
+      if (options.afterStatus) task = options.afterStatus(task) || task;
+      task.pendingKanbanTransition = { ...marker, phase: 'applied' };
+      task.pendingKanbanTransition.taskHash = statusTaskHash(task);
+      return task;
+    };
+    if (options.targetStatus !== undefined) {
+      taskStore.setTaskStatus(paths, taskId, targetStatus, options.actor, {
+        allowPendingKanbanTransition: id,
+        beforeStatus: options.beforeStatus,
+        afterStatus,
+      });
+    } else {
+      taskStore.updateTask(paths, taskId, afterStatus, { allowPendingKanbanTransition: id });
+    }
+    const afterTask = readBoardSnapshot(paths, teamName, { allowLegacy: true });
+    if (afterTask.hash !== before.hash || !isDeepStrictEqual(afterTask.identity, before.identity)) {
+      throw new Error('Kanban changed during the task status transition');
+    }
+    writeJson(paths.kanbanPath, next);
+    taskStore.updateTask(paths, taskId, (task) => {
+      delete task.pendingKanbanTransition;
+      return task;
+    }, { allowPendingKanbanTransition: id, preserveUpdatedAt: true });
+    return taskStore.readTask(paths, taskId, { includeDeleted: true });
+  } catch (error) {
+    throw Object.assign(
+      new Error(`KANBAN_TRANSITION_UNCERTAIN: Task status transition for task ${taskId} has an unknown outcome; action may have completed. Inspect the task and board before further changes. ${error.message}`),
+      { code: 'KANBAN_TRANSITION_UNCERTAIN', cause: error, taskId: String(taskId) }
+    );
+  }
 }
 
 function updateColumnOrder(paths, teamName, columnId, orderedTaskIds) {
@@ -506,7 +644,7 @@ module.exports = {
   assertKanbanStateConsistent,
   inspectPendingTransition,
   resolvePendingTransition,
-  clearKanban,
+  clearKanbanWithTaskTransition,
   garbageCollect,
   readKanbanState,
   setKanbanColumn,

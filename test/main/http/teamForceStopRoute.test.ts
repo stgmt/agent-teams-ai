@@ -28,7 +28,13 @@ vi.mock('electron', () => ({ app: { getPath: () => '/tmp', isPackaged: false } }
 vi.mock('@main/services/team/TeamLaunchStateStore', () => ({
   TeamLaunchStateStore: vi.fn(() => ({
     read: vi.fn(() => Promise.resolve(null)),
-    beginStop: async (teamName: string) => ({ teamName, stopIntent: 1, freshness: null }),
+    beginStop: async (teamName: string, runId: string) => ({
+      teamName,
+      stopIntent: 1,
+      freshness: { version: 1, teamName, kind: 'launch', runId },
+    }),
+    withStopAuthority: async (_team: string, _authority: unknown, operation: () => Promise<void>) =>
+      ({ current: true, value: await operation() }) as const,
     markStopped,
   })),
 }));
@@ -44,7 +50,14 @@ describe('POST /api/teams/:teamName/force-stop', () => {
   async function createApp(): Promise<FastifyInstance> {
     const created = Fastify();
     const services = {
-      teamApis: { runtime: { stopTeam, getAliveTeams, getRuntimeState: vi.fn() } },
+      teamApis: {
+        runtime: {
+          stopTeam,
+          getAliveTeams,
+          getRuntimeState: vi.fn(),
+          getStopTargetRunId: () => 'run-1',
+        },
+      },
     } as unknown as HttpServices;
     registerTeamRoutes(created, services);
     await created.ready();
@@ -78,14 +91,14 @@ describe('POST /api/teams/:teamName/force-stop', () => {
       killedRuntimePids: [],
       clearedPendingDeliveries: 0,
     });
-    expect(stopTeam).toHaveBeenCalledWith('fixteam');
+    expect(stopTeam).toHaveBeenCalledWith('fixteam', 'run-1');
     // The route records the team as stopped itself. Without that write,
     // reconciliation is free to re-derive a launch snapshot for a team the
     // user just tore down.
     expect(markStopped).toHaveBeenCalledWith('fixteam', {
       teamName: 'fixteam',
       stopIntent: 1,
-      freshness: null,
+      freshness: { version: 1, teamName: 'fixteam', kind: 'launch', runId: 'run-1' },
     });
   });
 
@@ -102,7 +115,7 @@ describe('POST /api/teams/:teamName/force-stop', () => {
     });
 
     expect(warn.mock.calls.map((call) => call.map(String).join(' ')).join('\n')).toContain(
-      'Regular stop failed before force stop cleanup'
+      'Regular stop failed without confirming its outcome'
     );
     expect(response.statusCode).toBe(200);
     const body = response.json<{

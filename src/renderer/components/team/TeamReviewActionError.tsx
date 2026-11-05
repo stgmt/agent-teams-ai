@@ -9,7 +9,9 @@ export const TeamReviewActionError = ({
   if (!error) return null;
 
   const message =
-    error.includes('Review transition for task') && error.includes('unknown outcome')
+    (error.includes('Review transition for task') ||
+      error.includes('Task status transition for task')) &&
+    error.includes('unknown outcome')
       ? t('artifact.recoveryActionHint')
       : error.includes('A required task artifact has not been attached')
         ? t('artifact.actionMissing')

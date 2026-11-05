@@ -213,7 +213,14 @@ describe('the escalated stop shares one fenced flow between the IPC handler and 
       stopFlowMocks.stopTeamWithEscalation.mockRejectedValueOnce(error);
       initializeTeamHandlers(
         { getTeamData: vi.fn(() => Promise.resolve({ members: [] })) } as never,
-        { runtime: { stopTeam, getAliveTeams, isTeamAlive: () => false } } as never
+        {
+          runtime: {
+            stopTeam,
+            getAliveTeams,
+            isTeamAlive: () => false,
+            getStopTargetRunId: () => 'run-observed',
+          },
+        } as never
       );
       registerTeamHandlers(ipcMain as never);
       await expect(handlers.get(TEAM_STOP)!({} as never, 'fixteam')).resolves.toMatchObject({
@@ -257,7 +264,14 @@ describe('the escalated stop shares one fenced flow between the IPC handler and 
       stopTeam.mockRejectedValueOnce(error);
       initializeTeamHandlers(
         { getTeamData: vi.fn(() => Promise.resolve({ members: [] })) } as never,
-        { runtime: { stopTeam, getAliveTeams, isTeamAlive: () => false } } as never
+        {
+          runtime: {
+            stopTeam,
+            getAliveTeams,
+            isTeamAlive: () => false,
+            getStopTargetRunId: () => 'run-observed',
+          },
+        } as never
       );
       registerTeamHandlers(ipcMain as never);
 

@@ -49,7 +49,10 @@ function member(
 const lead = (): MemberLifecycleSnapshot => member('team-lead', 'ready');
 
 function harness(
-  options: { initial?: TeamLifecycleSnapshot } & Pick<DesktopTeamRuntimeDependencies, 'launchAdmission'> = {}
+  options: { initial?: TeamLifecycleSnapshot } & Pick<
+    DesktopTeamRuntimeDependencies,
+    'launchAdmission'
+  > = {}
 ) {
   let version = 0;
   let current: TeamLifecycleSnapshot | null = options.initial ?? null;
@@ -305,6 +308,24 @@ describe('desktop team runtime over the native lifecycle', () => {
       expectedContext: owner,
       teamName,
       runId: 'TEST-run',
+    });
+  });
+
+  it('refuses to stop a different local run after the target was captured', async () => {
+    const { runtime, publish, run, commands } = harness();
+    publish(run, { state: 'preparing', members: {} });
+    expect(runtime.getStopTargetRunId(teamName)).toBe('TEST-run');
+    publish(
+      { ...run, runId: 'TEST-successor' },
+      { state: 'ready', members: { 'team-lead': lead() } }
+    );
+    await expect(runtime.stopTeam(teamName, 'TEST-run')).rejects.toThrow(/superseded/);
+    expect(commands.stop).not.toHaveBeenCalled();
+    await runtime.stopTeam(teamName, 'TEST-successor');
+    expect(commands.stop).toHaveBeenCalledExactlyOnceWith({
+      expectedContext: owner,
+      teamName,
+      runId: 'TEST-successor',
     });
   });
 

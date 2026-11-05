@@ -1,4 +1,4 @@
-import { promises as fs } from 'node:fs';
+import { promises as fs, readFileSync, statSync } from 'node:fs';
 import * as path from 'node:path';
 
 import { getTeamsBasePath } from '@main/utils/pathDecoder';
@@ -76,18 +76,22 @@ export function captureOpenCodeTranscriptBindings(
 /** Live authority, deliberately not restored from backups. Missing retains legacy restore. */
 export const TEAM_LAUNCH_FRESHNESS_FILE = 'launch-freshness.json';
 export type TeamLaunchFreshness =
-  | { version: 1; teamName: string; kind: 'launch'; runId: string }
+  | { version: 1; teamName: string; kind: 'launch'; runId: string; native?: true }
   | {
       version: 1;
       teamName: string;
       kind: 'stop';
       stopId: string;
+      native?: true;
       stoppedRunId?: string;
       transcriptBindings?: OpenCodeTranscriptBindingIdentity[];
     };
 
-export function getTeamLaunchFreshnessPath(teamName: string): string {
-  return path.join(getTeamsBasePath(), teamName, TEAM_LAUNCH_FRESHNESS_FILE);
+export function getTeamLaunchFreshnessPath(
+  teamName: string,
+  teamsRoot = getTeamsBasePath()
+): string {
+  return path.join(teamsRoot, teamName, TEAM_LAUNCH_FRESHNESS_FILE);
 }
 
 export function parseTeamLaunchFreshness(
@@ -102,6 +106,7 @@ export function parseTeamLaunchFreshness(
     teamName?: unknown;
     kind?: unknown;
     runId?: unknown;
+    native?: unknown;
     stopId?: unknown;
     stoppedRunId?: unknown;
     transcriptBindings?: unknown;
@@ -110,7 +115,13 @@ export function parseTeamLaunchFreshness(
     return null;
   }
   if (record.kind === 'launch' && typeof record.runId === 'string' && record.runId) {
-    return { version: 1, teamName, kind: 'launch', runId: record.runId };
+    return {
+      version: 1,
+      teamName,
+      kind: 'launch',
+      runId: record.runId,
+      ...(record.native === true ? { native: true as const } : {}),
+    };
   }
   if (record.kind === 'stop' && typeof record.stopId === 'string' && record.stopId) {
     return {
@@ -118,6 +129,7 @@ export function parseTeamLaunchFreshness(
       teamName,
       kind: 'stop',
       stopId: record.stopId,
+      ...(record.native === true ? { native: true as const } : {}),
       ...(typeof record.stoppedRunId === 'string' && record.stoppedRunId
         ? { stoppedRunId: record.stoppedRunId }
         : {}),
@@ -142,11 +154,12 @@ export function isStopLaunchFreshness(
 }
 
 export async function readTeamLaunchFreshness(
-  teamName: string
+  teamName: string,
+  teamsRoot?: string
 ): Promise<TeamLaunchFreshness | null> {
   let raw: string;
   try {
-    const file = getTeamLaunchFreshnessPath(teamName);
+    const file = getTeamLaunchFreshnessPath(teamName, teamsRoot);
     if ((await fs.stat(file)).size > 256 * 1024)
       throw new Error('Launch freshness exceeds size limit');
     raw = await fs.readFile(file, 'utf8');
@@ -158,6 +171,36 @@ export async function readTeamLaunchFreshness(
   if (!parsed) {
     throw new Error('Invalid launch freshness authority');
   }
+  return parsed;
+}
+
+/** Read the authority alongside snapshots; an unreadable fence cannot validate old status. */
+export async function readLaunchStatusAuthority(
+  teamDir: string
+): Promise<TeamLaunchFreshness | null | 'unreadable'> {
+  try {
+    return await readTeamLaunchFreshness(path.basename(teamDir), path.dirname(teamDir));
+  } catch {
+    return 'unreadable';
+  }
+}
+
+/** Capture the publication visible at Stop invocation, before waiting for locks. */
+export function readTeamLaunchFreshnessSync(
+  teamName: string,
+  teamsRoot?: string
+): TeamLaunchFreshness | null {
+  let raw: string;
+  try {
+    const file = getTeamLaunchFreshnessPath(teamName, teamsRoot);
+    if (statSync(file).size > 256 * 1024) throw new Error('Launch freshness exceeds size limit');
+    raw = readFileSync(file, 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  }
+  const parsed = parseTeamLaunchFreshness(teamName, JSON.parse(raw));
+  if (!parsed) throw new Error('Invalid launch freshness authority');
   return parsed;
 }
 

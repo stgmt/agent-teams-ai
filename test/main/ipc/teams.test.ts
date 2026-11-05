@@ -1,3 +1,5 @@
+import 'fake-indexeddb/auto';
+
 import { createRequire } from 'node:module';
 
 import { TeamReadFailureError } from '@features/team-read-recovery/main';
@@ -50,6 +52,10 @@ const cleanupPreload = vi.hoisted(() => {
     invoke: vi.fn(),
   };
 });
+const recoveryUiFixture = vi.hoisted(() => ({
+  context: { activeContextId: 'local', isContextSwitching: false },
+  confirm: vi.fn(async () => true),
+}));
 vi.mock('@preload/installRendererLogForwarding', () => ({
   installRendererLogForwarding: vi.fn(),
 }));
@@ -663,6 +669,7 @@ describe('ipc teams handlers', () => {
     ),
     isTeamAlive: vi.fn(() => true),
     getCurrentRunId: vi.fn(() => 'run-2' as string | null),
+    getStopTargetRunId: vi.fn(() => 'run-2' as string | null),
     pushLiveLeadProcessMessage: vi.fn(),
     respondToToolApproval: vi.fn(() => resolvedUndefined()),
     updateToolApprovalSettings: vi.fn(),
@@ -762,6 +769,7 @@ describe('ipc teams handlers', () => {
       isTeamAlive: teamHandlerMocks.isTeamAlive,
       getAliveTeams: teamHandlerMocks.getAliveTeams,
       getCurrentRunId: teamHandlerMocks.getCurrentRunId,
+      getStopTargetRunId: teamHandlerMocks.getStopTargetRunId,
     },
     memberLifecycle: {
       getMemberSpawnStatuses: teamHandlerMocks.getMemberSpawnStatuses,
@@ -828,6 +836,13 @@ describe('ipc teams handlers', () => {
   };
 
   let attachmentTestRoot = '';
+  async function publishMockStopTarget(): Promise<void> {
+    await fs.promises.mkdir(path.join(attachmentTestRoot, 'teams', 'my-team'), { recursive: true });
+    const { TeamLaunchStateStore } = await import('@main/services/team/TeamLaunchStateStore');
+    expect(await new TeamLaunchStateStore().beginLaunch('my-team', 'run-2', [], () => true)).toBe(
+      true
+    );
+  }
   beforeEach(() => {
     attachmentTestRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'TEST-team-ipc-storage-'));
     setAppDataBasePath(attachmentTestRoot);
@@ -1228,6 +1243,7 @@ describe('ipc teams handlers', () => {
   });
 
   it('preserves narrow facade receivers when a team handler invokes its runtime dependency', async () => {
+    await publishMockStopTarget();
     const runtimeCalls: string[] = [];
     const runtimeFacade = {
       ...teamHandlerApis.runtime,
@@ -3145,7 +3161,177 @@ describe('ipc teams handlers', () => {
     });
     expect(invalid).toMatchObject({ success: false });
     expect(service.updateKanban).toHaveBeenCalledTimes(2);
+    const cancel = { ...confirmation, mode: 'cancel' };
+    const cancelled = await handlers.get(TEAM_UPDATE_KANBAN)!({} as never, 'my-team', '12', cancel);
+    expect(cancelled).toMatchObject({ success: true });
+    expect(service.updateKanban).toHaveBeenLastCalledWith('my-team', '12', cancel);
+    expect(service.updateKanban).toHaveBeenCalledTimes(3);
   });
+
+  it.each([
+    ['marker_after', 'cancel', 'recoveryStatusCancel'],
+    ['board_before', 'publish', 'recoveryStatusPublish'],
+    ['board_after', 'clear', 'recoveryStatusClear'],
+  ])(
+    'recovers %s status transition through the real UI, preload, IPC, service and controller',
+    async (failure, mode, detailKey) => {
+      const teamDir = path.join(attachmentTestRoot, 'teams', 'my-team');
+      fs.mkdirSync(teamDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(teamDir, 'config.json'),
+        JSON.stringify({
+          name: 'my-team',
+          members: [
+            { name: 'lead', role: 'team-lead' },
+            { name: 'worker', role: 'developer' },
+          ],
+        })
+      );
+      const { createController } = createRequire(import.meta.url)(
+        '../../../agent-teams-controller/src/index.js'
+      );
+      const controller = createController({ teamName: 'my-team', claudeDir: attachmentTestRoot });
+      const board = controller.taskBoard;
+      const task = board.createTask({ subject: 'Recover status', owner: 'worker' });
+      board.completeTask(task.id, 'worker');
+      board.addReviewer('lead');
+      board.requestReview(task.id, { from: 'worker', reviewer: 'lead' });
+      const inboxPath = path.join(teamDir, 'inboxes', 'worker.json');
+      const inboxBefore = fs.existsSync(inboxPath) ? fs.readFileSync(inboxPath, 'utf8') : null;
+      const boardPath = path.join(teamDir, 'kanban-state.json');
+      const taskPath = path.join(attachmentTestRoot, 'tasks', 'my-team', `${task.id}.json`);
+      const rawFs = createRequire(import.meta.url)('node:fs') as typeof fs;
+      const rename = rawFs.renameSync;
+      let failures = 0;
+      const renameSpy = vi.spyOn(rawFs, 'renameSync').mockImplementation((source, destination) => {
+        if (
+          (failure === 'marker_after' && String(destination) === taskPath) ||
+          (failure !== 'marker_after' && String(destination) === boardPath)
+        ) {
+          failures += 1;
+          if (failure.endsWith('_after')) rename(source, destination);
+          throw Object.assign(new Error('board rename EIO'), { code: 'EIO' });
+        }
+        return rename(source, destination);
+      });
+      const start = vi.spyOn(board, 'startTask');
+      let transitionError: unknown;
+      try {
+        try {
+          board.startTask(task.id, 'worker');
+        } catch (error) {
+          transitionError = error;
+        }
+      } finally {
+        renameSpy.mockRestore();
+      }
+      expect(transitionError).toBeInstanceOf(Error);
+      expect(String(transitionError)).toMatch(/Task status transition.*unknown outcome/);
+      expect(failures).toBe(1);
+      const { TeamDataService } = await import('@main/services/team/TeamDataService');
+      const actualService = new TeamDataService();
+      Object.defineProperty(actualService, 'controllerFactory', { value: () => controller });
+      const update = service.updateKanban as unknown as {
+        mockImplementation: (
+          fn: (
+            ...args: Parameters<InstanceType<typeof TeamDataService>['updateKanban']>
+          ) => Promise<unknown>
+        ) => void;
+      };
+      update.mockImplementation((...args) => actualService.updateKanban(...args));
+
+      await import('../../../src/preload/index');
+      const preload = cleanupPreload.exposed.current!;
+      cleanupPreload.invoke.mockImplementation(async (channel: string, ...args: unknown[]) => {
+        const result = await handlers.get(channel)!({ sender: {} } as never, ...args);
+        return JSON.parse(JSON.stringify(result)) as unknown;
+      });
+      const currentContext = recoveryUiFixture.context;
+      const confirmRecovery = recoveryUiFixture.confirm;
+      vi.doMock('@renderer/store', () => ({
+        useStore: Object.assign(
+          (selector: (state: typeof currentContext) => unknown) => selector(currentContext),
+          {
+            getState: () => currentContext,
+          }
+        ),
+      }));
+      vi.doMock('@renderer/api', () => ({ api: preload }));
+      vi.doMock('@renderer/components/common/ConfirmDialog', () => ({ confirm: confirmRecovery }));
+      vi.doMock('@features/localization/renderer', () => ({
+        useAppTranslation: () => ({ t: (key: string) => key }),
+      }));
+      const { act, createElement } = await import('react');
+      const { createRoot } = await import('react-dom/client');
+      const { kanbanRecoveryDecisionStorage } =
+        await import('@renderer/components/team/kanbanRecoveryDecision');
+      const readDecision = vi.spyOn(kanbanRecoveryDecisionStorage, 'read');
+      const transitionDecision = vi.spyOn(kanbanRecoveryDecisionStorage, 'transition');
+      const { TeamReviewRecovery } = await import('@renderer/components/team/TeamReviewRecovery');
+      const element = document.createElement('div');
+      document.body.appendChild(element);
+      const root = createRoot(element);
+      const priorActFlag = (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
+        .IS_REACT_ACT_ENVIRONMENT;
+      (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+      const onRecovered = vi.fn();
+      try {
+        await act(async () =>
+          root.render(
+            createElement(TeamReviewRecovery, {
+              teamName: 'my-team',
+              error: String(transitionError),
+              onRecovered,
+            })
+          )
+        );
+        const check = Array.from(element.querySelectorAll('button')).find(
+          (button) => button.textContent === 'artifact.recoveryCheck'
+        )!;
+        await act(async () => {
+          check.click();
+          await vi.waitFor(() => expect(readDecision).toHaveBeenCalledOnce());
+          await readDecision.mock.results[0].value;
+        });
+        expect(element.textContent).toContain(`artifact.${detailKey}`);
+        const confirm = Array.from(element.querySelectorAll('button')).find(
+          (button) => button.textContent === 'artifact.recoveryConfirm'
+        )!;
+        await act(async () => {
+          confirm.click();
+          await vi.waitFor(() => expect(transitionDecision).toHaveBeenCalledTimes(2));
+          await transitionDecision.mock.results[1].value;
+        });
+        expect(confirmRecovery).toHaveBeenCalledOnce();
+        expect(onRecovered).toHaveBeenCalledOnce();
+        const recoveryCalls = cleanupPreload.invoke.mock.calls.filter(
+          ([channel]) => channel === TEAM_UPDATE_KANBAN
+        );
+        expect(recoveryCalls).toHaveLength(2);
+        expect(recoveryCalls[0][3]).toEqual({ op: 'inspect_pending' });
+        expect(recoveryCalls[1][3]).toMatchObject({ op: 'resolve_pending', mode });
+        expect(board.getTask(task.id).status).toBe(mode === 'cancel' ? 'completed' : 'in_progress');
+        if (mode === 'cancel') expect(board.getKanbanState().tasks[task.id].column).toBe('review');
+        else expect(board.getKanbanState().tasks[task.id]).toBeUndefined();
+        expect(start).toHaveBeenCalledOnce();
+        expect(fs.existsSync(inboxPath) ? fs.readFileSync(inboxPath, 'utf8') : null).toBe(
+          inboxBefore
+        );
+      } finally {
+        await act(async () => root.unmount());
+        element.remove();
+        (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
+          priorActFlag;
+        cleanupPreload.invoke.mockReset();
+        readDecision.mockRestore();
+        transitionDecision.mockRestore();
+        vi.doUnmock('@renderer/store');
+        vi.doUnmock('@renderer/api');
+        vi.doUnmock('@renderer/components/common/ConfirmDialog');
+        vi.doUnmock('@features/localization/renderer');
+      }
+    }
+  );
 
   it('marks created teams engaged before provisioning writes startup artifacts', async () => {
     const createTeam = 'created-watch-scope';
@@ -7086,6 +7272,7 @@ describe('ipc teams handlers', () => {
     });
 
     it('returns the lifecycle failure and releases the handler after both metadata rollbacks fail', async () => {
+      await publishMockStopTarget();
       const previousMetaMembers = [
         {
           name: 'team-lead',
@@ -7143,7 +7330,7 @@ describe('ipc teams handlers', () => {
       expect(service.replaceMembers).toHaveBeenCalledTimes(2);
       expect(teamHandlerMocks.attachLiveRosterMember).not.toHaveBeenCalled();
       expect(stopResult.success).toBe(true);
-      expect(teamHandlerMocks.stopTeam).toHaveBeenCalledWith('my-team');
+      expect(teamHandlerMocks.stopTeam).toHaveBeenCalledWith('my-team', 'run-2');
       expect(restartResult.success).toBe(true);
       expect(teamHandlerMocks.restartMember).toHaveBeenCalledWith('my-team', 'alice');
       vi.mocked(console.error).mockClear();

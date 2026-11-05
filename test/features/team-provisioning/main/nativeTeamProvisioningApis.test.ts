@@ -65,6 +65,7 @@ function setup(withDelivery = true) {
     isTeamAlive: vi.fn(() => true),
     getAliveTeams: vi.fn(() => ['TEST-team']),
     getCurrentRunId: vi.fn(() => 'TEST-run'),
+    getStopTargetRunId: vi.fn(() => 'TEST-run'),
     findByRunId,
   };
   const apis = createNativeTeamProvisioningApis({

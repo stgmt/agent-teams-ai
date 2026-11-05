@@ -35,4 +35,12 @@ describe('TeamReviewActionError', () => {
     );
     expect(renderToStaticMarkup(<TeamReviewActionError error={null} />)).toBe('');
   });
+
+  it.each([en, ru])('explains an unknown status action without proposing a retry', (locale) => {
+    translations.messages = { 'artifact.recoveryActionHint': locale.artifact.recoveryActionHint };
+    const warning = renderToStaticMarkup(
+      <TeamReviewActionError error="KANBAN_TRANSITION_UNCERTAIN: Task status transition for task task-1 has an unknown outcome" />
+    );
+    expect(warning).toContain(locale.artifact.recoveryActionHint);
+  });
 });

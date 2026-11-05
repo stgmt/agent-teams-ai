@@ -72,6 +72,7 @@ function assertKanbanStateConsistent(context, state) {
 function inspectPendingTransition(context, taskId) {
   return withTeamBoardLock(context.paths, () => {
     const snapshot = kanbanStore.inspectPendingTransition(context.paths, context.teamName, taskId);
+    if (snapshot.column === 'none') return snapshot;
     try {
       require('./taskArtifact.js').verifyTask(context, taskStore.readTask(context.paths, taskId));
       return snapshot;
@@ -83,7 +84,10 @@ function inspectPendingTransition(context, taskId) {
 
 function resolvePendingTransition(context, taskId, transitionId, snapshotHash, mode, contextHash) {
   return withTeamBoardLock(context.paths, () => {
-    require('./taskArtifact.js').verifyTask(context, taskStore.readTask(context.paths, taskId));
+    const task = taskStore.readTask(context.paths, taskId, { includeDeleted: true });
+    if (task.pendingKanbanTransition?.kind !== 'status') {
+      require('./taskArtifact.js').verifyTask(context, task);
+    }
     return kanbanStore.resolvePendingTransition(context.paths, context.teamName, taskId, transitionId, snapshotHash, mode, contextHash);
   });
 }
@@ -129,8 +133,17 @@ function clearKanban(context, taskId, options) {
     if (transition !== 'direct' && !allowedInternalTransitions.has(transition)) {
       throw new Error(`Invalid kanban clear transition: ${transition}`);
     }
-    kanbanStore.clearKanban(context.paths, context.teamName, canonicalTaskId, options);
-    return getKanbanState(context);
+    kanbanStore.clearKanbanWithTaskTransition(context.paths, context.teamName, canonicalTaskId, {
+      operation: 'clear', nextReviewState: options?.nextReviewState ?? 'none',
+    });
+    try {
+      return getKanbanState(context);
+    } catch (error) {
+      throw Object.assign(
+        new Error(`KANBAN_TRANSITION_UNCERTAIN: Task status transition for task ${canonicalTaskId} has an unknown outcome; action may have completed. Inspect the task and board before further changes. ${error.message}`),
+        { code: 'KANBAN_TRANSITION_UNCERTAIN', cause: error, taskId: canonicalTaskId }
+      );
+    }
   });
 }
 

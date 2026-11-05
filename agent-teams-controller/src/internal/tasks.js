@@ -386,11 +386,11 @@ function setTaskStatus(context, taskId, status, actor, options = {}) {
             if (normalizedStatus === 'completed') taskArtifact.verifyTask(context, before);
         }
         const state = ['deleted', 'in_progress', 'pending'].includes(normalizedStatus) ? kanbanStore.readKanbanState(context.paths, context.teamName) : null;
-        let task = taskStore.setTaskStatus(context.paths, taskId, status, actorForWrite);
-        if (state && hasKanbanReference(state, task.id)) {
-            kanbanStore.clearKanban(context.paths, context.teamName, task.id, { nextReviewState: 'none' });
-            task = taskStore.readTask(context.paths, task.id, { includeDeleted: true });
-        }
+        const task = state && hasKanbanReference(state, before.id)
+            ? kanbanStore.clearKanbanWithTaskTransition(context.paths, context.teamName, before.id, {
+                targetStatus: normalizedStatus, actor: actorForWrite, nextReviewState: 'none',
+            })
+            : taskStore.setTaskStatus(context.paths, taskId, status, actorForWrite);
         return { task, becameDeleted: before.status !== 'deleted' && task.status === 'deleted' };
     });
     if (task.status === 'completed') {
@@ -456,13 +456,12 @@ function startTask(context, taskId, actor) {
         assertTaskNotDeleted(before, 'starting work');
         const actorForWrite = assertTaskOwnerMutation(context, before, actor, 'start it');
         assertDependenciesResolved(context, before, 'in_progress');
-        let task = taskStore.setTaskStatus(context.paths, taskId, 'in_progress', actorForWrite);
         const state = kanbanStore.readKanbanState(context.paths, context.teamName);
-        if (hasKanbanReference(state, task.id)) {
-            kanbanStore.clearKanban(context.paths, context.teamName, task.id, { nextReviewState: 'none' });
-            task = taskStore.readTask(context.paths, task.id, { includeDeleted: true });
-        }
-        return task;
+        return hasKanbanReference(state, before.id)
+            ? kanbanStore.clearKanbanWithTaskTransition(context.paths, context.teamName, before.id, {
+                targetStatus: 'in_progress', actor: actorForWrite, nextReviewState: 'none',
+            })
+            : taskStore.setTaskStatus(context.paths, taskId, 'in_progress', actorForWrite);
     });
 }
 
@@ -618,12 +617,12 @@ function softDeleteTask(context, taskId, actor) {
         const actorForWrite = assertTaskOwnerMutation(context, before, actor, 'delete it', {
             allowLeadOverride: true,
         });
-        let task = taskStore.setTaskStatus(context.paths, taskId, 'deleted', actorForWrite);
         const state = kanbanStore.readKanbanState(context.paths, context.teamName);
-        if (hasKanbanReference(state, task.id)) {
-            kanbanStore.clearKanban(context.paths, context.teamName, task.id, { nextReviewState: 'none' });
-            task = taskStore.readTask(context.paths, task.id, { includeDeleted: true });
-        }
+        const task = hasKanbanReference(state, before.id)
+            ? kanbanStore.clearKanbanWithTaskTransition(context.paths, context.teamName, before.id, {
+                targetStatus: 'deleted', actor: actorForWrite, nextReviewState: 'none',
+            })
+            : taskStore.setTaskStatus(context.paths, taskId, 'deleted', actorForWrite);
         return { task, becameDeleted: before.status !== 'deleted' };
     });
     if (becameDeleted) {
@@ -641,19 +640,14 @@ function restoreTask(context, taskId, actor) {
         const actorForWrite = assertTaskOwnerMutation(context, before, actor, 'restore it', {
             allowLeadOverride: true,
         });
-        let task = taskStore.setTaskStatus(context.paths, taskId, 'pending', actorForWrite || 'user');
         const state = kanbanStore.readKanbanState(context.paths, context.teamName);
-        if (hasKanbanReference(state, task.id)) {
-            kanbanStore.clearKanban(context.paths, context.teamName, task.id, { nextReviewState: 'none' });
-            task = taskStore.readTask(context.paths, task.id, { includeDeleted: true });
-        }
-        if (task.reviewState !== 'none') {
-            task = taskStore.updateTask(context.paths, task.id, (current) => {
-                current.reviewState = 'none';
-                return current;
+        return hasKanbanReference(state, before.id)
+            ? kanbanStore.clearKanbanWithTaskTransition(context.paths, context.teamName, before.id, {
+                targetStatus: 'pending', actor: actorForWrite || 'user', nextReviewState: 'none',
+            })
+            : taskStore.setTaskStatus(context.paths, taskId, 'pending', actorForWrite || 'user', {
+                afterStatus: (task) => ({ ...task, reviewState: 'none' }),
             });
-        }
-        return task;
     });
 }
 
@@ -1117,6 +1111,7 @@ module.exports = {
     createTask,
     getTask,
     getTaskComment,
+    hasKanbanReference,
     linkTask,
     listDeletedTasks,
     listTaskInventory,

@@ -39,6 +39,7 @@ function createHttpServices(
         getRuntimeState: unexpectedTeamApiCall,
         stopTeam: unexpectedTeamApiCall,
         getAliveTeams: unexpectedTeamApiCall,
+        getStopTargetRunId: unexpectedTeamApiCall,
       },
       runtimeControl: teamRuntimeControlApi,
       memberDiagnostics: {

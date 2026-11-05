@@ -140,14 +140,119 @@ describe('team-fs-worker integration', () => {
   afterAll(async () => {
     const bundledWorkerPath = bundledWorkerPathPromise ? await bundledWorkerPathPromise : null;
     if (bundledWorkerPath) {
-      await fs.rm(path.dirname(bundledWorkerPath), { recursive: true, force: true });
+      const parent = await fs.realpath(os.tmpdir());
+      const target = await fs.realpath(path.dirname(bundledWorkerPath));
+      const relative = path.relative(parent, target);
+      if (!relative.startsWith('team-fs-worker-bundle-') || relative.includes(path.sep))
+        throw new Error('Invalid worker bundle cleanup target');
+      await fs.rm(target, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
     }
   });
 
   afterEach(async () => {
     if (tempDir) {
-      await fs.rm(tempDir, { recursive: true, force: true });
+      const parent = await fs.realpath(os.tmpdir());
+      const target = await fs.realpath(tempDir);
+      const relative = path.relative(parent, target);
+      if (!relative.startsWith('team-fs-worker-') || relative.includes(path.sep))
+        throw new Error('Invalid worker fixture cleanup target');
+      await fs.rm(target, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
       tempDir = '';
+    }
+  });
+
+  it('invalidates a cached legacy summary when a native owner is published', async () => {
+    const workerPath = await getWorkerPath();
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'team-fs-worker-'));
+    const teamName = 'cached-native-team';
+    const teamDir = path.join(tempDir, teamName);
+    await fs.mkdir(teamDir, { recursive: true });
+    await fs.writeFile(
+      path.join(teamDir, 'config.json'),
+      JSON.stringify({ name: teamName, members: [{ name: 'team-lead', agentType: 'team-lead' }] })
+    );
+    await fs.writeFile(
+      path.join(teamDir, 'launch-summary.json'),
+      JSON.stringify({
+        version: 1,
+        teamName,
+        updatedAt: new Date().toISOString(),
+        launchPhase: 'finished',
+        teamLaunchState: 'partial_failure',
+        failedCount: 1,
+      })
+    );
+    let worker = createWorker(workerPath);
+    try {
+      const first = await callListTeams(worker, tempDir);
+      expect(first.teams[0]).toMatchObject({ teamLaunchState: 'partial_failure' });
+      expect((await callListTeams(worker, tempDir)).diag?.cacheHits).toBe(1);
+      await fs.writeFile(
+        path.join(teamDir, 'launch-freshness.json'),
+        JSON.stringify({
+          version: 1,
+          teamName,
+          kind: 'launch',
+          runId: 'new-native-run',
+          native: true,
+        })
+      );
+      const next = await callListTeams(worker, tempDir);
+      expect(next.diag?.cacheMisses).toBe(1);
+      expect(next.teams[0]).not.toHaveProperty('teamLaunchState');
+      await fs.writeFile(
+        path.join(teamDir, 'launch-summary.json'),
+        JSON.stringify({
+          version: 1,
+          teamName,
+          publicationRunId: 'new-native-run',
+          updatedAt: new Date().toISOString(),
+          launchPhase: 'finished',
+          teamLaunchState: 'partial_failure',
+          failedCount: 1,
+        })
+      );
+      expect((await callListTeams(worker, tempDir)).teams[0]).toMatchObject({
+        teamLaunchState: 'partial_failure',
+      });
+      await fs.writeFile(
+        path.join(teamDir, 'launch-freshness.json'),
+        JSON.stringify({
+          version: 1,
+          teamName,
+          kind: 'stop',
+          stopId: 'stop-native',
+          stoppedRunId: 'new-native-run',
+          native: true,
+        })
+      );
+      const stopped = await callListTeams(worker, tempDir);
+      expect(stopped.diag?.cacheMisses).toBe(1);
+      expect(stopped.teams[0]).not.toHaveProperty('teamLaunchState');
+      await worker.terminate();
+      worker = createWorker(workerPath);
+      expect((await callListTeams(worker, tempDir)).teams[0]).not.toHaveProperty('teamLaunchState');
+      await fs.writeFile(
+        path.join(teamDir, 'launch-freshness.json'),
+        JSON.stringify({ version: 1, teamName, kind: 'launch', runId: 'new-legacy-run' })
+      );
+      await fs.writeFile(
+        path.join(teamDir, 'launch-summary.json'),
+        JSON.stringify({
+          version: 1,
+          teamName,
+          publicationRunId: 'new-legacy-run',
+          updatedAt: new Date().toISOString(),
+          launchPhase: 'finished',
+          teamLaunchState: 'partial_failure',
+          failedCount: 1,
+        })
+      );
+      expect((await callListTeams(worker, tempDir)).teams[0]).toMatchObject({
+        teamLaunchState: 'partial_failure',
+      });
+    } finally {
+      await worker.terminate();
     }
   });
 

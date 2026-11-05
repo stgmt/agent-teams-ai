@@ -3991,7 +3991,8 @@ async function handleStopTeam(
     // and expects the team to be stopped, so the force-stop cleanup takes over
     // when the regular stop does not confirm within its budget.
     const result = await stopTeamWithEscalation(tn, {
-      stopTeam: (name) => getTeamRuntimeApi().stopTeam(name),
+      stopTeam: (name, expectedRunId) => getTeamRuntimeApi().stopTeam(name, expectedRunId),
+      getStopTargetRunId: (name) => getTeamRuntimeApi().getStopTargetRunId(name),
       observeOwnedRuntimeRunIds: (name) =>
         readOwnedOpenCodeRuntimeRunIdsForTeam({ teamName: name }),
       observeOwnedRuntimeLaneIds: (name) =>
@@ -4034,9 +4035,7 @@ async function handleStopTeam(
         }),
     });
     if (result.stopOutcome !== 'stopped') {
-      logger.warn(
-        `[${tn}] Regular stop ${result.stopOutcome}; outcome is unconfirmed`
-      );
+      logger.warn(`[${tn}] Regular stop ${result.stopOutcome}; outcome is unconfirmed`);
     }
     assertEscalatedStopConfirmed(result);
   });
@@ -4054,7 +4053,8 @@ async function handleForceStopTeam(
     const tn = validated.value!;
     addMainBreadcrumb('team', 'forceStop', { teamName: tn });
     return runTeamForceStopFlow(tn, {
-      stopTeam: (name) => getTeamRuntimeApi().stopTeam(name),
+      stopTeam: (name, expectedRunId) => getTeamRuntimeApi().stopTeam(name, expectedRunId),
+      getStopTargetRunId: (name) => getTeamRuntimeApi().getStopTargetRunId(name),
       observeOwnedRuntimeRunIds: (name) =>
         readOwnedOpenCodeRuntimeRunIdsForTeam({ teamName: name }),
       observeOwnedRuntimeLaneIds: (name) =>

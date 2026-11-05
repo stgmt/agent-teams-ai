@@ -181,12 +181,25 @@ export abstract class TeamProvisioningStopCleanupCompatibilityFacade<
    * Stop the running process for a team. No-op if team is not running.
    * Always uses SIGKILL via killTeamProcess() to prevent CLI cleanup.
    */
-  async stopTeam(teamName: string): Promise<void> {
+  getStopTargetRunId(teamName: string): string | null {
+    return this.stopCleanupServiceHost.runTracking.getTrackedRunId(teamName);
+  }
+
+  async stopTeam(teamName: string, expectedRunId?: string | null): Promise<void> {
+    if (
+      expectedRunId === null ||
+      (expectedRunId !== undefined && this.getStopTargetRunId(teamName) !== expectedRunId)
+    ) {
+      throw new Error('Stop target was superseded by a different run');
+    }
     const teamKey = teamName.trim().toLowerCase();
     this.stopTeamGenerationByTeam.set(teamKey, this.getStopTeamGeneration(teamName) + 1);
-    await this.stopCleanupServiceHost.withTeamLock(teamName, () =>
-      this.stopFlowBoundary.stopTeam(teamName)
-    );
+    await this.stopCleanupServiceHost.withTeamLock(teamName, () => {
+      if (expectedRunId !== undefined && this.getStopTargetRunId(teamName) !== expectedRunId) {
+        throw new Error('Stop target was superseded by a different run');
+      }
+      return this.stopFlowBoundary.stopTeam(teamName);
+    });
   }
 
   protected async stopMixedSecondaryRuntimeLanes(teamName: string): Promise<void> {

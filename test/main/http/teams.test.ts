@@ -1,4 +1,10 @@
+import * as fs from 'node:fs/promises';
+import * as os from 'node:os';
+import * as path from 'node:path';
+
 import { registerTeamRoutes } from '@main/http/teams';
+import { TeamLaunchStateStore } from '@main/services/team/TeamLaunchStateStore';
+import { setClaudeBasePathOverride } from '@main/utils/pathDecoder';
 import Fastify from 'fastify';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -45,6 +51,7 @@ describe('HTTP team runtime routes', () => {
     >(() => Promise.resolve());
     const stopTeam = vi.fn<(teamName: string) => Promise<void>>(() => Promise.resolve());
     const getAliveTeams = vi.fn<() => string[]>();
+    const getStopTargetRunId = vi.fn<(teamName: string) => string | null>(() => null);
     const recordOpenCodeRuntimeBootstrapCheckin =
       vi.fn<(raw: unknown) => Promise<OpenCodeRuntimeControlAck>>();
     const deliverOpenCodeRuntimeMessage =
@@ -108,6 +115,7 @@ describe('HTTP team runtime routes', () => {
       getRuntimeState,
       stopTeam,
       getAliveTeams,
+      getStopTargetRunId,
     } satisfies TeamHttpRuntimeApi;
     const teamRuntimeControlApi = {
       recordOpenCodeRuntimeBootstrapCheckin,
@@ -158,6 +166,7 @@ describe('HTTP team runtime routes', () => {
       repairStaleTaskActivityIntervalsBeforeSnapshot,
       stopTeam,
       getAliveTeams,
+      getStopTargetRunId,
       recordOpenCodeRuntimeBootstrapCheckin,
       deliverOpenCodeRuntimeMessage,
       recordOpenCodeRuntimeTaskEvent,
@@ -253,7 +262,9 @@ describe('HTTP team runtime routes', () => {
       });
       expect(createResponse.statusCode).toBe(201);
       expect(createResponse.json()).toEqual({
-        teamName: 'new-team', draft: true, runtimeSelection: 'selected',
+        teamName: 'new-team',
+        draft: true,
+        runtimeSelection: 'selected',
       });
       expect(createTeamConfig).toHaveBeenCalledWith({
         teamName: 'new-team',
@@ -626,11 +637,11 @@ describe('HTTP team runtime routes', () => {
     async ({ providerId, marker, code }) => {
       const { app, createTeam, launchTeam, getSavedRequest, renameDraftTeam, resumeTeam } =
         await createApp();
-    getSavedRequest.mockResolvedValue({
-      teamName: 'unresolved-draft',
-      runtimeSelectionVersion: 1,
-      cwd: '/sandbox/test-project',
-      members: [],
+      getSavedRequest.mockResolvedValue({
+        teamName: 'unresolved-draft',
+        runtimeSelectionVersion: 1,
+        cwd: '/sandbox/test-project',
+        members: [],
       });
       try {
         const response = await app.inject({
@@ -998,8 +1009,23 @@ describe('HTTP team runtime routes', () => {
   });
 
   it('returns runtime state, provisioning status, and stop results', async () => {
-    const { app, getRuntimeState, getProvisioningStatus, stopTeam, getAliveTeams } =
-      await createApp();
+    const {
+      app,
+      getRuntimeState,
+      getProvisioningStatus,
+      stopTeam,
+      getAliveTeams,
+      getStopTargetRunId,
+    } = await createApp();
+    const scratch = await fs.mkdtemp(path.join(os.tmpdir(), 'TEST-http-team-stop-'));
+    const target = await fs.realpath(scratch);
+    const relative = path.relative(await fs.realpath(os.tmpdir()), target);
+    if (!relative.startsWith('TEST-http-team-stop-') || relative.includes(path.sep)) {
+      throw new Error('Refusing to remove a test fixture outside its scratch parent');
+    }
+    setClaudeBasePathOverride(path.join(target, 'claude'));
+    await fs.mkdir(path.join(target, 'claude', 'teams', 'demo-team'), { recursive: true });
+    getStopTargetRunId.mockReturnValue('run-2');
     getRuntimeState
       .mockResolvedValueOnce({
         teamName: 'demo-team',
@@ -1044,6 +1070,9 @@ describe('HTTP team runtime routes', () => {
     getAliveTeams.mockReturnValue(['demo-team']);
 
     try {
+      expect(
+        await new TeamLaunchStateStore().beginLaunch('demo-team', 'run-2', [], () => true)
+      ).toBe(true);
       const runtimeResponse = await app.inject({
         method: 'GET',
         url: '/api/teams/demo-team/runtime',
@@ -1069,7 +1098,7 @@ describe('HTTP team runtime routes', () => {
         runId: null,
         progress: null,
       });
-      expect(stopTeam).toHaveBeenCalledWith('demo-team');
+      expect(stopTeam).toHaveBeenCalledWith('demo-team', 'run-2');
 
       const aliveResponse = await app.inject({
         method: 'GET',
@@ -1093,6 +1122,8 @@ describe('HTTP team runtime routes', () => {
       ]);
     } finally {
       await app.close();
+      setClaudeBasePathOverride(null);
+      await fs.rm(target, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
     }
   });
 

@@ -1,4 +1,6 @@
 const kanban = require('./kanban.js');
+const kanbanStore = require('./kanbanStore.js');
+const taskStore = require('./taskStore.js');
 const messages = require('./messages.js');
 const runtimeHelpers = require('./runtimeHelpers.js');
 const reviewStateHelpers = require('./reviewState.js');
@@ -562,9 +564,15 @@ function requestChanges(context, taskId, flags = {}) {
       currentTask,
       'requesting changes'
     );
+    const leadSessionId = resolveLeadSessionId(context, flags);
     const timestamp = new Date().toISOString();
 
-    tasks.updateTask(context, currentTask.id, (t) => {
+    const reviewComment = taskStore.buildTaskComment(nextComment, {
+      author: nextFrom,
+      type: 'review_request',
+      ...(Array.isArray(flags.taskRefs) ? { taskRefs: flags.taskRefs } : {}),
+    });
+    const beforeStatus = (t) => {
       closeReviewIntervals(t, timestamp);
       t.historyEvents = tasks.appendHistoryEvent(t.historyEvents, {
         type: 'review_changes_requested',
@@ -576,28 +584,31 @@ function requestChanges(context, taskId, flags = {}) {
       });
       t.reviewState = 'needsFix';
       return t;
-    });
-
-    kanban.clearKanban(context, currentTask.id, {
-      nextReviewState: 'needsFix',
-      transition: 'request_changes',
-    });
-    tasks.setTaskStatus(context, currentTask.id, 'pending', nextFrom, {
-      trustedInternalWrite: true,
-    });
-    tasks.addTaskComment(context, currentTask.id, {
-      text: nextComment,
-      from: nextFrom,
-      type: 'review_request',
-      ...(Array.isArray(flags.taskRefs) ? { taskRefs: flags.taskRefs } : {}),
-      notifyOwner: false,
-    });
+    };
+    const afterStatus = (t) => {
+      t.reviewState = 'needsFix';
+      t.comments = [...(Array.isArray(t.comments) ? t.comments : []), reviewComment];
+      return t;
+    };
+    const state = kanban.getKanbanState(context);
+    let updatedTask;
+    if (tasks.hasKanbanReference(state, currentTask.id)) {
+      updatedTask = kanbanStore.clearKanbanWithTaskTransition(context.paths, context.teamName, currentTask.id, {
+        operation: 'request_changes', targetStatus: 'pending', actor: nextFrom,
+        nextReviewState: 'needsFix', beforeStatus, afterStatus,
+      });
+    } else {
+      taskStore.setTaskStatus(context.paths, currentTask.id, 'pending', nextFrom, {
+        beforeStatus, afterStatus,
+      });
+      updatedTask = tasks.getTask(context, currentTask.id);
+    }
 
     return {
-      task: tasks.getTask(context, currentTask.id),
+      task: updatedTask,
       from: nextFrom,
       comment: nextComment,
-      leadSessionId: resolveLeadSessionId(context, flags),
+      leadSessionId,
     };
   });
 

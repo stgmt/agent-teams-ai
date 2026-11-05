@@ -60,6 +60,7 @@ function createSource() {
     isTeamAlive: vi.fn(() => false),
     getAliveTeams: vi.fn(() => []),
     getCurrentRunId: vi.fn(() => null),
+    getStopTargetRunId: vi.fn(() => null),
     recordOpenCodeRuntimeBootstrapCheckin: vi.fn(),
     deliverOpenCodeRuntimeMessage: vi.fn(),
     recordOpenCodeRuntimeTaskEvent: vi.fn(),
@@ -190,6 +191,7 @@ describe('bindTeamIpcHandlerApis', () => {
       'getAliveTeams',
       'getCurrentRunId',
       'getRuntimeState',
+      'getStopTargetRunId',
       'isTeamAlive',
       'stopTeam',
     ]);

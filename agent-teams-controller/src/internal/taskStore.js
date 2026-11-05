@@ -8,6 +8,7 @@ const { getTeamBoardLockContext } = require('./boardLock.js');
 const reviewStateHelpers = require('./reviewState.js');
 const { normalizeCreationCommand } = require('./taskCreationCommand.js');
 const { normalizeTaskGroupChatId, applyTaskGroupChatUpdate } = require('./taskGroupAssociation.js');
+const { applyTaskStatus } = require('./taskStatusTransition.js');
 
 const TASK_STATUSES = new Set(['pending', 'in_progress', 'completed', 'deleted']);
 const UUID_TASK_ID_PATTERN =
@@ -837,71 +838,19 @@ function updateTask(paths, taskRef, updater, options = {}) {
   if (storageIdentity) {
     attachTaskStorageIdentity(nextTask, storageIdentity);
   }
-  nextTask.updatedAt = nowIso();
+  if (!options.preserveUpdatedAt) nextTask.updatedAt = nowIso();
   writeTask(paths, nextTask, { allowPendingKanbanTransition: nextTask.pendingKanbanTransition?.id });
   return nextTask;
 }
 
-function setTaskStatus(paths, taskRef, nextStatus, actor) {
+function setTaskStatus(paths, taskRef, nextStatus, actor, options = {}) {
   const status = normalizeStatus(nextStatus);
   if (!status) {
     throw new Error(`Invalid status: ${String(nextStatus)}`);
   }
-
-  return updateTask(paths, taskRef, (task) => {
-    if (task.status === status) {
-      if (status === 'deleted' || status === 'in_progress') {
-        task.reviewState = 'none';
-      } else if (
-        status === 'pending' &&
-        normalizeTaskReviewState(task.reviewState) !== 'needsFix'
-      ) {
-        task.reviewState = 'none';
-      }
-      return task;
-    }
-    const timestamp = nowIso();
-    const workIntervals = Array.isArray(task.workIntervals) ? [...task.workIntervals] : [];
-    const lastInterval = workIntervals.length > 0 ? workIntervals[workIntervals.length - 1] : null;
-
-    if (task.status !== 'in_progress' && status === 'in_progress') {
-      if (!lastInterval || lastInterval.completedAt !== undefined) {
-        workIntervals.push({ startedAt: timestamp });
-      }
-    } else if (task.status === 'in_progress' && status !== 'in_progress') {
-      if (lastInterval && lastInterval.completedAt === undefined) {
-        lastInterval.completedAt = timestamp;
-      }
-    }
-    if (status === 'pending' || status === 'in_progress' || status === 'deleted') {
-      closeOpenReviewIntervals(task, timestamp);
-    }
-
-    task.workIntervals = workIntervals.length > 0 ? workIntervals : undefined;
-    task.historyEvents = appendHistoryEvent(task.historyEvents, {
-      type: 'status_changed',
-      from: task.status,
-      to: status,
-      ...(actor ? { actor } : {}),
-      timestamp,
-    });
-    task.status = status;
-
-    if (status === 'deleted') {
-      task.deletedAt = timestamp;
-      task.reviewState = 'none';
-    } else if (task.deletedAt) {
-      delete task.deletedAt;
-    }
-
-    if (status === 'in_progress') {
-      task.reviewState = 'none';
-    } else if (status === 'pending' && normalizeTaskReviewState(task.reviewState) !== 'needsFix') {
-      task.reviewState = 'none';
-    }
-
-    return task;
-  });
+  return updateTask(paths, taskRef, (task) => applyTaskStatus(task, status, actor, options, {
+    nowIso, closeOpenReviewIntervals, appendHistoryEvent, normalizeTaskReviewState,
+  }), options);
 }
 
 function normalizeOwnerValue(owner) {
@@ -955,12 +904,12 @@ function normalizeMemberName(value) {
   return typeof value === 'string' && value.trim() ? value.trim().toLowerCase() : '';
 }
 
-function addTaskComment(paths, taskRef, text, options = {}) {
+function buildTaskComment(text, options = {}) {
   if (typeof text !== 'string' || !text.trim()) {
     throw new Error('Missing comment text');
   }
 
-  const comment = {
+  return {
     id: options.id || crypto.randomUUID(),
     author:
       typeof options.author === 'string' && options.author.trim() ? options.author.trim() : 'user',
@@ -977,7 +926,10 @@ function addTaskComment(paths, taskRef, text, options = {}) {
       ? { attachments: options.attachments }
       : {}),
   };
+}
 
+function addTaskComment(paths, taskRef, text, options = {}) {
+  const comment = buildTaskComment(text, options);
   let inserted = false;
   const task = updateTask(paths, taskRef, (currentTask) => {
     const comments = Array.isArray(currentTask.comments) ? currentTask.comments : [];
@@ -1281,6 +1233,7 @@ module.exports = {
   addTaskAttachmentMeta,
   addTaskComment,
   appendHistoryEvent,
+  buildTaskComment,
   buildTaskReference,
   configureTaskScanSnapshotCache,
   createTask,

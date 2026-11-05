@@ -286,7 +286,7 @@ describe('runTeamForceStopFlow', () => {
     expect(context.requestedAtMs).toEqual(expect.any(Number));
   });
 
-  it('cancels on the age fence alone when the run ids cannot be read', async () => {
+  it('does not cancel deliveries when the owning run ids cannot be read', async () => {
     const ports = createPorts({
       observeOwnedRuntimeRunIds: vi.fn(() => Promise.reject(new Error('lane index unreadable'))),
     });
@@ -294,10 +294,9 @@ describe('runTeamForceStopFlow', () => {
     const result = await runTeamForceStopFlow('fixteam', ports);
 
     expect(result.stopOutcome).toBe('stopped');
-    expect(ports.clearPendingPromptDeliveries).toHaveBeenCalledWith('fixteam', {
-      requestedAtMs: expect.any(Number),
-      ownedRunIds: [],
-    });
+    expect(result.cleanupOutcome).toBe('incomplete');
+    expect(ports.clearPendingPromptDeliveries).not.toHaveBeenCalled();
+    expect(ports.killRetainedRuntimeProcesses).not.toHaveBeenCalled();
     expect(result.diagnostics.join('\n')).toContain(
       'Runtime run ids could not be read: lane index unreadable'
     );
@@ -615,6 +614,19 @@ describe('runTeamForceStopFlow', () => {
 });
 
 describe('stopTeamWithEscalation', () => {
+  it('does not dispatch stop or cleanup when its local target cannot be identified', async () => {
+    const ports = createPorts({
+      getStopTargetRunId: () => {
+        throw new Error('target unavailable');
+      },
+    });
+    const result = await stopTeamWithEscalation('fixteam', ports);
+    expect(result).toMatchObject({ stopOutcome: 'stop_failed', cleanupOutcome: 'incomplete' });
+    expect(ports.stopTeam).not.toHaveBeenCalled();
+    expect(ports.clearPendingPromptDeliveries).not.toHaveBeenCalled();
+    expect(ports.killRetainedRuntimeProcesses).not.toHaveBeenCalled();
+  });
+
   it('reports both an unfinished timer and an unconfirmed stop publication', async () => {
     const ports = createPorts({
       stopTeam: vi.fn(() => Promise.reject(new TaskActivityStopError(true))),

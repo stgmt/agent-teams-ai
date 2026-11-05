@@ -6,6 +6,15 @@ import type { TeamLaunchStateStore } from '../TeamLaunchStateStore';
 import type { ProvisioningRun } from './TeamProvisioningRunModel';
 import type { OpenCodeAggregatePrimaryRestartLease } from './TeamProvisioningServiceMemberLifecycleFacade';
 
+export function cancelMatchingAggregateRestart(
+  restart: OpenCodeAggregatePrimaryRestartLease | undefined,
+  expectedRunId: string | null | undefined
+): void {
+  if (restart && (expectedRunId === undefined || restart.runId === expectedRunId)) {
+    restart.cancelRequested = true;
+  }
+}
+
 interface MemberLifecycleCompletion {
   teamKey: string;
   completion: Promise<void>;
