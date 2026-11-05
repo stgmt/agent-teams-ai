@@ -15,6 +15,8 @@ const state = vi.hoisted(() => ({
   deleteNotification: vi.fn(async () => undefined),
   clearNotifications: vi.fn(async () => undefined),
   navigateToError: vi.fn(),
+  pendingNotificationDetail: null as DetectedError | null,
+  takePendingNotificationDetail: vi.fn(() => true),
 }));
 
 vi.mock('@renderer/store', () => ({
@@ -64,6 +66,7 @@ describe('storage warning details', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     state.notifications = [warning()];
+    state.pendingNotificationDetail = null;
     vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
     host = document.createElement('div');
     document.body.appendChild(host);
@@ -99,7 +102,19 @@ describe('storage warning details', () => {
       (button) => button.textContent === 'dialogs.actions.openTeam'
     )!;
     await act(async () => openTeam.click());
-    expect(state.navigateToError).toHaveBeenCalledWith(state.notifications[0]);
+    expect(state.navigateToError).toHaveBeenCalledWith({
+      ...state.notifications[0],
+      requiresAcknowledgement: false,
+    });
     expect(document.body.querySelector('[role="dialog"]')).toBeNull();
+  });
+
+  it('opens a pending native warning with its full text after the view loads', async () => {
+    state.pendingNotificationDetail = warning();
+    await act(async () => root.render(<NotificationsView />));
+    expect(document.body.querySelector('[role="dialog"]')?.textContent).toContain(message);
+    expect(state.takePendingNotificationDetail).toHaveBeenCalledOnce();
+    expect(state.markNotificationRead).toHaveBeenCalledWith('warning-1');
+    expect(state.navigateToError).not.toHaveBeenCalled();
   });
 });

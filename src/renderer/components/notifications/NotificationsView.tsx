@@ -49,6 +49,8 @@ export const NotificationsView = (): React.JSX.Element => {
     deleteNotification,
     clearNotifications,
     navigateToError,
+    pendingNotificationDetail,
+    takePendingNotificationDetail,
   } = useStore(
     useShallow((s) => ({
       notifications: s.notifications,
@@ -59,6 +61,8 @@ export const NotificationsView = (): React.JSX.Element => {
       deleteNotification: s.deleteNotification,
       clearNotifications: s.clearNotifications,
       navigateToError: s.navigateToError,
+      pendingNotificationDetail: s.pendingNotificationDetail,
+      takePendingNotificationDetail: s.takePendingNotificationDetail,
     }))
   );
 
@@ -80,6 +84,15 @@ export const NotificationsView = (): React.JSX.Element => {
     };
     void loadNotifications();
   }, [fetchNotifications]);
+
+  useEffect(() => {
+    if (isLoading || !pendingNotificationDetail) return;
+    if (!takePendingNotificationDetail(pendingNotificationDetail)) return;
+    setWarningDetail(pendingNotificationDetail);
+    if (!pendingNotificationDetail.isRead) {
+      void markNotificationRead(pendingNotificationDetail.id);
+    }
+  }, [isLoading, pendingNotificationDetail, takePendingNotificationDetail, markNotificationRead]);
 
   // Sort notifications by timestamp (most recent first)
   const sortedNotifications = useMemo(() => {
@@ -410,7 +423,7 @@ export const NotificationsView = (): React.JSX.Element => {
               type="button"
               className="justify-self-start rounded-md border px-3 py-2 text-sm"
               onClick={() => {
-                navigateToError(warningDetail);
+                navigateToError({ ...warningDetail, requiresAcknowledgement: false });
                 setWarningDetail(null);
               }}
             >
