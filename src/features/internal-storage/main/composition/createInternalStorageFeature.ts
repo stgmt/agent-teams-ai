@@ -50,6 +50,8 @@ const logger = createLogger('Feature:InternalStorage');
 export interface InternalStorageFeatureDeps {
   /** Usually app.getPath('userData'); the SQLite file lives in a subfolder. */
   userDataPath: string;
+  /** Report comment journal failures without changing their result or retrying delivery. */
+  onCommentJournalFailure?: (teamName: string, error: unknown) => void;
 }
 
 export interface InternalStorageMemberWorkSyncBackend {
@@ -179,7 +181,7 @@ export function createInternalStorageFeature(
       selector,
       sqliteCommentStore,
       jsonCommentStore,
-      { fallbackRequiresReplica, logger }
+      { fallbackRequiresReplica, logger, onFailure: deps.onCommentJournalFailure }
     ),
     memberWorkSyncBackend: { gateway: client, selector, fallbackRequiresReplica },
     applicationCommandLedgerBackend: workerAvailable ? { gateway: client, selector } : null,

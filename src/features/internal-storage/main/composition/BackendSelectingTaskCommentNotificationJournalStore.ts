@@ -15,6 +15,7 @@ import type {
 export interface BackendSelectingTaskCommentNotificationJournalStoreOptions {
   fallbackRequiresReplica: boolean;
   logger?: { warn(message: string, metadata?: Record<string, unknown>): void };
+  onFailure?: (teamName: string, error: unknown) => void;
 }
 
 export class BackendSelectingTaskCommentNotificationJournalStore implements TaskCommentNotificationJournalStore {
@@ -57,6 +58,25 @@ export class BackendSelectingTaskCommentNotificationJournalStore implements Task
   }
 
   private async run<T>(
+    teamName: string,
+    mutation: boolean,
+    sqliteAction: () => Promise<T>,
+    jsonAction: () => Promise<T>
+  ): Promise<T> {
+    try {
+      return await this.runWithBackend(teamName, mutation, sqliteAction, jsonAction);
+    } catch (error) {
+      // Reporting is best-effort and must never replace the journal failure.
+      try {
+        this.options?.onFailure?.(teamName, error);
+      } catch {
+        // Preserve the original storage error for the caller.
+      }
+      throw error;
+    }
+  }
+
+  private async runWithBackend<T>(
     teamName: string,
     mutation: boolean,
     sqliteAction: () => Promise<T>,
