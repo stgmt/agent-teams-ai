@@ -157,6 +157,41 @@ describe('verified artifact action', () => {
     expect((await restarted.list('scope', 'team', 'task'))[0].status).toBe('manual');
   });
 
+  it('consumes a retry decision once even when two windows submit it together', async () => {
+    const { store, verify, service } = await fixture();
+    const enqueue = vi.fn(async () => {
+      throw new Error('response lost');
+    });
+    const uncertain = new VerifiedActionService({ store, verify, enqueue });
+    const action = await service.prepare('scope', 'team', 'task');
+    expect((await uncertain.approve('scope', action.id)).status).toBe('question');
+    const results = await Promise.allSettled([
+      uncertain.decide('scope', action.id, 'retry_once'),
+      uncertain.decide('scope', action.id, 'retry_once'),
+    ]);
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    expect(results.filter((result) => result.status === 'rejected')).toHaveLength(1);
+    expect(enqueue).toHaveBeenCalledTimes(2);
+    expect((await uncertain.list('scope', 'team', 'task'))[0]).toMatchObject({
+      status: 'manual',
+      attempts: 2,
+    });
+  });
+
+  it('recovers only the requested task rather than changing other scopes', async () => {
+    const { store, service } = await fixture();
+    await service.prepare('first', 'team', 'task');
+    await service.prepare('second', 'team', 'task');
+    await store.transaction(async (tx) => {
+      const items = await tx.read();
+      items.forEach((item) => Object.assign(item, { status: 'running', attempts: 1 }));
+      await tx.write(items);
+    });
+    expect((await service.list('first', 'team', 'task'))[0].status).toBe('question');
+    const all = await store.transaction((tx) => tx.read());
+    expect(all.find((item) => item.scope === 'second')?.status).toBe('running');
+  });
+
   it('recovers a crashed in-flight attempt without executing it', async () => {
     const { store, service, enqueue } = await fixture();
     const action = await service.prepare('scope', 'team', 'task');
