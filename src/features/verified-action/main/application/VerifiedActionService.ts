@@ -1,4 +1,4 @@
-import { createHash } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 
 import type { VerifiedAction, VerifiedActionDecision, VerifiedActionProof } from '../../contracts';
 
@@ -41,7 +41,7 @@ export class VerifiedActionService {
           action.taskId === taskId &&
           action.status === 'running'
         ) {
-          action.status = action.attempts === 1 ? 'question' : 'manual';
+          action.status = action.attempts === 1 && !action.decisionReceipt ? 'question' : 'manual';
           action.updatedAt = this.now();
           changed = true;
         }
@@ -96,12 +96,22 @@ export class VerifiedActionService {
   async decide(
     scope: string,
     id: string,
-    decision: VerifiedActionDecision
+    decision: VerifiedActionDecision,
+    decisionId: string = randomUUID()
   ): Promise<VerifiedAction> {
     return this.options.store.transaction(async (tx) => {
       const actions = await tx.read();
       const action = this.get(actions, scope, id);
+      if (action.decisionReceipt) {
+        if (
+          action.decisionReceipt.id === decisionId &&
+          action.decisionReceipt.decision === decision
+        )
+          return action;
+        throw new Error('This action has no pending question');
+      }
       if (action.status !== 'question') throw new Error('This action has no pending question');
+      action.decisionReceipt = { id: decisionId, decision };
       if (decision === 'completed') {
         action.status = 'completed';
         action.completion = 'user_attested';
@@ -124,6 +134,41 @@ export class VerifiedActionService {
       }
       action.updatedAt = this.now();
       await tx.write(actions);
+      return action;
+    });
+  }
+
+  /**
+   * Record a previously chosen answer without running the action. This fences
+   * a delayed decide under the same lock, so recovery never resends the effect.
+   */
+  async fenceDecision(
+    scope: string,
+    id: string,
+    decision: VerifiedActionDecision,
+    decisionId: string
+  ): Promise<VerifiedAction> {
+    return this.options.store.transaction(async (tx) => {
+      const actions = await tx.read();
+      const action = this.get(actions, scope, id);
+      const receipt = action.decisionReceipt;
+      if (receipt && (receipt.id !== decisionId || receipt.decision !== decision)) {
+        throw new Error('A different decision was already recorded');
+      }
+      if (!receipt && action.status !== 'question') {
+        throw new Error('The decision cannot be reconciled');
+      }
+      if (!receipt) action.decisionReceipt = { id: decisionId, decision };
+      if (!receipt || action.status === 'running') {
+        if (decision === 'completed' && !receipt) {
+          action.status = 'completed';
+          action.completion = 'user_attested';
+        } else {
+          action.status = 'manual';
+        }
+        action.updatedAt = this.now();
+        await tx.write(actions);
+      }
       return action;
     });
   }

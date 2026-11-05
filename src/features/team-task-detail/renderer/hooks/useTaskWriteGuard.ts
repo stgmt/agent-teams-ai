@@ -8,11 +8,17 @@ import {
   ArtifactWriteOutcomeHandledError,
 } from '../../core/domain/taskArtifactOutcome';
 import {
+  TaskWriteActionDecidedError,
   TaskWriteGuardOccupiedError,
   taskWriteGuardStorage,
 } from '../adapters/taskWriteGuardStorage';
 
-import type { TaskDetailIdentity, TaskDetailSession, TaskWriteOperation } from '../../contracts';
+import type {
+  TaskDetailIdentity,
+  TaskDetailSession,
+  TaskWriteDecision,
+  TaskWriteOperation,
+} from '../../contracts';
 import type { AppConnectionContext } from '@features/external-agent-connection/contracts';
 import type { TaskFieldUpdates } from '@shared/types';
 
@@ -125,6 +131,7 @@ export function useTaskWriteGuard({
                 taskWriteGuardState: 'ready',
                 taskWriteMarkerId: marker.attemptId,
                 taskWriteOperation: marker.operation,
+                taskWriteDecision: marker.decision ?? null,
                 taskWriteRootFingerprint: context.physicalRootFingerprint,
                 taskWriteExpectedContext: connectionContext(context),
                 artifactOutcomeUnknown: true,
@@ -135,6 +142,7 @@ export function useTaskWriteGuard({
                 taskWriteGuardState: 'ready',
                 taskWriteMarkerId: null,
                 taskWriteOperation: null,
+                taskWriteDecision: null,
                 taskWriteRootFingerprint: context.physicalRootFingerprint,
                 taskWriteExpectedContext: connectionContext(context),
               }
@@ -211,6 +219,7 @@ export function useTaskWriteGuard({
                   taskWriteGuardState: 'ready',
                   taskWriteMarkerId: error.marker.attemptId,
                   taskWriteOperation: error.marker.operation,
+                  taskWriteDecision: error.marker.decision ?? null,
                   taskWriteExpectedContext: connectionContext(context!),
                   artifactOutcomeUnknown: true,
                   artifactOutcomeChecked: false,
@@ -269,6 +278,194 @@ export function useTaskWriteGuard({
     [identity, identityKey, readGuardContext, requireOwner]
   );
 
+  const beginGuardedTaskDecision = useCallback(
+    async (actionId: string, choice: TaskWriteDecision['decision']) => {
+      const state = useStore.getState();
+      const session = state.taskDetailSessionById[identityKey];
+      if (
+        !requireOwner() ||
+        session?.taskWriteGuardState !== 'ready' ||
+        session.artifactWriteId ||
+        !session.taskWriteRootFingerprint ||
+        !session.taskWriteExpectedContext ||
+        (session.artifactOutcomeUnknown &&
+          (!session.artifactOutcomeChecked ||
+            session.taskWriteOperation !== 'manifest' ||
+            !session.taskWriteMarkerId)) ||
+        session.taskWriteDecision
+      ) {
+        throw new ArtifactWriteNotStartedError('No task decision was sent');
+      }
+      const token = crypto.randomUUID();
+      const decision: TaskWriteDecision = {
+        actionId,
+        decisionId: crypto.randomUUID(),
+        decision: choice,
+        stage: 'decision',
+      };
+      const marker = {
+        version: 1 as const,
+        attemptId: token,
+        operation: 'manifest' as const,
+        decision,
+      };
+      const previous = session.taskWriteMarkerId
+        ? {
+            version: 1 as const,
+            attemptId: session.taskWriteMarkerId,
+            operation: 'manifest' as const,
+          }
+        : null;
+      state.updateTaskDetailSession(identity, { artifactWriteId: token });
+      try {
+        // Persist the answer before any IPC, replacing the old marker atomically.
+        await withArtifactOutcomeDeadline(
+          taskWriteGuardStorage.beginDecision(
+            { ...identity, dataRootFingerprint: session.taskWriteRootFingerprint },
+            previous,
+            marker
+          )
+        );
+      } catch (error) {
+        let recordedMarker: Awaited<ReturnType<typeof taskWriteGuardStorage.read>> | undefined;
+        if (error instanceof TaskWriteActionDecidedError) {
+          try {
+            recordedMarker = await withArtifactOutcomeDeadline(
+              taskWriteGuardStorage.read({
+                ...identity,
+                dataRootFingerprint: session.taskWriteRootFingerprint,
+              })
+            );
+          } catch {
+            // A failed read remains unavailable; do not infer an empty guard.
+          }
+        }
+        const latest = useStore.getState();
+        if (latest.taskDetailSessionById[identityKey]?.artifactWriteId === token) {
+          latest.updateTaskDetailSession(
+            identity,
+            error instanceof TaskWriteGuardOccupiedError
+              ? {
+                  artifactWriteId: null,
+                  taskWriteMarkerId: error.marker.attemptId,
+                  taskWriteOperation: error.marker.operation,
+                  taskWriteDecision: error.marker.decision ?? null,
+                  artifactOutcomeUnknown: true,
+                  artifactOutcomeChecked: false,
+                }
+              : error instanceof TaskWriteActionDecidedError && recordedMarker !== undefined
+                ? {
+                    artifactWriteId: null,
+                    taskWriteMarkerId: recordedMarker?.attemptId ?? null,
+                    taskWriteOperation: recordedMarker?.operation ?? null,
+                    taskWriteDecision: recordedMarker?.decision ?? null,
+                    artifactOutcomeUnknown: recordedMarker !== null,
+                    artifactOutcomeChecked: false,
+                  }
+                : { artifactWriteId: null, taskWriteGuardState: 'unavailable' }
+          );
+        }
+        throw new ArtifactWriteNotStartedError(
+          'Task decision safety storage is unavailable or occupied'
+        );
+      }
+      const latest = useStore.getState();
+      if (latest.taskDetailSessionById[identityKey]?.artifactWriteId === token) {
+        latest.updateTaskDetailSession(identity, {
+          taskWriteMarkerId: token,
+          taskWriteOperation: 'manifest',
+          taskWriteDecision: decision,
+          artifactOutcomeUnknown: false,
+          artifactOutcomeChecked: false,
+        });
+      }
+      const context = await readGuardContext().catch(() => null);
+      if (
+        !context ||
+        !sameGuardContext(
+          session.taskWriteExpectedContext,
+          session.taskWriteRootFingerprint,
+          context
+        ) ||
+        !requireOwner() ||
+        useStore.getState().taskDetailSessionById[identityKey]?.artifactWriteId !== token
+      ) {
+        const current = useStore.getState();
+        if (current.taskDetailSessionById[identityKey]?.artifactWriteId === token)
+          current.updateTaskDetailSession(identity, {
+            artifactWriteId: null,
+            artifactOutcomeUnknown: true,
+          });
+        throw new ArtifactWriteOutcomeHandledError(
+          'Task decision was recorded for manual recovery'
+        );
+      }
+      return {
+        token,
+        decision,
+        expectedContext: connectionContext(context),
+        expectedRootFingerprint: context.physicalRootFingerprint,
+      };
+    },
+    [identity, identityKey, readGuardContext, requireOwner]
+  );
+
+  const markGuardedDecisionFenceSent = useCallback(
+    async (token: string): Promise<boolean> => {
+      const state = useStore.getState();
+      const session = state.taskDetailSessionById[identityKey];
+      if (
+        !isOriginCurrent() ||
+        !session?.taskWriteRootFingerprint ||
+        session.taskWriteMarkerId !== token ||
+        session.taskWriteOperation !== 'manifest' ||
+        !session.taskWriteDecision ||
+        session.taskWriteDecision.stage !== 'decision'
+      )
+        return false;
+      const marker = {
+        version: 1 as const,
+        attemptId: token,
+        operation: 'manifest' as const,
+        decision: session.taskWriteDecision,
+      };
+      const claimed = await withArtifactOutcomeDeadline(
+        taskWriteGuardStorage.markFenceSent(
+          { ...identity, dataRootFingerprint: session.taskWriteRootFingerprint },
+          marker
+        )
+      );
+      const latest = useStore.getState();
+      if (claimed && latest.taskDetailSessionById[identityKey]?.taskWriteMarkerId === token)
+        latest.updateTaskDetailSession(identity, {
+          taskWriteDecision: { ...session.taskWriteDecision, stage: 'fenceSent' },
+        });
+      return claimed;
+    },
+    [identity, identityKey, isOriginCurrent]
+  );
+
+  const readGuardedTaskDecisionIds = useCallback(async (): Promise<string[]> => {
+    const current = useStore.getState().taskDetailSessionById[identityKey];
+    if (
+      !isOriginCurrent() ||
+      !current?.taskWriteRootFingerprint ||
+      !current.taskWriteExpectedContext
+    )
+      throw new Error('Task context is unavailable');
+    const root = current.taskWriteRootFingerprint;
+    const expected = current.taskWriteExpectedContext;
+    const ids = await withArtifactOutcomeDeadline(
+      taskWriteGuardStorage.readChosenActionIds({
+        ...identity,
+        dataRootFingerprint: root,
+      })
+    );
+    if (!sameGuardContext(expected, root, await readGuardContext()))
+      throw new Error('Task context changed');
+    return ids;
+  }, [identity, identityKey, isOriginCurrent, readGuardContext]);
+
   const settleGuardedTaskWrite = useCallback(
     async (
       token: string,
@@ -316,6 +513,7 @@ export function useTaskWriteGuard({
             artifactWriteId: null,
             taskWriteMarkerId: result.marker?.attemptId ?? null,
             taskWriteOperation: result.marker?.operation ?? null,
+            taskWriteDecision: result.marker?.decision ?? null,
             artifactOutcomeUnknown: result.marker !== null,
             artifactOutcomeChecked: false,
             artifactOutcomeRevision: (session.artifactOutcomeRevision ?? 0) + 1,
@@ -364,6 +562,7 @@ export function useTaskWriteGuard({
         artifactWriteId: null,
         taskWriteMarkerId: null,
         taskWriteOperation: null,
+        taskWriteDecision: null,
       });
       return true;
     },
@@ -504,6 +703,7 @@ export function useTaskWriteGuard({
         artifactOutcomeChecked: false,
         taskWriteMarkerId: null,
         taskWriteOperation: null,
+        taskWriteDecision: null,
       });
     },
     [identity, identityKey, isOriginCurrent, readGuardContext]
@@ -559,8 +759,12 @@ export function useTaskWriteGuard({
       checked: session.artifactOutcomeChecked === true,
       expectedContext: session.taskWriteExpectedContext ?? null,
       expectedRootFingerprint: session.taskWriteRootFingerprint ?? null,
+      decision: session.taskWriteDecision ?? null,
     },
     beginGuardedTaskWrite,
+    beginGuardedTaskDecision,
+    markGuardedDecisionFenceSent,
+    readGuardedTaskDecisionIds,
     settleGuardedTaskWrite,
     checkGuardedTaskWriteOutcome,
     confirmGuardedTaskWriteOutcome,

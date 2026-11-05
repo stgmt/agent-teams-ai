@@ -106,4 +106,50 @@ describe('durable task write guard', () => {
       marker: null,
     });
   });
+
+  it('atomically replaces an uncertain marker with only one chosen answer across windows', async () => {
+    const first = createTaskWriteGuardStorage();
+    const second = createTaskWriteGuardStorage();
+    await first.acquire(identity, manifest);
+    const decisionMarker = {
+      ...manifest,
+      attemptId: 'chosen-attempt',
+      decision: {
+        actionId: 'c'.repeat(64),
+        decisionId: '11111111-1111-4111-8111-111111111111',
+        decision: 'retry_once' as const,
+        stage: 'decision' as const,
+      },
+    };
+    const competitor = {
+      ...decisionMarker,
+      attemptId: 'other-attempt',
+      decision: { ...decisionMarker.decision, decisionId: '22222222-2222-4222-8222-222222222222' },
+    };
+    const results = await Promise.allSettled([
+      first.beginDecision(identity, manifest, decisionMarker),
+      second.beginDecision(identity, manifest, competitor),
+    ]);
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    const stored = await createTaskWriteGuardStorage().read(identity);
+    expect([decisionMarker, competitor]).toContainEqual(stored);
+    expect(await first.readDecision(identity, manifest)).toEqual({
+      explicitlyResolved: true,
+      marker: stored,
+    });
+    const claims = await Promise.all([
+      first.markFenceSent(identity, stored!),
+      second.markFenceSent(identity, stored!),
+    ]);
+    expect(claims.filter(Boolean)).toHaveLength(1);
+    const recovered = await createTaskWriteGuardStorage().read(identity);
+    expect(recovered?.decision).toEqual({ ...stored!.decision, stage: 'fenceSent' });
+    expect(await first.markFenceSent(identity, stored!)).toBe(false);
+    await first.release(identity, recovered!);
+    expect(await second.readChosenActionIds(identity)).toEqual(['c'.repeat(64)]);
+    await expect(second.beginDecision(identity, null, competitor)).rejects.toThrow(
+      /already has a recorded decision/
+    );
+    expect(await second.read(identity)).toBeNull();
+  });
 });

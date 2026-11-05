@@ -6,6 +6,7 @@ import * as path from 'path';
 import {
   VERIFIED_ACTION_APPROVE,
   VERIFIED_ACTION_DECIDE,
+  VERIFIED_ACTION_FENCE_DECISION,
   VERIFIED_ACTION_LIST,
   VERIFIED_ACTION_PREPARE,
 } from '../../contracts';
@@ -21,6 +22,7 @@ const channels = [
   VERIFIED_ACTION_PREPARE,
   VERIFIED_ACTION_APPROVE,
   VERIFIED_ACTION_DECIDE,
+  VERIFIED_ACTION_FENCE_DECISION,
 ];
 
 function requireTask(teamName: unknown, taskId: unknown): [string, string] {
@@ -34,6 +36,23 @@ function requireTask(teamName: unknown, taskId: unknown): [string, string] {
 function requireId(value: unknown): string {
   if (typeof value !== 'string' || !/^[a-f0-9]{64}$/.test(value)) {
     throw new Error('Invalid action id');
+  }
+  return value;
+}
+
+function requireDecisionId(value: unknown): string {
+  if (
+    typeof value !== 'string' ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
+  ) {
+    throw new Error('Invalid decision id');
+  }
+  return value;
+}
+
+function requireDecision(value: unknown): VerifiedActionDecision {
+  if (value !== 'completed' && value !== 'retry_once' && value !== 'leave_unresolved') {
+    throw new Error('Invalid action decision');
   }
   return value;
 }
@@ -151,19 +170,38 @@ export function registerVerifiedActionIpc(
       expected: unknown,
       root: unknown,
       id: unknown,
-      decision: unknown
+      decision: unknown,
+      decisionId: unknown
     ) => {
-      if (
-        decision !== 'completed' &&
-        decision !== 'retry_once' &&
-        decision !== 'leave_unresolved'
-      ) {
-        throw new Error('Invalid action decision');
-      }
       return run(contextId, expected, root, (scope) =>
-        service.decide(scope, requireId(id), decision as VerifiedActionDecision)
+        service.decide(
+          scope,
+          requireId(id),
+          requireDecision(decision),
+          requireDecisionId(decisionId)
+        )
       );
     }
+  );
+  ipc.handle(
+    VERIFIED_ACTION_FENCE_DECISION,
+    (
+      _event,
+      contextId: unknown,
+      expected: unknown,
+      root: unknown,
+      id: unknown,
+      decision: unknown,
+      decisionId: unknown
+    ) =>
+      run(contextId, expected, root, (scope) =>
+        service.fenceDecision(
+          scope,
+          requireId(id),
+          requireDecision(decision),
+          requireDecisionId(decisionId)
+        )
+      )
   );
 }
 
