@@ -456,6 +456,12 @@ interface FileWatchReconcileTrigger {
   detail?: string;
 }
 
+interface GlobalTeamSpecCensus {
+  teamName: string;
+  specProject?: string;
+  specSlug?: string;
+}
+
 export class TeamDataService {
   private processHealthTimer: ReturnType<typeof setInterval> | null = null;
   private processHealthTeams = new Set<string>();
@@ -1322,17 +1328,11 @@ export class TeamDataService {
         ? await taskReader.getAllTasksProjectionSnapshot()
         : await taskReader.getAllTasks();
 
-    // The cached team list is the only cheap census of teams whose rows never
-    // reach the file projection: a registry-backed team keeps no task files.
-    let teams: readonly TeamSummary[] = [];
-    try {
-      teams = await this.listTeams();
-    } catch (error) {
-      logger.warn(
-        `[getAllTasks] team list unreadable: ${error instanceof Error ? error.message : String(error)}`
-      );
-    }
-    const registry = await this.readRegistryBackedGlobalTasks(teams);
+    // A registry-backed team keeps no task files, so names come from one directory
+    // read; only the teams that actually carry a spec binding are configured, and
+    // the full team summary (worker-driven, expensive) is never built for the board.
+    const census = await this.readTeamSpecCensus();
+    const registry = await this.readRegistryBackedGlobalTasks(census);
 
     const rawTasks = [
       // A registry-backed team's canonical state is the registry: stale local
@@ -1448,7 +1448,44 @@ export class TeamDataService {
    * Failures are per team: an unreachable registry drops that team's rows and
    * lands in `failures`, while every other team is still served.
    */
-  private async readRegistryBackedGlobalTasks(teams: readonly TeamSummary[]): Promise<{
+  /**
+   * Names plus the spec binding of each team, without building full summaries.
+   * A team without either binding field is skipped: it cannot be registry-backed.
+   */
+  private async readTeamSpecCensus(): Promise<GlobalTeamSpecCensus[]> {
+    const reader = this.configReader as TeamConfigReader & {
+      listTeamNames?: () => Promise<string[]>;
+    };
+    if (typeof reader.listTeamNames !== 'function') {
+      return [];
+    }
+    let names: string[];
+    try {
+      names = await reader.listTeamNames();
+    } catch {
+      return [];
+    }
+    const out: GlobalTeamSpecCensus[] = [];
+    await Promise.all(
+      names.map(async (teamName) => {
+        try {
+          const config = await readConfigForUiSnapshot(this.configReader, teamName);
+          if (!config) return;
+          if (!config.specProject && !config.specSlug) return;
+          out.push({
+            teamName,
+            ...(config.specProject ? { specProject: config.specProject } : {}),
+            ...(config.specSlug ? { specSlug: config.specSlug } : {}),
+          });
+        } catch {
+          // An unreadable team config is not a board failure by itself.
+        }
+      })
+    );
+    return out;
+  }
+
+  private async readRegistryBackedGlobalTasks(teams: readonly GlobalTeamSpecCensus[]): Promise<{
     tasks: (TeamTask & { teamName: string })[];
     backedTeamNames: Set<string>;
     failures: GlobalBoardTeamFailure[];

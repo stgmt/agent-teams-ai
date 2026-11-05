@@ -48,9 +48,24 @@ function makeService(options: HarnessOptions): {
   getTasks: Mock<(teamName: string) => Promise<RegistryTasksReadResult>>;
 } {
   const configs = options.configs ?? {};
+  const summaryConfig = (teamName: string): TeamConfig | null => {
+    const team = options.teams.find((entry) => entry.teamName === teamName);
+    if (!team) return null;
+    return {
+      name: teamName,
+      ...(team.specProject ? { specProject: team.specProject } : {}),
+      ...(team.specSlug ? { specSlug: team.specSlug } : {}),
+    } as TeamConfig;
+  };
+  // The board census is a directory read; bindings come from each team's config.
   const configReader = {
-    getConfigSnapshot: async (teamName: string) => configs[teamName] ?? null,
-    listTeams: async () => options.teams,
+    listTeamNames: async () => options.teams.map((team) => team.teamName),
+    getConfigSnapshot: async (teamName: string) => {
+      const fromSummary = summaryConfig(teamName);
+      if (!(teamName in configs)) return fromSummary;
+      // The binding lives in the team config; the fixture may set either side.
+      return { ...(fromSummary ?? {}), ...(configs[teamName] ?? {}) } as TeamConfig;
+    },
   };
   const fileTasks = options.fileTasks ?? [];
   const taskReader = {

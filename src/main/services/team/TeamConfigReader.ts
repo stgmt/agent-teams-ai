@@ -375,6 +375,22 @@ export class TeamConfigReader {
     private readonly teamMetaStore: TeamMetaStore = new TeamMetaStore()
   ) {}
 
+  /**
+   * Cheap census for callers that only need team names: one directory read, no
+   * config parsing and no summary build. Dot-directories are service state, not teams.
+   */
+  async listTeamNames(): Promise<string[]> {
+    let entries: fs.Dirent[];
+    try {
+      entries = await fs.promises.readdir(getTeamsBasePath(), { withFileTypes: true });
+    } catch {
+      return [];
+    }
+    return entries
+      .filter((entry) => entry.isDirectory() && !entry.name.startsWith('.'))
+      .map((entry) => entry.name);
+  }
+
   async listTeams(): Promise<TeamSummary[]> {
     const teamsBasePath = getTeamsBasePath();
     const cached = TeamConfigReader.listTeamsCacheByBasePath.get(teamsBasePath);
