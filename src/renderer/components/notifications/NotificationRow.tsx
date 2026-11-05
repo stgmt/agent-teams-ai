@@ -143,6 +143,7 @@ export const NotificationRow = ({
         {isHovered ? (
           <HoverActions
             isUnread={isUnread}
+            showNavigate={!error.requiresAcknowledgement}
             onArchiveClick={handleArchiveClick}
             onDeleteClick={handleDeleteClick}
             onNavigateClick={handleNavigateClick}
@@ -165,6 +166,7 @@ export const NotificationRow = ({
  */
 interface HoverActionsProps {
   isUnread: boolean;
+  showNavigate: boolean;
   onArchiveClick: (e: React.MouseEvent) => void;
   onDeleteClick: (e: React.MouseEvent) => void;
   onNavigateClick: (e: React.MouseEvent) => void;
@@ -172,6 +174,7 @@ interface HoverActionsProps {
 
 const HoverActions = ({
   isUnread,
+  showNavigate,
   onArchiveClick,
   onDeleteClick,
   onNavigateClick,
@@ -216,16 +219,18 @@ const HoverActions = ({
         <Trash2 className="size-4" />
       </button>
       {/* Navigate Button */}
-      <button
-        onClick={onNavigateClick}
-        onMouseEnter={() => setHoveredButton('navigate')}
-        onMouseLeave={() => setHoveredButton(null)}
-        className="rounded p-1.5 transition-colors"
-        style={getButtonStyle('navigate')}
-        title={t('notifications.row.viewInSession')}
-      >
-        <ArrowRight className="size-4" />
-      </button>
+      {showNavigate && (
+        <button
+          onClick={onNavigateClick}
+          onMouseEnter={() => setHoveredButton('navigate')}
+          onMouseLeave={() => setHoveredButton(null)}
+          className="rounded p-1.5 transition-colors"
+          style={getButtonStyle('navigate')}
+          title={t('notifications.row.viewInSession')}
+        >
+          <ArrowRight className="size-4" />
+        </button>
+      )}
     </>
   );
 };
