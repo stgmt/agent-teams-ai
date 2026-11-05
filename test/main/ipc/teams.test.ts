@@ -483,6 +483,7 @@ describe('ipc teams handlers', () => {
   };
 
   const service = {
+    updateTaskFields: vi.fn(() => resolvedUndefined()),
     runConfigurationOperation: vi.fn(
       async <T>(teamName: string, operation: () => Promise<T>): Promise<T> => {
         let result!: T;
@@ -987,6 +988,42 @@ describe('ipc teams handlers', () => {
   it('registers all expected handlers', () => {
     expect(ipcMain.handle).toHaveBeenCalledTimes(TEAM_HANDLER_KEYS.length);
     expect(new Set(handlers.keys())).toEqual(new Set(TEAM_HANDLER_KEYS));
+  });
+
+  it('passes artifact settings through the user IPC path but ignores renderer-supplied proof', async () => {
+    const handler = handlers.get(TEAM_UPDATE_TASK_FIELDS)!;
+    const result = await handler({}, 'my-team', 'task-1', {
+      artifactRequired: true,
+      artifactProjectPath: 'outputs/result.mp4',
+      artifactRequirement: { required: false, proof: { sha256: 'forged' } },
+    });
+    expect(result).toEqual({ success: true, data: undefined });
+    expect(service.updateTaskFields).toHaveBeenCalledWith('my-team', 'task-1', {
+      artifactRequired: true,
+      artifactProjectPath: 'outputs/result.mp4',
+    });
+  });
+
+  it('surfaces the controller artifact failure for completion without retrying it', async () => {
+    service.updateTaskStatus.mockRejectedValueOnce(new Error('Required task artifact has changed'));
+    const handler = handlers.get(TEAM_UPDATE_TASK_STATUS)!;
+    const result = await handler({}, 'my-team', 'task-1', 'completed');
+    expect(result).toMatchObject({ success: false, error: 'Required task artifact has changed' });
+    expect(service.updateTaskStatus).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(console.error).mock.calls[0]?.join(' ')).toContain('Required task artifact has changed');
+    vi.mocked(console.error).mockClear();
+  });
+
+  it('rejects invalid artifact settings before passing them to the controller', async () => {
+    const handler = handlers.get(TEAM_UPDATE_TASK_FIELDS)!;
+    expect(await handler({}, 'my-team', 'task-1', { artifactRequired: 'yes' })).toMatchObject({
+      success: false,
+      error: 'artifactRequired must be a boolean',
+    });
+    expect(await handler({}, 'my-team', 'task-1', { artifactProjectPath: 'x'.repeat(4097) })).toMatchObject({
+      success: false,
+    });
+    expect(service.updateTaskFields).not.toHaveBeenCalled();
   });
 
   // The exact inverse of the HTTP diagnostics tripwire: the IPC path owns the

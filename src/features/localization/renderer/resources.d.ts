@@ -3814,6 +3814,14 @@ export default interface Resources {
         "launchDetailsDescription": "Detailed team launch progress, live output and CLI logs."
       }
     },
+    "artifact": {
+      "attach": "Attach file",
+      "failed": "Could not update the task artifact.",
+      "hint": "Enter a file path relative to the team's configured project. The file stays in the project, including large files; completion checks its size and SHA-256.",
+      "missing": "No required artifact attached yet.",
+      "path": "Project-relative file path",
+      "require": "Require a task artifact"
+    },
     "claudeLogs": {
       "clearSearch": "Clear search",
       "emptyRawLogs": "{{count}}; none are assistant/tool output yet.",

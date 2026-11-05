@@ -201,6 +201,7 @@ import { TeamTaskAttachmentStore } from '../services/team/TeamTaskAttachmentStor
 import { TeamWorktreeGitService } from '../services/team/TeamWorktreeGitService';
 
 import { waitForOpenCodeRuntimeRelayForUi } from './teams/openCodeRuntimeDeliveryRelayUi';
+import { validateTaskArtifactFields } from './teams/taskArtifactFields';
 import { teamMessageNotificationScanner } from './teams/teamMessageNotificationScanner';
 import { createMessagesPageHandler } from './teams/teamMessagesPageHandler';
 import { TeamPermanentDeletionTransactionCoordinator } from './teams/TeamPermanentDeletionTransactionCoordinator';
@@ -4756,7 +4757,9 @@ async function handleUpdateTaskFields(
   if (groupChatId !== undefined && groupChatId !== null && typeof groupChatId !== 'string') {
     return { success: false, error: 'groupChatId must be a UUID string or null' };
   }
-  const validFields: TaskFieldUpdates = {};
+  const artifactFields = validateTaskArtifactFields(fields as Record<string, unknown>);
+  if (!artifactFields.valid) return { success: false, error: artifactFields.error };
+  const validFields: TaskFieldUpdates = { ...artifactFields.value };
   if (typeof subject === 'string') validFields.subject = subject.trim();
   if (typeof description === 'string') validFields.description = description;
   if (groupChatId === null || typeof groupChatId === 'string')
@@ -4776,6 +4779,8 @@ async function handleUpdateTaskFields(
       if (validFields.subject) changedParts.push('title');
       if (validFields.description !== undefined) changedParts.push('description');
       if (validFields.groupChatId !== undefined) changedParts.push('group chat');
+      if (validFields.artifactRequired !== undefined || validFields.artifactProjectPath !== undefined)
+        changedParts.push('artifact requirement');
       const message =
         `Task #${tid} has been updated by the user (changed: ${changedParts.join(', ')}). ` +
         `New title: "${validFields.subject ?? '(unchanged)'}".`;

@@ -23,7 +23,12 @@ import { getTeamTaskWorkflowColumn } from '@shared/utils/teamTaskState';
 import { useTaskDetailChanges } from './useTaskDetailChanges';
 
 import type { TaskDetailCommentImage } from '../ui/TaskDetailCommentImages';
-import type { KanbanTaskState, ResolvedTeamMember, TeamTaskWithKanban } from '@shared/types';
+import type {
+  KanbanTaskState,
+  ResolvedTeamMember,
+  TaskFieldUpdates,
+  TeamTaskWithKanban,
+} from '@shared/types';
 
 const EMPTY_UNREAD_COMMENT_IDS: ReadonlySet<string> = new Set();
 
@@ -91,6 +96,7 @@ export interface TaskDetailPresentationActions {
   setExecutionPreviewOnline: (online: boolean) => void;
   setLogsRefreshing: (refreshing: boolean) => void;
   setLogsSectionOpen: (open: boolean) => void;
+  updateTaskArtifact: (fields: TaskFieldUpdates) => Promise<void>;
 }
 
 export interface TaskDetailPresentationInput {
@@ -137,6 +143,7 @@ export function useTaskDetailPresentation(input: TaskDetailPresentationInput): {
     return () => setResourceDemand(surfaceId, resourceIdentity, 'detail', false);
   }, [resourceIdentity, resourceVisible, setResourceDemand, surfaceId]);
   const getTaskAttachmentData = useStore((state) => state.getTaskAttachmentData);
+  const updateTaskFields = useStore((state) => state.updateTaskFields);
   const setTaskNeedsClarification = useStore((state) => state.setTaskNeedsClarification);
   const handoffIntentRef = useRef(false);
   const [rootElement, setRootElement] = useState<HTMLElement | null>(null);
@@ -322,6 +329,7 @@ export function useTaskDetailPresentation(input: TaskDetailPresentationInput): {
       },
       flushCommentRead: viewport.flush,
       getTaskAttachmentData,
+      updateTaskArtifact: (fields) => updateTaskFields(teamName, currentTask.id, fields),
       handleDependencyClick,
       handleReply: (author, text) =>
         sessionController.setReply({ taskId: currentTask.id, author, text }),

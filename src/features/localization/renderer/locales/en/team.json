@@ -1,4 +1,12 @@
 {
+  "artifact": {
+    "require": "Require a task artifact",
+    "hint": "Enter a file path relative to the team's configured project. The file stays in the project, including large files; completion checks its size and SHA-256.",
+    "path": "Project-relative file path",
+    "attach": "Attach file",
+    "missing": "No required artifact attached yet.",
+    "failed": "Could not update the task artifact."
+  },
   "activity": {
     "chatVisualization": {
       "description": "Full visualization view",

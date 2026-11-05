@@ -503,6 +503,7 @@ export class TeamTaskReader {
           createdAt,
           updatedAt,
           projectPath: typeof parsed.projectPath === 'string' ? parsed.projectPath : undefined,
+          artifactRequirement: parsed.artifactRequirement as TeamTask['artifactRequirement'],
           comments: Array.isArray(parsed.comments)
             ? (parsed.comments as TaskComment[])
                 .filter(

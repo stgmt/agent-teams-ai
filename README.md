@@ -210,6 +210,7 @@ An orchestration layer for AI agent teams across Codex/Claude/OpenCode/Cursor/Gr
 - **Agents talk to each other** — they communicate, create and manage their own tasks, review, leave comments
 - **Cross-team communication** — agents can fully communicate across different teams; you can configure or prompt them to collaborate and message each other between teams
 - **Built-in review workflow** — easily see how agents review each other's tasks to make sure everything went exactly as planned
+- **Verifiable task artifacts** — optionally require a project file and check its size and SHA-256 when completing or reviewing a task ([details](docs/team-management/task-artifacts.md))
 - **Token analytics and budgets** — see input, output, cache, and reasoning usage across teams, agents, tasks, projects, models, runtimes, sessions, commands, and runs. Spot expensive work, track trends and forecasts, set monthly token or estimated-cost budgets, and get alerts at 80% and 100%
 - **Organizations and global overview** — group teams into departments, squads, or any nested structure. Track every organization on one live map with team and agent status, task progress, dependencies, delegation, and cross-team communication
 - **Stay in control** — send a direct message to any agent (DM or group chat), drop a comment on a task, or pick a quick action right on the kanban card whenever you want to clarify something or add new work
