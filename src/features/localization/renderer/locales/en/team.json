@@ -5,6 +5,8 @@
     "reopen": "Reopen the completed task before changing its artifact.",
     "name": "Required filename",
     "setName": "Set name",
+    "anyName": "No filename is set: any filename is accepted. The check does not assess content quality.",
+    "download": "Download artifact",
     "attach": "Attach file",
     "missing": "No required artifact attached yet.",
     "tooLarge": "The selected file exceeds 20 MiB.",

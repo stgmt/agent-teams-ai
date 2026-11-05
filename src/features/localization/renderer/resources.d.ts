@@ -3815,7 +3815,9 @@ export default interface Resources {
       }
     },
     "artifact": {
+      "anyName": "No filename is set: any filename is accepted. The check does not assess content quality.",
       "attach": "Attach file",
+      "download": "Download artifact",
       "failed": "Could not update the task artifact.",
       "hint": "Choose a file up to 20 MiB. A copy is stored with the task. For a larger video, you can attach a small manifest with its location and expected hash; only the manifest is checked.",
       "missing": "No required artifact attached yet.",

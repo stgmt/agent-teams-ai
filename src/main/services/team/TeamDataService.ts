@@ -2475,6 +2475,10 @@ export class TeamDataService {
     this.invalidateGlobalTaskProjectionCache();
   }
 
+  async readTaskArtifactData(teamName: string, taskId: string, attachmentId: string): Promise<string | null> {
+    return this.getTaskBoard(teamName).readTaskArtifactData(taskId, attachmentId);
+  }
+
   async updateTaskFields(
     teamName: string,
     taskId: string,

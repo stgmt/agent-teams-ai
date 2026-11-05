@@ -45,6 +45,16 @@ describe('required task artifacts', () => {
     expect(agent.completeTask(task.id, 'worker').status).toBe('completed');
   });
 
+  it('downloads an empty required artifact as an empty base64 string', () => {
+    desktop.updateTaskFields(task.id, {
+      artifactRequired: true,
+      artifactFile: file('empty.txt', ''),
+    });
+    const proof = desktop.verifyTaskArtifact(task.id);
+    expect(desktop.readTaskArtifactData(task.id, proof.attachmentId)).toBe('');
+    expect(desktop.readTaskArtifactData('missing-task', proof.attachmentId)).toBeNull();
+  });
+
   it.each(['completeTask', 'setTaskStatus'])('requires current stored bytes for %s', (method) => {
     desktop.updateTaskFields(task.id, { artifactRequired: true });
     const complete = () =>
@@ -58,8 +68,13 @@ describe('required task artifacts', () => {
       size: 5,
       sha256: crypto.createHash('sha256').update('first').digest('hex'),
     });
+    expect(desktop.readTaskArtifactData(task.id, proof.attachmentId)).toBe(
+      Buffer.from('first').toString('base64')
+    );
+    expect(desktop.readTaskArtifactData(task.id, 'other-id')).toBeNull();
     const target = stored();
     fs.writeFileSync(target, 'other');
+    expect(() => desktop.readTaskArtifactData(task.id, proof.attachmentId)).toThrow(/has changed/);
     expect(complete).toThrow(/has changed/);
     expect(desktop.getTask(task.id).status).toBe('pending');
     fs.unlinkSync(target);
@@ -246,32 +261,43 @@ describe('required task artifacts', () => {
       })
     ).toThrow(/20 MiB/);
     expect(desktop.getTask(task.id).artifactRequirement.proof).toBeUndefined();
+    expect(fs.existsSync(path.join(dir, 'teams', 'fixture', 'task-attachments', task.id))).toBe(
+      false
+    );
     const max = Buffer.alloc(20 * 1024 * 1024).toString('base64');
     desktop.updateTaskFields(task.id, { artifactFile: { filename: 'result', base64Data: max } });
     expect(desktop.verifyTaskArtifact(task.id).size).toBe(20 * 1024 * 1024);
   });
 
-  it('rejects same-sized stored-file changes during verification', () => {
-    desktop.updateTaskFields(task.id, {
-      artifactRequired: true,
-      artifactFile: file('result.bin', Buffer.alloc(2 * 1024 * 1024, 1)),
-    });
-    const target = stored(),
-      originalRead = fs.readSync;
-    let changed = false;
-    const spy = vi.spyOn(fs, 'readSync').mockImplementation((fd, ...args) => {
-      const bytes = originalRead(fd, ...args);
-      if (!changed && fs.fstatSync(fd).size === 2 * 1024 * 1024) {
-        fs.writeFileSync(target, Buffer.alloc(2 * 1024 * 1024, 2));
-        changed = true;
+  it.each(['verify', 'download'])(
+    'rejects same-sized stored-file changes during %s',
+    (operation) => {
+      desktop.updateTaskFields(task.id, {
+        artifactRequired: true,
+        artifactFile: file('result.bin', Buffer.alloc(2 * 1024 * 1024, 1)),
+      });
+      const proof = desktop.verifyTaskArtifact(task.id);
+      const target = stored(),
+        originalRead = fs.readSync;
+      let changed = false;
+      const spy = vi.spyOn(fs, 'readSync').mockImplementation((fd, ...args) => {
+        const bytes = originalRead(fd, ...args);
+        if (!changed && fs.fstatSync(fd).size === 2 * 1024 * 1024) {
+          fs.writeFileSync(target, Buffer.alloc(2 * 1024 * 1024, 2));
+          changed = true;
+        }
+        return bytes;
+      });
+      try {
+        const read = () =>
+          operation === 'verify'
+            ? desktop.verifyTaskArtifact(task.id)
+            : desktop.readTaskArtifactData(task.id, proof.attachmentId);
+        expect(read).toThrow(/changed while it was being read/);
+        expect(changed).toBe(true);
+      } finally {
+        spy.mockRestore();
       }
-      return bytes;
-    });
-    try {
-      expect(() => desktop.verifyTaskArtifact(task.id)).toThrow(/changed while it was being read/);
-      expect(changed).toBe(true);
-    } finally {
-      spy.mockRestore();
     }
-  });
+  );
 });

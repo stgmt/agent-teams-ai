@@ -23,7 +23,12 @@ describe('task artifact settings', () => {
     const host = document.createElement('div');
     document.body.appendChild(host);
     const root = createRoot(host);
-    const props = { onUpdate: updateTaskFields, canMutate: () => true, completed: false };
+    const props = {
+      onUpdate: updateTaskFields,
+      onDownload: vi.fn(async () => null),
+      canMutate: () => true,
+      completed: false,
+    };
     await act(async () => {
       root.render(<TaskArtifactSettings {...props} />);
     });
@@ -34,6 +39,7 @@ describe('task artifact settings', () => {
     await act(async () => {
       root.render(<TaskArtifactSettings {...props} requirement={{ required: true }} />);
     });
+    expect(host.textContent).toContain('artifact.anyName');
     const input = host.querySelector('input') as HTMLInputElement;
     await act(async () => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(
@@ -85,6 +91,7 @@ describe('task artifact settings', () => {
       root.render(
         <TaskArtifactSettings
           onUpdate={updateTaskFields}
+          onDownload={async () => null}
           canMutate={() => false}
           completed={false}
         />
@@ -103,7 +110,12 @@ describe('task artifact settings', () => {
     const root = createRoot(host);
     await act(async () => {
       root.render(
-        <TaskArtifactSettings onUpdate={updateTaskFields} canMutate={() => true} completed />
+        <TaskArtifactSettings
+          onUpdate={updateTaskFields}
+          onDownload={async () => null}
+          canMutate={() => true}
+          completed
+        />
       );
     });
     const toggle = host.querySelector('[role="switch"]') as HTMLButtonElement;
@@ -113,6 +125,84 @@ describe('task artifact settings', () => {
       toggle.click();
     });
     expect(updateTaskFields).not.toHaveBeenCalled();
+    await act(async () => root.unmount());
+  });
+
+  it('downloads the verified attachment bytes under the expected filename', async () => {
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ blob: async () => new Blob(['abc']) }))
+    );
+    vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:test');
+    vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined);
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (
+      this: HTMLAnchorElement
+    ) {
+      expect(this.download).toBe('result.txt');
+      expect(this.href).toBe('blob:test');
+    });
+    const onDownload = vi.fn(async () => 'YWJj');
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    await act(async () => {
+      root.render(
+        <TaskArtifactSettings
+          onUpdate={updateTaskFields}
+          onDownload={onDownload}
+          canMutate={() => true}
+          completed
+          requirement={{
+            required: true,
+            expectedFilename: 'result.txt',
+            proof: { attachmentId: 'artifact-1', sha256: 'a'.repeat(64), size: 3 },
+          }}
+        />
+      );
+    });
+    const button = Array.from(host.querySelectorAll('button')).find(
+      (item) => item.textContent === 'artifact.download'
+    )!;
+    await act(async () => {
+      button.click();
+    });
+    expect(onDownload).toHaveBeenCalledWith('artifact-1');
+    expect(click).toHaveBeenCalledTimes(1);
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:test');
+    await act(async () => root.unmount());
+  });
+
+  it('shows a verification failure without retrying the download', async () => {
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+    const onDownload = vi.fn(async () => {
+      throw new Error('Artifact has changed');
+    });
+    const host = document.createElement('div');
+    const root = createRoot(host);
+    await act(async () => {
+      root.render(
+        <TaskArtifactSettings
+          onUpdate={updateTaskFields}
+          onDownload={onDownload}
+          canMutate={() => true}
+          completed
+          requirement={{
+            required: true,
+            expectedFilename: 'result.txt',
+            proof: { attachmentId: 'artifact-1', sha256: 'a'.repeat(64), size: 3 },
+          }}
+        />
+      );
+    });
+    const button = Array.from(host.querySelectorAll('button')).find(
+      (item) => item.textContent === 'artifact.download'
+    )!;
+    await act(async () => {
+      button.click();
+    });
+    expect(onDownload).toHaveBeenCalledTimes(1);
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain('Artifact has changed');
     await act(async () => root.unmount());
   });
 });

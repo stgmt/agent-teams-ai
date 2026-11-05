@@ -14,6 +14,7 @@ interface Props {
   completed: boolean;
   canMutate: () => boolean;
   onUpdate: (fields: TaskFieldUpdates) => Promise<void>;
+  onDownload: (attachmentId: string) => Promise<string | null>;
 }
 
 function readBase64(file: File): Promise<string> {
@@ -36,6 +37,7 @@ export const TaskArtifactSettings = ({
   completed,
   canMutate,
   onUpdate,
+  onDownload,
 }: Readonly<Props>): React.JSX.Element => {
   const { t } = useAppTranslation('team');
   const [filename, setFilename] = useState(requirement?.expectedFilename ?? '');
@@ -57,10 +59,14 @@ export const TaskArtifactSettings = ({
   };
 
   const attach = async (file?: File): Promise<void> => {
-    if (!file || !canMutate()) return;
+    if (!file || !canMutate()) {
+      if (fileInput.current) fileInput.current.value = '';
+      return;
+    }
     setError(null);
     if (file.size > MAX_FILE_SIZE) {
       setError(t('artifact.tooLarge'));
+      if (fileInput.current) fileInput.current.value = '';
       return;
     }
     setPending(true);
@@ -72,6 +78,34 @@ export const TaskArtifactSettings = ({
     } finally {
       setPending(false);
       if (fileInput.current) fileInput.current.value = '';
+    }
+  };
+
+  const download = async (): Promise<void> => {
+    if (!requirement?.proof) return;
+    setError(null);
+    setPending(true);
+    try {
+      const data = await onDownload(requirement.proof.attachmentId);
+      if (data === null) throw new Error(t('artifact.missing'));
+      const blob = await fetch(`data:application/octet-stream;base64,${data}`).then((response) =>
+        response.blob()
+      );
+      const url = URL.createObjectURL(blob);
+      try {
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = requirement.expectedFilename ?? 'artifact';
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t('artifact.failed'));
+    } finally {
+      setPending(false);
     }
   };
 
@@ -91,6 +125,9 @@ export const TaskArtifactSettings = ({
       {requirement?.required ? (
         <>
           <p className="text-xs text-[var(--color-text-muted)]">{t('artifact.hint')}</p>
+          {!requirement.expectedFilename ? (
+            <p className="text-xs text-[var(--color-text-muted)]">{t('artifact.anyName')}</p>
+          ) : null}
           <div className="flex gap-2">
             <Input
               aria-label={t('artifact.name')}
@@ -123,10 +160,15 @@ export const TaskArtifactSettings = ({
             {t('artifact.attach')}
           </Button>
           {requirement.proof ? (
-            <p className="break-all text-xs text-[var(--color-text-muted)]">
-              {requirement.expectedFilename} · {requirement.proof.size} B · SHA-256{' '}
-              {requirement.proof.sha256}
-            </p>
+            <>
+              <p className="break-all text-xs text-[var(--color-text-muted)]">
+                {requirement.expectedFilename} · {requirement.proof.size} B · SHA-256{' '}
+                {requirement.proof.sha256}
+              </p>
+              <Button type="button" size="sm" disabled={pending} onClick={() => void download()}>
+                {t('artifact.download')}
+              </Button>
+            </>
           ) : (
             <p className="text-xs text-[var(--color-text-muted)]">{t('artifact.missing')}</p>
           )}

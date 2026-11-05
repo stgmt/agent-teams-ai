@@ -223,6 +223,14 @@ export const TaskDetailBody = ({
           completed={currentTask.status === 'completed'}
           canMutate={sessionController.canEditNow}
           onUpdate={actions.updateTaskArtifact}
+          onDownload={(attachmentId) =>
+            actions.getTaskAttachmentData(
+              teamName,
+              currentTask.id,
+              attachmentId,
+              'application/octet-stream'
+            )
+          }
         />
         <TaskAttachments
           teamName={teamName}

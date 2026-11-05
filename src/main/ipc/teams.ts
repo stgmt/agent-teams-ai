@@ -5209,7 +5209,8 @@ async function handleGetTaskAttachment(
     return { success: false, error: 'Invalid attachmentId' };
   }
 
-  return wrapTeamHandler('getTaskAttachment', () =>
+  return wrapTeamHandler('getTaskAttachment', async () =>
+    (await getTeamDataService().readTaskArtifactData(vTeam.value!, vTask.value!, safeAttId)) ??
     taskAttachmentStore.getAttachment(vTeam.value!, vTask.value!, safeAttId, mimeType.trim())
   );
 }

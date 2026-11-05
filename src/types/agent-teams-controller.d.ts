@@ -105,6 +105,7 @@ declare module 'agent-teams-controller' {
   export interface ControllerTaskBoardTaskApi
     extends ControllerTaskReadApi, ControllerTaskWriteApi {
     verifyTaskArtifact(taskId: string): TaskArtifactProof | null;
+    readTaskArtifactData(taskId: string, attachmentId: string): string | null;
     setTaskArtifactFile(taskId: string, file: TaskArtifactFile, actor?: string): unknown;
     reconcileTaskCreation(flags: Record<string, unknown>): unknown;
   }

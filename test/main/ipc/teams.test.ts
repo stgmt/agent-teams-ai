@@ -483,6 +483,7 @@ describe('ipc teams handlers', () => {
   };
 
   const service = {
+    readTaskArtifactData: vi.fn(() => resolved(null as string | null)),
     updateTaskFields: vi.fn(() => resolvedUndefined()),
     runConfigurationOperation: vi.fn(
       async <T>(teamName: string, operation: () => Promise<T>): Promise<T> => {
@@ -982,7 +983,7 @@ describe('ipc teams handlers', () => {
     vi.useRealTimers();
     setClaudeBasePathOverride(null);
     setAppDataBasePath(null);
-    fs.rmSync(attachmentTestRoot, { recursive: true, force: true });
+    fs.rmSync(attachmentTestRoot, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
   });
 
   it('registers all expected handlers', () => {
@@ -1026,6 +1027,31 @@ describe('ipc teams handlers', () => {
       success: false,
     });
     expect(service.updateTaskFields).not.toHaveBeenCalled();
+  });
+
+  it('returns the verified controller artifact before a colliding appData attachment', async () => {
+    const taskId = 'task-artifact';
+    const attachmentId = 'artifact-1';
+    const attachmentDir = path.join(getAppDataPath(), 'task-attachments', 'my-team', taskId);
+    fs.mkdirSync(attachmentDir, { recursive: true });
+    fs.writeFileSync(path.join(attachmentDir, `${attachmentId}--other.bin`), 'wrong bytes');
+    service.readTaskArtifactData.mockResolvedValueOnce(Buffer.from('verified bytes').toString('base64'));
+    const result = await handlers.get(TEAM_GET_TASK_ATTACHMENT)!({}, 'my-team', taskId, attachmentId, 'application/octet-stream');
+    expect(result).toEqual({ success: true, data: Buffer.from('verified bytes').toString('base64') });
+    expect(service.readTaskArtifactData).toHaveBeenCalledWith('my-team', taskId, attachmentId);
+  });
+
+  it('does not fall back to an appData collision when artifact verification fails', async () => {
+    const taskId = 'task-artifact';
+    const attachmentId = 'artifact-1';
+    const attachmentDir = path.join(getAppDataPath(), 'task-attachments', 'my-team', taskId);
+    fs.mkdirSync(attachmentDir, { recursive: true });
+    fs.writeFileSync(path.join(attachmentDir, `${attachmentId}--other.bin`), 'wrong bytes');
+    service.readTaskArtifactData.mockRejectedValueOnce(new Error('Required task artifact has changed'));
+    const result = await handlers.get(TEAM_GET_TASK_ATTACHMENT)!({}, 'my-team', taskId, attachmentId, 'application/octet-stream');
+    expect(result).toMatchObject({ success: false, error: 'Required task artifact has changed' });
+    expect(vi.mocked(console.error).mock.calls[0]?.join(' ')).toContain('Required task artifact has changed');
+    vi.mocked(console.error).mockClear();
   });
 
   // The exact inverse of the HTTP diagnostics tripwire: the IPC path owns the

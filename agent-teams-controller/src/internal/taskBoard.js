@@ -186,6 +186,7 @@ function requestChanges(context, taskId, flags) {
 
 module.exports = {
   verifyTaskArtifact: taskArtifact.verifyTaskArtifact,
+  readTaskArtifactData: taskArtifact.readTaskArtifactData,
   setTaskArtifactFile: taskArtifact.setTaskArtifactFile,
   addReviewer,
   addTaskAttachmentMeta,
