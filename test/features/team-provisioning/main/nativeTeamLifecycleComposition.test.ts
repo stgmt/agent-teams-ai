@@ -7,9 +7,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { BoundControlContext } from '../../../../src/features/external-agent-connection/main/BoundControlContext';
 import { createNativeTeamLifecycle } from '../../../../src/features/team-provisioning/main/composition/createNativeTeamLifecycle';
+import { TeamConfigReader } from '../../../../src/main/services/team/TeamConfigReader';
+import { setClaudeBasePathOverride } from '../../../../src/main/utils/pathDecoder';
 
 const directories: string[] = [];
 afterEach(async () => {
+  setClaudeBasePathOverride(null);
   await Promise.all(
     directories
       .splice(0)
@@ -21,6 +24,7 @@ describe('native lifecycle composition admission', () => {
   it('materializes the full configured roster before provider preparation and releases its claim on stop', async () => {
     const root = await mkdtemp(join(tmpdir(), 'TEST-native-config-composition-'));
     directories.push(root);
+    setClaudeBasePathOverride(root);
     const teamsRoot = join(root, 'teams');
     const teamName = 'test-configured-team';
     await mkdir(join(teamsRoot, teamName), { recursive: true });
@@ -50,6 +54,13 @@ describe('native lifecycle composition admission', () => {
           prepareTrust(launch.providerId, launch.workingDirectory, signal),
         async executable() {
           const saved = JSON.parse(await readFile(configPath, 'utf8'));
+          const freshness = JSON.parse(
+            await readFile(join(teamsRoot, teamName, 'launch-freshness.json'), 'utf8')
+          );
+          expect(freshness).toMatchObject({
+            kind: 'launch',
+            runId: lifecycle.snapshot(teamName).identity.runId,
+          });
           expect(saved.members.map((row: { name: string }) => row.name)).toEqual([
             'team-lead',
             'builder',
@@ -114,6 +125,14 @@ describe('native lifecycle composition admission', () => {
         )
       )
       .toBe(true);
+    expect(lifecycle.snapshot(teamName).state).toBe('failed');
+    const listed = (await new TeamConfigReader().listTeams()).find(
+      (team) => team.teamName === teamName
+    );
+    expect(listed?.teamLaunchState).not.toBe('partial_pending');
+    await expect(
+      readFile(join(teamsRoot, teamName, 'launch-state.json'), 'utf8')
+    ).rejects.toMatchObject({ code: 'ENOENT' });
     expect(await lifecycle.commands.launch(request)).toEqual(receipt);
     lifecycle.liveLeadMessages.push(
       run,

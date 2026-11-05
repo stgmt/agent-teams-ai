@@ -913,7 +913,7 @@ export const TeamListView = memo(function TeamListView(): React.JSX.Element {
           if (list) setAliveTeams(list);
         },
         onOutcome: (outcome, error) => {
-          const success = outcome === 'stopped' || outcome === 'stopped_after_transport_error';
+          const success = outcome === 'stopped';
           recordTeamStop({
             source: 'list',
             success,

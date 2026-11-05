@@ -1,4 +1,12 @@
 declare module 'agent-teams-controller' {
+  export const boardLocks: {
+    withTeamBoardLock<T>(paths: { teamDir: string; claudeDir?: string }, fn: () => T): T;
+    tryWithTeamBoardLock<T>(
+      paths: { teamDir: string; claudeDir?: string },
+      fn: () => T,
+      options?: { createParent?: boolean }
+    ): T | null;
+  };
   export interface TaskFieldUpdates {
     subject?: string;
     description?: string;
@@ -8,8 +16,15 @@ declare module 'agent-teams-controller' {
     artifactFile?: TaskArtifactFile;
   }
 
-  export interface TaskArtifactProof { attachmentId: string; sha256: string; size: number }
-  export interface TaskArtifactFile { filename: string; base64Data: string }
+  export interface TaskArtifactProof {
+    attachmentId: string;
+    sha256: string;
+    size: number;
+  }
+  export interface TaskArtifactFile {
+    filename: string;
+    base64Data: string;
+  }
 
   export interface ControllerContextOptions {
     teamName: string;
@@ -162,6 +177,16 @@ declare module 'agent-teams-controller' {
     extends ControllerKanbanReadApi, ControllerKanbanWriteApi {}
 
   export interface ControllerKanbanApi extends ControllerTaskBoardKanbanApi {
+    assertKanbanStateConsistent(state: unknown): void;
+    readKanbanStateAlreadyLocked(): unknown;
+    inspectPendingTransition(taskId: string): unknown;
+    resolvePendingTransition(
+      taskId: string,
+      transitionId: string,
+      snapshotHash: string,
+      mode: string,
+      contextHash: string
+    ): void;
     /** @deprecated Internal board lifecycle write. Use controller.taskBoard.setKanbanColumn. */
     setKanbanColumn(taskId: string, column: string, options?: Record<string, unknown>): unknown;
     /** @deprecated Internal board lifecycle write. Use controller.taskBoard.clearKanban. */

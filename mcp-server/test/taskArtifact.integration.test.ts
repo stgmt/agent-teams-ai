@@ -11,6 +11,9 @@ import { registerTaskTools } from '../src/tools/taskTools';
 const { createController } = createRequire(import.meta.url)(
   '../../agent-teams-controller/src/index.js'
 );
+const taskStore = createRequire(import.meta.url)(
+  '../../agent-teams-controller/src/internal/taskStore.js'
+);
 
 type Tool = {
   name: string;
@@ -22,7 +25,16 @@ describe('required artifacts through MCP tools', () => {
   let dir = '';
   afterEach(() => {
     vi.restoreAllMocks();
-    if (dir) fs.rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
+    if (dir) {
+      const target = path.resolve(dir);
+      if (
+        !target.startsWith(`${path.resolve(os.tmpdir())}${path.sep}`) ||
+        !path.basename(target).startsWith('mcp-artifact-test-')
+      ) {
+        throw new Error('Refusing to remove a non-fixture path');
+      }
+      fs.rmSync(target, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
+    }
     dir = '';
   });
 
@@ -94,5 +106,45 @@ describe('required artifacts through MCP tools', () => {
     await complete.execute(legacyArgs);
     await expect(attach.execute({ ...legacyArgs, ...payload })).rejects.toThrow(/does not require/);
     expect(desktop.getTask(legacy.id).artifactRequirement).toBeUndefined();
+  });
+
+  it('reports an uncertain transition through task_get and task_list tools', async () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-artifact-test-'));
+    const teamDir = path.join(dir, 'teams', 'fixture');
+    fs.mkdirSync(teamDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(teamDir, 'config.json'),
+      JSON.stringify({
+        name: 'fixture',
+        members: [
+          { name: 'lead', role: 'team-lead' },
+          { name: 'worker', role: 'developer' },
+        ],
+      })
+    );
+    const board = createController({ teamName: 'fixture', claudeDir: dir }).taskBoard;
+    const task = board.createTask({ subject: 'fixture', owner: 'worker' });
+    board.completeTask(task.id, 'worker');
+    const original = taskStore.updateTask;
+    const spy = vi.spyOn(taskStore, 'updateTask').mockImplementationOnce((...args: unknown[]) => {
+      original(...args);
+      throw Object.assign(new Error('post-commit EIO'), { code: 'EIO' });
+    });
+    try {
+      expect(() => board.requestReview(task.id, { from: 'worker' })).toThrow(/may have completed/);
+    } finally {
+      spy.mockRestore();
+    }
+    vi.spyOn(controllerModule, 'getController').mockImplementation((teamName, claudeDir) =>
+      createController({ teamName, claudeDir, allowUserMessageSender: false })
+    );
+    const tools = new Map<string, Tool>();
+    registerTaskTools({ addTool: (tool: Tool) => tools.set(tool.name, tool) } as never);
+    await expect(
+      tools.get('task_get')!.execute({ teamName: 'fixture', claudeDir: dir, taskId: task.id })
+    ).rejects.toMatchObject({ code: 'KANBAN_TRANSITION_UNCERTAIN' });
+    await expect(
+      tools.get('task_list')!.execute({ teamName: 'fixture', claudeDir: dir })
+    ).rejects.toMatchObject({ code: 'KANBAN_TRANSITION_UNCERTAIN' });
   });
 });

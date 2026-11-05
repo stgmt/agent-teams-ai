@@ -1,10 +1,17 @@
-import { useCallback, useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { useStore } from '@renderer/store';
 import {
   selectResolvedMembersForTeamName,
   selectTeamDataForName,
 } from '@renderer/store/slices/teamSlice';
+import {
+  acquireTaskAction,
+  isTaskActionInFlight,
+  publishTaskActionError,
+  subscribeTaskActionEvents,
+} from '@renderer/store/team/taskActionInFlight';
+import { mapReviewError } from '@renderer/store/team/teamErrorPolicies';
 import { buildMemberColorMap } from '@renderer/utils/memberHelpers';
 import { useShallow } from 'zustand/react/shallow';
 
@@ -15,6 +22,8 @@ export interface OrganizationInspectorTaskBindings {
   contextId: string;
   tasks: TeamTaskWithKanban[];
   taskMap: Map<string, TeamTask>;
+  actionErrors: { contextId: string; teamName: string; taskId: string; message: string }[];
+  dismissTaskActionError: (taskId: string) => void;
   memberColorMap: Map<string, string>;
   kanbanTaskStateById:
     | NonNullable<ReturnType<typeof selectTeamDataForName>>['kanbanState']['tasks']
@@ -30,7 +39,15 @@ export interface OrganizationInspectorTaskBindings {
   onMoveBackToDone: (taskId: string) => void;
 }
 
+function isTaskContextCurrent(contextId: string): boolean {
+  const state = useStore.getState();
+  return !state.isContextSwitching && state.activeContextId === contextId;
+}
+
 export function useOrganizationInspectorTasks(teamName: string): OrganizationInspectorTaskBindings {
+  const [actionErrors, setActionErrors] = useState<
+    { contextId: string; teamName: string; taskId: string; message: string }[]
+  >([]);
   const {
     contextId,
     globalTasks,
@@ -53,6 +70,40 @@ export function useOrganizationInspectorTasks(teamName: string): OrganizationIns
       updateKanban: state.updateKanban,
       updateTaskStatus: state.updateTaskStatus,
     }))
+  );
+
+  useEffect(() => {
+    setActionErrors([]);
+    return subscribeTaskActionEvents((event) => {
+      if (event.contextId !== contextId || event.teamName !== teamName) return;
+      setActionErrors((errors) => {
+        const remaining = errors.filter((error) => error.taskId !== event.taskId);
+        return event.type === 'failed' ? [...remaining, event] : remaining;
+      });
+    });
+  }, [contextId, teamName]);
+
+  const runTaskAction = useCallback(
+    (taskId: string, action: () => Promise<void>): void => {
+      if (!isTaskContextCurrent(contextId)) return;
+      const identity = { contextId, teamName, taskId };
+      const release = acquireTaskAction(identity);
+      if (!release) return;
+      if (!isTaskContextCurrent(contextId)) {
+        release();
+        return;
+      }
+      const handleError = (error: unknown): void => {
+        release();
+        publishTaskActionError({ ...identity, message: mapReviewError(error) });
+      };
+      try {
+        void Promise.resolve(action()).then(release, handleError);
+      } catch (error) {
+        handleError(error);
+      }
+    },
+    [contextId, teamName]
   );
 
   const tasks = useMemo<TeamTaskWithKanban[]>(() => {
@@ -93,67 +144,80 @@ export function useOrganizationInspectorTasks(teamName: string): OrganizationIns
     [openTaskById]
   );
 
+  const onRequestChanges = useCallback(
+    (taskId: string): void => {
+      if (!isTaskContextCurrent(contextId) || isTaskActionInFlight({ contextId, teamName, taskId }))
+        return;
+      openTaskById(taskId);
+    },
+    [contextId, openTaskById, teamName]
+  );
+
   const onStartTask = useCallback(
     (taskId: string): void => {
       if (!teamName) return;
-      void startTaskByUser(teamName, taskId).catch(() => undefined);
+      runTaskAction(taskId, async () => {
+        await startTaskByUser(teamName, taskId);
+      });
     },
-    [startTaskByUser, teamName]
+    [runTaskAction, startTaskByUser, teamName]
   );
 
   const onCompleteTask = useCallback(
     (taskId: string): void => {
       if (!teamName) return;
-      void updateTaskStatus(teamName, taskId, 'completed').catch(() => undefined);
+      runTaskAction(taskId, () => updateTaskStatus(teamName, taskId, 'completed'));
     },
-    [teamName, updateTaskStatus]
+    [runTaskAction, teamName, updateTaskStatus]
   );
 
   const onCancelTask = useCallback(
     (taskId: string): void => {
       if (!teamName) return;
-      void updateTaskStatus(teamName, taskId, 'pending').catch(() => undefined);
+      runTaskAction(taskId, () => updateTaskStatus(teamName, taskId, 'pending'));
     },
-    [teamName, updateTaskStatus]
+    [runTaskAction, teamName, updateTaskStatus]
   );
 
   const onApproveTask = useCallback(
     (taskId: string): void => {
       if (!teamName) return;
-      void updateKanban(teamName, taskId, { op: 'set_column', column: 'approved' }).catch(
-        () => undefined
+      runTaskAction(taskId, () =>
+        updateKanban(teamName, taskId, { op: 'set_column', column: 'approved' })
       );
     },
-    [teamName, updateKanban]
+    [runTaskAction, teamName, updateKanban]
   );
 
   const onRequestReview = useCallback(
     (taskId: string): void => {
       if (!teamName) return;
-      void requestReview(teamName, taskId).catch(() => undefined);
+      runTaskAction(taskId, () => requestReview(teamName, taskId));
     },
-    [requestReview, teamName]
+    [requestReview, runTaskAction, teamName]
   );
 
   const onMoveBackToDone = useCallback(
     (taskId: string): void => {
       if (!teamName) return;
-      void (async () => {
-        try {
-          await updateKanban(teamName, taskId, { op: 'remove' });
-          await updateTaskStatus(teamName, taskId, 'completed');
-        } catch {
-          // Store state surfaces the error.
-        }
-      })();
+      runTaskAction(taskId, async () => {
+        await updateKanban(teamName, taskId, { op: 'remove' });
+        if (!isTaskContextCurrent(contextId)) return;
+        await updateTaskStatus(teamName, taskId, 'completed');
+      });
     },
-    [teamName, updateKanban, updateTaskStatus]
+    [contextId, runTaskAction, teamName, updateKanban, updateTaskStatus]
   );
 
   return {
     contextId,
     tasks,
     taskMap,
+    actionErrors: actionErrors.filter(
+      (error) => error.contextId === contextId && error.teamName === teamName
+    ),
+    dismissTaskActionError: (taskId) =>
+      setActionErrors((errors) => errors.filter((error) => error.taskId !== taskId)),
     memberColorMap,
     kanbanTaskStateById: teamData?.kanbanState.tasks,
     openTaskDetail,
@@ -163,7 +227,7 @@ export function useOrganizationInspectorTasks(teamName: string): OrganizationIns
     onCancelTask,
     onApproveTask,
     onRequestReview,
-    onRequestChanges: openTaskById,
+    onRequestChanges,
     onMoveBackToDone,
   };
 }

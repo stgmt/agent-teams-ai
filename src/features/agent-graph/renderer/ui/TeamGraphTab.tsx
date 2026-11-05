@@ -232,7 +232,7 @@ export const TeamGraphTab = ({
         buttonTestId="open-terminal-floating-button-graph"
         enabled={isActive && !fullscreen}
       />
-      {interactions.dialogs}
+      {!fullscreen ? interactions.dialogs : null}
       {fullscreen && (
         <Suspense fallback={null}>
           <TeamGraphOverlay
@@ -241,6 +241,7 @@ export const TeamGraphTab = ({
             sidebarVisible={effectiveSidebarVisible}
             onToggleSidebar={hasSidebarSource ? toggleSidebarVisible : undefined}
             messagesPanelEnabled={isActive && isPaneFocused}
+            interactions={interactions}
           />
         </Suspense>
       )}

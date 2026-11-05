@@ -66,11 +66,20 @@ export function useTeamStopControl(): TeamStopControl {
           refresh: options.refresh,
           setBusy: () => undefined,
           reportFailure: (kind) => {
-            const unknown = kind === 'status_unknown';
+            const translationKey =
+              kind === 'activity_and_cleanup_unconfirmed'
+                ? 'detail.stopActivityCleanupUnknown'
+                : kind === 'stopped_activity_review_pending'
+                  ? 'detail.stopActivityPending'
+                  : kind === 'stopped_activity_unconfirmed'
+                    ? 'detail.stopActivityUnknown'
+                    : kind === 'status_unknown'
+                      ? 'detail.stopUnknown'
+                      : 'detail.stopFailed';
             void confirm({
               mode: 'info',
-              title: t(unknown ? 'detail.stopUnknown.title' : 'detail.stopFailed.title'),
-              message: t(unknown ? 'detail.stopUnknown.message' : 'detail.stopFailed.message'),
+              title: t(`${translationKey}.title`),
+              message: t(`${translationKey}.message`),
               confirmLabel: tCommon('actions.close'),
             });
           },

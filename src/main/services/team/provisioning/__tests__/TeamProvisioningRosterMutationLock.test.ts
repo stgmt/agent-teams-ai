@@ -172,6 +172,25 @@ describe('team provisioning roster mutation lock', () => {
     expect(stopFlow).toHaveBeenCalledOnce();
   });
 
+  it.each(['successor-run', null] as const)(
+    'does not revoke another run when a stale or unknown Stop target is %s',
+    async (currentRunId) => {
+      const service = new TeamProvisioningService();
+      const stopFlow = vi.fn(async () => undefined);
+      Object.assign(service as unknown as { stopFlowBoundaryValue: unknown }, {
+        stopFlowBoundaryValue: { stopTeam: stopFlow },
+      });
+      vi.spyOn(service, 'getStopTargetRunId').mockReturnValue(currentRunId);
+      const internals = service as unknown as { getStopTeamGeneration(teamName: string): number };
+
+      await expect(service.stopTeam('lock-team', currentRunId ? 'old-run' : null)).rejects.toThrow(
+        'Stop target was superseded'
+      );
+      expect(internals.getStopTeamGeneration('lock-team')).toBe(0);
+      expect(stopFlow).not.toHaveBeenCalled();
+    }
+  );
+
   it('releases roster ownership after rollback failure so stop and restart can recover', async () => {
     const service = new TeamProvisioningService();
     const stopFlow = vi.fn(async () => undefined);

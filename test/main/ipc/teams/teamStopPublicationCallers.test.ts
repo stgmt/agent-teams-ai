@@ -1,5 +1,6 @@
 import { writeFile } from 'node:fs/promises';
-import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
+import * as os from 'node:os';
 import * as path from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -65,13 +66,14 @@ describe('Stop publication admission through real IPC/HTTP wrappers', () => {
   };
   const runtime = {
     stopTeam: vi.fn(async () => {}),
+    getStopTargetRunId: vi.fn((): string | null => 'original'),
     getAliveTeams: () => [],
     isTeamAlive: () => true,
     getRuntimeState: async () => ({ state: 'stopped' }),
   };
   beforeEach(async () => {
-    temp = await mkdtemp('/tmp/stop-publication-callers-');
-    setClaudeBasePathOverride(temp);
+    temp = await mkdtemp(path.join(os.tmpdir(), 'stop-publication-callers-'));
+    setClaudeBasePathOverride(path.join(temp, 'claude'));
     await mkdir(path.join(getTeamsBasePath(), team), { recursive: true });
     await store.beginLaunch(team, 'original', ['alice'], () => true);
     initializeTeamHandlers(
@@ -82,17 +84,38 @@ describe('Stop publication admission through real IPC/HTTP wrappers', () => {
     tails.release.mockReset();
     tails.release.mockResolvedValue({ diagnostics: [] });
     runtime.stopTeam.mockClear();
+    runtime.getStopTargetRunId.mockReset();
+    runtime.getStopTargetRunId.mockReturnValue('original');
   });
   afterEach(async () => {
     removeTeamHandlers(ipc as never);
     handlers.clear();
     setClaudeBasePathOverride(null);
-    await rm(temp, { recursive: true, force: true });
+    const parent = await realpath(os.tmpdir());
+    const target = await realpath(temp);
+    const relative = path.relative(parent, target);
+    if (!relative.startsWith('stop-publication-callers-') || relative.includes(path.sep)) {
+      throw new Error('Refusing to remove a test fixture outside its scratch parent');
+    }
+    await rm(target, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
   });
-  async function invoke(surface: string, force: boolean) {
+  async function invoke(surface: string, force: boolean, incomplete = false) {
     if (surface === 'ipc') {
       const result = await handlers.get(force ? TEAM_FORCE_STOP : TEAM_STOP)!({}, team);
-      expect(result).toMatchObject({ success: true });
+      if (force) {
+        expect(result).toMatchObject({
+          success: true,
+          data: { cleanupOutcome: incomplete ? 'incomplete' : 'completed' },
+        });
+      } else if (incomplete) {
+        expect(result).toMatchObject({
+          success: false,
+          error: expect.stringContaining('team_stop_unconfirmed:stopped'),
+        });
+        vi.mocked(console.error).mockClear();
+      } else {
+        expect(result).toMatchObject({ success: true });
+      }
       return;
     }
     const app = Fastify();
@@ -102,11 +125,48 @@ describe('Stop publication admission through real IPC/HTTP wrappers', () => {
         method: 'POST',
         url: `/api/teams/${team}/${force ? 'force-stop' : 'stop'}`,
       });
-      expect(response.statusCode).toBe(200);
+      expect(response.statusCode).toBe(!force && incomplete ? 409 : 200);
+      if (force)
+        expect(response.json()).toMatchObject({
+          cleanupOutcome: incomplete ? 'incomplete' : 'completed',
+        });
+      else if (incomplete) expect(response.json().error).toContain('team_stop_unconfirmed:stopped');
     } finally {
       await app.close();
     }
   }
+  it.each([
+    ['ipc', false],
+    ['ipc', true],
+    ['http', false],
+    ['http', true],
+  ] as const)('%s force=%s: stops and unpublishes its own captured run', async (surface, force) => {
+    await invoke(surface, force);
+    expect(runtime.stopTeam).toHaveBeenCalledExactlyOnceWith(team, 'original');
+    expect(await readTeamLaunchFreshness(team)).toMatchObject({
+      kind: 'stop',
+      stoppedRunId: 'original',
+    });
+  });
+
+  it.each([
+    ['ipc', null],
+    ['ipc', 'local-other'],
+    ['http', null],
+    ['http', 'local-other'],
+  ] as const)('%s retains another process run when local target is %s', async (surface, target) => {
+    runtime.getStopTargetRunId.mockReturnValue(target);
+    await invoke(surface, false, true);
+    expect(runtime.stopTeam).toHaveBeenCalledExactlyOnceWith(team, target);
+    expect((await store.read(team))?.publicationRunId).toBe('original');
+    expect(await readTeamLaunchFreshness(team)).toMatchObject({
+      kind: 'launch',
+      runId: 'original',
+    });
+    expect(await store.isStopped(team)).toBe(false);
+    vi.mocked(console.warn).mockClear();
+  });
+
   it.each([
     ['ipc', false],
     ['ipc', true],
@@ -122,10 +182,12 @@ describe('Stop publication admission through real IPC/HTTP wrappers', () => {
         await release.promise;
         return { diagnostics: [] };
       });
-      const stopping = invoke(surface, force);
+      const stopping = invoke(surface, force, true);
       await entered.promise;
       expect(runtime.stopTeam).toHaveBeenCalledOnce();
-      expect(await store.beginLaunch(team, 'successor', ['alice'], () => true)).toBe(true);
+      const launching = store.beginLaunch(team, 'successor', ['alice'], () => true);
+      release.resolve();
+      expect(await launching).toBe(true);
       const successor = createPersistedLaunchSnapshot({
         teamName: team,
         expectedMembers: ['alice'],
@@ -133,7 +195,6 @@ describe('Stop publication admission through real IPC/HTTP wrappers', () => {
         members: {},
       });
       expect(await store.write(team, successor, { runId: 'successor' })).toBe(true);
-      release.resolve();
       await stopping;
       const reopened = new TeamLaunchStateStore();
       expect(await reopened.read(team)).toMatchObject({
@@ -188,7 +249,7 @@ describe('Stop publication admission through real IPC/HTTP wrappers', () => {
     async (surface, force) => {
       const freshnessPath = path.join(getTeamsBasePath(), team, 'launch-freshness.json');
       await writeFile(freshnessPath, '{corrupt');
-      await invoke(surface, force);
+      await invoke(surface, force, true);
       expect(console.warn).toHaveBeenCalledExactlyOnceWith(
         surface === 'ipc' ? '[IPC:teams]' : '[HTTP:teams]',
         expect.stringContaining(`[${team}] Stopped-state admission failed:`)

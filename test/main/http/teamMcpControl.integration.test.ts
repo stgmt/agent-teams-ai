@@ -306,6 +306,7 @@ function createServices(claudeRoot: string): {
       return Promise.resolve();
     },
     getAliveTeams: (): string[] => [...aliveTeams],
+    getStopTargetRunId: (teamName: string): string | null => runIdByTeam.get(teamName) ?? null,
   } satisfies TeamHttpRuntimeApi;
   const teamRuntimeControlApi = {
     recordOpenCodeRuntimeBootstrapCheckin: (): Promise<OpenCodeRuntimeControlAck> =>

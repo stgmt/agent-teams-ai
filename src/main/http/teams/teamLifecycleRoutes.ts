@@ -20,11 +20,15 @@ import {
   stopTeamWithEscalation,
 } from '@main/services/team/lifecycle/teamForceStopFlow';
 import { reapCursorAgentLeadTreesForStoppedTeam } from '@main/services/team/lifecycle/teamLeadProcessTreeReap';
-import { assertEscalatedStopConfirmed } from '@main/services/team/provisioning/TeamProvisioningOpenCodeRuntimeStopOutcome';
+import {
+  assertEscalatedStopConfirmed,
+  OpenCodeRuntimeStopUnconfirmedError,
+} from '@main/services/team/provisioning/TeamProvisioningOpenCodeRuntimeStopOutcome';
 import { validateTeamName } from '@main/services/team/TeamIdentifierValidation';
 import { TeamLaunchStateStore } from '@main/services/team/TeamLaunchStateStore';
 import { getTeamsBasePath } from '@main/utils/pathDecoder';
 import { getErrorMessage } from '@shared/utils/errorHandling';
+import { TaskActivityStopError } from '@shared/utils/teamStopErrors';
 
 import type { HttpServices } from '../index';
 import type { TeamHttpRuntimeApi } from '@main/services/team/contracts/TeamProvisioningApis';
@@ -75,7 +79,8 @@ export function registerTeamLifecycleRoutes(
         // bounded budget, and only if it does not deliver does the force-stop
         // cleanup guarantee the team is down.
         const result = await stopTeamWithEscalation(teamName, {
-          stopTeam: (name) => teamRuntimeApi.stopTeam(name),
+          stopTeam: (name, expectedRunId) => teamRuntimeApi.stopTeam(name, expectedRunId),
+          getStopTargetRunId: (name) => teamRuntimeApi.getStopTargetRunId(name),
           observeOwnedRuntimeRunIds: (name) =>
             readOwnedOpenCodeRuntimeRunIdsForTeam({ teamName: name }),
           observeOwnedRuntimeLaneIds: (name) =>
@@ -112,14 +117,8 @@ export function registerTeamLifecycleRoutes(
                 releaseLoopbackRuntimesReservedByTeam(getTeamsBasePath(), name),
             }),
         });
-        if (result.stopOutcome === 'runtime_already_down') {
-          logger.info(
-            `[${teamName}] Runtime hosts were already down; finished the stop without the orchestrator acknowledgement (killed ${result.killedRuntimePids.length} runtime pid(s), cancelled ${result.clearedPendingDeliveries} pending deliveries)`
-          );
-        } else if (result.stopOutcome !== 'stopped') {
-          logger.warn(
-            `[${teamName}] Regular stop ${result.stopOutcome}; escalated to force stop (killed ${result.killedRuntimePids.length} runtime pid(s), cancelled ${result.clearedPendingDeliveries} pending deliveries)`
-          );
+        if (result.stopOutcome !== 'stopped') {
+          logger.warn(`[${teamName}] Regular stop ${result.stopOutcome}; outcome is unconfirmed`);
         }
         // Same rejection as the in-app Stop control: a stop that did not
         // confirm is a failure here too, never a 200 carrying runtime state
@@ -127,6 +126,18 @@ export function registerTeamLifecycleRoutes(
         assertEscalatedStopConfirmed(result);
         return reply.send(await teamRuntimeApi.getRuntimeState(teamName));
       } catch (error) {
+        // These are deliberate, user-actionable outcomes, not generic 500s.
+        // Preserve their finite code for browser and headless callers.
+        if (error instanceof TaskActivityStopError) {
+          return reply.status(409).send({ error: getErrorMessage(error) });
+        }
+        if (
+          error instanceof OpenCodeRuntimeStopUnconfirmedError &&
+          error.message.startsWith('team_stop_unconfirmed:')
+        ) {
+          const status = error.message.startsWith('team_stop_unconfirmed:timed_out') ? 504 : 409;
+          return reply.status(status).send({ error: error.message });
+        }
         if (shouldLogError(error)) {
           logger.error(
             `Error in POST /api/teams/${request.params.teamName}/stop:`,
@@ -155,7 +166,8 @@ export function registerTeamLifecycleRoutes(
         const teamName = validatedTeamName.value!;
         const teamRuntimeApi = getTeamRuntimeApi(services);
         const result = await runTeamForceStopFlow(teamName, {
-          stopTeam: (name) => teamRuntimeApi.stopTeam(name),
+          stopTeam: (name, expectedRunId) => teamRuntimeApi.stopTeam(name, expectedRunId),
+          getStopTargetRunId: (name) => teamRuntimeApi.getStopTargetRunId(name),
           observeOwnedRuntimeRunIds: (name) =>
             readOwnedOpenCodeRuntimeRunIdsForTeam({ teamName: name }),
           observeOwnedRuntimeLaneIds: (name) =>

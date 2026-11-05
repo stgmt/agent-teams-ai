@@ -1,12 +1,24 @@
+import {
+  isTaskActivityStopCleanupUnconfirmed,
+  isTaskActivityStopError,
+  isTaskActivityStopPendingReview,
+} from '@shared/utils/teamStopErrors';
+
 export type TeamStopActionOutcome =
   | 'stopped'
-  | 'stopped_after_transport_error'
+  | 'stopped_activity_unconfirmed'
+  | 'stopped_activity_review_pending'
+  | 'activity_and_cleanup_unconfirmed'
   | 'still_running'
   | 'status_unknown';
 
 export type TeamStopFailureKind = Extract<
   TeamStopActionOutcome,
-  'still_running' | 'status_unknown'
+  | 'still_running'
+  | 'status_unknown'
+  | 'stopped_activity_unconfirmed'
+  | 'stopped_activity_review_pending'
+  | 'activity_and_cleanup_unconfirmed'
 >;
 
 export interface TeamStopActionPorts {
@@ -37,18 +49,27 @@ export async function runTeamStopAction(
       outcome = 'stopped';
     } catch (stopError) {
       ports.logError(stopError);
-      try {
-        const alive = await ports.processAlive(ports.teamName);
-        if (alive) {
-          outcome = 'still_running';
-          ports.reportFailure(outcome, errorMessage(stopError));
-        } else {
-          outcome = 'stopped_after_transport_error';
-        }
-      } catch (probeError) {
-        ports.logError(probeError);
+      if (isTaskActivityStopError(stopError)) {
+        outcome = isTaskActivityStopCleanupUnconfirmed(stopError)
+          ? 'activity_and_cleanup_unconfirmed'
+          : isTaskActivityStopPendingReview(stopError)
+            ? 'stopped_activity_review_pending'
+            : 'stopped_activity_unconfirmed';
+        ports.reportFailure(outcome, errorMessage(stopError));
+      } else if (errorMessage(stopError).startsWith('team_stop_unconfirmed:')) {
+        // A liveness probe cannot settle an unconfirmed stop or its task-clock writes.
         outcome = 'status_unknown';
-        ports.reportFailure(outcome, errorMessage(probeError));
+        ports.reportFailure(outcome, errorMessage(stopError));
+      } else {
+        try {
+          const alive = await ports.processAlive(ports.teamName);
+          outcome = alive ? 'still_running' : 'status_unknown';
+          ports.reportFailure(outcome, errorMessage(stopError));
+        } catch (probeError) {
+          ports.logError(probeError);
+          outcome = 'status_unknown';
+          ports.reportFailure(outcome, errorMessage(probeError));
+        }
       }
     }
 

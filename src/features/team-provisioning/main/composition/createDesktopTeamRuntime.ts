@@ -69,7 +69,7 @@ export interface DesktopTeamRuntime extends ProvisioningStatusReaderPort {
   cancelProvisioning(runId: string): Promise<void>;
   hasProvisioningRun(teamName: string): boolean;
   getRuntimeState(teamName: string): Promise<TeamRuntimeState>;
-  stopTeam(teamName: string): Promise<void>;
+  stopTeam(teamName: string, expectedRunId?: string | null): Promise<void>;
   /**
    * Shutdown path: stops every team that still holds a run and reports the ones
    * that failed, so one stuck release cannot keep the process alive.
@@ -86,6 +86,7 @@ export interface DesktopTeamRuntime extends ProvisioningStatusReaderPort {
    */
   hasActiveTeamRuntimes(): boolean;
   getCurrentRunId(teamName: string): string | null;
+  getStopTargetRunId(teamName: string): string | null;
   /**
    * Launches admitted and not yet finished. A pending launch consumes the
    * app-owned HTTP bridge the same way a live lane does, so the bridge must not
@@ -119,8 +120,11 @@ export function createDesktopTeamRuntime(deps: DesktopTeamRuntimeDependencies): 
     });
   };
 
-  const stopTeam = async (teamName: string): Promise<void> => {
+  const stopTeam = async (teamName: string, expectedRunId?: string | null): Promise<void> => {
     const snapshot = deps.lifecycle.runs.find(teamName);
+    if (expectedRunId !== undefined && (snapshot?.identity.runId ?? null) !== expectedRunId) {
+      throw new Error('Stop target was superseded by a different run');
+    }
     // A stopped and released run has nothing to stop; anything else (including a
     // failed release) must reach the command so the release can be retried.
     if (!snapshot || snapshot.state === 'stopped') return;
@@ -362,6 +366,10 @@ export function createDesktopTeamRuntime(deps: DesktopTeamRuntimeDependencies): 
 
     getCurrentRunId(teamName) {
       return deps.lifecycle.runs.aliveRunId(teamName);
+    },
+
+    getStopTargetRunId(teamName) {
+      return deps.lifecycle.runs.find(teamName)?.identity.runId ?? null;
     },
 
     pendingLaunchAdmissions() {

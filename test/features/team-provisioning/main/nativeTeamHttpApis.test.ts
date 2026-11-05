@@ -74,6 +74,7 @@ function setup() {
     isTeamAlive: vi.fn(),
     getAliveTeams: vi.fn(() => ['TEST-team']),
     getCurrentRunId: vi.fn(),
+    getStopTargetRunId: vi.fn(() => 'TEST-run'),
     findByRunId,
   };
   const runtimeControl = {

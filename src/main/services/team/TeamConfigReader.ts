@@ -11,17 +11,10 @@ import {
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { readBootstrapLaunchSnapshot } from './TeamBootstrapStateReader';
 import { isReadableTeamConfigPayload } from './TeamConfigPayload';
 import { getTeamFsWorkerClient } from './TeamFsWorkerClient';
-import { normalizePersistedLaunchSnapshot } from './TeamLaunchStateEvaluator';
-import {
-  choosePreferredLaunchStateSummary,
-  type LaunchStateSummary,
-  normalizePersistedLaunchSummaryProjection,
-  shouldSuppressLegacyLaunchArtifactHeuristic,
-  TEAM_LAUNCH_SUMMARY_FILE,
-} from './TeamLaunchSummaryProjection';
+import { shouldSuppressLegacyLaunchArtifactHeuristic } from './TeamLaunchSummaryProjection';
+import { readLaunchStateSummary } from './TeamLaunchSummaryReader';
 import { TeamMembersMetaStore } from './TeamMembersMetaStore';
 import { TeamMetaStore } from './TeamMetaStore';
 
@@ -47,8 +40,6 @@ const COARSE_FS_FULL_VERIFY_MS = 1_500;
 const LIST_TEAMS_CACHE_TTL_MS = 5_000;
 const MAX_SESSION_HISTORY_IN_SUMMARY = 2000;
 const MAX_PROJECT_PATH_HISTORY_IN_SUMMARY = 200;
-const MAX_LAUNCH_STATE_BYTES = 32 * 1024;
-const TEAM_LAUNCH_STATE_FILE = 'launch-state.json';
 
 export interface TeamConfigFingerprint {
   size: string;
@@ -147,45 +138,6 @@ export function resolveProjectPathFromConfig(
   }
 
   return undefined;
-}
-
-async function readLaunchStateSummary(teamDir: string): Promise<LaunchStateSummary | null> {
-  const bootstrapSnapshot = await readBootstrapLaunchSnapshot(path.basename(teamDir));
-  const launchStatePath = path.join(teamDir, TEAM_LAUNCH_STATE_FILE);
-  const launchSummaryPath = path.join(teamDir, TEAM_LAUNCH_SUMMARY_FILE);
-  const [launchSnapshot, launchSummaryProjection] = await Promise.all([
-    (async () => {
-      try {
-        const stat = await fs.promises.stat(launchStatePath);
-        if (!stat.isFile() || stat.size > MAX_LAUNCH_STATE_BYTES) {
-          return null;
-        }
-
-        const raw = await readFileUtf8WithTimeout(launchStatePath, PER_TEAM_READ_TIMEOUT_MS);
-        return normalizePersistedLaunchSnapshot(path.basename(teamDir), JSON.parse(raw));
-      } catch {
-        return null;
-      }
-    })(),
-    (async () => {
-      try {
-        const stat = await fs.promises.stat(launchSummaryPath);
-        if (!stat.isFile() || stat.size > MAX_LAUNCH_STATE_BYTES) {
-          return null;
-        }
-        const raw = await readFileUtf8WithTimeout(launchSummaryPath, PER_TEAM_READ_TIMEOUT_MS);
-        return normalizePersistedLaunchSummaryProjection(path.basename(teamDir), JSON.parse(raw));
-      } catch {
-        return null;
-      }
-    })(),
-  ]);
-
-  return choosePreferredLaunchStateSummary({
-    bootstrapSnapshot,
-    launchSnapshot,
-    launchSummaryProjection,
-  });
 }
 
 async function mapLimit<T, R>(

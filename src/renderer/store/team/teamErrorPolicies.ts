@@ -20,12 +20,41 @@ export function mapReviewError(error: unknown): string {
   return message || 'Failed to perform review action';
 }
 
-export function shouldInvalidateCachedTeamDataForError(
+export async function runScopedReviewAction(
+  canReport: () => boolean,
+  setError: (message: string | null) => void,
+  action: () => Promise<unknown>
+): Promise<void> {
+  if (canReport()) setError(null);
+  try {
+    await action();
+  } catch (error) {
+    if (canReport()) setError(mapReviewError(error));
+    throw error;
+  }
+}
+
+export function dropUncertainTeamSnapshot<T>(
+  cache: Record<string, T>,
   teamName: string,
   message: string
-): boolean {
+): { teamDataCacheByName?: Record<string, T> } {
+  if (
+    (!message.includes('KANBAN_TRANSITION_UNCERTAIN') &&
+      !message.includes('KANBAN_SNAPSHOT_CHANGED')) ||
+    !cache[teamName]
+  )
+    return {};
+  const next = { ...cache };
+  delete next[teamName];
+  return { teamDataCacheByName: next };
+}
+
+export function shouldInvalidateCachedTeamDataForError(teamName: string, message: string): boolean {
   return (
     message === 'TEAM_DRAFT' ||
+    message.includes('KANBAN_TRANSITION_UNCERTAIN') ||
+    message.includes('KANBAN_SNAPSHOT_CHANGED') ||
     message.includes('TEAM_DRAFT') ||
     message === `Team not found: ${teamName}` ||
     message === 'Team config not found'

@@ -16,6 +16,10 @@ export interface FileLockOptions {
   retryIntervalMs?: number;
   /** Hold ownership until physical completion; age alone cannot evict a live writer. */
   preventLiveOwnerTakeover?: boolean;
+  /** Readers can refuse to recreate a concurrently removed parent directory. */
+  createParent?: boolean;
+  /** Keep the acquired inode reachable if its parent directory is moved. */
+  retainOwnerHandle?: boolean;
 }
 
 // Protocol must stay equivalent to agent-teams-controller/src/internal/fileLock.js.
@@ -64,6 +68,7 @@ function removeEmptyGate(gate: string): void {
 interface Contention {
   streak: number;
   error: Error | undefined;
+  ownerFd?: number;
 }
 
 // Windows keeps a path whose delete is still pending (another process is unlinking or
@@ -113,8 +118,9 @@ function parsePid(value: string): number | null {
   return Number.isSafeInteger(pid) ? pid : null;
 }
 
-function writeComplete(name: string, content: string): void {
-  const fd = fs.openSync(name, 'wx', 0o600);
+function writeComplete(name: string, content: string, retainHandle = false): number | undefined {
+  const fd = fs.openSync(name, retainHandle ? 'wx+' : 'wx', 0o600);
+  let complete = false;
   try {
     const bytes = Buffer.from(content, 'utf8');
     let offset = 0;
@@ -123,8 +129,10 @@ function writeComplete(name: string, content: string): void {
       if (written <= 0) throw new Error(`Unable to complete file lock candidate: ${name}`);
       offset += written;
     }
+    complete = true;
+    return retainHandle ? fd : undefined;
   } finally {
-    fs.closeSync(fd);
+    if (!retainHandle || !complete) fs.closeSync(fd);
   }
 }
 
@@ -207,6 +215,20 @@ function readLockInfo(lockPath: string): LockInfo | null {
   return { stat, content: stat.isFile() ? readOrMissing(lockPath) : null };
 }
 
+/** Best-effort cache hint only; unreadable or malformed ownership remains active. */
+export function isFileLockActive(lockPath: string): boolean {
+  try {
+    const info = readLockInfo(lockPath);
+    if (!info) return false;
+    if (!info.stat.isFile() || info.content === null) return true;
+    const record = /^([1-9][0-9]*)\n[0-9]+\n(?:[^\n]+\n)?$/.exec(info.content);
+    const pid = record ? parsePid(record[1]) : null;
+    return pid === null || isProcessAlive(pid);
+  } catch {
+    return true;
+  }
+}
+
 function sameLock(left: LockInfo, right: LockInfo | null): boolean {
   return (
     right !== null &&
@@ -242,10 +264,49 @@ function recoverDataLock(lockPath: string, options: Required<FileLockOptions>): 
   if (sameLock(observed, readLockInfo(lockPath))) unlinkOrMissing(lockPath);
 }
 
-function releaseLock(lockPath: string, token: string): void {
-  const observed = readLockInfo(lockPath);
-  const lines = observed?.content?.split('\n');
-  if (lines?.[0] === String(process.pid) && lines[2] === token) unlinkOrMissing(lockPath);
+// A moved parent can hide our pathname while the held descriptor still refers
+// to our inode. Only after the callback ends, publish a dead PID in the legacy
+// format so an older client can safely reclaim that released inode.
+function markRetainedOwnerReleased(fd: number, token: string): void {
+  const size = fs.fstatSync(fd).size;
+  if (size < 1 || size > 1024) throw new Error('Retained lock identity is unreadable');
+  const bytes = Buffer.alloc(size);
+  if (fs.readSync(fd, bytes, 0, size, 0) !== size) throw new Error('Retained lock read failed');
+  const lines = bytes.toString('utf8').split('\n');
+  if (lines[0] !== String(process.pid) || lines[2] !== token)
+    throw new Error('Retained lock owner changed');
+  let releasedPid: number | null = null;
+  for (let pid = 2147483647; pid > 2147482647; pid -= 1) {
+    if (!isProcessAlive(pid)) {
+      releasedPid = pid;
+      break;
+    }
+  }
+  if (releasedPid === null) throw new Error('Cannot mark retained lock safely released');
+  const marker = Buffer.from(`${releasedPid}\n0\nreleased\n`, 'utf8');
+  let offset = 0;
+  while (offset < marker.length) {
+    const written = fs.writeSync(fd, marker, offset, marker.length - offset, offset);
+    if (written <= 0) throw new Error('Retained lock release write failed');
+    offset += written;
+  }
+  fs.ftruncateSync(fd, marker.length);
+}
+
+function releaseLock(lockPath: string, token: string, ownerFd?: number): void {
+  try {
+    if (ownerFd !== undefined) {
+      // A pathname may now address a different copied inode with the same
+      // PID/token. Only our retained descriptor identifies the actual owner.
+      markRetainedOwnerReleased(ownerFd, token);
+    } else {
+      const observed = readLockInfo(lockPath);
+      const lines = observed?.content?.split('\n');
+      if (lines?.[0] === String(process.pid) && lines[2] === token) unlinkOrMissing(lockPath);
+    }
+  } finally {
+    if (ownerFd !== undefined) fs.closeSync(ownerFd);
+  }
 }
 
 function tryAcquire(
@@ -263,7 +324,7 @@ function tryAcquire(
     contention.error = error instanceof Error ? error : new Error(String(error));
     return true;
   };
-  fs.mkdirSync(path.dirname(lockPath), { recursive: true, mode: 0o700 });
+  if (options.createParent) fs.mkdirSync(path.dirname(lockPath), { recursive: true, mode: 0o700 });
   const gate = `${lockPath}-transition-v2`;
   let entry: string | null;
   try {
@@ -280,14 +341,21 @@ function tryAcquire(
       if (statOrMissing(lockPath)) return false;
       const candidate = `${lockPath}.candidate-${process.pid}-${randomUUID()}`;
       try {
-        writeComplete(candidate, `${process.pid}\n${Date.now()}\n${token}\n`);
+        let ownerFd = writeComplete(
+          candidate,
+          `${process.pid}\n${Date.now()}\n${token}\n`,
+          options.retainOwnerHandle
+        );
         try {
-          // Hard link is no-replace publication of complete bytes, including on
-          // Windows. Unsupported filesystems fail; never fall back to canonical wx.
+          // Keep a handle to this exact inode before publishing the lock.
           fs.linkSync(candidate, lockPath);
           published = true;
+          contention.ownerFd = ownerFd;
+          ownerFd = undefined;
         } catch (error) {
           if (codeOf(error) !== 'EEXIST') throw error;
+        } finally {
+          if (ownerFd !== undefined) fs.closeSync(ownerFd);
         }
       } finally {
         unlinkOrMissing(candidate);
@@ -301,8 +369,10 @@ function tryAcquire(
   } catch (error) {
     // A cleanup error after publication must not strand a live owner whose
     // callback was never entered. Release needs no gate: live PIDs cannot be stolen.
-    if (published) releaseLock(lockPath, token);
-    else if (absorbDeletePending(error)) return false;
+    if (published) {
+      releaseLock(lockPath, token, contention.ownerFd);
+      contention.ownerFd = undefined;
+    } else if (absorbDeletePending(error)) return false;
     throw error;
   }
 }
@@ -320,6 +390,8 @@ function resolveLockOptions(options: FileLockOptions): Required<FileLockOptions>
     staleTimeoutMs: options.staleTimeoutMs ?? STALE_TIMEOUT_MS,
     retryIntervalMs: options.retryIntervalMs ?? RETRY_INTERVAL_MS,
     preventLiveOwnerTakeover: options.preventLiveOwnerTakeover ?? false,
+    createParent: options.createParent ?? true,
+    retainOwnerHandle: options.retainOwnerHandle ?? false,
   };
 }
 
@@ -344,7 +416,7 @@ export function withFileLockSync<T>(
   try {
     return fn();
   } finally {
-    releaseLock(lockPath, token);
+    releaseLock(lockPath, token, contention.ownerFd);
   }
 }
 
@@ -369,6 +441,30 @@ export async function withFileLock<T>(
   try {
     return await fn();
   } finally {
-    releaseLock(lockPath, token);
+    releaseLock(lockPath, token, contention.ownerFd);
+  }
+}
+
+/** Acquire without blocking the event loop, then release before yielding again. */
+export async function withFileLockForSyncOperation<T>(
+  filePath: string,
+  fn: () => T,
+  options: FileLockOptions = {}
+): Promise<T> {
+  const resolvedOptions = resolveLockOptions(options);
+  const lockPath = `${filePath}.lock`;
+  const deadline = Date.now() + resolvedOptions.acquireTimeoutMs;
+  const token = resolvedOptions.preventLiveOwnerTakeover ? `strict-${randomUUID()}` : randomUUID();
+  const contention: Contention = { streak: 0, error: undefined };
+  while (!tryAcquire(lockPath, resolvedOptions, token, contention)) {
+    if (Date.now() >= deadline) {
+      throw contention.error ?? new Error(`File lock timeout: ${filePath}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, resolvedOptions.retryIntervalMs));
+  }
+  try {
+    return fn();
+  } finally {
+    releaseLock(lockPath, token, contention.ownerFd);
   }
 }
