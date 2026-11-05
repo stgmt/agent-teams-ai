@@ -4,7 +4,7 @@ import {
   createTaskWriteGuardStorage,
   taskWriteGuardKey,
 } from '@features/team-task-detail/renderer/adapters/taskWriteGuardStorage';
-import { del } from 'idb-keyval';
+import { del, set } from 'idb-keyval';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const identity = {
@@ -65,13 +65,21 @@ describe('durable task write guard', () => {
     await store.release(identity, artifact);
     await expect(store.release(identity, artifact)).rejects.toThrow(/changed/);
     await expect(
-      store.release(identity, artifact, { allowMissingAfterDecision: true })
+      store.release(identity, artifact, { explicitDecision: true })
     ).resolves.toBeUndefined();
     await store.acquire(identity, manifest);
-    await expect(
-      store.release(identity, artifact, { allowMissingAfterDecision: true })
-    ).rejects.toThrow(/changed/);
+    await expect(store.release(identity, artifact, { explicitDecision: true })).rejects.toThrow(
+      /changed/
+    );
     expect(await store.read(identity)).toEqual(manifest);
+    expect(await createTaskWriteGuardStorage().readDecision(identity, artifact)).toEqual({
+      explicitlyResolved: true,
+      marker: manifest,
+    });
+    expect(await store.readDecision(identity, { ...artifact, operation: 'manifest' })).toEqual({
+      explicitlyResolved: false,
+      marker: manifest,
+    });
   });
 
   it('propagates unavailable storage and never grants admission', async () => {
@@ -86,5 +94,16 @@ describe('durable task write guard', () => {
     const store = createTaskWriteGuardStorage(backend);
     await expect(store.read(identity)).rejects.toThrow(/unavailable/);
     await expect(store.acquire(identity, artifact)).rejects.toThrow(/unavailable/);
+  });
+
+  it('retains and upgrades a marker written by the earlier schema', async () => {
+    await set(taskWriteGuardKey(identity), artifact);
+    const store = createTaskWriteGuardStorage();
+    expect(await store.read(identity)).toEqual(artifact);
+    await store.release(identity, artifact, { explicitDecision: true });
+    expect(await createTaskWriteGuardStorage().readDecision(identity, artifact)).toEqual({
+      explicitlyResolved: true,
+      marker: null,
+    });
   });
 });

@@ -26,6 +26,13 @@ export async function runArtifactBoundUpdate(
   operation: () => Promise<void>
 ): Promise<void> {
   if (!hasArtifactFields(fields)) return operation();
+  if (
+    fields.subject !== undefined ||
+    fields.description !== undefined ||
+    fields.groupChatId !== undefined
+  ) {
+    throw new Error('Artifact updates must be submitted separately from other task fields');
+  }
   const expected = binding.expectedContext;
   if (!expected || typeof expected !== 'object')
     throw new Error('Artifact update requires the expected app context');

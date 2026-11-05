@@ -294,7 +294,39 @@ export function useTaskWriteGuard({
           artifactOutcomeRevision: (session.artifactOutcomeRevision ?? 0) + 1,
         });
       };
+      const adoptRecordedDecision = async (): Promise<boolean> => {
+        if (!current.taskWriteRootFingerprint) return false;
+        try {
+          const result = await withArtifactOutcomeDeadline(
+            taskWriteGuardStorage.readDecision(
+              { ...identity, dataRootFingerprint: current.taskWriteRootFingerprint },
+              { version: 1, attemptId: token, operation }
+            )
+          );
+          if (!result.explicitlyResolved || result.marker?.attemptId === token) return false;
+          const latest = useStore.getState();
+          const session = latest.taskDetailSessionById[identityKey];
+          if (
+            session?.artifactWriteId !== token ||
+            session.taskWriteOperation !== operation ||
+            session.taskWriteMarkerId !== token
+          )
+            return false;
+          latest.updateTaskDetailSession(identity, {
+            artifactWriteId: null,
+            taskWriteMarkerId: result.marker?.attemptId ?? null,
+            taskWriteOperation: result.marker?.operation ?? null,
+            artifactOutcomeUnknown: result.marker !== null,
+            artifactOutcomeChecked: false,
+            artifactOutcomeRevision: (session.artifactOutcomeRevision ?? 0) + 1,
+          });
+          return true;
+        } catch {
+          return false;
+        }
+      };
       if (outcome === 'unknown') {
+        if (await adoptRecordedDecision()) return true;
         markUnknown();
         return true;
       }
@@ -318,6 +350,7 @@ export function useTaskWriteGuard({
           )
         );
       } catch (error) {
+        if (await adoptRecordedDecision()) return true;
         markUnknown();
         throw error;
       }
@@ -349,13 +382,46 @@ export function useTaskWriteGuard({
         throw new Error('Task write safety marker is unavailable');
       if (priorSession?.taskWriteOperation && priorSession.taskWriteOperation !== operation)
         throw new Error('A different task operation requires attention');
-      const expectedContext = priorSession?.taskWriteExpectedContext;
+      let expectedContext = priorSession?.taskWriteExpectedContext;
       const expectedRoot = priorSession?.taskWriteRootFingerprint;
-      if (
-        !expectedContext ||
-        !sameGuardContext(expectedContext, expectedRoot, await readGuardContext())
-      )
-        throw new Error('Task data root changed');
+      const liveContext = await readGuardContext();
+      if (!expectedContext) throw new Error('Task data root changed');
+      if (!sameGuardContext(expectedContext, expectedRoot, liveContext)) {
+        if (
+          !priorSession?.artifactOutcomeUnknown ||
+          priorSession.artifactWriteId ||
+          !priorSession.taskWriteMarkerId ||
+          expectedContext.appInstanceId !== liveContext.appInstanceId ||
+          !expectedRoot ||
+          expectedRoot !== liveContext.physicalRootFingerprint
+        )
+          throw new Error('Task data root changed');
+        const stored = await withArtifactOutcomeDeadline(
+          taskWriteGuardStorage.read({ ...identity, dataRootFingerprint: expectedRoot })
+        );
+        if (
+          stored &&
+          (stored.attemptId !== priorSession.taskWriteMarkerId || stored.operation !== operation)
+        )
+          throw new Error('Task outcome changed during the check');
+        if (!sameGuardContext(liveContext, expectedRoot, await readGuardContext()))
+          throw new Error('Task data root changed');
+        const latest = useStore.getState();
+        const session = latest.taskDetailSessionById[identityKey];
+        if (
+          !session?.artifactOutcomeUnknown ||
+          session.artifactWriteId ||
+          session.taskWriteMarkerId !== priorSession.taskWriteMarkerId ||
+          session.taskWriteOperation !== operation ||
+          session.artifactOutcomeRevision !== priorSession.artifactOutcomeRevision
+        )
+          throw new Error('Task outcome changed during the check');
+        expectedContext = connectionContext(liveContext);
+        latest.updateTaskDetailSession(identity, {
+          taskWriteExpectedContext: expectedContext,
+          artifactOutcomeChecked: false,
+        });
+      }
       const revision = priorSession?.artifactOutcomeRevision ?? 0;
       const previousToken = before.taskDetailById[identityKey]?.fullToken;
       before.invalidateTaskDetailSource(identity);
@@ -420,7 +486,7 @@ export function useTaskWriteGuard({
             dataRootFingerprint: session.taskWriteRootFingerprint!,
           },
           { version: 1, attemptId: token, operation },
-          { allowMissingAfterDecision: true }
+          { explicitDecision: true }
         )
       );
       const latest = useStore.getState();
