@@ -14,7 +14,10 @@ import {
   finishTemplateMutation,
   getPendingTemplateMutation,
   usePendingTemplateMutations,
+  wasTemplateMutationResolved,
 } from './pendingTemplateMutation';
+
+import type { PendingTemplateMutation } from './pendingTemplateMutation';
 
 export type EditTemplateStatus =
   | 'idle'
@@ -26,6 +29,7 @@ export type EditTemplateStatus =
   | 'unreadableRecord'
   | 'storageUnavailable'
   | 'unresolvedWriteOutcome'
+  | 'resolvedElsewhere'
   | 'requestFailed'
   | 'requestSizeValidationFailed';
 
@@ -119,6 +123,7 @@ export function useEditTemplate({
   onSaved,
 }: UseEditTemplateInput): UseEditTemplateResult {
   const { operations: pendingMutations, storageAvailable } = usePendingTemplateMutations();
+  const lastMutationRef = useRef<PendingTemplateMutation | null>(null);
   const [name, setNameState] = useState(template?.name ?? '');
   const [description, setDescriptionState] = useState(template?.description ?? '');
   const [teamPrompt, setTeamPromptState] = useState(template?.teamPrompt ?? '');
@@ -137,6 +142,17 @@ export function useEditTemplate({
   const requestIdRef = useRef(0);
   const lastTemplateIdRef = useRef<string | null>(null);
   const pendingUpdateRef = useRef<PendingUpdate | null>(null);
+
+  useEffect(() => {
+    if (
+      status === 'unresolvedWriteOutcome' &&
+      lastMutationRef.current &&
+      wasTemplateMutationResolved(lastMutationRef.current)
+    ) {
+      pendingUpdateRef.current = null;
+      setStatus('resolvedElsewhere');
+    }
+  }, [status, pendingMutations, storageAvailable]);
 
   // Initialize draft when opened or when template selection changes
   useEffect(() => {
@@ -244,7 +260,13 @@ export function useEditTemplate({
   }, [revisionConflict]);
 
   const save = useCallback(async (): Promise<boolean> => {
-    if (busy || !template || status === 'unresolvedWriteOutcome' || getPendingTemplateMutation())
+    if (
+      busy ||
+      !template ||
+      status === 'unresolvedWriteOutcome' ||
+      status === 'resolvedElsewhere' ||
+      getPendingTemplateMutation()
+    )
       return false;
 
     // Normalize the team prompt with the established trim() policy before
@@ -271,6 +293,7 @@ export function useEditTemplate({
       setStatus('storageUnavailable');
       return false;
     }
+    lastMutationRef.current = operation;
 
     const requestId = ++requestIdRef.current;
     pendingUpdateRef.current = pending;
@@ -304,7 +327,12 @@ export function useEditTemplate({
       // A genuine dispatched transport failure (timeout, abort, network loss,
       // malformed response) keeps the outcome unknown and requires a
       // read-only re-check.
-      setStatus('unresolvedWriteOutcome');
+      if (wasTemplateMutationResolved(operation)) {
+        pendingUpdateRef.current = null;
+        setStatus('resolvedElsewhere');
+      } else {
+        setStatus('unresolvedWriteOutcome');
+      }
       return false;
     } finally {
       if (requestId === requestIdRef.current) {
@@ -352,7 +380,12 @@ export function useEditTemplate({
       case 'unresolvedWriteOutcome': {
         // The server could not reconcile its own write either, so keep the
         // dispatched payload for a later read-only re-check.
-        setStatus('unresolvedWriteOutcome');
+        if (wasTemplateMutationResolved(operation)) {
+          pendingUpdateRef.current = null;
+          setStatus('resolvedElsewhere');
+        } else {
+          setStatus('unresolvedWriteOutcome');
+        }
         return false;
       }
     }
@@ -399,6 +432,7 @@ export function useEditTemplate({
     !busy &&
     name.trim().length > 0 &&
     status !== 'unresolvedWriteOutcome' &&
+    status !== 'resolvedElsewhere' &&
     pendingMutations.length === 0 &&
     storageAvailable;
   const canRecheck =

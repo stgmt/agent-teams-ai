@@ -162,6 +162,9 @@ export const SaveAsTemplateDialog = ({
         retry: false,
       };
     }
+    if (attemptStatus === 'resolvedElsewhere') {
+      return { message: t('customTemplates.states.resolvedElsewhere'), tone: 'info', retry: false };
+    }
     if (attemptStatus === 'idConflict') {
       return {
         message: t('customTemplates.errors.templateIdConflict'),

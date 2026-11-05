@@ -10,6 +10,7 @@ export interface PendingTemplateMutation {
 type NewMutation = Omit<PendingTemplateMutation, 'id'>;
 type Snapshot = { operations: readonly PendingTemplateMutation[]; storageAvailable: boolean };
 const PREFIX = 'agent-teams:custom-template-pending-mutation:';
+const DECISION_PREFIX = 'agent-teams:custom-template-mutation-decision:';
 const PROBE_KEY = 'agent-teams:custom-template-mutation-storage-probe';
 const listeners = new Set<() => void>();
 let snapshot: Snapshot = { operations: [], storageAvailable: true };
@@ -53,6 +54,10 @@ function refresh(): void {
       if (!key?.startsWith(PREFIX)) continue;
       const id = key.slice(PREFIX.length);
       const parsed = parseOperation(id, storage.getItem(key));
+      // The user may have decided just before the renderer stopped, between
+      // recording the receipt and removing this marker. The receipt is the
+      // durable evidence of that decision for this exact id and operation.
+      if (storage.getItem(DECISION_PREFIX + id) === parsed.kind) continue;
       const previous = snapshot.operations.find((item) => item.id === id);
       next.push(
         previous && previous.kind === parsed.kind && previous.label === parsed.label
@@ -63,7 +68,11 @@ function refresh(): void {
     // Markers created while storage was unavailable remain blocked in memory.
     if (!snapshot.storageAvailable) {
       for (const item of snapshot.operations)
-        if (!next.some((entry) => entry.id === item.id)) next.push(item);
+        if (
+          storage.getItem(DECISION_PREFIX + item.id) !== item.kind &&
+          !next.some((entry) => entry.id === item.id)
+        )
+          next.push(item);
     }
     if (
       !snapshot.storageAvailable ||
@@ -81,6 +90,11 @@ refresh();
 if (typeof window !== 'undefined') {
   window.addEventListener('storage', (event) => {
     if (event.key === null || event.key.startsWith(PREFIX)) refresh();
+    else if (event.key.startsWith(DECISION_PREFIX)) {
+      const previous = snapshot;
+      refresh();
+      if (snapshot === previous) publish([...snapshot.operations], snapshot.storageAvailable);
+    }
   });
 }
 
@@ -133,6 +147,33 @@ export function finishTemplateMutation(operation: PendingTemplateMutation): void
   }
 }
 
+/** Persist the user's decision before removing exactly this marker. */
+export function resolveTemplateMutation(operation: PendingTemplateMutation): boolean {
+  try {
+    globalThis.localStorage.setItem(DECISION_PREFIX + operation.id, operation.kind);
+    globalThis.localStorage.removeItem(PREFIX + operation.id);
+    publish(
+      snapshot.operations.filter((item) => item.id !== operation.id),
+      true
+    );
+    refresh();
+    return true;
+  } catch {
+    publish(snapshot.operations, false);
+    return false;
+  }
+}
+
+/** Only a durable decision for this exact operation suppresses a late question. */
+export function wasTemplateMutationResolved(operation: PendingTemplateMutation): boolean {
+  try {
+    return globalThis.localStorage.getItem(DECISION_PREFIX + operation.id) === operation.kind;
+  } catch {
+    publish(snapshot.operations, false);
+    return false;
+  }
+}
+
 /** Test helper: inject or clear independent markers. */
 export function setPendingTemplateMutation(value: NewMutation | null): void {
   if (value) {
@@ -140,8 +181,10 @@ export function setPendingTemplateMutation(value: NewMutation | null): void {
     globalThis.localStorage.setItem(PREFIX + operation.id, JSON.stringify(value));
     publish([...snapshot.operations, operation], true);
   } else {
-    for (const operation of snapshot.operations)
-      globalThis.localStorage.removeItem(PREFIX + operation.id);
+    for (const key of Object.keys(globalThis.localStorage)) {
+      if (key.startsWith(PREFIX) || key.startsWith(DECISION_PREFIX))
+        globalThis.localStorage.removeItem(key);
+    }
     publish([], true);
   }
 }

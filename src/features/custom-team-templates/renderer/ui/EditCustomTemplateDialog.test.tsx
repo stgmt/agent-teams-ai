@@ -3,7 +3,11 @@ import { createRoot } from 'react-dom/client';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { setPendingTemplateMutation } from '../hooks/pendingTemplateMutation';
+import {
+  getPendingTemplateMutations,
+  resolveTemplateMutation,
+  setPendingTemplateMutation,
+} from '../hooks/pendingTemplateMutation';
 
 const updateTemplate = vi.hoisted(() => vi.fn());
 const listTemplates = vi.hoisted(() => vi.fn());
@@ -152,6 +156,51 @@ afterEach(() => {
 });
 
 describe('EditCustomTemplateDialog', () => {
+  it('recognizes a decision made elsewhere after an unknown edit is already shown', async () => {
+    updateTemplate.mockResolvedValueOnce({
+      status: 'unresolvedWriteOutcome',
+      templateId: 'tmpl-1',
+    });
+    await render();
+    await save();
+    expect(host.querySelector('[data-testid="edit-template-recheck"]')).not.toBeNull();
+    const old = getPendingTemplateMutations()[0];
+    await act(async () => {
+      expect(resolveTemplateMutation(old)).toBe(true);
+    });
+    expect(host.querySelector('[data-testid="edit-template-resolved-elsewhere"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="edit-template-recheck"]')).toBeNull();
+    expect(updateTemplate).toHaveBeenCalledTimes(1);
+  });
+  it.each(['unresolved', 'rejected'] as const)(
+    'does not ask again after another window resolved a late %s edit',
+    async (outcome) => {
+      let resolveWrite!: (value: UpdateCustomTeamTemplateResult) => void;
+      let rejectWrite!: (error: Error) => void;
+      updateTemplate.mockReturnValueOnce(
+        new Promise((resolve, reject) => {
+          resolveWrite = resolve;
+          rejectWrite = reject;
+        })
+      );
+      await render();
+      await act(async () => saveButton().click());
+      const old = getPendingTemplateMutations()[0];
+      await act(async () => {
+        expect(resolveTemplateMutation(old)).toBe(true);
+        setPendingTemplateMutation({ kind: 'duplicate', label: 'New action' });
+      });
+      await act(async () => {
+        if (outcome === 'unresolved')
+          resolveWrite({ status: 'unresolvedWriteOutcome', templateId: 'tmpl-1' });
+        else rejectWrite(new Error('lost response'));
+      });
+      expect(host.querySelector('[data-testid="edit-template-resolved-elsewhere"]')).not.toBeNull();
+      expect(host.querySelector('[data-testid="edit-template-recheck"]')).toBeNull();
+      expect(updateTemplate).toHaveBeenCalledTimes(1);
+      expect(getPendingTemplateMutations().map((item) => item.label)).toEqual(['New action']);
+    }
+  );
   it.each([
     { memberField: 'workflow', newline: '\n' },
     { memberField: 'workflow', newline: '\r\n' },

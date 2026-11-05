@@ -64,7 +64,11 @@ vi.mock('@renderer/components/ui/dialog', () => ({
     React.createElement('h2', null, children),
 }));
 
-import { setPendingTemplateMutation } from '../hooks/pendingTemplateMutation';
+import {
+  getPendingTemplateMutations,
+  resolveTemplateMutation,
+  setPendingTemplateMutation,
+} from '../hooks/pendingTemplateMutation';
 
 import { SaveAsTemplateDialog } from './SaveAsTemplateDialog';
 
@@ -285,6 +289,86 @@ describe('SaveAsTemplateDialog preview', () => {
 });
 
 describe('SaveAsTemplateDialog save', () => {
+  it('recognizes a decision event before the old marker is removed', async () => {
+    await render();
+    await saveUntilUnresolved();
+    const old = getPendingTemplateMutations()[0];
+    const decisionKey = `agent-teams:custom-template-mutation-decision:${old.id}`;
+    await act(async () => {
+      localStorage.setItem(decisionKey, old.kind);
+      window.dispatchEvent(new StorageEvent('storage', { key: decisionKey }));
+    });
+    expect(host.textContent).toContain('customTemplates.states.resolvedElsewhere');
+    expect(getPendingTemplateMutations()).toEqual([]);
+    expect(saveTemplate).toHaveBeenCalledTimes(1);
+  });
+  it('recognizes the decision storage event even if its marker event arrived first', async () => {
+    await render();
+    await saveUntilUnresolved();
+    const old = getPendingTemplateMutations()[0];
+    const markerKey = `agent-teams:custom-template-pending-mutation:${old.id}`;
+    const decisionKey = `agent-teams:custom-template-mutation-decision:${old.id}`;
+    await act(async () => {
+      localStorage.removeItem(markerKey);
+      window.dispatchEvent(new StorageEvent('storage', { key: markerKey }));
+    });
+    expect(button('customTemplates.actions.recheck')).toBeTruthy();
+    await act(async () => {
+      localStorage.setItem(decisionKey, old.kind);
+      window.dispatchEvent(new StorageEvent('storage', { key: decisionKey }));
+    });
+    expect(host.textContent).toContain('customTemplates.states.resolvedElsewhere');
+    expect(saveTemplate).toHaveBeenCalledTimes(1);
+  });
+  it('recognizes a decision made elsewhere after the unknown save is already shown', async () => {
+    await render();
+    await saveUntilUnresolved();
+    expect(button('customTemplates.actions.recheck')).toBeTruthy();
+    const old = getPendingTemplateMutations()[0];
+    await act(async () => {
+      expect(resolveTemplateMutation(old)).toBe(true);
+    });
+    expect(host.textContent).toContain('customTemplates.states.resolvedElsewhere');
+    expect(
+      buttons().some((candidate) =>
+        candidate.textContent?.includes('customTemplates.actions.recheck')
+      )
+    ).toBe(false);
+    expect(saveTemplate).toHaveBeenCalledTimes(1);
+  });
+  it.each(['unresolved', 'rejected'] as const)(
+    'does not ask again after another window resolved a late %s save',
+    async (outcome) => {
+      let resolveWrite!: (value: ConfirmCustomTeamTemplateSaveResult) => void;
+      let rejectWrite!: (error: Error) => void;
+      saveTemplate.mockReturnValueOnce(
+        new Promise((resolve, reject) => {
+          resolveWrite = resolve;
+          rejectWrite = reject;
+        })
+      );
+      await render();
+      await act(async () => saveButton().click());
+      const old = getPendingTemplateMutations()[0];
+      await act(async () => {
+        expect(resolveTemplateMutation(old)).toBe(true);
+        setPendingTemplateMutation({ kind: 'edit', label: 'New action' });
+      });
+      await act(async () => {
+        if (outcome === 'unresolved')
+          resolveWrite({ status: 'unresolvedWriteOutcome', templateId: 'template-1' });
+        else rejectWrite(new Error('lost response'));
+      });
+      expect(host.textContent).toContain('customTemplates.states.resolvedElsewhere');
+      expect(
+        buttons().some((candidate) =>
+          candidate.textContent?.includes('customTemplates.actions.recheck')
+        )
+      ).toBe(false);
+      expect(saveTemplate).toHaveBeenCalledTimes(1);
+      expect(getPendingTemplateMutations().map((item) => item.label)).toEqual(['New action']);
+    }
+  );
   it('blocks a new save while a library write still needs user re-check', async () => {
     setPendingTemplateMutation({ kind: 'duplicate', label: 'Uncertain copy' });
     await render();

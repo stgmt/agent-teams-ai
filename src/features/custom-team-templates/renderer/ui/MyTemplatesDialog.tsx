@@ -14,8 +14,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@renderer/components/u
 import { AlertTriangle, Copy, Download, Pencil, RefreshCw, Trash2, Upload } from 'lucide-react';
 
 import {
-  finishTemplateMutation,
   getPendingTemplateMutations,
+  resolveTemplateMutation,
   usePendingTemplateMutations,
 } from '../hooks/pendingTemplateMutation';
 import { useCustomTemplateLibrary } from '../hooks/useCustomTemplateLibrary';
@@ -175,8 +175,9 @@ export const MyTemplatesDialog = ({ open, onClose }: MyTemplatesDialogProps): Re
                   variant="outline"
                   onClick={() => {
                     if (getPendingTemplateMutations() === reviewed.operations) {
-                      for (const operation of reviewed.operations)
-                        finishTemplateMutation(operation);
+                      for (const operation of reviewed.operations) {
+                        if (!resolveTemplateMutation(operation)) break;
+                      }
                       setReviewed(null);
                     }
                   }}

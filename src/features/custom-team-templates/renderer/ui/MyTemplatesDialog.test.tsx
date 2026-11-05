@@ -90,7 +90,11 @@ vi.mock('../hooks/useTemplateImport', () => ({
 
 import { TEAM_TEMPLATES } from '@features/team-templates';
 
-import { setPendingTemplateMutation } from '../hooks/pendingTemplateMutation';
+import {
+  getPendingTemplateMutations,
+  resolveTemplateMutation,
+  setPendingTemplateMutation,
+} from '../hooks/pendingTemplateMutation';
 
 import { MyTemplatesDialog } from './MyTemplatesDialog';
 
@@ -186,6 +190,80 @@ afterEach(() => {
 });
 
 describe('MyTemplatesDialog', () => {
+  it.each(
+    (['duplicate', 'delete', 'copyBuiltin'] as const).flatMap((kind) =>
+      (['unresolved', 'rejected'] as const).flatMap((outcome) =>
+        (['before', 'after'] as const).map((order) => [kind, outcome, order] as const)
+      )
+    )
+  )(
+    'shows a decision from another window for %s %s (%s response)',
+    async (kind, outcome, order) => {
+      const mutation =
+        kind === 'duplicate'
+          ? duplicateTemplate
+          : kind === 'delete'
+            ? deleteTemplate
+            : copyBuiltinTemplate;
+      let resolveWrite!: (value: { status: 'unresolvedWriteOutcome'; templateId: string }) => void;
+      let rejectWrite!: (error: Error) => void;
+      mutation.mockReturnValueOnce(
+        new Promise((resolve, reject) => {
+          resolveWrite = resolve;
+          rejectWrite = reject;
+        })
+      );
+      await render();
+      if (kind === 'copyBuiltin') {
+        await selectTab('customTemplates.library.tabs.builtIn');
+        await act(async () =>
+          host.querySelector<HTMLButtonElement>('[data-testid="copy-builtin-open"]')?.click()
+        );
+      } else {
+        await act(async () =>
+          host
+            .querySelector<HTMLButtonElement>(`[data-testid="${kind}-template-template-1"]`)
+            ?.click()
+        );
+      }
+      const action =
+        kind === 'duplicate'
+          ? 'customTemplates.duplicate.action'
+          : kind === 'delete'
+            ? 'customTemplates.delete.confirm'
+            : 'customTemplates.copyBuiltin.action';
+      await act(async () => button(action).click());
+      const old = getPendingTemplateMutations()[0];
+      const decideElsewhere = async () =>
+        act(async () => {
+          expect(resolveTemplateMutation(old)).toBe(true);
+          setPendingTemplateMutation({ kind: 'edit', label: 'New action' });
+        });
+      const finish = async () =>
+        act(async () => {
+          if (outcome === 'unresolved')
+            resolveWrite({ status: 'unresolvedWriteOutcome', templateId: 'x' });
+          else rejectWrite(new Error('lost response'));
+        });
+      if (order === 'before') {
+        await decideElsewhere();
+        await finish();
+      } else {
+        await finish();
+        await decideElsewhere();
+      }
+      const testId =
+        kind === 'duplicate'
+          ? 'duplicate-template-resolved-elsewhere'
+          : kind === 'delete'
+            ? 'delete-template-resolved-elsewhere'
+            : 'copy-builtin-resolved-elsewhere';
+      expect(host.querySelector(`[data-testid="${testId}"]`)).not.toBeNull();
+      expect(button(action).disabled).toBe(true);
+      expect(mutation).toHaveBeenCalledTimes(1);
+      expect(getPendingTemplateMutations().map((item) => item.label)).toEqual(['New action']);
+    }
+  );
   it.each(['duplicate', 'delete', 'copyBuiltin'] as const)(
     're-reads the library and blocks another %s after an unknown outcome',
     async (operation) => {

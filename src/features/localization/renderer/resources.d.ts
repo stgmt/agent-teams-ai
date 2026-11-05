@@ -4225,6 +4225,7 @@ export default interface Resources {
         "pendingSaveHelp": "Close this dialog, open Templates, and select My Templates. Select Re-check outcome, then choose whether to allow new changes. If the list is incomplete, check outside the list first.",
         "mutationStorageUnavailable": "New changes are blocked because this profile cannot store the recovery record. Enable local storage and reopen the library.",
         "snapshotWarning": "This list is a snapshot. The previous change could still complete later. Continue only if you accept this uncertainty.",
+        "resolvedElsewhere": "This uncertain change was already reviewed in another window. Close and reopen this dialog to start a new change.",
         "partialSnapshotWarning": "The list is incomplete and the outcome is unknown. Confirm only after checking outside this list, or keep changes blocked.",
         "unresolvedTitle": "Outcome not confirmed"
       },

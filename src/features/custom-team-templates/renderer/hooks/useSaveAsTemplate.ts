@@ -7,8 +7,10 @@ import {
   finishTemplateMutation,
   getPendingTemplateMutation,
   usePendingTemplateMutations,
+  wasTemplateMutationResolved,
 } from './pendingTemplateMutation';
 
+import type { PendingTemplateMutation } from './pendingTemplateMutation';
 import type {
   ConfirmCustomTeamTemplateSaveResult,
   CustomTeamTemplatePreview,
@@ -45,6 +47,7 @@ export type SaveAttempt =
   | { status: 'rechecking' }
   | { status: 'saved'; template: CustomTeamTemplateV1; alreadyPresent: boolean }
   | { status: 'unresolved'; templateId: string }
+  | { status: 'resolvedElsewhere' }
   | { status: 'idConflict'; templateId: string }
   | { status: 'requestFailed' }
   | { status: 'unavailable'; during: 'save' | 'recheck' };
@@ -122,6 +125,17 @@ export function useSaveAsTemplate({
   const busyRef = useRef(false);
   const sessionIsOpenRef = useRef(false);
   const sessionSourceTeamRef = useRef(sourceTeamName);
+  const lastMutationRef = useRef<PendingTemplateMutation | null>(null);
+
+  useEffect(() => {
+    if (
+      hasUnknownOutcome(attempt) &&
+      lastMutationRef.current &&
+      wasTemplateMutationResolved(lastMutationRef.current)
+    ) {
+      setAttempt({ status: 'resolvedElsewhere' });
+    }
+  }, [attempt, pendingMutations, storageAvailable]);
 
   const applyPrepareResult = useCallback((result: PrepareCustomTeamTemplatePreviewResult): void => {
     setIssues([]);
@@ -291,6 +305,7 @@ export function useSaveAsTemplate({
       setAttempt({ status: 'unavailable', during: 'save' });
       return;
     }
+    lastMutationRef.current = operation;
     const requestId = requestIdRef.current;
     busyRef.current = true;
     setNotice(null);
@@ -303,12 +318,18 @@ export function useSaveAsTemplate({
       });
       if (result.status !== 'unresolvedWriteOutcome') finishTemplateMutation(operation);
       if (requestId !== requestIdRef.current) return;
+      if (result.status === 'unresolvedWriteOutcome' && wasTemplateMutationResolved(operation)) {
+        setAttempt({ status: 'resolvedElsewhere' });
+        return;
+      }
       applySaveResult(result);
     } catch {
       if (requestId !== requestIdRef.current) return;
       // A transport failure says nothing about whether the write landed, so
       // the outcome stays unknown instead of being reported as a failure.
-      setAttempt({ status: 'requestFailed' });
+      setAttempt({
+        status: wasTemplateMutationResolved(operation) ? 'resolvedElsewhere' : 'requestFailed',
+      });
     } finally {
       busyRef.current = false;
     }
@@ -384,6 +405,7 @@ export function useSaveAsTemplate({
     if (sessionIsOpenRef.current) return;
     sessionIsOpenRef.current = true;
     sessionSourceTeamRef.current = sourceTeamName;
+    lastMutationRef.current = null;
     // Any response that arrives after the dialog reopened belongs to a previous
     // session and must be dropped.
     requestIdRef.current += 1;
