@@ -226,6 +226,14 @@ export const VerifiedActionPanel = ({
       if (!isCurrent()) return;
       if (!binding.manifest || binding.manifest.markerId !== guardState.markerId)
         throw new Error('Task outcome changed during the check');
+      if (binding.manifest.resolved) {
+        // Another window has recorded this user's explicit resolution. Do not
+        // dispatch another fence or repeat the action from the stale view.
+        setActions(null);
+        setUncertain(false);
+        setError(null);
+        return;
+      }
       const [actions, decided] = await Promise.all([
         withDeadline(
           bridge.list(

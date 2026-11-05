@@ -82,7 +82,7 @@ const guard = {
     async (): Promise<{
       expectedContext: typeof expected;
       expectedRootFingerprint: string;
-      manifest: { markerId: string; decision: TaskWriteDecision | null };
+      manifest: { markerId: string; decision: TaskWriteDecision | null; resolved?: true };
     }> => ({
       expectedContext: expected,
       expectedRootFingerprint,
@@ -207,7 +207,7 @@ describe('VerifiedActionPanel', () => {
     let finishCheck!: (value: {
       expectedContext: typeof expected;
       expectedRootFingerprint: string;
-      manifest: { markerId: string; decision: TaskWriteDecision | null };
+      manifest: { markerId: string; decision: TaskWriteDecision | null; resolved?: true };
     }) => void;
     guard.checkGuardedTaskWriteOutcome.mockImplementationOnce(
       () =>
@@ -356,6 +356,55 @@ describe('VerifiedActionPanel', () => {
     await act(async () => root.unmount());
   });
 
+  it('does not replay a decision already explicitly resolved by another window', async () => {
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+    const stale = {
+      ...guard,
+      taskWriteGuard: {
+        ...guard.taskWriteGuard,
+        markerId: 'decision-token',
+        operation: 'manifest' as const,
+        unknown: true,
+        decision: {
+          actionId: action.id,
+          decisionId: '11111111-1111-4111-8111-111111111111',
+          decision: 'retry_once' as const,
+          stage: 'fenceSent' as const,
+        },
+      },
+    };
+    guard.checkGuardedTaskWriteOutcome.mockResolvedValueOnce({
+      expectedContext: expected,
+      expectedRootFingerprint,
+      manifest: { markerId: 'decision-token', decision: null, resolved: true },
+    });
+    mocks.list.mockReset().mockResolvedValue([{ ...action, status: 'question', attempts: 1 }]);
+    const host = document.createElement('div');
+    document.body.append(host);
+    const root = createRoot(host);
+    await act(async () =>
+      root.render(
+        <VerifiedActionPanel
+          contextId="local"
+          teamName="team"
+          taskId="task"
+          enabled
+          canMutate={() => true}
+          guard={stale}
+        />
+      )
+    );
+    mocks.list.mockClear();
+    await act(async () => button(host, 'verifiedAction.guardCheck').click());
+    expect(mocks.list).not.toHaveBeenCalled();
+    expect(guard.markGuardedDecisionFenceSent).not.toHaveBeenCalled();
+    expect(mocks.fenceDecision).not.toHaveBeenCalled();
+    expect(mocks.decide).not.toHaveBeenCalled();
+    expect(guard.confirmGuardedTaskWriteOutcome).not.toHaveBeenCalled();
+    expect(host.textContent).not.toContain('verifiedAction.question');
+    await act(async () => root.unmount());
+  });
+
   it('uses the freshly synchronized decision during this check rather than a stale render', async () => {
     vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
     const decisionId = '11111111-1111-4111-8111-111111111111';
@@ -485,7 +534,7 @@ describe('VerifiedActionPanel', () => {
     let finishCheck!: (value: {
       expectedContext: typeof expected;
       expectedRootFingerprint: string;
-      manifest: { markerId: string; decision: TaskWriteDecision | null };
+      manifest: { markerId: string; decision: TaskWriteDecision | null; resolved?: true };
     }) => void;
     guard.checkGuardedTaskWriteOutcome.mockImplementationOnce(
       () =>

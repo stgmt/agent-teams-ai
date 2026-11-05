@@ -114,9 +114,14 @@ afterEach(async () => {
   document.body.innerHTML = '';
 });
 
-it.each([false, true])(
-  'checks the durable decision in another window with real IPC (generation changes: %s)',
-  async (newGeneration) => {
+it.each([
+  { newGeneration: false, explicitlyResolved: false },
+  { newGeneration: true, explicitlyResolved: false },
+  { newGeneration: false, explicitlyResolved: true },
+  { newGeneration: true, explicitlyResolved: true },
+])(
+  'checks another window with real IPC (new generation: $newGeneration, explicit resolution: $explicitlyResolved)',
+  async ({ newGeneration, explicitlyResolved }) => {
     vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
     const temp = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'verified-cross-window-'));
     tempRoots.push(temp);
@@ -258,8 +263,16 @@ it.each([false, true])(
         )?.disabled
       ).toBe(false)
     );
-    expect(await firstWindow.releaseUnadmittedFence(guardIdentity, marker, claimId)).toBe(true);
-    expect((await secondWindow.read(guardIdentity))?.decision?.stage).toBe('decision');
+    if (explicitlyResolved) {
+      await firstWindow.release(guardIdentity, marker, { explicitDecision: true });
+      expect(await secondWindow.readDecision(guardIdentity, marker)).toEqual({
+        explicitlyResolved: true,
+        marker: null,
+      });
+    } else {
+      expect(await firstWindow.releaseUnadmittedFence(guardIdentity, marker, claimId)).toBe(true);
+      expect((await secondWindow.read(guardIdentity))?.decision?.stage).toBe('decision');
+    }
     if (newGeneration) {
       await bound.closeAdmission();
       bound.rebind(paths.claude);
@@ -274,14 +287,22 @@ it.each([false, true])(
         .find((item) => item.textContent === 'verifiedAction.guardCheck')
         ?.click();
     });
-    await vi.waitFor(() => expect(mocks.verifiedAction.fenceDecision).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(controller.taskWriteGuard.unknown).toBe(false));
     await vi.waitFor(async () => expect(await secondWindow.read(guardIdentity)).toBeNull());
     const [result] = await fileStore.transaction((tx) => tx.read());
-    expect(result).toMatchObject({
-      status: 'manual',
-      attempts: 1,
-      decisionReceipt: { id: decisionId, decision: 'retry_once' },
-    });
+    if (explicitlyResolved) {
+      expect(mocks.verifiedAction.fenceDecision).not.toHaveBeenCalled();
+      expect(result).toMatchObject({ status: 'question', attempts: 1 });
+      expect(result.decisionReceipt).toBeUndefined();
+      expect(host.textContent).not.toContain('verifiedAction.question');
+    } else {
+      expect(mocks.verifiedAction.fenceDecision).toHaveBeenCalledOnce();
+      expect(result).toMatchObject({
+        status: 'manual',
+        attempts: 1,
+        decisionReceipt: { id: decisionId, decision: 'retry_once' },
+      });
+    }
     expect(await secondWindow.readChosenActionIds(guardIdentity)).toEqual([actionId]);
     expect(mocks.verifiedAction.decide).not.toHaveBeenCalled();
     expect(enqueue).not.toHaveBeenCalled();

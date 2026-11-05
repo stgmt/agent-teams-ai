@@ -96,6 +96,28 @@ describe('durable task write guard', () => {
     await expect(store.acquire(identity, artifact)).rejects.toThrow(/unavailable/);
   });
 
+  it('does not reuse an explicitly resolved attempt token for an ABA marker', async () => {
+    const store = createTaskWriteGuardStorage();
+    await store.acquire(identity, manifest);
+    await store.release(identity, manifest, { explicitDecision: true });
+    await expect(store.acquire(identity, manifest)).rejects.toThrow(/already been resolved/);
+    const decisionMarker = {
+      ...manifest,
+      decision: {
+        actionId: 'c'.repeat(64),
+        decisionId: '11111111-1111-4111-8111-111111111111',
+        decision: 'retry_once' as const,
+        stage: 'decision' as const,
+      },
+    };
+    await expect(store.beginDecision(identity, null, decisionMarker)).rejects.toThrow(
+      /already been resolved/
+    );
+    const fresh = { ...manifest, attemptId: 'fresh-attempt' };
+    await store.acquire(identity, fresh);
+    expect(await store.read(identity)).toEqual(fresh);
+  });
+
   it('retains and upgrades a marker written by the earlier schema', async () => {
     await set(taskWriteGuardKey(identity), artifact);
     const store = createTaskWriteGuardStorage();

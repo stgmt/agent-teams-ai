@@ -550,7 +550,7 @@ export function useTaskWriteGuard({
     ): Promise<{
       expectedContext: AppConnectionContext;
       expectedRootFingerprint: string;
-      manifest?: { markerId: string; decision: TaskWriteDecision | null };
+      manifest?: { markerId: string; decision: TaskWriteDecision | null; resolved?: true };
     }> => {
       if (!isOriginCurrent()) throw new Error('Task context changed');
       const before = useStore.getState();
@@ -630,7 +630,9 @@ export function useTaskWriteGuard({
         (session?.taskWriteOperation && session.taskWriteOperation !== operation)
       )
         throw new Error('Task outcome changed during the check');
-      let manifest: { markerId: string; decision: TaskWriteDecision | null } | undefined;
+      let manifest:
+        | { markerId: string; decision: TaskWriteDecision | null; resolved?: true }
+        | undefined;
       if (operation === 'manifest' && priorSession?.artifactOutcomeUnknown) {
         if (!priorSession.taskWriteMarkerId)
           throw new Error('Task write safety marker is unavailable');
@@ -653,8 +655,20 @@ export function useTaskWriteGuard({
             current.taskWriteOperation !== 'manifest'))
       )
         throw new Error('Task outcome changed during the check');
-      if (current?.artifactOutcomeUnknown)
+      if (manifest?.resolved) {
+        // The explicit receipt refers to this exact attempt. No durable marker
+        // is deleted here: a later write must still acquire its own marker.
+        latest.updateTaskDetailSession(identity, {
+          artifactOutcomeUnknown: false,
+          artifactOutcomeChecked: false,
+          artifactOutcomeRevision: revision + 1,
+          taskWriteMarkerId: null,
+          taskWriteOperation: null,
+          taskWriteDecision: null,
+        });
+      } else if (current?.artifactOutcomeUnknown) {
         latest.updateTaskDetailSession(identity, { artifactOutcomeChecked: true });
+      }
       return {
         expectedContext,
         expectedRootFingerprint: expectedRoot,

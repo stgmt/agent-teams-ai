@@ -162,12 +162,17 @@ export function createTaskWriteGuardStorage(
     },
     async acquire(identity: TaskWriteGuardIdentity, marker: TaskWriteGuardMarker): Promise<void> {
       let occupied: TaskWriteGuardMarker | null = null;
+      let resolvedAttempt = false;
       await backend.update(taskWriteGuardKey(identity), (value: unknown) => {
         const state = parseState(value);
         occupied = state.marker;
-        return occupied ? state : { ...state, marker };
+        resolvedAttempt = state.decisions.some(
+          (item) => item.attemptId === marker.attemptId && item.operation === marker.operation
+        );
+        return occupied || resolvedAttempt ? state : { ...state, marker };
       });
       if (occupied) throw new TaskWriteGuardOccupiedError(occupied);
+      if (resolvedAttempt) throw new Error('Task write attempt has already been resolved');
     },
     /** Consume the old uncertainty and record the chosen answer in one transaction. */
     async beginDecision(
@@ -177,6 +182,7 @@ export function createTaskWriteGuardStorage(
     ): Promise<void> {
       let occupied: TaskWriteGuardMarker | null = null;
       let decided = false;
+      let resolvedAttempt = false;
       const decision = parseMarker(marker)?.decision;
       if (!decision || decision.stage !== 'decision') throw new Error('Invalid task decision');
       await backend.update(taskWriteGuardKey(identity), (value: unknown) => {
@@ -190,6 +196,15 @@ export function createTaskWriteGuardStorage(
             current.decision)
         ) {
           occupied = current;
+          return state;
+        }
+        if (
+          state.decisions.some(
+            (item) => item.attemptId === marker.attemptId && item.operation === marker.operation
+          ) ||
+          (previous?.attemptId === marker.attemptId && previous.operation === marker.operation)
+        ) {
+          resolvedAttempt = true;
           return state;
         }
         if (state.chosenActions.some((item) => item.actionId === decision.actionId)) {
@@ -219,6 +234,7 @@ export function createTaskWriteGuardStorage(
         };
       });
       if (occupied) throw new TaskWriteGuardOccupiedError(occupied);
+      if (resolvedAttempt) throw new Error('Task write attempt has already been resolved');
       if (decided) throw new TaskWriteActionDecidedError();
     },
     /** Only one window may dispatch the recovery fence for this answer. */

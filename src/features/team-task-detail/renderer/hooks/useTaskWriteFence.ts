@@ -124,14 +124,22 @@ export function useTaskWriteFence({
       decision: TaskWriteDecision | null,
       revision: number
     ) => {
-      const stored = await withDeadline(
-        taskWriteGuardStorage.read({ ...identity, dataRootFingerprint: rootFingerprint })
+      // The marker and its explicit-resolution receipt must be one durable
+      // snapshot. A missing marker by itself never proves that the user acted.
+      const snapshot = await withDeadline(
+        taskWriteGuardStorage.readDecision(
+          { ...identity, dataRootFingerprint: rootFingerprint },
+          { version: 1, attemptId: token, operation: 'manifest' }
+        )
       );
+      const stored = snapshot.marker;
       if (
-        !stored ||
-        stored.attemptId !== token ||
-        stored.operation !== 'manifest' ||
-        !sameDecision(stored.decision, decision)
+        stored
+          ? snapshot.explicitlyResolved ||
+            stored.attemptId !== token ||
+            stored.operation !== 'manifest' ||
+            !sameDecision(stored.decision, decision)
+          : !snapshot.explicitlyResolved
       )
         throw new Error('Task outcome changed during the check');
       const state = useStore.getState();
@@ -147,6 +155,7 @@ export function useTaskWriteFence({
         !sameDecision(session.taskWriteDecision, decision)
       )
         throw new Error('Task outcome changed during the check');
+      if (!stored) return { markerId: token, decision: null, resolved: true as const };
       const currentDecision = stored.decision ?? null;
       state.updateTaskDetailSession(identity, { taskWriteDecision: currentDecision });
       return { markerId: token, decision: currentDecision };

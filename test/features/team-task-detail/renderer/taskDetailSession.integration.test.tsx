@@ -21,7 +21,7 @@ import {
   captureTaskDetailReadScope,
 } from '@renderer/store/team/taskDetailReadAuthority';
 import { invalidateContextScopedRequestEpoch } from '@renderer/store/utils/contextScopedRequestEpoch';
-import { del } from 'idb-keyval';
+import { del, set } from 'idb-keyval';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { TaskDetailIdentity } from '@features/team-task-detail/contracts';
@@ -193,6 +193,325 @@ describe('task session surface and origin integration', () => {
     });
     return token;
   }
+
+  it.each([false, true])(
+    'adopts an explicit resolution from another window (generation changes: %s)',
+    async (newGeneration) => {
+      const guardIdentity = { ...identity, dataRootFingerprint: guardContext.dataRootFingerprint };
+      const decision = {
+        actionId: 'c'.repeat(64),
+        decisionId: '11111111-1111-4111-8111-111111111111',
+        decision: 'retry_once' as const,
+        stage: 'decision' as const,
+      };
+      const marker = {
+        version: 1 as const,
+        attemptId: 'resolved-attempt',
+        operation: 'manifest' as const,
+        decision,
+      };
+      const claimId = '22222222-2222-4222-8222-222222222222';
+      await taskWriteGuardStorage.beginDecision(guardIdentity, null, marker);
+      expect(await taskWriteGuardStorage.markFenceSent(guardIdentity, marker, claimId)).toBe(true);
+      let controller!: TaskDetailSessionController;
+      let surface!: ReturnType<typeof createRoot>;
+      await act(async () => {
+        surface = mount('other-window', (value) => {
+          controller = value;
+        });
+      });
+      await waitForGuard();
+      await taskWriteGuardStorage.release(guardIdentity, marker, { explicitDecision: true });
+      const context = { ...guardContext, connectionGeneration: newGeneration ? 2 : 1 };
+      apiMock.externalAgentConnection.getConnectionInfo.mockResolvedValue({
+        context,
+        taskWriteRootFingerprint: guardIdentity.dataRootFingerprint,
+      });
+      apiMock.teams.getTask.mockResolvedValue({ ...task });
+      let binding!: Awaited<
+        ReturnType<TaskDetailSessionController['checkGuardedTaskWriteOutcome']>
+      >;
+      await act(async () => {
+        binding = await controller.checkGuardedTaskWriteOutcome('manifest');
+      });
+      expect(binding.manifest).toMatchObject({ markerId: marker.attemptId, resolved: true });
+      expect(controller.taskWriteGuard).toMatchObject({
+        markerId: null,
+        operation: null,
+        unknown: false,
+        checked: false,
+      });
+      expect(await taskWriteGuardStorage.readChosenActionIds(guardIdentity)).toEqual([
+        decision.actionId,
+      ]);
+      await act(async () => {
+        surface.unmount();
+      });
+      roots.splice(roots.indexOf(surface), 1);
+      await act(async () => {
+        mount('reopened-window', (value) => {
+          controller = value;
+        });
+      });
+      await waitForGuard();
+      expect(controller.taskWriteGuard).toMatchObject({ markerId: null, unknown: false });
+    }
+  );
+
+  it.each([false, true])(
+    'does not clear a newer marker despite the old resolution (same token, different operation: %s)',
+    async (sameToken) => {
+      const guardIdentity = { ...identity, dataRootFingerprint: guardContext.dataRootFingerprint };
+      const decision = {
+        actionId: 'c'.repeat(64),
+        decisionId: '11111111-1111-4111-8111-111111111111',
+        decision: 'retry_once' as const,
+        stage: 'decision' as const,
+      };
+      const marker = {
+        version: 1 as const,
+        attemptId: 'resolved-attempt',
+        operation: 'manifest' as const,
+        decision,
+      };
+      await taskWriteGuardStorage.beginDecision(guardIdentity, null, marker);
+      let controller!: TaskDetailSessionController;
+      await act(async () => {
+        mount('other-window', (value) => {
+          controller = value;
+        });
+      });
+      await waitForGuard();
+      await taskWriteGuardStorage.release(guardIdentity, marker, { explicitDecision: true });
+      const newer = {
+        version: 1 as const,
+        attemptId: sameToken ? marker.attemptId : 'new-attempt',
+        operation: 'artifact' as const,
+      };
+      await taskWriteGuardStorage.acquire(guardIdentity, newer);
+      apiMock.teams.getTask.mockResolvedValue({ ...task });
+      await act(async () => {
+        await expect(controller.checkGuardedTaskWriteOutcome('manifest')).rejects.toThrow(
+          /outcome changed/
+        );
+      });
+      expect(controller.taskWriteGuard).toMatchObject({
+        markerId: marker.attemptId,
+        unknown: true,
+      });
+      expect(await taskWriteGuardStorage.read(guardIdentity)).toEqual(newer);
+    }
+  );
+
+  it('does not trust an active marker whose token already has a resolution receipt', async () => {
+    const guardIdentity = { ...identity, dataRootFingerprint: guardContext.dataRootFingerprint };
+    const decision = {
+      actionId: 'c'.repeat(64),
+      decisionId: '11111111-1111-4111-8111-111111111111',
+      decision: 'retry_once' as const,
+      stage: 'decision' as const,
+    };
+    const marker = {
+      version: 1 as const,
+      attemptId: 'reused-attempt',
+      operation: 'manifest' as const,
+      decision,
+    };
+    await taskWriteGuardStorage.beginDecision(guardIdentity, null, marker);
+    let controller!: TaskDetailSessionController;
+    await act(async () => {
+      mount('other-window', (value) => {
+        controller = value;
+      });
+    });
+    await waitForGuard();
+    await set(taskWriteGuardKey(guardIdentity), {
+      version: 2,
+      marker,
+      decisions: [{ attemptId: marker.attemptId, operation: marker.operation }],
+      chosenActions: [decision],
+    });
+    apiMock.teams.getTask.mockResolvedValue({ ...task });
+    await act(async () => {
+      await expect(controller.checkGuardedTaskWriteOutcome('manifest')).rejects.toThrow(
+        /outcome changed/
+      );
+    });
+    expect(controller.taskWriteGuard).toMatchObject({ markerId: marker.attemptId, unknown: true });
+    expect(await taskWriteGuardStorage.read(guardIdentity)).toEqual(marker);
+  });
+
+  it('does not apply an explicit resolution from another physical root', async () => {
+    const guardIdentity = { ...identity, dataRootFingerprint: guardContext.dataRootFingerprint };
+    const decision = {
+      actionId: 'c'.repeat(64),
+      decisionId: '11111111-1111-4111-8111-111111111111',
+      decision: 'retry_once' as const,
+      stage: 'decision' as const,
+    };
+    const marker = {
+      version: 1 as const,
+      attemptId: 'resolved-attempt',
+      operation: 'manifest' as const,
+      decision,
+    };
+    await taskWriteGuardStorage.beginDecision(guardIdentity, null, marker);
+    let controller!: TaskDetailSessionController;
+    await act(async () => {
+      mount('other-window', (value) => {
+        controller = value;
+      });
+    });
+    await waitForGuard();
+    await taskWriteGuardStorage.release(guardIdentity, marker, { explicitDecision: true });
+    apiMock.externalAgentConnection.getConnectionInfo.mockResolvedValue({
+      context: { ...guardContext, connectionGeneration: 2 },
+      taskWriteRootFingerprint: 'b'.repeat(64),
+    });
+    await act(async () => {
+      await expect(controller.checkGuardedTaskWriteOutcome('manifest')).rejects.toThrow(
+        /root changed/
+      );
+    });
+    expect(controller.taskWriteGuard).toMatchObject({ markerId: marker.attemptId, unknown: true });
+  });
+
+  it('does not apply a late resolution to a newer local session and marker', async () => {
+    const guardIdentity = { ...identity, dataRootFingerprint: guardContext.dataRootFingerprint };
+    const decision = {
+      actionId: 'c'.repeat(64),
+      decisionId: '11111111-1111-4111-8111-111111111111',
+      decision: 'retry_once' as const,
+      stage: 'decision' as const,
+    };
+    const marker = {
+      version: 1 as const,
+      attemptId: 'resolved-attempt',
+      operation: 'manifest' as const,
+      decision,
+    };
+    await taskWriteGuardStorage.beginDecision(guardIdentity, null, marker);
+    let controller!: TaskDetailSessionController;
+    await act(async () => {
+      mount('other-window', (value) => {
+        controller = value;
+      });
+    });
+    await waitForGuard();
+    await taskWriteGuardStorage.release(guardIdentity, marker, { explicitDecision: true });
+    apiMock.teams.getTask.mockResolvedValue({ ...task });
+    let releaseRead!: () => void;
+    let readStarted!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseRead = resolve;
+    });
+    const started = new Promise<void>((resolve) => {
+      readStarted = resolve;
+    });
+    const read = taskWriteGuardStorage.readDecision.bind(taskWriteGuardStorage);
+    const spy = vi
+      .spyOn(taskWriteGuardStorage, 'readDecision')
+      .mockImplementationOnce(async (...args) => {
+        const result = await read(...args);
+        readStarted();
+        await gate;
+        return result;
+      });
+    let check!: ReturnType<TaskDetailSessionController['checkGuardedTaskWriteOutcome']>;
+    await act(async () => {
+      check = controller.checkGuardedTaskWriteOutcome('manifest');
+      await started;
+    });
+    const newer = { version: 1 as const, attemptId: 'new-attempt', operation: 'artifact' as const };
+    await taskWriteGuardStorage.acquire(guardIdentity, newer);
+    await act(async () => {
+      const state = useStore.getState();
+      const current = state.taskDetailSessionById[key];
+      state.updateTaskDetailSession(identity, {
+        taskWriteMarkerId: newer.attemptId,
+        taskWriteOperation: newer.operation,
+        taskWriteDecision: null,
+        artifactOutcomeUnknown: true,
+        artifactOutcomeRevision: (current.artifactOutcomeRevision ?? 0) + 1,
+      });
+    });
+    await act(async () => {
+      releaseRead();
+      await expect(check).rejects.toThrow(/outcome changed/);
+    });
+    expect(await taskWriteGuardStorage.read(guardIdentity)).toEqual(newer);
+    expect(controller.taskWriteGuard).toMatchObject({
+      markerId: newer.attemptId,
+      operation: 'artifact',
+      unknown: true,
+    });
+    spy.mockRestore();
+  });
+
+  it('cannot start a new action when another marker appears after the resolved snapshot', async () => {
+    const guardIdentity = { ...identity, dataRootFingerprint: guardContext.dataRootFingerprint };
+    const decision = {
+      actionId: 'c'.repeat(64),
+      decisionId: '11111111-1111-4111-8111-111111111111',
+      decision: 'retry_once' as const,
+      stage: 'decision' as const,
+    };
+    const marker = {
+      version: 1 as const,
+      attemptId: 'resolved-attempt',
+      operation: 'manifest' as const,
+      decision,
+    };
+    await taskWriteGuardStorage.beginDecision(guardIdentity, null, marker);
+    let controller!: TaskDetailSessionController;
+    await act(async () => {
+      mount('other-window', (value) => {
+        controller = value;
+      });
+    });
+    await waitForGuard();
+    await taskWriteGuardStorage.release(guardIdentity, marker, { explicitDecision: true });
+    apiMock.teams.getTask.mockResolvedValue({ ...task });
+    let releaseRead!: () => void;
+    let readStarted!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseRead = resolve;
+    });
+    const started = new Promise<void>((resolve) => {
+      readStarted = resolve;
+    });
+    const read = taskWriteGuardStorage.readDecision.bind(taskWriteGuardStorage);
+    const spy = vi
+      .spyOn(taskWriteGuardStorage, 'readDecision')
+      .mockImplementationOnce(async (...args) => {
+        const result = await read(...args);
+        readStarted();
+        await gate;
+        return result;
+      });
+    let check!: ReturnType<TaskDetailSessionController['checkGuardedTaskWriteOutcome']>;
+    await act(async () => {
+      check = controller.checkGuardedTaskWriteOutcome('manifest');
+      await started;
+    });
+    const newer = { version: 1 as const, attemptId: 'new-attempt', operation: 'artifact' as const };
+    await taskWriteGuardStorage.acquire(guardIdentity, newer);
+    await act(async () => {
+      releaseRead();
+      await check;
+    });
+    expect(await taskWriteGuardStorage.read(guardIdentity)).toEqual(newer);
+    const performed = vi.fn();
+    await act(async () => {
+      await expect(controller.beginGuardedTaskWrite('artifact').then(performed)).rejects.toThrow(
+        /safety storage is unavailable or occupied/
+      );
+    });
+    expect(performed).not.toHaveBeenCalled();
+    expect(await taskWriteGuardStorage.read(guardIdentity)).toEqual(newer);
+    expect(controller.taskWriteGuard).toMatchObject({ markerId: newer.attemptId, unknown: true });
+    spy.mockRestore();
+  });
 
   it.each([false, true])(
     'adopts only the same durable decision after another window releases a fence (generation changes: %s)',
