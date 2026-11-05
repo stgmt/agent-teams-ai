@@ -120,7 +120,7 @@ export const VerifiedActionPanel = ({
       );
       const unknown =
         decision !== 'leave_unresolved' &&
-        (result.status === 'question' || result.status === 'running' || result.status === 'manual');
+        (result.status === 'question' || result.status === 'running');
       if (
         !(await guard.settleGuardedTaskWrite(token, 'manifest', unknown ? 'unknown' : 'confirmed'))
       ) {
@@ -192,8 +192,14 @@ export const VerifiedActionPanel = ({
     }
   };
 
-  // Keep an existing decision reachable if the requirement was later disabled.
-  if (contextId !== 'local' || !bridge || (!enabled && (!actions || actions.length === 0)))
+  // An interrupted preparation may have no saved action yet. Its marker must
+  // remain reachable even if another window disabled the requirement.
+  const hasManifestMarker = guardState.operation === 'manifest' && !!guardState.markerId;
+  if (
+    contextId !== 'local' ||
+    !bridge ||
+    (!enabled && (!actions || actions.length === 0) && !hasManifestMarker)
+  )
     return null;
   const pending = actions?.some((item) =>
     ['awaiting_approval', 'running', 'question'].includes(item.status)

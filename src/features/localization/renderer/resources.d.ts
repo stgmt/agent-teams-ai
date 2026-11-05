@@ -3824,7 +3824,7 @@ export default interface Resources {
       "failed": "Could not update the task artifact.",
       "guardLoading": "Checking task write safety state…",
       "guardUnavailable": "Task write safety storage is unavailable. Changes are disabled; reopen the app when storage is working.",
-      "guardUnsupported": "Artifact changes are available only in the local desktop app.",
+      "guardUnsupported": "Artifact editing and downloads are available only in the local desktop app.",
       "hint": "Choose a file up to 20 MiB. A copy is stored with the task. For a larger video, you can attach a small manifest with its location and expected hash; only the manifest is checked.",
       "invalidName": "Enter a filename without a directory or special path characters.",
       "missing": "No required artifact attached yet.",

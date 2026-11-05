@@ -144,6 +144,7 @@ describe('VerifiedActionPanel', () => {
     );
     expect(host.textContent).toContain('verifiedAction.manual');
     expect(host.textContent).not.toContain('verifiedAction.question');
+    expect(guard.settleGuardedTaskWrite).toHaveBeenCalledWith('guard-token', 'manifest', 'confirmed');
     await act(async () => {
       root.unmount();
     });
@@ -218,6 +219,40 @@ describe('VerifiedActionPanel', () => {
     });
     expect(host.textContent).toContain('verifiedAction.question');
     expect(host.textContent).not.toContain('verifiedAction.prepare');
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it('keeps an interrupted preparation reachable when the requirement is disabled', async () => {
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+    mocks.list.mockResolvedValueOnce([]);
+    const pending = {
+      ...guard,
+      taskWriteGuard: {
+        ...guard.taskWriteGuard,
+        markerId: 'old-token',
+        operation: 'manifest' as const,
+        unknown: true,
+      },
+    };
+    const host = document.createElement('div');
+    document.body.append(host);
+    const root = createRoot(host);
+    await act(async () => {
+      root.render(
+        <VerifiedActionPanel
+          contextId="local"
+          teamName="team"
+          taskId="task"
+          enabled={false}
+          canMutate={() => true}
+          guard={pending}
+        />
+      );
+    });
+    expect(host.textContent).toContain('verifiedAction.guardUnknown');
+    expect(button(host, 'verifiedAction.guardCheck').disabled).toBe(false);
     await act(async () => {
       root.unmount();
     });
