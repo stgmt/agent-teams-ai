@@ -11,9 +11,17 @@
     "checkOutcome": "Check current task",
     "confirmMessage": "The task was read. This is only a snapshot; a delayed earlier request could still finish later. Allow new changes?",
     "confirmOutcome": "Allow new changes",
+    "saving": "An artifact update is still in progress.",
+    "notStarted": "No update was sent; check the current task or wait for the ongoing update.",
+    "guardLoading": "Checking task write safety state…",
+    "guardUnavailable": "Task write safety storage is unavailable. Changes are disabled; reopen the app when storage is working.",
+    "guardUnsupported": "Artifact changes are available only in the local desktop app.",
+    "otherOperation": "Another task operation needs attention in its own section.",
     "attach": "Attach file",
     "missing": "No required artifact attached yet.",
     "tooLarge": "The selected file exceeds 20 MiB.",
+    "invalidName": "Enter a filename without a directory or special path characters.",
+    "nameMismatch": "Choose the required file: {{expected}}.",
     "failed": "Could not update the task artifact."
   },
   "activity": {

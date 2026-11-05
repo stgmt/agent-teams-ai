@@ -8,7 +8,9 @@ const MAX_BASE64_CHARS = Math.ceil((20 * 1024 * 1024) / 3) * 4;
 
 export function validateTaskArtifactFields(
   input: Record<string, unknown>
-): { valid: true; value: ArtifactFields } | { valid: false; error: string } {
+):
+  | { valid: true; value: ArtifactFields; expectedContext: unknown }
+  | { valid: false; error: string } {
   const { artifactRequired, artifactExpectedFilename, artifactFile } = input;
   if (input.artifactProjectPath !== undefined) {
     return { valid: false, error: 'Project paths are not supported; send artifact file bytes' };
@@ -40,6 +42,7 @@ export function validateTaskArtifactFields(
   }
   return {
     valid: true,
+    expectedContext: input.artifactExpectedContext,
     value: {
       ...(artifactRequired !== undefined ? { artifactRequired } : {}),
       ...(artifactExpectedFilename !== undefined ? { artifactExpectedFilename } : {}),

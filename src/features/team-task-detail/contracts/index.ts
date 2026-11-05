@@ -1,3 +1,4 @@
+import type { AppConnectionContext } from '@features/external-agent-connection/contracts';
 import type { InlineChip } from '@shared/types/inlineChip';
 
 export interface TaskDetailIdentity {
@@ -5,6 +6,8 @@ export interface TaskDetailIdentity {
   teamName: string;
   taskId: string;
 }
+
+export type TaskWriteOperation = 'artifact' | 'manifest';
 
 export type TaskDetailReadPhase =
   | 'hydrating'
@@ -52,6 +55,14 @@ export interface TaskDetailSession {
   artifactOutcomeUnknown?: boolean;
   artifactOutcomeChecked?: boolean;
   artifactOutcomeRevision?: number;
+  artifactWriteId?: string | null;
+  taskWriteGuardState?: 'loading' | 'ready' | 'unavailable';
+  taskWriteGuardReason?: 'unsupported' | 'unavailable' | null;
+  taskWriteMarkerId?: string | null;
+  taskWriteOperation?: TaskWriteOperation | null;
+  taskWriteHydrationId?: string | null;
+  taskWriteRootFingerprint?: string | null;
+  taskWriteExpectedContext?: AppConnectionContext | null;
   commentText: string;
   commentChips: InlineChip[];
   pendingAttachments: PendingAttachment[];

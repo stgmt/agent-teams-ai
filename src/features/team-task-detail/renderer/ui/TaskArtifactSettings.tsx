@@ -5,9 +5,26 @@ import { Button } from '@renderer/components/ui/button';
 import { Input } from '@renderer/components/ui/input';
 import { Switch } from '@renderer/components/ui/switch';
 
+import {
+  ArtifactWriteNotStartedError,
+  ArtifactWriteOutcomeHandledError,
+} from '../../core/domain/taskArtifactOutcome';
+
 import type { TaskArtifactRequirement, TaskFieldUpdates } from '@shared/types';
 
 const MAX_FILE_SIZE = 20 * 1024 * 1024;
+
+function isArtifactFilename(value: string): boolean {
+  const name = value.trim();
+  return (
+    Boolean(name) &&
+    value.length <= 255 &&
+    !/[\\/:]/.test(value) &&
+    !Array.from(value).some((character) => character.charCodeAt(0) < 32) &&
+    name !== '.' &&
+    name !== '..'
+  );
+}
 
 interface Props {
   requirement?: TaskArtifactRequirement;
@@ -17,9 +34,13 @@ interface Props {
   onDownload: (attachmentId: string) => Promise<string | null>;
   outcomeUnknown: boolean;
   outcomeChecked: boolean;
+  writeInFlight: boolean;
+  guardStatus: 'loading' | 'ready' | 'unavailable';
+  guardReason: 'unsupported' | 'unavailable' | null;
+  otherOperation: boolean;
   onOutcomeUnknown: () => void;
   onCheckOutcome: () => Promise<void>;
-  onConfirmOutcome: () => void;
+  onConfirmOutcome: () => Promise<void>;
 }
 
 function readBase64(file: File): Promise<string> {
@@ -45,6 +66,10 @@ export const TaskArtifactSettings = ({
   onDownload,
   outcomeUnknown,
   outcomeChecked,
+  writeInFlight,
+  guardStatus,
+  guardReason,
+  otherOperation,
   onOutcomeUnknown,
   onCheckOutcome,
   onConfirmOutcome,
@@ -56,20 +81,42 @@ export const TaskArtifactSettings = ({
   const fileInput = useRef<HTMLInputElement>(null);
 
   const update = async (fields: TaskFieldUpdates): Promise<void> => {
-    if (outcomeUnknown || !canMutate()) return;
+    if (
+      outcomeUnknown ||
+      writeInFlight ||
+      guardStatus !== 'ready' ||
+      otherOperation ||
+      !canMutate()
+    )
+      return;
     setError(null);
+    if (
+      fields.artifactExpectedFilename !== undefined &&
+      !isArtifactFilename(fields.artifactExpectedFilename)
+    ) {
+      setError(t('artifact.invalidName'));
+      return;
+    }
     setPending(true);
     try {
       await onUpdate(fields);
-    } catch {
-      onOutcomeUnknown();
+    } catch (err) {
+      if (err instanceof ArtifactWriteNotStartedError) setError(t('artifact.notStarted'));
+      else if (!(err instanceof ArtifactWriteOutcomeHandledError)) onOutcomeUnknown();
     } finally {
       setPending(false);
     }
   };
 
   const attach = async (file?: File): Promise<void> => {
-    if (!file || outcomeUnknown || !canMutate()) {
+    if (
+      !file ||
+      outcomeUnknown ||
+      writeInFlight ||
+      guardStatus !== 'ready' ||
+      otherOperation ||
+      !canMutate()
+    ) {
       if (fileInput.current) fileInput.current.value = '';
       return;
     }
@@ -79,14 +126,25 @@ export const TaskArtifactSettings = ({
       if (fileInput.current) fileInput.current.value = '';
       return;
     }
+    if (!isArtifactFilename(file.name)) {
+      setError(t('artifact.invalidName'));
+      if (fileInput.current) fileInput.current.value = '';
+      return;
+    }
+    if (requirement?.expectedFilename && requirement.expectedFilename !== file.name.trim()) {
+      setError(t('artifact.nameMismatch', { expected: requirement.expectedFilename }));
+      if (fileInput.current) fileInput.current.value = '';
+      return;
+    }
     setPending(true);
     try {
       const base64Data = await readBase64(file);
       if (canMutate()) {
         try {
           await onUpdate({ artifactFile: { filename: file.name, base64Data } });
-        } catch {
-          onOutcomeUnknown();
+        } catch (err) {
+          if (err instanceof ArtifactWriteNotStartedError) setError(t('artifact.notStarted'));
+          else if (!(err instanceof ArtifactWriteOutcomeHandledError)) onOutcomeUnknown();
         }
       }
     } catch (err) {
@@ -102,6 +160,18 @@ export const TaskArtifactSettings = ({
     setPending(true);
     try {
       await onCheckOutcome();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t('artifact.failed'));
+    } finally {
+      setPending(false);
+    }
+  };
+
+  const confirmOutcome = async (): Promise<void> => {
+    setError(null);
+    setPending(true);
+    try {
+      await onConfirmOutcome();
     } catch (err) {
       setError(err instanceof Error ? err.message : t('artifact.failed'));
     } finally {
@@ -142,7 +212,14 @@ export const TaskArtifactSettings = ({
       <label className="flex items-center gap-2">
         <Switch
           checked={requirement?.required === true}
-          disabled={pending || outcomeUnknown || (completed && !requirement?.required)}
+          disabled={
+            pending ||
+            writeInFlight ||
+            guardStatus !== 'ready' ||
+            otherOperation ||
+            outcomeUnknown ||
+            (completed && !requirement?.required)
+          }
           onCheckedChange={(checked) => void update({ artifactRequired: checked })}
         />
         {t('artifact.require')}
@@ -150,11 +227,37 @@ export const TaskArtifactSettings = ({
       {completed ? (
         <p className="text-xs text-[var(--color-text-muted)]">{t('artifact.reopen')}</p>
       ) : null}
-      {outcomeUnknown ? (
+      {writeInFlight ? (
+        <p role="status" className="text-xs text-[var(--color-text-muted)]">
+          {t('artifact.saving')}
+        </p>
+      ) : null}
+      {guardStatus !== 'ready' ? (
+        <p role="status" className="text-xs text-[var(--color-text-muted)]">
+          {t(
+            guardStatus === 'loading'
+              ? 'artifact.guardLoading'
+              : guardReason === 'unsupported'
+                ? 'artifact.guardUnsupported'
+                : 'artifact.guardUnavailable'
+          )}
+        </p>
+      ) : null}
+      {otherOperation ? (
+        <p role="status" className="text-xs text-[var(--color-text-muted)]">
+          {t('artifact.otherOperation')}
+        </p>
+      ) : null}
+      {guardStatus === 'ready' && !otherOperation && outcomeUnknown ? (
         <div role="alert" className="space-y-2 text-xs text-[var(--color-text-muted)]">
           <p>{t(outcomeChecked ? 'artifact.confirmMessage' : 'artifact.unknown')}</p>
           {outcomeChecked ? (
-            <Button type="button" size="sm" disabled={pending} onClick={onConfirmOutcome}>
+            <Button
+              type="button"
+              size="sm"
+              disabled={pending}
+              onClick={() => void confirmOutcome()}
+            >
               {t('artifact.confirmOutcome')}
             </Button>
           ) : (
@@ -175,13 +278,27 @@ export const TaskArtifactSettings = ({
               aria-label={t('artifact.name')}
               placeholder={t('artifact.name')}
               value={filename}
-              disabled={completed || outcomeUnknown}
+              disabled={
+                completed ||
+                writeInFlight ||
+                guardStatus !== 'ready' ||
+                otherOperation ||
+                outcomeUnknown
+              }
               onChange={(event) => setFilename(event.target.value)}
             />
             <Button
               type="button"
               size="sm"
-              disabled={pending || completed || outcomeUnknown || !filename.trim()}
+              disabled={
+                pending ||
+                completed ||
+                writeInFlight ||
+                guardStatus !== 'ready' ||
+                otherOperation ||
+                outcomeUnknown ||
+                !filename.trim()
+              }
               onClick={() => void update({ artifactExpectedFilename: filename.trim() })}
             >
               {t('artifact.setName')}
@@ -196,7 +313,14 @@ export const TaskArtifactSettings = ({
           <Button
             type="button"
             size="sm"
-            disabled={pending || completed || outcomeUnknown}
+            disabled={
+              pending ||
+              completed ||
+              writeInFlight ||
+              guardStatus !== 'ready' ||
+              otherOperation ||
+              outcomeUnknown
+            }
             onClick={() => fileInput.current?.click()}
           >
             {t('artifact.attach')}

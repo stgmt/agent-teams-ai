@@ -1,5 +1,6 @@
 import React, { act, useEffect } from 'react';
 import { createRoot } from 'react-dom/client';
+import 'fake-indexeddb/auto';
 
 import { createTaskDetailReadEntry, taskDetailKey } from '@features/team-task-detail/core';
 import { TaskDetailEditorActivationFeedback } from '@features/team-task-detail/renderer/adapters/TaskDetailEditorActivationFeedback';
@@ -7,6 +8,10 @@ import { TaskDetailReadCoordinator } from '@features/team-task-detail/renderer/a
 import { useTaskDetailEditorHost } from '@features/team-task-detail/renderer/hooks/useTaskDetailEditorHost';
 import { useTaskDetailReviewRoute } from '@features/team-task-detail/renderer/hooks/useTaskDetailReviewRoute';
 import { useTaskDetailSession } from '@features/team-task-detail/renderer/hooks/useTaskDetailSession';
+import {
+  taskWriteGuardKey,
+  taskWriteGuardStorage,
+} from '@features/team-task-detail/renderer/adapters/taskWriteGuardStorage';
 import { useStore } from '@renderer/store';
 import { __resetTeamSliceModuleStateForTests } from '@renderer/store/slices/teamSlice';
 import {
@@ -15,6 +20,7 @@ import {
 } from '@renderer/store/team/taskDetailReadAuthority';
 import { invalidateContextScopedRequestEpoch } from '@renderer/store/utils/contextScopedRequestEpoch';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { del } from 'idb-keyval';
 
 import type { TaskDetailIdentity } from '@features/team-task-detail/contracts';
 import type { TaskDetailSessionController } from '@features/team-task-detail/renderer';
@@ -27,8 +33,9 @@ const apiMock = vi.hoisted(() => ({
     restoreTeam: vi.fn(),
     softDeleteTask: vi.fn(),
   },
+  externalAgentConnection: { getConnectionInfo: vi.fn() },
 }));
-vi.mock('@renderer/api', () => ({ api: apiMock }));
+vi.mock('@renderer/api', () => ({ api: apiMock, isElectronMode: () => true }));
 vi.mock('@renderer/services/draftStorage', () => ({
   draftStorage: {
     loadDraft: vi.fn(async () => null),
@@ -40,6 +47,11 @@ vi.mock('@renderer/services/draftStorage', () => ({
 
 const initial = useStore.getState();
 const identity: TaskDetailIdentity = { contextId: 'local', teamName: 'TEST-team', taskId: '1' };
+const guardContext = {
+  appInstanceId: 'TEST-app',
+  dataRootFingerprint: 'a'.repeat(64),
+  connectionGeneration: 1,
+};
 const key = taskDetailKey(identity);
 const task: TeamTaskWithKanban = { id: '1', subject: 'TEST task', status: 'pending' };
 const teamDeletedAt = '2026-10-14T18:00:00.000Z';
@@ -121,9 +133,13 @@ function mount(surfaceId: string, receive: (controller: TaskDetailSessionControl
 }
 
 describe('task session surface and origin integration', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
+    await del(
+      taskWriteGuardKey({ ...identity, dataRootFingerprint: guardContext.dataRootFingerprint })
+    );
     vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
     vi.clearAllMocks();
+    apiMock.externalAgentConnection.getConnectionInfo.mockResolvedValue({ context: guardContext });
     __resetTeamSliceModuleStateForTests();
     useStore.setState(
       {
@@ -157,6 +173,22 @@ describe('task session surface and origin integration', () => {
     vi.unstubAllGlobals();
   });
 
+  async function waitForGuard(): Promise<void> {
+    await vi.waitFor(() =>
+      expect(useStore.getState().taskDetailSessionById[key]?.taskWriteGuardState).toBe('ready')
+    );
+  }
+
+  async function makeUnknown(controller: TaskDetailSessionController): Promise<string> {
+    await waitForGuard();
+    let token = '';
+    await act(async () => {
+      ({ token } = await controller.beginGuardedTaskWrite('artifact'));
+      await controller.settleGuardedTaskWrite(token, 'artifact', 'unknown');
+    });
+    return token;
+  }
+
   it('requires a fresh task read and an explicit decision before clearing an unknown artifact outcome', async () => {
     let controller!: TaskDetailSessionController;
     await act(async () => {
@@ -164,12 +196,10 @@ describe('task session surface and origin integration', () => {
         controller = value;
       });
     });
-    await act(async () => {
-      controller.markArtifactOutcomeUnknown();
-    });
+    await makeUnknown(controller);
     expect(useStore.getState().taskDetailSessionById[key].artifactOutcomeUnknown).toBe(true);
     await act(async () => {
-      controller.confirmArtifactOutcome();
+      await expect(controller.confirmArtifactOutcome()).rejects.toThrow(/Check the matching/);
     });
     expect(useStore.getState().taskDetailSessionById[key].artifactOutcomeUnknown).toBe(true);
     apiMock.teams.getTask.mockResolvedValueOnce({
@@ -186,7 +216,7 @@ describe('task session surface and origin integration', () => {
     expect(useStore.getState().taskDetailSessionById[key].artifactOutcomeUnknown).toBe(true);
     expect(useStore.getState().taskDetailSessionById[key].artifactOutcomeChecked).toBe(true);
     await act(async () => {
-      controller.confirmArtifactOutcome();
+      await controller.confirmArtifactOutcome();
     });
     expect(useStore.getState().taskDetailSessionById[key].artifactOutcomeUnknown).toBe(false);
   });
@@ -198,9 +228,7 @@ describe('task session surface and origin integration', () => {
         controller = value;
       });
     });
-    await act(async () => {
-      controller.markArtifactOutcomeUnknown();
-    });
+    await makeUnknown(controller);
     apiMock.teams.getTask.mockRejectedValueOnce(new Error('read failed'));
     await act(async () => {
       await expect(controller.checkArtifactOutcome()).rejects.toThrow(/confirm/);
@@ -220,17 +248,134 @@ describe('task session surface and origin integration', () => {
     });
     const update = vi.fn(async () => undefined);
     useStore.setState({ updateTaskFields: update });
-    await act(async () => {
-      controller.markArtifactOutcomeUnknown();
-    });
+    await makeUnknown(controller);
     await expect(controller.updateTaskArtifact({ artifactRequired: true })).rejects.toThrow(
-      /Check the current task/
+      /No task write was sent/
     );
     expect(update).not.toHaveBeenCalled();
     await act(async () => {
-      controller.confirmArtifactOutcome();
+      await expect(controller.confirmArtifactOutcome()).rejects.toThrow(/Check the matching/);
     });
     expect(useStore.getState().taskDetailSessionById[key].artifactOutcomeUnknown).toBe(true);
+  });
+
+  it('recovers a manifest marker and only clears it after the matching operation is checked and confirmed', async () => {
+    const marker = {
+      version: 1 as const,
+      attemptId: 'persisted-attempt',
+      operation: 'manifest' as const,
+    };
+    await taskWriteGuardStorage.acquire(
+      { ...identity, dataRootFingerprint: guardContext.dataRootFingerprint },
+      marker
+    );
+    let controller!: TaskDetailSessionController;
+    await act(async () => {
+      mount('dialog', (value) => {
+        controller = value;
+      });
+    });
+    await waitForGuard();
+    expect(controller.taskWriteGuard).toMatchObject({
+      unknown: true,
+      markerId: marker.attemptId,
+      operation: 'manifest',
+    });
+    await expect(controller.checkGuardedTaskWriteOutcome('artifact')).rejects.toThrow(
+      /different task operation/
+    );
+    await expect(
+      controller.confirmGuardedTaskWriteOutcome(marker.attemptId, 'artifact')
+    ).rejects.toThrow(/matching/);
+    apiMock.teams.getTask.mockResolvedValueOnce({ ...task });
+    await act(async () => {
+      await controller.checkGuardedTaskWriteOutcome('manifest');
+    });
+    await expect(controller.confirmGuardedTaskWriteOutcome('wrong-id', 'manifest')).rejects.toThrow(
+      /matching/
+    );
+    expect(
+      await taskWriteGuardStorage.read({
+        ...identity,
+        dataRootFingerprint: guardContext.dataRootFingerprint,
+      })
+    ).toEqual(marker);
+    await act(async () => {
+      await controller.confirmGuardedTaskWriteOutcome(marker.attemptId, 'manifest');
+    });
+    expect(
+      await taskWriteGuardStorage.read({
+        ...identity,
+        dataRootFingerprint: guardContext.dataRootFingerprint,
+      })
+    ).toBeNull();
+  });
+
+  it('fails closed if persistent safety storage is unavailable', async () => {
+    const read = vi
+      .spyOn(taskWriteGuardStorage, 'read')
+      .mockRejectedValueOnce(new Error('storage unavailable'));
+    let controller!: TaskDetailSessionController;
+    await act(async () => {
+      mount('dialog', (value) => {
+        controller = value;
+      });
+    });
+    await vi.waitFor(() =>
+      expect(useStore.getState().taskDetailSessionById[key]?.taskWriteGuardState).toBe(
+        'unavailable'
+      )
+    );
+    const update = vi.fn(async () => undefined);
+    useStore.setState({ updateTaskFields: update });
+    await expect(controller.updateTaskArtifact({ artifactRequired: true })).rejects.toThrow(
+      /No task write was sent/
+    );
+    expect(update).not.toHaveBeenCalled();
+    read.mockRestore();
+  });
+
+  it('does not send a write if saving its persistent marker fails', async () => {
+    let controller!: TaskDetailSessionController;
+    await act(async () => {
+      mount('dialog', (value) => {
+        controller = value;
+      });
+    });
+    await waitForGuard();
+    const acquire = vi
+      .spyOn(taskWriteGuardStorage, 'acquire')
+      .mockRejectedValueOnce(new Error('storage unavailable'));
+    const update = vi.fn(async () => undefined);
+    useStore.setState({ updateTaskFields: update });
+    await act(async () => {
+      await expect(controller.updateTaskArtifact({ artifactRequired: true })).rejects.toThrow(
+        /safety storage/
+      );
+    });
+    expect(update).not.toHaveBeenCalled();
+    expect(useStore.getState().taskDetailSessionById[key].taskWriteGuardState).toBe('unavailable');
+    acquire.mockRestore();
+  });
+
+  it('never clears an old-root marker after the active root changes', async () => {
+    const marker = { version: 1 as const, attemptId: 'old-root', operation: 'artifact' as const };
+    const guardIdentity = { ...identity, dataRootFingerprint: guardContext.dataRootFingerprint };
+    await taskWriteGuardStorage.acquire(guardIdentity, marker);
+    let controller!: TaskDetailSessionController;
+    await act(async () => {
+      mount('dialog', (value) => {
+        controller = value;
+      });
+    });
+    await waitForGuard();
+    apiMock.externalAgentConnection.getConnectionInfo.mockResolvedValue({
+      context: { ...guardContext, dataRootFingerprint: 'b'.repeat(64), connectionGeneration: 2 },
+    });
+    await expect(controller.checkGuardedTaskWriteOutcome('artifact')).rejects.toThrow(
+      /root changed/
+    );
+    expect(await taskWriteGuardStorage.read(guardIdentity)).toEqual(marker);
   });
 
   it('does not confirm a newer unknown outcome with an older in-flight read', async () => {
@@ -240,9 +385,7 @@ describe('task session surface and origin integration', () => {
         controller = value;
       });
     });
-    await act(async () => {
-      controller.markArtifactOutcomeUnknown();
-    });
+    await makeUnknown(controller);
     let resolveRead!: (value: TeamTaskWithKanban) => void;
     let signalStarted!: () => void;
     const started = new Promise<void>((resolve) => {
@@ -268,6 +411,150 @@ describe('task session surface and origin integration', () => {
     });
     expect(useStore.getState().taskDetailSessionById[key].artifactOutcomeUnknown).toBe(true);
     expect(useStore.getState().taskDetailSessionById[key].artifactOutcomeChecked).toBe(false);
+  });
+
+  it.each(['resolve', 'reject'] as const)(
+    'does not let a late %s unlock a newer guarded write',
+    async (lateResult) => {
+      let controller!: TaskDetailSessionController;
+      await act(async () => {
+        mount('dialog', (value) => {
+          controller = value;
+        });
+      });
+      await waitForGuard();
+      expect(controller.canEditNow()).toBe(true);
+      let resolveWrite!: () => void;
+      let rejectWrite!: (error: Error) => void;
+      let resolveNext!: () => void;
+      let firstStarted!: () => void;
+      let nextStarted!: () => void;
+      const firstStartedPromise = new Promise<void>((resolve) => {
+        firstStarted = resolve;
+      });
+      const nextStartedPromise = new Promise<void>((resolve) => {
+        nextStarted = resolve;
+      });
+      const update = vi
+        .fn()
+        .mockImplementationOnce(() => {
+          firstStarted();
+          return new Promise<void>((resolve, reject) => {
+            resolveWrite = resolve;
+            rejectWrite = reject;
+          });
+        })
+        .mockImplementationOnce(() => {
+          nextStarted();
+          return new Promise<void>((resolve) => {
+            resolveNext = resolve;
+          });
+        });
+      useStore.setState({ updateTaskFields: update });
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      try {
+        let timedOut!: Promise<void>;
+        await act(async () => {
+          const operation = controller.updateTaskArtifact({ artifactRequired: true });
+          timedOut = expect(operation).rejects.toThrow(/timed out/);
+          await firstStartedPromise;
+        });
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(30_000);
+          await timedOut;
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+      expect(useStore.getState().taskDetailSessionById[key].artifactOutcomeUnknown).toBe(true);
+      apiMock.teams.getTask.mockResolvedValueOnce({
+        ...task,
+        artifactRequirement: { required: true },
+      });
+      await act(async () => {
+        await controller.checkArtifactOutcome();
+      });
+      await act(async () => {
+        await controller.confirmArtifactOutcome();
+      });
+      expect(useStore.getState().taskDetailSessionById[key].artifactOutcomeUnknown).toBe(false);
+      let next!: Promise<void>;
+      await act(async () => {
+        next = controller.updateTaskArtifact({ artifactRequired: true });
+        await nextStartedPromise;
+      });
+      const nextId = useStore.getState().taskDetailSessionById[key].artifactWriteId;
+      expect(nextId).toBeTruthy();
+      await act(async () => {
+        if (lateResult === 'resolve') resolveWrite();
+        else rejectWrite(new Error('late failure'));
+        await Promise.resolve();
+      });
+      expect(update).toHaveBeenCalledTimes(2);
+      expect(useStore.getState().taskDetailSessionById[key].artifactWriteId).toBe(nextId);
+      expect(apiMock.teams.getTask).toHaveBeenCalledTimes(1);
+      expect(useStore.getState().taskDetailSessionById[key].artifactOutcomeUnknown).toBe(false);
+      apiMock.teams.getTask.mockResolvedValueOnce({
+        ...task,
+        artifactRequirement: { required: true },
+      });
+      await act(async () => {
+        resolveNext();
+        await next;
+      });
+      expect(useStore.getState().taskDetailSessionById[key].artifactWriteId).toBeNull();
+    }
+  );
+
+  it('keeps an in-flight guard when the task surface unmounts and reopens', async () => {
+    let first!: TaskDetailSessionController;
+    let root!: ReturnType<typeof createRoot>;
+    await act(async () => {
+      root = mount('dialog-a', (value) => {
+        first = value;
+      });
+    });
+    await waitForGuard();
+    let finish!: () => void;
+    let started!: () => void;
+    const startedPromise = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const update = vi.fn(() => {
+      started();
+      return new Promise<void>((resolve) => {
+        finish = resolve;
+      });
+    });
+    useStore.setState({ updateTaskFields: update });
+    let pending!: Promise<void>;
+    await act(async () => {
+      pending = first.updateTaskArtifact({ artifactRequired: true });
+      await startedPromise;
+    });
+    const attemptId = useStore.getState().taskDetailSessionById[key].artifactWriteId;
+    let reopened!: TaskDetailSessionController;
+    await act(async () => {
+      root.unmount();
+      roots.splice(roots.indexOf(root), 1);
+      mount('dialog-b', (value) => {
+        reopened = value;
+      });
+    });
+    expect(useStore.getState().taskDetailSessionById[key].artifactWriteId).toBe(attemptId);
+    await expect(reopened.updateTaskArtifact({ artifactRequired: true })).rejects.toThrow(
+      /No task write was sent/
+    );
+    expect(update).toHaveBeenCalledTimes(1);
+    apiMock.teams.getTask.mockResolvedValueOnce({
+      ...task,
+      artifactRequirement: { required: true },
+    });
+    await act(async () => {
+      finish();
+      await pending;
+    });
+    expect(useStore.getState().taskDetailSessionById[key].artifactWriteId).toBeNull();
   });
 
   it('refreshes same-ID tasks across teams once per identity from root interest', async () => {

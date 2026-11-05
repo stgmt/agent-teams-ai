@@ -200,6 +200,7 @@ import { TeamMetaStore } from '../services/team/TeamMetaStore';
 import { TeamTaskAttachmentStore } from '../services/team/TeamTaskAttachmentStore';
 import { TeamWorktreeGitService } from '../services/team/TeamWorktreeGitService';
 
+import * as artifactWrite from './teams/artifactBoundAdmission';
 import { waitForOpenCodeRuntimeRelayForUi } from './teams/openCodeRuntimeDeliveryRelayUi';
 import { validateTaskArtifactFields } from './teams/taskArtifactFields';
 import { teamMessageNotificationScanner } from './teams/teamMessageNotificationScanner';
@@ -628,8 +629,10 @@ export function initializeTeamHandlers(
   },
   scopedResourceReleaser?: TeamScopedResourceReleaser,
   inputDeclarationResolver?: ResolveOpenCodeInputDeclaration,
-  retireGatewayBindings?: (teamName: string) => Promise<void>
+  retireGatewayBindings?: (teamName: string) => Promise<void>,
+  artifactAdmission?: artifactWrite.ArtifactAdmission
 ): void {
+  artifactWrite.configureArtifactAdmission(artifactAdmission);
   teamDataService = service;
   resolveOpenCodeInputDeclaration = inputDeclarationResolver;
   teamProvisioningStartApi = teamHandlerApis.provisioningStart;
@@ -4753,7 +4756,6 @@ async function handleUpdateTaskFields(
   if (description !== undefined && typeof description !== 'string') {
     return { success: false, error: 'description must be a string' };
   }
-
   if (groupChatId !== undefined && groupChatId !== null && typeof groupChatId !== 'string') {
     return { success: false, error: 'groupChatId must be a UUID string or null' };
   }
@@ -4764,23 +4766,21 @@ async function handleUpdateTaskFields(
   if (typeof description === 'string') validFields.description = description;
   if (groupChatId === null || typeof groupChatId === 'string')
     validFields.groupChatId = groupChatId;
-
   if (Object.keys(validFields).length === 0) {
     return { success: false, error: 'At least one field must be provided' };
   }
-
   return wrapTeamHandler('updateTaskFields', async () => {
     const tn = vTeam.value!;
-    await getTeamDataService().updateTaskFields(tn, tid, validFields);
-
+    await artifactWrite.runArtifactBoundUpdate(validFields, artifactFields.expectedContext, () =>
+      getTeamDataService().updateTaskFields(tn, tid, validFields)
+    );
     // Notify the lead about updated task fields
     if (getTeamRuntimeApi().isTeamAlive(tn)) {
       const changedParts: string[] = [];
       if (validFields.subject) changedParts.push('title');
       if (validFields.description !== undefined) changedParts.push('description');
       if (validFields.groupChatId !== undefined) changedParts.push('group chat');
-      if (validFields.artifactRequired !== undefined || validFields.artifactExpectedFilename !== undefined || validFields.artifactFile !== undefined)
-        changedParts.push('artifact requirement');
+      if (artifactWrite.hasArtifactFields(validFields)) changedParts.push('artifact requirement');
       const message =
         `Task #${tid} has been updated by the user (changed: ${changedParts.join(', ')}). ` +
         `New title: "${validFields.subject ?? '(unchanged)'}".`;
@@ -5209,10 +5209,12 @@ async function handleGetTaskAttachment(
     return { success: false, error: 'Invalid attachmentId' };
   }
 
-  return wrapTeamHandler('getTaskAttachment', async () =>
-    (await getTeamDataService().readTaskArtifactData(vTeam.value!, vTask.value!, safeAttId)) ??
-    taskAttachmentStore.getAttachment(vTeam.value!, vTask.value!, safeAttId, mimeType.trim())
-  );
+  const team = vTeam.value!;
+  const task = vTask.value!;
+  return wrapTeamHandler('getTaskAttachment', async () => {
+    const artifact = await getTeamDataService().readTaskArtifactData(team, task, safeAttId);
+    return artifact ?? taskAttachmentStore.getAttachment(team, task, safeAttId, mimeType.trim());
+  });
 }
 
 async function handleDeleteTaskAttachment(

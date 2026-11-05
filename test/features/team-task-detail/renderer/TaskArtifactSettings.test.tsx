@@ -12,9 +12,13 @@ const updateTaskFields = vi.fn(async () => undefined);
 const outcomeProps = {
   outcomeUnknown: false,
   outcomeChecked: false,
+  writeInFlight: false,
+  guardStatus: 'ready' as const,
+  guardReason: null,
+  otherOperation: false,
   onOutcomeUnknown: vi.fn(),
   onCheckOutcome: vi.fn(async () => undefined),
-  onConfirmOutcome: vi.fn(),
+  onConfirmOutcome: vi.fn(async () => undefined),
 };
 
 describe('task artifact settings', () => {
@@ -110,6 +114,81 @@ describe('task artifact settings', () => {
       (host.querySelector('[role="switch"]') as HTMLButtonElement).click();
     });
     expect(updateTaskFields).not.toHaveBeenCalled();
+    await act(async () => root.unmount());
+  });
+
+  it.each([
+    ['in flight', { writeInFlight: true }, 'artifact.saving'],
+    [
+      'storage unavailable',
+      { guardStatus: 'unavailable' as const, guardReason: 'unavailable' as const },
+      'artifact.guardUnavailable',
+    ],
+    [
+      'unsupported browser',
+      { guardStatus: 'unavailable' as const, guardReason: 'unsupported' as const },
+      'artifact.guardUnsupported',
+    ],
+    ['other operation', { outcomeUnknown: true, otherOperation: true }, 'artifact.otherOperation'],
+  ])('blocks artifact writes for %s', async (_label, overrides, message) => {
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+    const host = document.createElement('div');
+    const root = createRoot(host);
+    await act(async () => {
+      root.render(
+        <TaskArtifactSettings
+          {...outcomeProps}
+          {...overrides}
+          onUpdate={updateTaskFields}
+          onDownload={async () => null}
+          canMutate={() => true}
+          completed={false}
+        />
+      );
+    });
+    expect((host.querySelector('[role="switch"]') as HTMLButtonElement).disabled).toBe(true);
+    expect(host.textContent).toContain(message);
+    if ('otherOperation' in overrides && overrides.otherOperation)
+      expect(host.textContent).not.toContain('artifact.checkOutcome');
+    expect(updateTaskFields).not.toHaveBeenCalled();
+    await act(async () => root.unmount());
+  });
+
+  it('reports an invalid filename before sending a mutation and does not mark the outcome unknown', async () => {
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+    const onUnknown = vi.fn();
+    const host = document.createElement('div');
+    const root = createRoot(host);
+    await act(async () => {
+      root.render(
+        <TaskArtifactSettings
+          {...outcomeProps}
+          onOutcomeUnknown={onUnknown}
+          onUpdate={updateTaskFields}
+          onDownload={async () => null}
+          canMutate={() => true}
+          completed={false}
+          requirement={{ required: true }}
+        />
+      );
+    });
+    const input = host.querySelector<HTMLInputElement>('input:not([type="file"])')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(
+        input,
+        '../bad.txt'
+      );
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    const save = Array.from(host.querySelectorAll('button')).find(
+      (item) => item.textContent === 'artifact.setName'
+    )!;
+    await act(async () => {
+      save.click();
+    });
+    expect(updateTaskFields).not.toHaveBeenCalled();
+    expect(onUnknown).not.toHaveBeenCalled();
+    expect(host.querySelector('[role="alert"]')?.textContent).toBe('artifact.invalidName');
     await act(async () => root.unmount());
   });
 
@@ -236,13 +315,19 @@ describe('task artifact settings', () => {
           <TaskArtifactSettings
             outcomeUnknown={unknown}
             outcomeChecked={checked}
+            writeInFlight={false}
+            guardStatus="ready"
+            guardReason={null}
+            otherOperation={false}
             onOutcomeUnknown={() => setUnknown(true)}
             onCheckOutcome={async () => {
               await check();
               setRequired(serverRequired);
               setChecked(true);
             }}
-            onConfirmOutcome={() => setUnknown(false)}
+            onConfirmOutcome={async () => {
+              setUnknown(false);
+            }}
             onUpdate={mutate}
             onDownload={async () => null}
             canMutate={() => true}
@@ -303,12 +388,18 @@ describe('task artifact settings', () => {
         <TaskArtifactSettings
           outcomeUnknown={unknown}
           outcomeChecked={checked}
+          writeInFlight={false}
+          guardStatus="ready"
+          guardReason={null}
+          otherOperation={false}
           onOutcomeUnknown={() => setUnknown(true)}
           onCheckOutcome={async () => {
             await check();
             setChecked(true);
           }}
-          onConfirmOutcome={() => setUnknown(false)}
+          onConfirmOutcome={async () => {
+            setUnknown(false);
+          }}
           onUpdate={mutate}
           onDownload={async () => null}
           canMutate={() => true}

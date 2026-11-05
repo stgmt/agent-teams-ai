@@ -133,6 +133,7 @@ import type { CrossTeamService } from '../services/team/CrossTeamService';
 import type { LaunchIoGovernor } from '../services/team/LaunchIoGovernor';
 import type { TeamBackupService } from '../services/team/TeamBackupService';
 import type { ResolveOpenCodeInputDeclaration } from '@features/agent-attachments';
+import type { AppConnectionContext } from '@features/external-agent-connection/contracts';
 
 const logger = createLogger('IPC:handlers');
 
@@ -160,6 +161,10 @@ export function initializeIpcHandlers(
     full: (context: ServiceContext) => void;
     updateClaudeRoot: (applyConfig: () => void) => Promise<void>;
     changeContext?: (operation: () => Promise<void> | void) => Promise<void>;
+    withExpectedContext?<T>(
+      expected: AppConnectionContext,
+      operation: () => Promise<T>
+    ): Promise<T>;
     onAgentLanguageUpdated: (newLangCode: string) => Promise<void> | void;
   },
   httpServerDeps?: {
@@ -241,7 +246,8 @@ export function initializeIpcHandlers(
       },
     }),
     resolveOpenCodeInputDeclaration,
-    retireGatewayBindings
+    retireGatewayBindings,
+    contextCallbacks.withExpectedContext
   );
   initializeConfigHandlers({
     updateClaudeRoot: contextCallbacks.updateClaudeRoot,

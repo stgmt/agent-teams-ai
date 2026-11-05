@@ -225,6 +225,13 @@ export const TaskDetailBody = ({
           onUpdate={actions.updateTaskArtifact}
           outcomeUnknown={sessionController.session.artifactOutcomeUnknown === true}
           outcomeChecked={sessionController.session.artifactOutcomeChecked === true}
+          writeInFlight={Boolean(sessionController.session.artifactWriteId)}
+          guardStatus={sessionController.taskWriteGuard.status}
+          guardReason={sessionController.taskWriteGuard.reason}
+          otherOperation={Boolean(
+            sessionController.taskWriteGuard.operation &&
+            sessionController.taskWriteGuard.operation !== 'artifact'
+          )}
           onOutcomeUnknown={sessionController.markArtifactOutcomeUnknown}
           onCheckOutcome={sessionController.checkArtifactOutcome}
           onConfirmOutcome={sessionController.confirmArtifactOutcome}

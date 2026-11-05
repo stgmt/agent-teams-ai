@@ -265,6 +265,7 @@ import { isTeamInternalControlMessageEnvelope } from '@shared/utils/teamInternal
 import { mkdirSync } from 'node:fs';
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
 import { AnnouncementsLifecycle } from './announcementsLifecycle';
+import { createIpcContextCallbacks } from './createIpcContextCallbacks';
 import {
   bindMemberWorkSyncProvisioningRuntime,
   createDeferredWorkSyncStallObservation,
@@ -3290,15 +3291,12 @@ async function initializeServices(): Promise<void> {
     teammateToolTracker ?? undefined,
     teamLogSourceTracker,
     branchStatusService ?? undefined,
-    {
+    createIpcContextCallbacks({
       rewire: rewireContextEvents,
       full: onContextSwitched,
-      updateClaudeRoot: (applyConfig) => externalAgentConnection!.updateRoot(applyConfig),
-      changeContext: (operation) => externalAgentConnection!.changeContext(operation),
-      onAgentLanguageUpdated: (newLangCode: string) => {
-        void teamProvisioningService.notifyLanguageChange(newLangCode);
-      },
-    },
+      connection: () => externalAgentConnection,
+      notifyLanguageChange: (language) => teamProvisioningService.notifyLanguageChange(language),
+    }),
     {
       httpServer,
       startHttpServer: () => startHttpServer(handleModeSwitch),
