@@ -3489,6 +3489,11 @@
       "noDescription": "No description",
       "noMembers": "Prompt-only template — no members recorded",
       "recoveryRequired": "The database was damaged and rebuilt. Previous templates may be lost. Inspect the preserved database files before choosing whether to restore them or start a new library; template changes are blocked.",
+      "recoveryStopAndPreserve": "Stop all app and server instances using this database, then make a copy of the entire storage directory. Saved files are in entries named app.db.corrupt-*.",
+      "recoveryStorageDirectory": "Storage directory:",
+      "recoveryBackupWarning": "The damaged backup may not be recoverable. Restoring an older database can replace newer data belonging to other features.",
+      "recoveryMarkerInstructions": "After deciding whether to restore a backup or start a new library, remove this marker file manually and restart the app or server:",
+      "recoveryMarkerPath": "Marker file:",
       "storageUnavailable": "The template library is unavailable right now.",
       "tabs": {
         "builtIn": "Built-in",

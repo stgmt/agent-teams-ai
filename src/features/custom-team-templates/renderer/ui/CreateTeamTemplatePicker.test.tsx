@@ -153,10 +153,20 @@ describe('CreateTeamTemplatePicker', () => {
   });
 
   it('warns about recovered storage without presenting an empty library', async () => {
-    listTemplates.mockResolvedValueOnce({ status: 'recoveryRequired' });
+    listTemplates.mockResolvedValueOnce({
+      status: 'recoveryRequired',
+      storageDirectory: '/server/storage',
+      markerPath: '/server/storage/app.db.templates-recovery-required',
+    });
     renderPicker(true);
     await flush();
     expect(host.textContent).toContain('customTemplates.library.recoveryRequired');
+    expect(host.querySelector('[data-testid="template-recovery-directory"]')?.textContent).toBe(
+      '/server/storage'
+    );
+    expect(host.querySelector('[data-testid="template-recovery-marker"]')?.textContent).toBe(
+      '/server/storage/app.db.templates-recovery-required'
+    );
     expect(host.querySelector('[data-testid="create-template-custom-empty"]')).toBeNull();
     expect(optionBuiltin('research')).not.toBeNull();
   });

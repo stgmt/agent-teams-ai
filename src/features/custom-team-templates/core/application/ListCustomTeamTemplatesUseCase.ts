@@ -34,7 +34,7 @@ export class ListCustomTeamTemplatesUseCase {
       return { status: 'storageUnavailable' };
     }
 
-    if (listed.recoveryRequired) return { status: 'recoveryRequired' };
+    if (listed.recoveryRequired) return { status: 'recoveryRequired', ...listed.recoveryRequired };
     if (listed.unreadableRecords.length > 0) {
       return {
         status: 'hasUnreadableRecords',

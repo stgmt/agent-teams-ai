@@ -230,7 +230,10 @@ describe('custom team templates worker ops', () => {
     expect(first.handle('customTemplate.list', {})).toEqual({
       templates: [],
       unreadableRecords: [],
-      recoveryRequired: true,
+      recoveryRequired: {
+        storageDirectory: path.dirname(dbPath),
+        markerPath: `${dbPath}.templates-recovery-required`,
+      },
     });
     expect(() => first.handle('customTemplate.create', createPayload())).toThrow(/manual recovery/);
     expect(
@@ -242,7 +245,10 @@ describe('custom team templates worker ops', () => {
     expect(restarted.handle('customTemplate.list', {})).toEqual({
       templates: [],
       unreadableRecords: [],
-      recoveryRequired: true,
+      recoveryRequired: {
+        storageDirectory: path.dirname(dbPath),
+        markerPath: `${dbPath}.templates-recovery-required`,
+      },
     });
     expect(() => restarted.handle('customTemplate.create', createPayload())).toThrow(
       /manual recovery/

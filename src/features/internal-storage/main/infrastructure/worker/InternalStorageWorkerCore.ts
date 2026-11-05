@@ -1,6 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
+import { withFileLockSync } from '@main/services/team/fileLock';
 import { and, eq } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 
@@ -141,7 +142,16 @@ export class InternalStorageWorkerCore {
           this.open();
           if (this.templateRecoveryRequired()) {
             if (op === 'customTemplate.list') {
-              return { templates: [], unreadableRecords: [], recoveryRequired: true };
+              return {
+                templates: [],
+                unreadableRecords: [],
+                recoveryRequired: {
+                  storageDirectory: path.resolve(path.dirname(this.options.databasePath)),
+                  markerPath: path.resolve(
+                    `${this.options.databasePath}.templates-recovery-required`
+                  ),
+                },
+              };
             }
             throw new Error('Custom template storage requires manual recovery');
           }
@@ -276,32 +286,54 @@ export class InternalStorageWorkerCore {
       return this.state;
     }
 
-    let integrity: 'ok' | 'recovered' = 'ok';
-    let db: SqliteDatabase;
-    try {
-      db = this.openOnce();
-    } catch (initialError) {
-      if (!isLikelyCorruptionError(initialError)) {
-        throw initialError;
-      }
-      this.markTemplateRecoveryRequired();
-      // A corrupt database is backed up (never deleted) and recreated; the
-      // journals can be re-imported from *.pre-sqlite JSON archives.
-      this.backupCorruptDatabaseFiles();
-      integrity = 'recovered';
-      try {
-        db = this.openOnce();
-      } catch (retryError) {
-        const retryMessage = retryError instanceof Error ? retryError.message : String(retryError);
-        const initialMessage =
-          initialError instanceof Error ? initialError.message : String(initialError);
-        throw new Error(
-          `Failed to open internal storage after corruption recovery: ${retryMessage} (initial error: ${initialMessage})`
-        );
-      }
-    }
-
-    this.state = { db, orm: drizzle(db), integrity };
+    // Every opener takes the same physical lock before opening or inspecting
+    // the file. Otherwise an opener can observe it between backup and recreate.
+    const databasePath = path.resolve(this.options.databasePath);
+    fs.mkdirSync(path.dirname(databasePath), { recursive: true });
+    const lockScope = path.join(
+      fs.realpathSync(path.dirname(databasePath)),
+      `${path.basename(databasePath)}.recovery`
+    );
+    this.state = withFileLockSync(
+      lockScope,
+      () => {
+        this.assertNoInterruptedRecovery();
+        let integrity: 'ok' | 'recovered' = 'ok';
+        let db: SqliteDatabase;
+        try {
+          db = this.openOnce();
+        } catch (initialError) {
+          if (!isLikelyCorruptionError(initialError)) throw initialError;
+          this.markTemplateRecoveryRequired();
+          fs.writeFileSync(
+            `${databasePath}.recovery-in-progress`,
+            'Recovery interrupted; preserve and inspect the storage directory.\n',
+            { flag: 'wx', mode: 0o600 }
+          );
+          this.backupCorruptDatabaseFiles();
+          integrity = 'recovered';
+          try {
+            db = this.openOnce();
+            try {
+              fs.unlinkSync(`${databasePath}.recovery-in-progress`);
+            } catch (error) {
+              db.close();
+              throw error;
+            }
+          } catch (retryError) {
+            const retryMessage =
+              retryError instanceof Error ? retryError.message : String(retryError);
+            const initialMessage =
+              initialError instanceof Error ? initialError.message : String(initialError);
+            throw new Error(
+              `Failed to open internal storage after corruption recovery: ${retryMessage} (initial error: ${initialMessage})`
+            );
+          }
+        }
+        return { db, orm: drizzle(db), integrity };
+      },
+      { preventLiveOwnerTakeover: true }
+    );
     return this.state;
   }
 
@@ -313,6 +345,19 @@ export class InternalStorageWorkerCore {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
       throw error;
     }
+  }
+
+  private assertNoInterruptedRecovery(): void {
+    const markerPath = `${path.resolve(this.options.databasePath)}.recovery-in-progress`;
+    try {
+      fs.lstatSync(markerPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+      throw error;
+    }
+    throw new Error(
+      `Internal storage recovery was interrupted; preserve and inspect ${path.dirname(markerPath)} before removing ${markerPath}`
+    );
   }
 
   private markTemplateRecoveryRequired(): void {
@@ -358,14 +403,18 @@ export class InternalStorageWorkerCore {
 
   private backupCorruptDatabaseFiles(): void {
     const stamp = (this.options.now?.() ?? new Date()).toISOString().replace(/[:.]/g, '-');
+    // mkdir creates an exclusive, unique container even for identical clocks;
+    // a later recovery cannot replace a previous backup on any platform.
+    const backupDirectory = fs.mkdtempSync(`${this.options.databasePath}.corrupt-${stamp}-`);
     for (const suffix of ['', '-wal', '-shm']) {
       const filePath = `${this.options.databasePath}${suffix}`;
       try {
-        if (fs.existsSync(filePath)) {
-          fs.renameSync(filePath, `${this.options.databasePath}.corrupt-${stamp}${suffix}`);
-        }
-      } catch {
-        // Backup is best-effort; the retry open will surface real failures.
+        fs.renameSync(
+          filePath,
+          path.join(backupDirectory, `${path.basename(this.options.databasePath)}${suffix}`)
+        );
+      } catch (error) {
+        if (suffix === '' || (error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
       }
     }
   }

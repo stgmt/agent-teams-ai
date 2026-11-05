@@ -76,13 +76,33 @@ describe('InternalStorageWorkerCore', () => {
         'ALTER TABLE custom_team_templates DROP COLUMN revision; ' +
         'PRAGMA user_version = 4;'
     );
-    raw.prepare('INSERT INTO member_work_sync_report_intents (team_name,id,member_key,member_name,status,reason,recorded_at,request_json) VALUES (?,?,?,?,?,?,?,?)').run('sandbox','legacy','alice','alice','pending','fallback','2026-09-10T00:00:00Z','{}');
+    raw
+      .prepare(
+        'INSERT INTO member_work_sync_report_intents (team_name,id,member_key,member_name,status,reason,recorded_at,request_json) VALUES (?,?,?,?,?,?,?,?)'
+      )
+      .run(
+        'sandbox',
+        'legacy',
+        'alice',
+        'alice',
+        'pending',
+        'fallback',
+        '2026-09-10T00:00:00Z',
+        '{}'
+      );
     raw.close();
     const upgraded = track(makeCore(dbPath));
-    expect((upgraded.handle('ping', {}) as InternalStorageBackendInfo).schemaVersion).toBe(INTERNAL_STORAGE_SCHEMA_VERSION);
-    const check = new Database(dbPath, {readonly: true});
-    try { expect(check.prepare('SELECT id,journal_json FROM member_work_sync_report_intents').get()).toEqual({id:'legacy',journal_json:null}); }
-    finally { check.close(); }
+    expect((upgraded.handle('ping', {}) as InternalStorageBackendInfo).schemaVersion).toBe(
+      INTERNAL_STORAGE_SCHEMA_VERSION
+    );
+    const check = new Database(dbPath, { readonly: true });
+    try {
+      expect(
+        check.prepare('SELECT id,journal_json FROM member_work_sync_report_intents').get()
+      ).toEqual({ id: 'legacy', journal_json: null });
+    } finally {
+      check.close();
+    }
   });
 
   it('ping opens the database, migrates schema and reports backend info', async () => {
@@ -267,6 +287,16 @@ describe('InternalStorageWorkerCore', () => {
 
     const siblings = await fs.readdir(path.dirname(dbPath));
     expect(siblings.some((name) => name.includes('.corrupt-'))).toBe(true);
+  });
+
+  it('fails closed if an earlier recovery was interrupted before the database was recreated', async () => {
+    const dbPath = await makeTmpDbPath();
+    await fs.mkdir(path.dirname(dbPath), { recursive: true });
+    await fs.writeFile(`${dbPath}.recovery-in-progress`, 'interrupted');
+    const core = track(makeCore(dbPath));
+    expect(() => core.handle('ping', {})).toThrow(/recovery was interrupted/);
+    await expect(fs.stat(dbPath)).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(await fs.readFile(`${dbPath}.recovery-in-progress`, 'utf8')).toBe('interrupted');
   });
 
   it('records store imports idempotently (upsert by store + team)', async () => {

@@ -645,9 +645,20 @@ describe('MyTemplatesDialog', () => {
   it('warns about recovered storage and disables template imports', async () => {
     listTemplates.mockResolvedValue({
       status: 'recoveryRequired',
+      storageDirectory: '/server/storage with spaces',
+      markerPath: '/server/storage with spaces/app.db.templates-recovery-required',
     } satisfies ListCustomTeamTemplatesResult);
     await render();
     expect(host.textContent).toContain('customTemplates.library.recoveryRequired');
+    expect(host.querySelector('[data-testid="template-recovery-directory"]')?.textContent).toBe(
+      '/server/storage with spaces'
+    );
+    expect(host.querySelector('[data-testid="template-recovery-marker"]')?.textContent).toBe(
+      '/server/storage with spaces/app.db.templates-recovery-required'
+    );
+    expect(host.textContent).toContain('customTemplates.library.recoveryStopAndPreserve');
+    expect(host.textContent).toContain('customTemplates.library.recoveryBackupWarning');
+    expect(host.textContent).toContain('customTemplates.library.recoveryMarkerInstructions');
     expect(host.textContent).not.toContain('customTemplates.library.empty');
     const importButton = host.querySelector<HTMLButtonElement>(
       '[data-testid="import-template-button"]'

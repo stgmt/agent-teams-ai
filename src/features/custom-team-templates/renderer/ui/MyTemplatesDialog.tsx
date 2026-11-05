@@ -28,6 +28,7 @@ import { DuplicateCustomTemplateDialog } from './DuplicateCustomTemplateDialog';
 import { EditCustomTemplateDialog } from './EditCustomTemplateDialog';
 import { ExportCustomTeamTemplateDialog } from './ExportCustomTeamTemplateDialog';
 import { ImportCustomTeamTemplateDialog } from './ImportCustomTeamTemplateDialog';
+import { TemplateRecoveryInstructions } from './TemplateRecoveryInstructions';
 
 import type { PendingTemplateMutation } from '../hooks/pendingTemplateMutation';
 import type {
@@ -363,13 +364,18 @@ export const MyTemplatesDialog = ({ open, onClose }: MyTemplatesDialogProps): Re
                   className="flex items-start gap-2 rounded-md border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-200"
                 >
                   <AlertTriangle className="mt-0.5 size-4 shrink-0" />
-                  <p>
-                    {state.status === 'recoveryRequired'
-                      ? t('customTemplates.library.recoveryRequired')
-                      : state.status === 'storageUnavailable'
+                  {state.status === 'recoveryRequired' ? (
+                    <TemplateRecoveryInstructions
+                      storageDirectory={state.storageDirectory}
+                      markerPath={state.markerPath}
+                    />
+                  ) : (
+                    <p>
+                      {state.status === 'storageUnavailable'
                         ? t('customTemplates.library.storageUnavailable')
                         : t('customTemplates.library.loadFailed')}
-                  </p>
+                    </p>
+                  )}
                 </div>
               ) : null}
             </div>

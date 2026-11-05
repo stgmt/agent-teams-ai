@@ -77,7 +77,7 @@ export interface ListCustomTeamTemplateRecordsResult {
   templates: readonly CustomTeamTemplateV1[];
   unreadableRecords: readonly CustomTeamTemplateUnreadableRecord[];
   /** The database was rebuilt after corruption; the old library needs manual recovery. */
-  recoveryRequired?: boolean;
+  recoveryRequired?: { storageDirectory: string; markerPath: string };
 }
 
 export interface ReadCustomTeamTemplateRecordRequest {

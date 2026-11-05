@@ -113,7 +113,13 @@ describe('custom team template contracts', () => {
 
   it('keeps an empty library distinct from an unavailable store', () => {
     expect(describeListResult({ status: 'empty' })).toBe('empty');
-    expect(describeListResult({ status: 'recoveryRequired' })).toBe('recoveryRequired');
+    expect(
+      describeListResult({
+        status: 'recoveryRequired',
+        storageDirectory: '/server/storage',
+        markerPath: '/server/storage/app.db.templates-recovery-required',
+      })
+    ).toBe('recoveryRequired');
     expect(describeListResult({ status: 'storageUnavailable' })).toBe('storageUnavailable');
   });
 

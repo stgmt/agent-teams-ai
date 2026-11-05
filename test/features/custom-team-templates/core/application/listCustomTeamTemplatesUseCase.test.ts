@@ -89,11 +89,18 @@ describe('ListCustomTeamTemplatesUseCase', () => {
         Promise.resolve({
           templates: [],
           unreadableRecords: [],
-          recoveryRequired: true,
+          recoveryRequired: {
+            storageDirectory: '/server/storage',
+            markerPath: '/server/storage/app.db.templates-recovery-required',
+          },
         })
       ),
     });
-    await expect(useCase.execute()).resolves.toEqual({ status: 'recoveryRequired' });
+    await expect(useCase.execute()).resolves.toEqual({
+      status: 'recoveryRequired',
+      storageDirectory: '/server/storage',
+      markerPath: '/server/storage/app.db.templates-recovery-required',
+    });
   });
 
   it('reads the library without mutating it', async () => {

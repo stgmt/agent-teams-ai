@@ -14,6 +14,8 @@ import {
   resolveCreateTeamTemplateDraft,
 } from '../templateDraft';
 
+import { TemplateRecoveryInstructions } from './TemplateRecoveryInstructions';
+
 import type { CreateTeamTemplateDraft } from '../templateDraft';
 import type { CustomTeamTemplateV1 } from '@features/custom-team-templates/contracts';
 
@@ -227,13 +229,18 @@ export const CreateTeamTemplatePicker = ({
             className="flex items-start gap-2 rounded-md border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-200"
           >
             <AlertTriangle className="mt-0.5 size-4 shrink-0" />
-            <p>
-              {state.status === 'recoveryRequired'
-                ? t('customTemplates.library.recoveryRequired')
-                : state.status === 'storageUnavailable'
+            {state.status === 'recoveryRequired' ? (
+              <TemplateRecoveryInstructions
+                storageDirectory={state.storageDirectory}
+                markerPath={state.markerPath}
+              />
+            ) : (
+              <p>
+                {state.status === 'storageUnavailable'
                   ? t('customTemplates.library.storageUnavailable')
                   : t('customTemplates.library.loadFailed')}
-            </p>
+              </p>
+            )}
           </div>
         ) : null}
         {libraryFailed ? (

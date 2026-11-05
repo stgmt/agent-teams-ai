@@ -149,7 +149,10 @@ describe('custom-team-templates transports', () => {
       Promise.resolve({
         templates: [],
         unreadableRecords: [],
-        recoveryRequired: true,
+        recoveryRequired: {
+          storageDirectory: '/server/storage',
+          markerPath: '/server/storage/app.db.templates-recovery-required',
+        },
       });
     const feature = createCustomTeamTemplatesFeature({ backend: { gateway: storage } });
     const ipc = fakeIpcMain();
@@ -159,9 +162,13 @@ describe('custom-team-templates transports', () => {
     try {
       await expect(ipc.invoke(CUSTOM_TEAM_TEMPLATE_CHANNELS.listTemplates)).resolves.toEqual({
         status: 'recoveryRequired',
+        storageDirectory: '/server/storage',
+        markerPath: '/server/storage/app.db.templates-recovery-required',
       });
       await expect(http.call('GET', CUSTOM_TEAM_TEMPLATE_ROUTES.listTemplates)).resolves.toEqual({
         status: 'recoveryRequired',
+        storageDirectory: '/server/storage',
+        markerPath: '/server/storage/app.db.templates-recovery-required',
       });
     } finally {
       feature.dispose();

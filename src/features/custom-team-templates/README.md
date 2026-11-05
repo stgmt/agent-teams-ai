@@ -50,15 +50,19 @@ The JSON file contains `format: "agent-teams-custom-template"`, `schemaVersion: 
 
 Focused coverage lives in `test/features/custom-team-templates/` and beside the renderer adapters and dialogs. It covers file validation, portable projection, name conflicts, write uncertainty, native file operations and standalone entrypoint loading.
 
-If internal storage detects a corrupt database, it preserves the damaged files
-with `.corrupt-*` suffixes and creates `storage/app.db.templates-recovery-required`
-beside the rebuilt database. Template reads report recovery required and template
+If internal storage detects a corrupt database, it moves the damaged files into
+a unique `app.db.corrupt-*` directory and creates `storage/app.db.templates-recovery-required`
+beside the rebuilt database. Older versions may have `.corrupt-*` files instead.
+Template reads report recovery required, show the storage and marker paths, and template
 writes remain disabled across restarts. Stop every app instance and preserve the
 entire storage directory before inspecting or restoring a backup; the corrupt
 backup is not guaranteed to be recoverable, and restoring an older database may
 replace newer data belonging to other features. After an operator has decided
 how to recover, remove the marker explicitly and restart the app. The marker is
 never removed automatically by a failed or uncertain operation.
+If backup or database creation was interrupted, `app.db.recovery-in-progress`
+also blocks all database opens: preserve and inspect the directory, resolve the
+interrupted recovery, and remove that marker manually before restarting.
 
 On Linux with a test display, run `pnpm test:e2e:custom-template-import-export` for the visual `dev:mcp` flow. The harness uses disposable app data and fixtures only for native file-dialog selections; the renderer, IPC, SQLite storage and file operations are real. Set `CUSTOM_TEMPLATE_E2E_OUTPUT_DIR` to retain the receipt, screenshots and app log in a chosen directory.
 
