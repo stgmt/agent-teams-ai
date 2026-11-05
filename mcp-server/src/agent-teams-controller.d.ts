@@ -4,10 +4,12 @@ declare module 'agent-teams-controller' {
     description?: string;
     groupChatId?: string | null;
     artifactRequired?: boolean;
-    artifactProjectPath?: string;
+    artifactExpectedFilename?: string;
+    artifactFile?: TaskArtifactFile;
   }
 
   export interface TaskArtifactProof { attachmentId: string; sha256: string; size: number }
+  export interface TaskArtifactFile { filename: string; base64Data: string }
 
   export interface ControllerContextOptions {
     teamName: string;
@@ -84,7 +86,7 @@ declare module 'agent-teams-controller' {
   export interface ControllerTaskBoardTaskApi
     extends ControllerTaskReadApi, ControllerTaskWriteApi {
     verifyTaskArtifact(taskId: string): TaskArtifactProof | null;
-    setTaskArtifactFile(taskId: string, relativePath: string, actor?: string): unknown;
+    setTaskArtifactFile(taskId: string, file: TaskArtifactFile, actor?: string): unknown;
     reconcileTaskCreation(flags: Record<string, unknown>): unknown;
   }
 

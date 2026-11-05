@@ -326,7 +326,7 @@ export function registerTaskTools(server: Pick<FastMCP, 'addTool'>) {
       '- groupChatId: optional group context; fetch group_chat_list before proactive sends; association does not grant membership\n' +
       '- sourceMessage.attachments: from original user message (filePath = absolute path to file on disk, use Read tool to view)\n' +
       '- attachments: files attached to the task (filePath = absolute path, use Read tool to view)\n' +
-      '- artifactRequirement: when required, attach a project-relative file with task_set_artifact_file before completion\n' +
+      '- artifactRequirement: when required, send file bytes with task_set_artifact_file before completion\n' +
       '- comments[].attachments: files on comments (filePath = absolute path, use Read tool to view)',
     parameters: z.object({
       ...toolContextSchema,
@@ -502,18 +502,19 @@ export function registerTaskTools(server: Pick<FastMCP, 'addTool'>) {
   server.addTool({
     name: 'task_set_artifact_file',
     description:
-      'Attach the required artifact from a project-relative file path. The server records its SHA-256 and size; completion rechecks the file. Only the task owner may attach it.',
+      'Attach required artifact bytes (up to 20 MiB decoded) as base64. The filename must match any user-specified name; actor must match the task owner. Base64 expands data and can consume substantial MCP context.',
     parameters: z.object({
       ...toolContextSchema,
       taskId: z.string().min(1),
-      relativePath: z.string().min(1),
+      filename: z.string().min(1).max(255),
+      base64Data: z.string().max(Math.ceil((20 * 1024 * 1024) / 3) * 4),
       actor: taskMutationActorSchema,
     }),
-    execute: async ({ teamName, claudeDir, taskId, relativePath, actor }) => {
+    execute: async ({ teamName, claudeDir, taskId, filename, base64Data, actor }) => {
       assertConfiguredTeam(teamName, claudeDir);
       const task = getController(teamName, claudeDir).taskBoard.setTaskArtifactFile(
         taskId,
-        relativePath,
+        { filename, base64Data },
         actor
       ) as Record<string, unknown>;
       return await Promise.resolve(

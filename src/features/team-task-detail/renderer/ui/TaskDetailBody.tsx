@@ -217,9 +217,10 @@ export const TaskDetailBody = ({
           key={JSON.stringify([
             teamName,
             currentTask.id,
-            currentTask.artifactRequirement?.reference?.relativePath,
+            currentTask.artifactRequirement?.expectedFilename,
           ])}
           requirement={currentTask.artifactRequirement}
+          completed={currentTask.status === 'completed'}
           canMutate={sessionController.canEditNow}
           onUpdate={actions.updateTaskArtifact}
         />

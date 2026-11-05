@@ -3817,10 +3817,13 @@ export default interface Resources {
     "artifact": {
       "attach": "Attach file",
       "failed": "Could not update the task artifact.",
-      "hint": "Enter a file path relative to the team's configured project. The file stays in the project, including large files; completion checks its size and SHA-256.",
+      "hint": "Choose a file up to 20 MiB. A copy is stored with the task. For a larger video, you can attach a small manifest with its location and expected hash; only the manifest is checked.",
       "missing": "No required artifact attached yet.",
-      "path": "Project-relative file path",
-      "require": "Require a task artifact"
+      "name": "Required filename",
+      "reopen": "Reopen the completed task before changing its artifact.",
+      "require": "Require a task artifact",
+      "setName": "Set name",
+      "tooLarge": "The selected file exceeds 20 MiB."
     },
     "claudeLogs": {
       "clearSearch": "Clear search",

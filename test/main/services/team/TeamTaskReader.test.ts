@@ -138,7 +138,7 @@ describe('TeamTaskReader', () => {
     const artifactRequirement = {
       required: true,
       proof: { attachmentId: 'artifact-1', sha256: 'a'.repeat(64), size: 8 },
-      reference: { relativePath: 'outputs/result.mp4', rootFingerprint: 'b'.repeat(64) },
+      expectedFilename: 'result.mp4',
     };
     await writeTaskFile('atlas-hq', {
       id: 'artifact-task', subject: 'Artifact task', status: 'pending',

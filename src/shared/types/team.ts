@@ -1,6 +1,6 @@
 import type { NotificationTarget, TeamEventType } from './notifications';
 import type { OpenCodeStopHandshakeFailureFacts } from './openCodeStopHandshakeFailure';
-import type { TaskArtifactRequirement, TaskAttachmentMeta } from './taskArtifact';
+import type { TaskArtifactFile, TaskArtifactRequirement, TaskAttachmentMeta } from './taskArtifact';
 import type { TaskRef } from './teamBoardTask';
 import type * as TeamProvisioningTypes from './teamProvisioning';
 import type { UserReplyLinkFields } from './userReplyLink';
@@ -909,7 +909,8 @@ export interface TaskFieldUpdates {
   description?: string;
   groupChatId?: string | null;
   artifactRequired?: boolean;
-  artifactProjectPath?: string;
+  artifactExpectedFilename?: string;
+  artifactFile?: TaskArtifactFile;
 }
 
 export interface CreateTaskRequest {

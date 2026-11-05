@@ -19,6 +19,11 @@ export interface TaskArtifactProof {
 
 export interface TaskArtifactRequirement {
   required: boolean;
+  expectedFilename?: string;
   proof?: TaskArtifactProof;
-  reference?: { relativePath: string; rootFingerprint: string };
+}
+
+export interface TaskArtifactFile {
+  filename: string;
+  base64Data: string;
 }

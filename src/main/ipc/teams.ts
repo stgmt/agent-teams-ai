@@ -4779,7 +4779,7 @@ async function handleUpdateTaskFields(
       if (validFields.subject) changedParts.push('title');
       if (validFields.description !== undefined) changedParts.push('description');
       if (validFields.groupChatId !== undefined) changedParts.push('group chat');
-      if (validFields.artifactRequired !== undefined || validFields.artifactProjectPath !== undefined)
+      if (validFields.artifactRequired !== undefined || validFields.artifactExpectedFilename !== undefined || validFields.artifactFile !== undefined)
         changedParts.push('artifact requirement');
       const message =
         `Task #${tid} has been updated by the user (changed: ${changedParts.join(', ')}). ` +

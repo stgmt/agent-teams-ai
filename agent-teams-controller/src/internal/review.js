@@ -347,8 +347,8 @@ function startReview(context, taskId, flags = {}) {
     const from = getReviewStartActor(context, task, flags);
     const timestamp = new Date().toISOString();
 
+    kanban.setKanbanColumn(context, task.id, 'review', { transition: 'start_review' });
     try {
-      kanban.setKanbanColumn(context, task.id, 'review', { transition: 'start_review' });
       tasks.updateTask(context, task.id, (t) => {
         openReviewInterval(t, from, timestamp);
         t.historyEvents = tasks.appendHistoryEvent(t.historyEvents, {
@@ -399,8 +399,8 @@ function requestReview(context, taskId, flags = {}) {
       );
     }
 
+    kanban.setKanbanColumn(context, currentTask.id, 'review', { transition: 'request_review' });
     try {
-      kanban.setKanbanColumn(context, currentTask.id, 'review', { transition: 'request_review' });
       tasks.updateTask(context, currentTask.id, (t) => {
         t.historyEvents = tasks.appendHistoryEvent(t.historyEvents, {
           type: 'review_requested',

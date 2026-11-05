@@ -46,7 +46,10 @@ describe('required artifacts through MCP tools', () => {
     );
     const desktop = createController({ teamName, claudeDir: dir }).taskBoard;
     const task = desktop.createTask({ subject: 'Artifact task', owner: 'worker' });
-    desktop.updateTaskFields(task.id, { artifactRequired: true });
+    desktop.updateTaskFields(task.id, {
+      artifactRequired: true,
+      artifactExpectedFilename: 'result.txt',
+    });
     vi.spyOn(controllerModule, 'getController').mockImplementation((name, claudeDir) =>
       createController({ teamName: name, claudeDir, allowUserMessageSender: false })
     );
@@ -56,16 +59,26 @@ describe('required artifacts through MCP tools', () => {
     const complete = tools.get('task_complete')!;
     const setStatus = tools.get('task_set_status')!;
     const args = { teamName, claudeDir: dir, taskId: task.id, actor: 'worker' };
-    expect(attach.parameters.safeParse({ ...args, relativePath: 'result.txt' }).success).toBe(true);
-    expect(
-      attach.parameters.safeParse({ teamName, taskId: task.id, relativePath: 'result.txt' }).success
-    ).toBe(false);
+    const payload = { filename: 'result.txt', base64Data: Buffer.from('first').toString('base64') };
+    expect(attach.parameters.safeParse({ ...args, ...payload }).success).toBe(true);
+    expect(attach.parameters.safeParse({ teamName, taskId: task.id, ...payload }).success).toBe(
+      false
+    );
+    expect(attach.parameters.safeParse({ ...args, relativePath: 'result.txt' }).success).toBe(
+      false
+    );
     await expect(complete.execute(args)).rejects.toThrow(/not been attached/);
-    const file = path.join(project, 'result.txt');
-    fs.writeFileSync(file, 'first');
-    const response = await attach.execute({ ...args, relativePath: 'result.txt' });
+    await expect(attach.execute({ ...args, ...payload, filename: 'decoy.txt' })).rejects.toThrow(
+      /result.txt/
+    );
+    const response = await attach.execute({ ...args, ...payload });
     const result = JSON.parse((response as { content: { text: string }[] }).content[0]!.text);
     expect(result.artifactRequirement.proof).toMatchObject({ size: 5, sha256: expect.any(String) });
+    const file = desktop
+      .getTask(task.id)
+      .attachments.find(
+        (item: { id: string }) => item.id === result.artifactRequirement.proof.attachmentId
+      ).filePath;
     fs.writeFileSync(file, 'other');
     await expect(complete.execute(args)).rejects.toThrow(/has changed/);
     await expect(setStatus.execute({ ...args, status: 'completed' })).rejects.toThrow(
@@ -76,5 +89,10 @@ describe('required artifacts through MCP tools', () => {
     fs.writeFileSync(file, 'first');
     await complete.execute(args);
     expect(desktop.getTask(task.id).status).toBe('completed');
+    const legacy = desktop.createTask({ subject: 'Legacy task', owner: 'worker' });
+    const legacyArgs = { ...args, taskId: legacy.id };
+    await complete.execute(legacyArgs);
+    await expect(attach.execute({ ...legacyArgs, ...payload })).rejects.toThrow(/does not require/);
+    expect(desktop.getTask(legacy.id).artifactRequirement).toBeUndefined();
   });
 });

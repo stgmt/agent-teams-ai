@@ -1,25 +1,49 @@
-import type { TaskFieldUpdates } from '@shared/types';
+import type { TaskArtifactFile, TaskFieldUpdates } from '@shared/types';
 
-type ArtifactFields = Pick<TaskFieldUpdates, 'artifactRequired' | 'artifactProjectPath'>;
+type ArtifactFields = Pick<
+  TaskFieldUpdates,
+  'artifactRequired' | 'artifactExpectedFilename' | 'artifactFile'
+>;
+const MAX_BASE64_CHARS = Math.ceil((20 * 1024 * 1024) / 3) * 4;
 
 export function validateTaskArtifactFields(
   input: Record<string, unknown>
 ): { valid: true; value: ArtifactFields } | { valid: false; error: string } {
-  const { artifactRequired, artifactProjectPath } = input;
+  const { artifactRequired, artifactExpectedFilename, artifactFile } = input;
+  if (input.artifactProjectPath !== undefined) {
+    return { valid: false, error: 'Project paths are not supported; send artifact file bytes' };
+  }
   if (artifactRequired !== undefined && typeof artifactRequired !== 'boolean') {
     return { valid: false, error: 'artifactRequired must be a boolean' };
   }
   if (
-    artifactProjectPath !== undefined &&
-    (typeof artifactProjectPath !== 'string' || artifactProjectPath.length > 4096)
+    artifactExpectedFilename !== undefined &&
+    (typeof artifactExpectedFilename !== 'string' || artifactExpectedFilename.length > 255)
   ) {
-    return { valid: false, error: 'artifactProjectPath must be a path under 4097 characters' };
+    return { valid: false, error: 'artifactExpectedFilename must be a filename' };
+  }
+  if (artifactFile !== undefined) {
+    if (!artifactFile || typeof artifactFile !== 'object')
+      return { valid: false, error: 'artifactFile must contain filename and base64Data' };
+    const file = artifactFile as Record<string, unknown>;
+    if (
+      typeof file.filename !== 'string' ||
+      file.filename.length > 255 ||
+      typeof file.base64Data !== 'string' ||
+      file.base64Data.length > MAX_BASE64_CHARS
+    ) {
+      return {
+        valid: false,
+        error: 'artifactFile must contain a filename and at most 20 MiB of base64 data',
+      };
+    }
   }
   return {
     valid: true,
     value: {
       ...(artifactRequired !== undefined ? { artifactRequired } : {}),
-      ...(artifactProjectPath !== undefined ? { artifactProjectPath } : {}),
+      ...(artifactExpectedFilename !== undefined ? { artifactExpectedFilename } : {}),
+      ...(artifactFile !== undefined ? { artifactFile: artifactFile as TaskArtifactFile } : {}),
     },
   };
 }

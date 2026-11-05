@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 
 import { useAppTranslation } from '@features/localization/renderer';
 import { Button } from '@renderer/components/ui/button';
@@ -7,21 +7,41 @@ import { Switch } from '@renderer/components/ui/switch';
 
 import type { TaskArtifactRequirement, TaskFieldUpdates } from '@shared/types';
 
+const MAX_FILE_SIZE = 20 * 1024 * 1024;
+
 interface Props {
   requirement?: TaskArtifactRequirement;
+  completed: boolean;
   canMutate: () => boolean;
   onUpdate: (fields: TaskFieldUpdates) => Promise<void>;
 }
 
-export function TaskArtifactSettings({
+function readBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('Could not read the selected file'));
+    reader.onload = () => {
+      if (typeof reader.result !== 'string' || !reader.result.includes(',')) {
+        reject(new Error('Could not read the selected file'));
+      } else {
+        resolve(reader.result.slice(reader.result.indexOf(',') + 1));
+      }
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+export const TaskArtifactSettings = ({
   requirement,
+  completed,
   canMutate,
   onUpdate,
-}: Readonly<Props>): React.JSX.Element {
+}: Readonly<Props>): React.JSX.Element => {
   const { t } = useAppTranslation('team');
-  const [relativePath, setRelativePath] = useState(requirement?.reference?.relativePath ?? '');
+  const [filename, setFilename] = useState(requirement?.expectedFilename ?? '');
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const fileInput = useRef<HTMLInputElement>(null);
 
   const update = async (fields: TaskFieldUpdates): Promise<void> => {
     if (!canMutate()) return;
@@ -36,38 +56,75 @@ export function TaskArtifactSettings({
     }
   };
 
+  const attach = async (file?: File): Promise<void> => {
+    if (!file || !canMutate()) return;
+    setError(null);
+    if (file.size > MAX_FILE_SIZE) {
+      setError(t('artifact.tooLarge'));
+      return;
+    }
+    setPending(true);
+    try {
+      const base64Data = await readBase64(file);
+      if (canMutate()) await onUpdate({ artifactFile: { filename: file.name, base64Data } });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t('artifact.failed'));
+    } finally {
+      setPending(false);
+      if (fileInput.current) fileInput.current.value = '';
+    }
+  };
+
   return (
     <div className="mb-3 space-y-2 rounded-md border border-[var(--color-border)] p-3 text-sm">
       <label className="flex items-center gap-2">
         <Switch
           checked={requirement?.required === true}
-          disabled={pending}
+          disabled={pending || (completed && !requirement?.required)}
           onCheckedChange={(checked) => void update({ artifactRequired: checked })}
         />
         {t('artifact.require')}
       </label>
+      {completed ? (
+        <p className="text-xs text-[var(--color-text-muted)]">{t('artifact.reopen')}</p>
+      ) : null}
       {requirement?.required ? (
         <>
           <p className="text-xs text-[var(--color-text-muted)]">{t('artifact.hint')}</p>
           <div className="flex gap-2">
             <Input
-              aria-label={t('artifact.path')}
-              placeholder={t('artifact.path')}
-              value={relativePath}
-              onChange={(event) => setRelativePath(event.target.value)}
+              aria-label={t('artifact.name')}
+              placeholder={t('artifact.name')}
+              value={filename}
+              disabled={completed}
+              onChange={(event) => setFilename(event.target.value)}
             />
             <Button
               type="button"
               size="sm"
-              disabled={pending || !relativePath.trim()}
-              onClick={() => void update({ artifactProjectPath: relativePath.trim() })}
+              disabled={pending || completed || !filename.trim()}
+              onClick={() => void update({ artifactExpectedFilename: filename.trim() })}
             >
-              {t('artifact.attach')}
+              {t('artifact.setName')}
             </Button>
           </div>
+          <input
+            ref={fileInput}
+            type="file"
+            className="hidden"
+            onChange={(event) => void attach(event.target.files?.[0])}
+          />
+          <Button
+            type="button"
+            size="sm"
+            disabled={pending || completed}
+            onClick={() => fileInput.current?.click()}
+          >
+            {t('artifact.attach')}
+          </Button>
           {requirement.proof ? (
             <p className="break-all text-xs text-[var(--color-text-muted)]">
-              {requirement.reference?.relativePath} · {requirement.proof.size} B · SHA-256{' '}
+              {requirement.expectedFilename} · {requirement.proof.size} B · SHA-256{' '}
               {requirement.proof.sha256}
             </p>
           ) : (
@@ -82,4 +139,4 @@ export function TaskArtifactSettings({
       ) : null}
     </div>
   );
-}
+};

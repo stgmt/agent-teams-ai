@@ -688,10 +688,7 @@ function setTaskOwner(context, taskId, owner, actor) {
 }
 
 function updateTaskFields(context, taskId, fields) {
-    return withTeamBoardLock(context.paths, () => {
-        const task = readMutableTask(context, taskId, 'updating task fields');
-        return taskStore.updateTaskFields(context.paths, taskId, taskArtifact.prepareUpdate(context, task, fields));
-    });
+    return taskArtifact.updateTaskFields(context, taskId, fields);
 }
 
 function addTaskCommentWithOptions(context, taskId, flags, options = {}) {

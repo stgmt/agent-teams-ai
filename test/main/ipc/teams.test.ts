@@ -994,13 +994,15 @@ describe('ipc teams handlers', () => {
     const handler = handlers.get(TEAM_UPDATE_TASK_FIELDS)!;
     const result = await handler({}, 'my-team', 'task-1', {
       artifactRequired: true,
-      artifactProjectPath: 'outputs/result.mp4',
+      artifactExpectedFilename: 'result.mp4',
+      artifactFile: { filename: 'result.mp4', base64Data: 'YWJj' },
       artifactRequirement: { required: false, proof: { sha256: 'forged' } },
     });
     expect(result).toEqual({ success: true, data: undefined });
     expect(service.updateTaskFields).toHaveBeenCalledWith('my-team', 'task-1', {
       artifactRequired: true,
-      artifactProjectPath: 'outputs/result.mp4',
+      artifactExpectedFilename: 'result.mp4',
+      artifactFile: { filename: 'result.mp4', base64Data: 'YWJj' },
     });
   });
 
@@ -1020,7 +1022,7 @@ describe('ipc teams handlers', () => {
       success: false,
       error: 'artifactRequired must be a boolean',
     });
-    expect(await handler({}, 'my-team', 'task-1', { artifactProjectPath: 'x'.repeat(4097) })).toMatchObject({
+    expect(await handler({}, 'my-team', 'task-1', { artifactProjectPath: 'outputs/secret' })).toMatchObject({
       success: false,
     });
     expect(service.updateTaskFields).not.toHaveBeenCalled();
