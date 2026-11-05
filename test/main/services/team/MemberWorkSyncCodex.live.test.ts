@@ -33,6 +33,7 @@ import {
   startMemberWorkSyncControlServer,
   waitUntil,
 } from './memberWorkSyncLiveHarness';
+import { createRegistryLiveFixture, type RegistryLiveFixture } from './helpers/registryLiveFixture';
 
 import type { TeamChangeEvent, TeamProvisioningProgress } from '../../../../src/shared/types';
 
@@ -70,6 +71,7 @@ const VITEST_HOME_PREFIX = 'agent-teams-vitest-home-';
 liveDescribe('Member work sync Codex live e2e', () => {
   let tempDir: string;
   let tempClaudeRoot: string;
+  let registry: RegistryLiveFixture;
   let previousCliPath: string | undefined;
   let previousCliFlavor: string | undefined;
   let previousControlUrl: string | undefined;
@@ -149,6 +151,7 @@ liveDescribe('Member work sync Codex live e2e', () => {
     tempClaudeRoot = path.join(tempDir, '.claude');
     await fs.mkdir(tempClaudeRoot, { recursive: true });
     setClaudeBasePathOverride(tempClaudeRoot);
+    registry = await createRegistryLiveFixture(tempDir);
 
     previousCliPath = process.env.CLAUDE_AGENT_TEAMS_ORCHESTRATOR_CLI_PATH;
     previousCliFlavor = process.env.CLAUDE_TEAM_CLI_FLAVOR;
@@ -192,6 +195,7 @@ liveDescribe('Member work sync Codex live e2e', () => {
     await feature?.dispose().catch(() => undefined);
     await codexAccountFeature?.dispose().catch(() => undefined);
     await controlServer?.close().catch(() => undefined);
+    await registry?.dispose();
 
     restoreEnv('CLAUDE_AGENT_TEAMS_ORCHESTRATOR_CLI_PATH', previousCliPath);
     restoreEnv('CLAUDE_TEAM_CLI_FLAVOR', previousCliFlavor);
@@ -303,6 +307,8 @@ liveDescribe('Member work sync Codex live e2e', () => {
     await activeService.createTeam(
       {
         teamName,
+        specProject: registry.binding.project,
+        specSlug: registry.binding.spec,
         cwd: projectPath,
         providerId: 'codex',
         providerBackendId: 'codex-native',
@@ -340,6 +346,7 @@ liveDescribe('Member work sync Codex live e2e', () => {
       'team-lead';
     const task = await teamDataService.createTask(teamName, {
       subject: `Member work sync live lease ${marker}`,
+      requirements: ['FR-1'],
       owner: memberName,
       startImmediately: true,
       prompt: [
@@ -565,6 +572,8 @@ liveDescribe('Member work sync Codex live e2e', () => {
     await activeService.createTeam(
       {
         teamName,
+        specProject: registry.binding.project,
+        specSlug: registry.binding.spec,
         cwd: projectPath,
         providerId: 'codex',
         providerBackendId: 'codex-native',
@@ -605,6 +614,7 @@ liveDescribe('Member work sync Codex live e2e', () => {
 
     const task = await teamDataService.createTask(teamName, {
       subject: `Member work sync live nudge ${marker}`,
+      requirements: ['FR-1'],
       owner: memberName,
       startImmediately: false,
       prompt: [
@@ -713,7 +723,6 @@ liveDescribe('Member work sync Codex live e2e', () => {
       { TeamProvisioningService },
       { TeamConfigReader },
       { TeamTaskReader },
-      { TeamTaskWriter },
       { TeamKanbanManager },
       { TeamMembersMetaStore },
       { createCodexAccountFeature },
@@ -722,7 +731,6 @@ liveDescribe('Member work sync Codex live e2e', () => {
       import('../../../../src/main/services/team/TeamProvisioningService'),
       import('../../../../src/main/services/team/TeamConfigReader'),
       import('../../../../src/main/services/team/TeamTaskReader'),
-      import('../../../../src/main/services/team/TeamTaskWriter'),
       import('../../../../src/main/services/team/TeamKanbanManager'),
       import('../../../../src/main/services/team/TeamMembersMetaStore'),
       import('../../../../src/features/codex-account/main/composition/createCodexAccountFeature'),
@@ -785,6 +793,8 @@ liveDescribe('Member work sync Codex live e2e', () => {
     await activeService.createTeam(
       {
         teamName,
+        specProject: registry.binding.project,
+        specSlug: registry.binding.spec,
         cwd: projectPath,
         providerId: 'codex',
         providerBackendId: 'codex-native',
@@ -946,21 +956,17 @@ liveDescribe('Member work sync Codex live e2e', () => {
       },
     });
 
-    const createdAt = new Date().toISOString();
-    const taskId = `runtime-meta-${Date.now()}`;
-    const displayId = String(Date.now()).slice(-8);
-    await new TeamTaskWriter().createTask(teamName, {
-      id: taskId,
-      displayId,
+    const writer = await registry.writer(teamName);
+    const { task } = await writer.createTask({
       subject: `Member work sync live runtime meta ${marker}`,
       description: 'Verify native stale recovery when runtime member meta lacks provider fields.',
+      requirements: ['FR-1'],
       owner: memberName!,
-      createdBy: 'user',
+      actor: 'user',
       status: 'in_progress',
       projectPath,
-      createdAt,
-      updatedAt: createdAt,
     });
+    const taskId = task.id;
     feature.noteTeamChange({ type: 'task', teamName, taskId });
 
     let agendaFingerprint = '';
@@ -1229,6 +1235,8 @@ liveDescribe('Member work sync Codex live e2e', () => {
     await activeService.createTeam(
       {
         teamName,
+        specProject: registry.binding.project,
+        specSlug: registry.binding.spec,
         cwd: projectPath,
         providerId: 'codex',
         providerBackendId: 'codex-native',
@@ -1268,6 +1276,7 @@ liveDescribe('Member work sync Codex live e2e', () => {
 
     const task = await teamDataService.createTask(teamName, {
       subject: `Member work sync live completion ${marker}`,
+      requirements: ['FR-1'],
       owner: memberName,
       startImmediately: true,
       prompt: [

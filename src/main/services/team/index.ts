@@ -105,5 +105,4 @@ export {
 } from './TeamProvisioningService';
 export { TeamSentMessagesStore } from './TeamSentMessagesStore';
 export { TeamTaskReader } from './TeamTaskReader';
-export { TeamTaskWriter } from './TeamTaskWriter';
 export { countLineChanges } from './UnifiedLineCounter';

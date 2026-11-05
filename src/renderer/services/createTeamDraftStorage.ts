@@ -49,6 +49,8 @@ export interface SerializedMemberDraft {
 export interface CreateTeamDraftSnapshot {
   version: number;
   teamName: string;
+  specProject?: string;
+  specSlug?: string;
   runtimeSelectionVersion?: 1;
   runtimeProviderId?: TeamProviderId;
   runtimeModel?: string;
@@ -110,6 +112,8 @@ function isValidSnapshot(data: unknown): data is CreateTeamDraftSnapshot {
     typeof obj.version === 'number' &&
     obj.version === SNAPSHOT_VERSION &&
     typeof obj.teamName === 'string' &&
+    (obj.specProject === undefined || typeof obj.specProject === 'string') &&
+    (obj.specSlug === undefined || typeof obj.specSlug === 'string') &&
     (obj.runtimeSelectionVersion === undefined || obj.runtimeSelectionVersion === 1) &&
     (obj.runtimeProviderId === undefined || isTeamProviderId(obj.runtimeProviderId)) &&
     (obj.runtimeModel === undefined || typeof obj.runtimeModel === 'string') &&

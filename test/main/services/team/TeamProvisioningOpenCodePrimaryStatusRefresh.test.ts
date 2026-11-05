@@ -149,11 +149,11 @@ function fixture() {
     },
     persisted: {
       readTaskActivityRepairLaunchSnapshot: async () => null,
-      repairStaleTaskActivityIntervalsOnce: () => undefined,
+      repairStaleTaskActivityIntervalsOnce: () => true,
       reconcilePersistedLaunchState: (team: string) => service.reconcilePersistedLaunchState(team),
       attachLiveRuntimeMetadataToStatuses: async (_team: string, current: unknown) => current,
       getOpenCodeSecondaryBootstrapPendingMemberNames: () => new Set(),
-      resumeActiveTaskActivityForMembers: () => undefined,
+      resumeActiveTaskActivityForMembers: async () => ({}),
       readLaunchFreshness: async () => null,
     },
     live: {
@@ -164,6 +164,8 @@ function fixture() {
     nowIso: () => new Date().toISOString(),
   } as unknown as MemberSpawnStatusesSnapshotPorts<MemberSpawnStatusRun>;
   Object.assign(service, {
+    runs: new Map(),
+    pendingStartupWorkDeliveriesByTeam: new Map(),
     runtimeAdapterRunByTeam: owners,
     runtimeAdapterProgressByRunId: runtimeProgress,
     openCodePrimaryStatusRefreshByOwner: new WeakMap(),

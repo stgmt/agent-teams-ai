@@ -25,6 +25,7 @@ vi.mock('../../../../src/main/utils/pathDecoder', () => ({
   getBackupsBasePath: () => hoisted.backupsBase,
   getAppDataPath: () => hoisted.appDataPath,
   getTasksBasePath: () => hoisted.tasksBase,
+  getLocalTasksBasePath: () => `${hoisted.tasksBase}-local`,
 }));
 
 import { TeamPermanentDeletionLock } from '../../../../src/main/services/team/permanent-deletion/TeamPermanentDeletionLock';
@@ -625,6 +626,46 @@ describe('TeamBackupService', () => {
     hoisted.tasksBase = '';
     if (tempDir) {
       await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('archives old task backups while preserving execution state without claiming registry recovery', async () => {
+    const teamName = 'registry-backup';
+    const teamDir = path.join(hoisted.teamsBase, teamName);
+    const localDir = path.join(`${hoisted.tasksBase}-local`, teamName);
+    const backupDir = path.join(hoisted.backupsBase, 'teams', teamName);
+    const legacyDir = path.join(hoisted.tasksBase, teamName);
+    const journal = '.creation-commands/journal.json';
+    await fs.mkdir(teamDir, { recursive: true });
+    await fs.mkdir(legacyDir, { recursive: true });
+    await fs.mkdir(path.join(localDir, '.creation-commands'), { recursive: true });
+    await fs.writeFile(path.join(teamDir, 'config.json'), JSON.stringify({ name: teamName, specProject: 'sandbox/project', specSlug: 'spec' }));
+    await fs.writeFile(path.join(legacyDir, '1.json'), '{"subject":"obsolete"}');
+    await fs.writeFile(path.join(localDir, '1.json'), '{"taskId":"1","comments":[]}');
+    await fs.writeFile(path.join(localDir, journal), '{"pending":["1"]}');
+    const service = new TeamBackupService();
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      await service.initialize();
+      await service.backupTeam(teamName);
+      await expect(fs.stat(path.join(backupDir, 'tasks', '1.json'))).rejects.toMatchObject({ code: 'ENOENT' });
+      expect(await fs.readFile(path.join(backupDir, 'tasks-local', journal), 'utf8')).toBe('{"pending":["1"]}');
+      await fs.mkdir(path.join(backupDir, 'tasks'), { recursive: true });
+      await fs.writeFile(path.join(backupDir, 'tasks', '1.json'), '{"subject":"archive"}');
+      await service.backupTeam(teamName);
+      expect(await fs.readFile(path.join(backupDir, 'tasks', '1.json'), 'utf8')).toBe('{"subject":"archive"}');
+      await fs.unlink(path.join(legacyDir, '1.json'));
+      await fs.unlink(path.join(localDir, '1.json'));
+      await fs.writeFile(path.join(localDir, journal), '{"pending":["newer"]}');
+      await fs.unlink(path.join(teamDir, 'config.json'));
+      await service.restoreIfNeeded();
+      await expect(fs.stat(path.join(legacyDir, '1.json'))).rejects.toMatchObject({ code: 'ENOENT' });
+      expect(await fs.readFile(path.join(localDir, '1.json'), 'utf8')).toBe('{"taskId":"1","comments":[]}');
+      expect(await fs.readFile(path.join(localDir, journal), 'utf8')).toBe('{"pending":["newer"]}');
+      expect(warning.mock.calls.flat().join(' ')).toContain('Registry tasks for registry-backup were not restored');
+    } finally {
+      warning.mockRestore();
+      service.dispose();
     }
   });
 

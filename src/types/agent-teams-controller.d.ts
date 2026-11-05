@@ -9,6 +9,8 @@ declare module 'agent-teams-controller' {
     teamName: string;
     claudeDir?: string;
     allowUserMessageSender?: boolean;
+    /** Short-lived full-task snapshot for reads only; every canonical task write is rejected. */
+    readOnlyTaskSnapshot?: ReadonlyArray<import('@shared/types').TeamTask>;
   }
 
   export interface ControllerTaskReadApi {
@@ -186,10 +188,25 @@ declare module 'agent-teams-controller' {
   export interface ControllerTaskBoardApi
     extends ControllerTaskBoardTaskApi, ControllerTaskBoardKanbanApi, ControllerReviewWriteApi {
     /**
-     * Board facts for lead reports, read under the board lock so an unreadable
-     * or ambiguous row surfaces as an error instead of an empty board.
+     * Board facts for lead reports. Snapshot contexts avoid waiting on the board
+     * lock; other contexts retain it so unreadable or ambiguous rows throw.
      */
     readLeadReportFacts(): unknown[];
+    /** Snapshot-only hand-over that uses asynchronous inbox persistence. */
+    deliverStartupWorkAsync(
+      memberName: string,
+      options: { launchId: string; isCurrent: () => boolean }
+    ): Promise<{
+      memberName: string;
+      delivered: {
+        taskId: string;
+        displayId: string;
+        kind: 'assignment' | 'review';
+        messageId: string;
+      }[];
+      skipped: { taskId: string; kind: 'assignment' | 'review'; reason: string }[];
+      cancelled?: true;
+    }>;
   }
 
   export interface ControllerMessageApi {
@@ -204,10 +221,6 @@ declare module 'agent-teams-controller' {
     stopProcess(flags: Record<string, unknown>): unknown;
     unregisterProcess(flags: Record<string, unknown>): unknown;
     listProcesses(): unknown[];
-  }
-
-  export interface ControllerMaintenanceApi {
-    reconcileArtifacts(flags?: Record<string, unknown>): unknown;
   }
 
   export interface ControllerCrossTeamApi {
@@ -254,7 +267,6 @@ declare module 'agent-teams-controller' {
     taskBoard: ControllerTaskBoardApi;
     messages: ControllerMessageApi;
     processes: ControllerProcessApi;
-    maintenance: ControllerMaintenanceApi;
     crossTeam: ControllerCrossTeamApi;
     runtime: ControllerRuntimeApi;
     groupChats: {

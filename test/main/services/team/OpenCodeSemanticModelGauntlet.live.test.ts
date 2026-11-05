@@ -7,6 +7,7 @@ import {
   getTeamsBasePath,
   setClaudeBasePathOverride,
 } from '../../../../src/main/utils/pathDecoder';
+import { createRegistryLiveFixture, type RegistryLiveFixture } from './helpers/registryLiveFixture';
 
 import {
   createOpenCodeLiveHarness,
@@ -769,6 +770,7 @@ async function runGauntletOnce(input: {
     input.model
   )}-${Date.now()}-${input.runIndex}`;
   let harness: Awaited<ReturnType<typeof createOpenCodeLiveHarness>> | null = null;
+  let registry: RegistryLiveFixture | null = null;
   let keepTempDir = false;
   const measure = async <T>(stageName: string, run: () => Promise<T>): Promise<T> => {
     const stageStartedAt = Date.now();
@@ -790,6 +792,7 @@ async function runGauntletOnce(input: {
       await fs.mkdir(tempClaudeRoot, { recursive: true });
       await fs.mkdir(projectPath, { recursive: true });
       setClaudeBasePathOverride(tempClaudeRoot);
+      registry = await createRegistryLiveFixture(tempDir);
       await materializeOpenCodeScenarioProject(input.scenario, projectPath);
       harness = await createOpenCodeLiveHarness({
         tempDir,
@@ -806,6 +809,7 @@ async function runGauntletOnce(input: {
           scenario: input.scenario,
           teamName,
           projectPath,
+          specBinding: registry!.binding,
           model: harness!.selectedModel,
         }),
         (progress) => progressEvents.push(progress)
@@ -813,7 +817,9 @@ async function runGauntletOnce(input: {
     );
     diagnostics.push(`runId=${runId}`);
     await measure('materializeTasks', async () =>
-      materializeOpenCodeScenarioTasks({ scenario: input.scenario, teamName, projectPath })
+      materializeOpenCodeScenarioTasks({
+        scenario: input.scenario, teamName, projectPath, writer: await registry!.writer(teamName),
+      })
     );
     assertLaunchReady(progressEvents);
     stages.launchBootstrap = true;
@@ -1073,6 +1079,8 @@ async function runGauntletOnce(input: {
       await activeHarness.dispose().catch(() => undefined);
       await waitForOpenCodeLanesStopped(teamName).catch(() => undefined);
     }
+    const activeRegistry = registry as RegistryLiveFixture | null;
+    await activeRegistry?.dispose();
     setClaudeBasePathOverride(null);
     if (!keepTempDir) {
       await fs.rm(tempDir, { recursive: true, force: true }).catch(() => undefined);

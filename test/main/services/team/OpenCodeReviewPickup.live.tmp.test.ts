@@ -31,9 +31,7 @@ import { TeamInboxWriter } from '@main/services/team/TeamInboxWriter';
 import { TeamKanbanManager } from '@main/services/team/TeamKanbanManager';
 import { TeamMembersMetaStore } from '@main/services/team/TeamMembersMetaStore';
 import { TeamTaskReader } from '@main/services/team/TeamTaskReader';
-import { TeamTaskWriter } from '@main/services/team/TeamTaskWriter';
 import {
-  getTasksBasePath,
   getTeamsBasePath,
   setClaudeBasePathOverride,
 } from '@main/utils/pathDecoder';
@@ -42,27 +40,33 @@ import {
   createOpenCodeLiveHarness,
   waitForOpenCodeLanesStopped,
 } from './openCodeLiveTestHarness';
+import { createRegistryLiveFixture, type RegistryLiveFixture } from './helpers/registryLiveFixture';
 
 const liveDescribe =
   process.env.OPENCODE_E2E === '1' && process.env.OPENCODE_E2E_REVIEW_PICKUP === '1'
     ? describe
     : describe.skip;
 
-const PROJECT_PATH = process.env.OPENCODE_E2E_PROJECT_PATH?.trim() ?? process.cwd();
 const MODEL = process.env.OPENCODE_E2E_MODEL?.trim() ?? 'opencode/big-pickle';
 
 liveDescribe('OpenCode review pickup live e2e', () => {
   let tempDir: string;
   let tempClaudeRoot: string;
+  let projectPath: string;
+  let registry: RegistryLiveFixture;
 
   beforeEach(async () => {
     tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'opencode-review-pickup-e2e-'));
     tempClaudeRoot = path.join(tempDir, '.claude');
+    projectPath = path.join(tempDir, 'project');
+    await fs.mkdir(projectPath, { recursive: true });
     await fs.mkdir(tempClaudeRoot, { recursive: true });
     setClaudeBasePathOverride(tempClaudeRoot);
+    registry = await createRegistryLiveFixture(tempDir);
   });
 
   afterEach(async () => {
+    await registry?.dispose();
     setClaudeBasePathOverride(null);
     if (process.env.OPENCODE_E2E_KEEP_TEMP === '1') {
       console.info(`[OpenCodeReviewPickup.live] preserved temp dir: ${tempDir}`);
@@ -77,7 +81,7 @@ liveDescribe('OpenCode review pickup live e2e', () => {
       const harness = await createOpenCodeLiveHarness({
         tempDir,
         selectedModel: MODEL,
-        projectPath: PROJECT_PATH,
+        projectPath,
       });
       const feature = createMemberWorkSyncFeature({
     lifecycleIdentity: createTestWorkSyncIdentity(),
@@ -152,15 +156,15 @@ liveDescribe('OpenCode review pickup live e2e', () => {
 
       const teamName = `opencode-review-pickup-${Date.now()}`;
       const memberName = 'bob';
-      const taskId = '7142f765-76e5-4532-8a37-e228b841a6ed';
-      const displayId = '7142f765';
 
       try {
         const progressEvents: { message?: string }[] = [];
         await harness.svc.createTeam(
           {
             teamName,
-            cwd: PROJECT_PATH,
+            cwd: projectPath,
+            specProject: registry.binding.project,
+            specSlug: registry.binding.spec,
             providerId: 'opencode',
             model: MODEL,
             skipPermissions: true,
@@ -177,36 +181,22 @@ liveDescribe('OpenCode review pickup live e2e', () => {
           JSON.stringify(progressEvents, null, 2)
         ).toBe(true);
 
-        const createdAt = new Date().toISOString();
-        await new TeamTaskWriter().createTask(teamName, {
-          id: taskId,
-          displayId,
+        const writer = await registry.writer(teamName);
+        const { task } = await writer.createTask({
           subject: 'Live review pickup e2e task',
           description: 'Verify review-pickup delivery over its own unread review request.',
+          requirements: ['FR-1'],
           owner: 'alice',
-          createdBy: 'lead',
+          actor: 'lead',
           status: 'completed',
-          reviewState: 'review',
-          projectPath: PROJECT_PATH,
-          createdAt,
-          updatedAt: createdAt,
+          projectPath,
         });
-
-        const taskPath = path.join(getTasksBasePath(), teamName, `${taskId}.json`);
-        const task = JSON.parse(await fs.readFile(taskPath, 'utf8'));
-        task.historyEvents = [
-          ...(Array.isArray(task.historyEvents) ? task.historyEvents : []),
-          {
-            id: 'evt-live-review-request',
-            type: 'review_requested',
-            timestamp: new Date(Date.now() + 1000).toISOString(),
-            from: 'approved',
-            to: 'review',
-            reviewer: memberName,
-          },
-        ];
-        task.updatedAt = new Date().toISOString();
-        await fs.writeFile(taskPath, `${JSON.stringify(task, null, 2)}\n`, 'utf8');
+        const taskId = task.id;
+        const displayId = task.displayId ?? taskId;
+        await writer.transitionReview({ taskId, action: 'request', actor: 'lead', reviewer: memberName });
+        const reviewedTask = (await new TeamTaskReader().getTasks(teamName)).find((item) => item.id === taskId);
+        const reviewEvent = reviewedTask?.historyEvents?.find((event) => event.type === 'review_requested');
+        expect(reviewEvent?.id).toBeTruthy();
 
         await new TeamInboxWriter().sendMessage(teamName, {
           member: memberName,
@@ -230,7 +220,7 @@ liveDescribe('OpenCode review pickup live e2e', () => {
           kind: 'review',
           evidence: {
             reviewObligation: 'review_pickup_required',
-            reviewRequestEventId: 'evt-live-review-request',
+            reviewRequestEventId: reviewEvent!.id,
           },
         });
 

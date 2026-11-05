@@ -1,8 +1,4 @@
-import {
-  getAutoDetectedClaudeBasePath,
-  getTasksBasePath,
-  getTeamsBasePath,
-} from '@main/utils/pathDecoder';
+import { getAutoDetectedClaudeBasePath, getTeamsBasePath } from '@main/utils/pathDecoder';
 import { createLogger } from '@shared/utils/logger';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -63,7 +59,6 @@ export function startProvisioningFilesystemMonitor<
 ): void {
   const configuredTeamDir = path.join(getTeamsBasePath(), run.teamName);
   const defaultTeamDir = path.join(getAutoDetectedClaudeBasePath(), 'teams', run.teamName);
-  const tasksDir = path.join(getTasksBasePath(), run.teamName);
   const primaryProvisioningMembers = Array.isArray(run.effectiveMembers)
     ? run.effectiveMembers
     : request.members;
@@ -168,12 +163,7 @@ export function startProvisioningFilesystemMonitor<
         if (run.waitingTasksSince === null) {
           run.waitingTasksSince = Date.now();
         }
-        const taskCount = await countFiles(tasksDir, '.json');
-        const taskFound = taskCount > 0;
-        const taskFallbackExpired =
-          !taskFound && Date.now() - run.waitingTasksSince >= TASK_WAIT_FALLBACK_MS;
-
-        if (taskFound || taskFallbackExpired) {
+        if (Date.now() - run.waitingTasksSince >= TASK_WAIT_FALLBACK_MS) {
           run.fsPhase = 'all_files_found';
           if (!run.deterministicBootstrap && !run.provisioningComplete) {
             void ports.handleProvisioningTurnComplete(run).catch((error: unknown) => {

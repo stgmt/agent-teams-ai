@@ -13,8 +13,7 @@ const { findRecentDuplicateTask } = require('./taskCreationDeduplication.js');
 const { isTaskOpen } = require('./taskLifecycle.js');
 const {
     createMemberMessagingProtocol,
-    isCodexMember,
-    isOpenCodeMember,
+    resolveMemberRuntimeProvider,
 } = require('./memberMessagingProtocol.js');
 const {
     assertKnownTaskActor,
@@ -62,12 +61,6 @@ function logNonCritical(message) {
         return;
     }
     console.warn(message);
-}
-
-function resolveMemberRuntimeProvider(member) {
-    if (isOpenCodeMember(member)) return 'opencode';
-    if (isCodexMember(member)) return 'codex';
-    return 'native';
 }
 
 function maybeNotifyPreviousOwnerOnReassignment(context, previousTask, updatedTask, options = {}) {
@@ -462,6 +455,12 @@ function startTask(context, taskId, actor) {
         if (hasKanbanReference(state, task.id)) {
             kanbanStore.clearKanban(context.paths, context.teamName, task.id, { nextReviewState: 'none' });
             task = taskStore.readTask(context.paths, task.id, { includeDeleted: true });
+        }
+        if (task.reviewState === 'needsFix') {
+            task = taskStore.updateTask(context.paths, task.id, (current) => {
+                current.reviewState = 'none';
+                return current;
+            });
         }
         return task;
     });

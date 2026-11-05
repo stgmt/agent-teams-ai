@@ -39,6 +39,7 @@ function runtimeDeps(teamsRoot: string): NativeDesktopTeamRuntimeDependencies {
     provider: {} as never,
     runtimeRoot: join(teamsRoot, 'runtime'),
     workspaceRoot: teamsRoot,
+    readStartupTasks: async () => [],
     mcp: {} as never,
     inbox: {} as never,
     controlUrl: async () => 'http://127.0.0.1:1',

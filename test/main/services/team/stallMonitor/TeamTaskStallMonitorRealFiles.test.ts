@@ -1,5 +1,5 @@
-import * as agentTeamsControllerModule from 'agent-teams-controller';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -12,11 +12,11 @@ import { TeamTaskStallNotifier } from '../../../../../src/main/services/team/sta
 import { TeamTaskStallPolicy } from '../../../../../src/main/services/team/stallMonitor/TeamTaskStallPolicy';
 import { TeamTaskStallSnapshotSource } from '../../../../../src/main/services/team/stallMonitor/TeamTaskStallSnapshotSource';
 import { TeamDataService } from '../../../../../src/main/services/team/TeamDataService';
+import { createRegistryTaskTestBoundary, type RegistryTaskTestBoundary } from '../helpers/registryTaskTestBoundary';
 
 import type { ActiveTeamRegistry } from '../../../../../src/main/services/team/stallMonitor/ActiveTeamRegistry';
 import type { TaskStallAlert } from '../../../../../src/main/services/team/stallMonitor/TeamTaskStallTypes';
-
-const { createController } = agentTeamsControllerModule;
+import type { TeamTask } from '../../../../../src/shared/types';
 
 // Level L2 of the lead-status bugfix: the real monitor, snapshot source, policy, journal,
 // notifier, TeamDataService and controller on real team files in a temp Claude root.
@@ -29,14 +29,47 @@ const TEAM = 'fixture';
 describe('stall monitor on real team files (R9)', () => {
   let claudeRoot = '';
   let monitor: TeamTaskStallMonitor | null = null;
+  let registryBoundary: RegistryTaskTestBoundary | null = null;
+  let nextTaskId = 1;
 
   const teamDir = () => join(claudeRoot, 'teams', TEAM);
-  const board = () => createController({ teamName: TEAM, claudeDir: claudeRoot }).taskBoard;
   const inbox = (member: string): { from?: string; summary?: string; text?: string }[] => {
     const file = join(teamDir(), 'inboxes', `${member}.json`);
     return existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : [];
   };
   const signals = () => inbox('alice').filter((row) => row.summary === SIGNAL_SUMMARY);
+  const makeTask = (
+    subject: string,
+    owner: string,
+    overrides: Partial<TeamTask> = {}
+  ): TeamTask => {
+    const id = String(nextTaskId++);
+    return {
+      id,
+      subject,
+      owner,
+      status: 'pending',
+      historyEvents: owner
+        ? [{
+            id: `owner-assigned-${id}`,
+            type: 'owner_changed',
+            timestamp: new Date(Date.now() - 30_000).toISOString(),
+            to: owner,
+          }]
+        : [],
+      ...overrides,
+    };
+  };
+  const seedTasks = async (...tasks: TeamTask[]): Promise<TeamTask[]> => {
+    if (!registryBoundary) throw new Error('The isolated registry fixture is not initialized.');
+    await registryBoundary.replaceTasks(tasks);
+    return tasks;
+  };
+  const makeStartedTask = (subject: string, owner: string): TeamTask =>
+    makeTask(subject, owner, {
+      status: 'in_progress',
+      workIntervals: [{ startedAt: new Date().toISOString() }],
+    });
 
   // РИСК: двойник реестра активных команд. Имитирует «команда запущена»; определение живых
   // процессов и отслеживание журналов команды он не покрывает.
@@ -48,9 +81,10 @@ describe('stall monitor on real team files (R9)', () => {
   } as unknown as ActiveTeamRegistry;
 
   const startMonitor = () => {
+    if (!registryBoundary) throw new Error('The isolated registry fixture is not initialized.');
     monitor = new TeamTaskStallMonitor(
       registry,
-      new TeamTaskStallSnapshotSource(),
+      new TeamTaskStallSnapshotSource({ taskReader: registryBoundary.taskReader }),
       new TeamTaskStallPolicy(),
       new TeamTaskStallJournal({ store: new JsonTaskStallJournalStore() }),
       new TeamTaskStallNotifier(new TeamDataService())
@@ -60,10 +94,12 @@ describe('stall monitor on real team files (R9)', () => {
 
   const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-  beforeEach(() => {
+  beforeEach(async () => {
+    vi.useRealTimers();
     claudeRoot = mkdtempSync(join(tmpdir(), 'stall-monitor-real-'));
     setClaudeBasePathOverride(claudeRoot);
     mkdirSync(teamDir(), { recursive: true });
+    nextTaskId = 1;
     // The snapshot source needs the project directory of the team, as a running team has.
     const workspace = join(claudeRoot, 'workspace');
     mkdirSync(workspace, { recursive: true });
@@ -75,6 +111,8 @@ describe('stall monitor on real team files (R9)', () => {
       JSON.stringify({
         name: TEAM,
         projectPath: workspace,
+        specProject: 'sandbox/project',
+        specSlug: 'sandbox-spec',
         leadSessionId: 'lead-session-1',
         members: [
           { name: 'alice', role: 'team-lead', providerId: 'anthropic' },
@@ -82,6 +120,11 @@ describe('stall monitor on real team files (R9)', () => {
         ],
       })
     );
+    registryBoundary = await createRegistryTaskTestBoundary({ teamName: TEAM });
+    vi.stubEnv('CLAUDE_TEAM_TASK_STALL_MONITOR_ENABLED', 'true');
+    vi.stubEnv('CLAUDE_TEAM_OPENCODE_TASK_STALL_REMEDIATION_ENABLED', 'false');
+    vi.stubEnv('CLAUDE_TEAM_TASK_STALL_ALERTS_ENABLED', 'true');
+    vi.stubEnv('CLAUDE_TEAM_PENDING_PICKUP_STALL_REMEDIATION_ENABLED', 'true');
     vi.stubEnv('CLAUDE_TEAM_TASK_STALL_SCAN_INTERVAL_MS', '150');
     vi.stubEnv('CLAUDE_TEAM_TASK_STALL_STARTUP_GRACE_MS', '1');
     vi.stubEnv('CLAUDE_TEAM_TASK_STALL_ACTIVATION_GRACE_MS', '1');
@@ -89,15 +132,29 @@ describe('stall monitor on real team files (R9)', () => {
   });
 
   afterEach(async () => {
-    await monitor?.stop();
+    vi.useRealTimers();
+    const monitorStopped = monitor?.stop();
     monitor = null;
-    vi.unstubAllEnvs();
-    setClaudeBasePathOverride(null);
-    rmSync(claudeRoot, { recursive: true, force: true });
+    try {
+      await registryBoundary?.dispose();
+    } finally {
+      registryBoundary = null;
+      try {
+        await monitorStopped;
+      } finally {
+        vi.useRealTimers();
+        vi.unstubAllEnvs();
+        setClaudeBasePathOverride(null);
+        if (claudeRoot) {
+          rmSync(claudeRoot, { recursive: true, force: true });
+          claudeRoot = '';
+        }
+      }
+    }
   });
 
   it('S4.1: a task assigned to a Claude member and not started reaches the lead exactly once', async () => {
-    const task = board().createTask({ subject: 'Prepare the quarterly numbers', owner: 'bob' });
+    const [task] = await seedTasks(makeTask('Prepare the quarterly numbers', 'bob'));
     startMonitor();
 
     await vi.waitFor(() => expect(signals()).toHaveLength(1), { timeout: 15_000, interval: 100 });
@@ -105,27 +162,26 @@ describe('stall monitor on real team files (R9)', () => {
 
     expect(signals()).toHaveLength(1);
     expect(signals()[0].from).toBe('system');
-    expect(signals()[0].text).toContain(String((task as { displayId?: string }).displayId));
+    expect(signals()[0].text).toContain(task.id);
   });
 
   it('S4.2: a work stall alert passes the real notifier, TeamDataService and controller into the lead inbox', async () => {
     // The work thresholds (4 to 10 minutes) are constants of the policy, not environment
     // variables, so the scan is not driven here; the live run (S4.1 in L3) covers the full chain.
-    const task = board().createTask({ subject: 'Reconcile the ledger', owner: 'bob' });
-    board().startTask(String((task as { id: string }).id), 'bob');
+    const [task] = await seedTasks(makeStartedTask('Reconcile the ledger', 'bob'));
     const alert: TaskStallAlert = {
       teamName: TEAM,
-      taskId: String((task as { id: string }).id),
-      displayId: String((task as { displayId?: string }).displayId),
-      subject: 'Reconcile the ledger',
+      taskId: task.id,
+      displayId: task.id,
+      subject: task.subject,
       branch: 'work',
       signal: 'turn_ended_after_touch',
       reason: 'Potential work stall.',
       epochKey: 'work:epoch',
       owner: 'bob',
       taskRef: {
-        taskId: String((task as { id: string }).id),
-        displayId: String((task as { displayId?: string }).displayId),
+        taskId: task.id,
+        displayId: task.id,
         teamName: TEAM,
       },
     } as TaskStallAlert;
@@ -137,8 +193,7 @@ describe('stall monitor on real team files (R9)', () => {
   });
 
   it('S4.3: a task the owner started before the threshold gives no signal', async () => {
-    const task = board().createTask({ subject: 'Started in time', owner: 'bob' });
-    board().startTask(String((task as { id: string }).id), 'bob');
+    await seedTasks(makeStartedTask('Started in time', 'bob'));
     startMonitor();
 
     await sleep(2_000);
@@ -147,14 +202,9 @@ describe('stall monitor on real team files (R9)', () => {
   });
 
   it('S4.4: a task blocked by an unfinished dependency gives no signal', async () => {
-    const blocker = board().createTask({ subject: 'First step', owner: 'bob' });
-    board().startTask(String((blocker as { id: string }).id), 'bob');
-    board().createTask({
-      subject: 'Second step',
-      owner: 'bob',
-      blockedBy: [String((blocker as { id: string }).id)],
-    });
-    startMonitor();
+    const blocker = makeStartedTask('First step', 'bob');
+    const waiting = makeTask('Second step', 'bob', { blockedBy: [blocker.id] });
+    await seedTasks(blocker, waiting);
 
     await sleep(2_000);
 
@@ -162,7 +212,7 @@ describe('stall monitor on real team files (R9)', () => {
   });
 
   it('S4.5: a task waiting for clarification gives no signal', async () => {
-    board().createTask({ subject: 'Needs an answer', owner: 'bob', needsClarification: 'lead' });
+    await seedTasks(makeTask('Needs an answer', 'bob', { needsClarification: 'lead' }));
     startMonitor();
 
     await sleep(2_000);
@@ -171,7 +221,7 @@ describe('stall monitor on real team files (R9)', () => {
   });
 
   it('S4.6: inside the pause between signals there is no second signal for the task', async () => {
-    board().createTask({ subject: 'Left alone', owner: 'bob' });
+    await seedTasks(makeTask('Left alone', 'bob'));
     startMonitor();
 
     await vi.waitFor(() => expect(signals()).toHaveLength(1), { timeout: 15_000, interval: 100 });
@@ -182,7 +232,7 @@ describe('stall monitor on real team files (R9)', () => {
 
   it('S4.7: after the escalation steps are spent the signals stop and the end is logged once', async () => {
     vi.stubEnv('CLAUDE_TEAM_TASK_STALL_ALERT_COOLDOWN_MS', '400');
-    board().createTask({ subject: 'Abandoned', owner: 'bob' });
+    await seedTasks(makeTask('Abandoned', 'bob'));
     const exhaustedWarnings = () =>
       vi
         .mocked(console.warn)
@@ -209,7 +259,7 @@ describe('stall monitor on real team files (R9)', () => {
 
   it('S4.8: inside the startup window of the team there is no signal', async () => {
     vi.stubEnv('CLAUDE_TEAM_TASK_STALL_STARTUP_GRACE_MS', '600000');
-    board().createTask({ subject: 'Too early', owner: 'bob' });
+    await seedTasks(makeTask('Too early', 'bob'));
     startMonitor();
 
     await sleep(2_000);
@@ -218,7 +268,7 @@ describe('stall monitor on real team files (R9)', () => {
   });
 
   it('S4.9: a pending task owned by the lead gives no signal', async () => {
-    board().createTask({ subject: 'The lead own task', owner: 'alice' });
+    await seedTasks(makeTask('The lead own task', 'alice'));
     startMonitor();
 
     await sleep(2_000);
@@ -227,9 +277,9 @@ describe('stall monitor on real team files (R9)', () => {
   });
 
   it('S4.10: an owner busy on another task in progress gives no signal for the pending one', async () => {
-    const running = board().createTask({ subject: 'Running', owner: 'bob' });
-    board().startTask(String((running as { id: string }).id), 'bob');
-    board().createTask({ subject: 'Waiting its turn', owner: 'bob' });
+    const running = makeStartedTask('Running', 'bob');
+    const waiting = makeTask('Waiting its turn', 'bob');
+    await seedTasks(running, waiting);
     startMonitor();
 
     await sleep(2_000);

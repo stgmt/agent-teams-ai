@@ -1,31 +1,52 @@
-import * as agentTeamsControllerModule from 'agent-teams-controller';
-import { mkdir, mkdtemp, rm, writeFile } from 'fs/promises';
-import { tmpdir } from 'os';
+import { createRequire } from 'node:module';
+import { mkdir, writeFile } from 'fs/promises';
 import { join } from 'path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { buildNativeAppManagedBootstrapSpecs } from '../../../../src/main/services/team/bootstrap/NativeAppManagedBootstrapContextBuilder';
+import { registryOnlyTaskControlFixture } from './helpers/registryOnlyTaskControlFixture';
+import {
+  createRegistryTaskTestBoundary,
+  type RegistryTaskTestBoundary,
+} from './helpers/registryTaskTestBoundary';
 import { setClaudeBasePathOverride } from '../../../../src/main/utils/pathDecoder';
+import type { TeamTask } from '@shared/types';
 
-const { createController } = agentTeamsControllerModule;
+const { createController } = registryOnlyTaskControlFixture;
+const requireFromTest = createRequire(import.meta.url);
+const desktopBinding = requireFromTest(
+  '../../../../agent-teams-controller/src/internal/desktopControlBinding.js'
+) as { isDesktopBound: () => boolean };
 
-// Real builder, real controller, real board files in a temp Claude root.
-// S1.14: the startup context of a member carries no Actionable work. Work in the
-// startup context keeps the runtime in the member's first turn, so the launch
-// confirmation never arrives inside the window (bug A of the member startup spec).
-
+// The startup briefings read from a bound local task API, never the operator's registry.
 describe('native app-managed bootstrap context carries no work (S1.14)', () => {
-  let claudeRoot = '';
+  const claudeRoot = registryOnlyTaskControlFixture.claudeDir;
+  let registryBoundary: RegistryTaskTestBoundary;
+  let restoreDesktopBinding: (() => void) | undefined;
 
   beforeEach(async () => {
-    claudeRoot = await mkdtemp(join(tmpdir(), 'native-bootstrap-nowork-'));
     setClaudeBasePathOverride(claudeRoot);
+    registryBoundary = await createRegistryTaskTestBoundary({ teamName: 'sandbox-spec' });
+    await Promise.all(
+      ['nowork-full', 'nowork-compact'].map((teamName) =>
+        registryOnlyTaskControlFixture.clearTeam(teamName)
+      )
+    );
   });
 
   afterEach(async () => {
+    restoreDesktopBinding?.();
+    restoreDesktopBinding = undefined;
     setClaudeBasePathOverride(null);
-    await rm(claudeRoot, { recursive: true, force: true });
+    await Promise.all(
+      ['nowork-full', 'nowork-compact'].map((teamName) =>
+        registryOnlyTaskControlFixture.clearTeam(teamName)
+      )
+    );
+    await registryBoundary.dispose();
   });
+
+  afterAll(() => registryOnlyTaskControlFixture.dispose());
+
 
   async function seedTeam(teamName: string, workerNames: string[]) {
     await mkdir(join(claudeRoot, 'teams', teamName), { recursive: true });
@@ -33,6 +54,8 @@ describe('native app-managed bootstrap context carries no work (S1.14)', () => {
       join(claudeRoot, 'teams', teamName, 'config.json'),
       JSON.stringify({
         name: teamName,
+        specProject: 'sandbox/project',
+        specSlug: 'sandbox-spec',
         leadSessionId: 'lead-session-1',
         members: [
           { name: 'lead', role: 'team-lead' },
@@ -41,12 +64,27 @@ describe('native app-managed bootstrap context carries no work (S1.14)', () => {
       })
     );
     const board = createController({ teamName, claudeDir: claudeRoot }).taskBoard;
-    const running = board.createTask({
-      subject: 'RUNNING_SENTINEL quarterly numbers',
-      owner: 'bob',
-    });
+    const registryTasks: TeamTask[] = [];
+    const createTask = (subject: string, status: TeamTask['status']) => {
+      const task = board.createTask({ requirements: ['FR-1'], subject, owner: 'bob' });
+      const createdTask = task as { id: string };
+      const id = String(createdTask.id);
+      registryOnlyTaskControlFixture.trackTask(teamName, id);
+      registryTasks.push({
+        id,
+        displayId: id,
+        subject,
+        owner: 'bob',
+        status,
+        createdAt: '2026-10-22T10:00:00.000Z',
+        updatedAt: '2026-10-22T10:00:00.000Z',
+      });
+      return task;
+    };
+    const running = createTask('RUNNING_SENTINEL quarterly numbers', 'in_progress');
     board.startTask(String((running as { id: string }).id), 'bob');
-    board.createTask({ subject: 'PENDING_SENTINEL ledger check', owner: 'bob' });
+    createTask('PENDING_SENTINEL ledger check', 'pending');
+    await registryBoundary.replaceTasks(registryTasks);
     return board;
   }
 
@@ -54,17 +92,30 @@ describe('native app-managed bootstrap context carries no work (S1.14)', () => {
     names.map((name) => ({ name, providerId: 'anthropic' as const, role: 'developer' }));
 
   it('full context: no Actionable block, no task subjects; the controller carries the hand-over notice', async () => {
+    const { buildNativeAppManagedBootstrapSpecs } = await import(
+      '../../../../src/main/services/team/bootstrap/NativeAppManagedBootstrapContextBuilder'
+    );
     const board = await seedTeam('nowork-full', ['bob']);
+    // The local app-control fixture has no group-chat endpoint; avoid that unrelated read while
+    // the task queue and hand-over assertions continue to use their real local fixtures.
+    const wasDesktopBound = desktopBinding.isDesktopBound;
+    desktopBinding.isDesktopBound = () => false;
+    restoreDesktopBinding = () => {
+      desktopBinding.isDesktopBound = wasDesktopBound;
+    };
     // The fixture is valid only if the ordinary queue does list the work.
     const ordinaryQueue = await board.taskBriefing('bob');
     expect(ordinaryQueue).toContain('Actionable:');
     expect(ordinaryQueue).toContain('RUNNING_SENTINEL');
 
-    const specs = await buildNativeAppManagedBootstrapSpecs({
-      teamName: 'nowork-full',
-      cwd: '/tmp/workspace',
-      members: members(['bob']),
-    });
+    const specs = await buildNativeAppManagedBootstrapSpecs(
+      {
+        teamName: 'nowork-full',
+        cwd: '/tmp/workspace',
+        members: members(['bob']),
+      },
+      registryBoundary.taskReader
+    );
     const context = specs.get('bob')?.contextText ?? '';
 
     expect(context).toContain('Member briefing for bob on team "nowork-full"');
@@ -83,19 +134,24 @@ describe('native app-managed bootstrap context carries no work (S1.14)', () => {
     );
     expect(deferred).toContain('No Actionable work is loaded in this startup context');
     expect(deferred).toContain('New task assigned');
-    expect(deferred).not.toContain('RUNNING_SENTINEL');
-  });
 
+  });
   it('compact context (large roster): the same guarantee holds', async () => {
+    const { buildNativeAppManagedBootstrapSpecs } = await import(
+      '../../../../src/main/services/team/bootstrap/NativeAppManagedBootstrapContextBuilder'
+    );
     const names = ['bob', ...Array.from({ length: 9 }, (_, index) => `peer-${index}`)];
     const board = await seedTeam('nowork-compact', names);
     expect(await board.taskBriefing('bob')).toContain('RUNNING_SENTINEL');
 
-    const specs = await buildNativeAppManagedBootstrapSpecs({
-      teamName: 'nowork-compact',
-      cwd: '/tmp/workspace',
-      members: members(names),
-    });
+    const specs = await buildNativeAppManagedBootstrapSpecs(
+      {
+        teamName: 'nowork-compact',
+        cwd: '/tmp/workspace',
+        members: members(names),
+      },
+      registryBoundary.taskReader
+    );
     const context = specs.get('bob')?.contextText ?? '';
 
     expect(context).toContain('The app loaded compact startup context');

@@ -21,6 +21,10 @@ import {
   memberLifecycleUseCasesHarness,
   stubMemberLifecycleHostOptionalSeam,
 } from './provisioningHarness';
+import {
+  isolateRegistryCredentialForProvisioningTest,
+  isolateTaskActivityRepairForProvisioningTest,
+} from './provisioningHarness/ancillaryTaskServiceTestSeams';
 
 const hoisted = vi.hoisted(() => ({
   paths: {
@@ -36,6 +40,14 @@ let tempTasksBase = '';
 
 vi.mock('@main/services/team/ClaudeBinaryResolver', () => ({
   ClaudeBinaryResolver: { resolve: vi.fn() },
+}));
+
+vi.mock('@main/services/team/TeamTaskReader', () => ({
+  TeamTaskReader: class {
+    async getTasks() {
+      return [];
+    }
+  },
 }));
 
 vi.mock('@main/utils/childProcess', () => ({
@@ -406,16 +418,30 @@ function expectAppOnlyMcpConfigPath(mcpConfigPath: string): void {
   const memberMcpConfig = JSON.parse(fs.readFileSync(mcpConfigPath, 'utf8')) as {
     mcpServers: Record<
       string,
-      { command?: string; args?: string[]; enabled?: boolean; env?: Record<string, string> }
+      {
+        command?: string;
+        args?: string[];
+        enabled?: boolean;
+        env?: Record<string, string>;
+        type?: string;
+        url?: string;
+        headers?: Record<string, string>;
+      }
     >;
   };
-  expect(Object.keys(memberMcpConfig.mcpServers)).toEqual(['agent-teams']);
+  expect(Object.keys(memberMcpConfig.mcpServers)).toEqual(['agent-teams', 'omp-spec-kit']);
   expect(memberMcpConfig.mcpServers['agent-teams']).toMatchObject({
     enabled: true,
     env: {
       AGENT_TEAMS_MCP_CLAUDE_DIR: tempClaudeRoot,
       CLAUDE_TEAM_CONTROL_URL: 'http://127.0.0.1:43123',
     },
+  });
+  expect(memberMcpConfig.mcpServers['omp-spec-kit']).toMatchObject({
+    type: 'http',
+    url: 'http://127.0.0.1:8650/mcp',
+    headers: { Authorization: 'Bearer provisioning-test-registry-token' },
+    enabled: true,
   });
   expect(memberMcpConfig.mcpServers.tavily).toBeUndefined();
   expect(memberMcpConfig.mcpServers['brave-real-browser']).toBeUndefined();
@@ -514,6 +540,8 @@ describe('TeamProvisioningService member MCP config safe e2e', () => {
     setAppDataBasePath(tempClaudeRoot);
     fs.mkdirSync(tempTeamsBase, { recursive: true });
     fs.mkdirSync(tempTasksBase, { recursive: true });
+    isolateRegistryCredentialForProvisioningTest(tempClaudeRoot);
+    isolateTaskActivityRepairForProvisioningTest();
   });
 
   afterEach(() => {

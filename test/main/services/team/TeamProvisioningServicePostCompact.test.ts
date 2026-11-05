@@ -20,6 +20,14 @@ vi.mock('@main/services/team/ClaudeBinaryResolver', () => ({
   ClaudeBinaryResolver: { resolve: vi.fn() },
 }));
 
+vi.mock('@main/services/team/TeamTaskReader', () => ({
+  TeamTaskReader: class {
+    async getTasks() {
+      return [];
+    }
+  },
+}));
+
 // These tests simulate an already-running lead; compiler behavior is covered by
 // the workspace bundle tests, while execCli below models provider diagnostics.
 vi.mock('@main/services/team/WorkspaceMcpBundle', () => ({
@@ -58,6 +66,10 @@ import { execCli, spawnCli } from '@main/utils/childProcess';
 import { setAppDataBasePath } from '@main/utils/pathDecoder';
 
 import { toMetaMembers } from './provisioningHarness';
+import {
+  isolateRegistryCredentialForProvisioningTest,
+  isolateTaskActivityRepairForProvisioningTest,
+} from './provisioningHarness/ancillaryTaskServiceTestSeams';
 
 import type { TeamCreateRequest, TeamMember, TeamProviderId } from '@shared/types';
 
@@ -256,7 +268,7 @@ async function setupRunningTeam(teamName: string) {
 
   const svc = new TeamProvisioningService();
   mockProviderRuntime(svc);
-  mockLaunchConfigFacade(svc, [{ name: 'alice', role: 'developer' }]);
+  mockLaunchConfigFacade(svc, []);
   (svc as any).persistLaunchStateSnapshot = vi.fn(async () => {});
   (svc as any).pathExists = vi.fn(async () => false);
   (svc as any).startFilesystemMonitor = vi.fn();
@@ -283,6 +295,8 @@ async function setupRunningTeam(teamName: string) {
 describe('TeamProvisioningService post-compact lifecycle', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    isolateTaskActivityRepairForProvisioningTest();
+
     tempClaudeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-team-compact-'));
     tempTeamsBase = path.join(tempClaudeRoot, 'teams');
     tempTasksBase = path.join(tempClaudeRoot, 'tasks');
@@ -292,6 +306,7 @@ describe('TeamProvisioningService post-compact lifecycle', () => {
     setAppDataBasePath(tempClaudeRoot);
     fs.mkdirSync(tempTeamsBase, { recursive: true });
     fs.mkdirSync(tempTasksBase, { recursive: true });
+    isolateRegistryCredentialForProvisioningTest(tempClaudeRoot);
   });
 
   afterEach(() => {

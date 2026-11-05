@@ -276,7 +276,22 @@ export async function verifySelectedProviderModelsForProvisioning({
 
   // A loopback router serves models the Anthropic catalog cannot describe, so the model
   // list carried by the launch facts is the only honest source here.
-  const localRouterModels = new Set<string>(runtimeFacts.localRouterModelIds ?? []);
+  const localRouterModels = new Set<string>(
+    (runtimeFacts.localRouterModelIds ?? [])
+      .map((modelId) => modelId.split('@')[0].trim())
+      .filter((modelId) => modelId.length > 0)
+  );
+  // The provider-default check carries a sentinel instead of a model id, so routing must
+  // be proven by the model the check actually resolves to.
+  const isServedByLocalRouterModel = (...modelIds: Array<string | null | undefined>): boolean =>
+    modelIds.some((modelId) => {
+      const normalized = modelId?.split('@')[0]?.trim();
+      return (
+        Boolean(normalized) &&
+        !isDefaultProviderModelSelection(normalized) &&
+        localRouterModels.has(normalized as string)
+      );
+    });
 
   const recordOutcome = (
     requestedModelId: string,
@@ -318,7 +333,7 @@ export async function verifySelectedProviderModelsForProvisioning({
     }
     if (
       effortSupport.kind === 'unverified-catalog-missing' &&
-      localRouterModels.has(requestedModelId.split('@')[0].trim())
+      isServedByLocalRouterModel(requestedModelId, selection.resolvedLaunchModel)
     ) {
       details.push(
         `Selected model ${requestedModelId} runs through the local model router; effort "${effort}" is carried by the router.`

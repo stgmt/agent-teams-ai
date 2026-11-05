@@ -180,10 +180,6 @@ declare module 'agent-teams-controller' {
     listProcesses(): unknown[];
   }
 
-  export interface ControllerMaintenanceApi {
-    reconcileArtifacts(flags?: Record<string, unknown>): unknown;
-  }
-
   export interface ControllerCrossTeamApi {
     sendCrossTeamMessage(flags: Record<string, unknown>): unknown;
     listCrossTeamTargets(flags?: Record<string, unknown>): unknown;
@@ -243,7 +239,6 @@ declare module 'agent-teams-controller' {
       }>;
     };
     processes: ControllerProcessApi;
-    maintenance: ControllerMaintenanceApi;
     crossTeam: ControllerCrossTeamApi;
     runtime: ControllerRuntimeApi;
     workSync: ControllerWorkSyncApi;

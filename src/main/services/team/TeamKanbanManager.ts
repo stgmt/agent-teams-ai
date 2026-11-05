@@ -1,3 +1,4 @@
+import { atomicWriteAsync } from '@main/utils/atomicWrite';
 import { FileReadTimeoutError, readFileUtf8WithTimeout } from '@main/utils/fsRead';
 import { getTeamsBasePath } from '@main/utils/pathDecoder';
 import { KANBAN_COLUMN_IDS } from '@shared/constants/kanban';
@@ -5,7 +6,7 @@ import { createLogger } from '@shared/utils/logger';
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { atomicWriteAsync } from './atomicWrite';
+import { withFileLock } from './fileLock';
 
 import type { KanbanColumnId, KanbanState, UpdateKanbanPatch } from '@shared/types';
 
@@ -146,74 +147,88 @@ export class TeamKanbanManager {
     columnId: KanbanColumnId,
     orderedTaskIds: string[]
   ): Promise<void> {
-    const state = await this.getState(teamName);
-    const columnOrder = { ...state.columnOrder };
-    if (orderedTaskIds.length > 0) {
-      columnOrder[columnId] = orderedTaskIds;
-    } else {
-      delete columnOrder[columnId];
-    }
-    await this.writeState(teamName, { ...state, columnOrder });
+    return this.withTeamBoardLock(teamName, async () => {
+      const state = await this.getState(teamName);
+      const columnOrder = { ...state.columnOrder };
+      if (orderedTaskIds.length > 0) {
+        columnOrder[columnId] = orderedTaskIds;
+      } else {
+        delete columnOrder[columnId];
+      }
+      await this.writeState(teamName, { ...state, columnOrder });
+    });
   }
 
   async updateTask(teamName: string, taskId: string, patch: UpdateKanbanPatch): Promise<void> {
-    const state = await this.getState(teamName);
+    return this.withTeamBoardLock(teamName, async () => {
+      const state = await this.getState(teamName);
 
-    if (patch.op === 'remove' || patch.op === 'request_changes') {
-      delete state.tasks[taskId];
-    } else if (patch.column === 'review') {
-      state.tasks[taskId] = {
-        column: 'review',
-        reviewer: null,
-        movedAt: new Date().toISOString(),
-      };
-    } else {
-      state.tasks[taskId] = {
-        column: 'approved',
-        movedAt: new Date().toISOString(),
-      };
-    }
+      if (patch.op === 'remove' || patch.op === 'request_changes') {
+        delete state.tasks[taskId];
+      } else if (patch.column === 'review') {
+        state.tasks[taskId] = {
+          column: 'review',
+          reviewer: null,
+          movedAt: new Date().toISOString(),
+        };
+      } else {
+        state.tasks[taskId] = {
+          column: 'approved',
+          movedAt: new Date().toISOString(),
+        };
+      }
 
-    await this.writeState(teamName, state);
+      await this.writeState(teamName, state);
+    });
   }
 
-  async garbageCollect(teamName: string, validTaskIds: Set<string>): Promise<void> {
-    const state = await this.getState(teamName);
-    const before = Object.keys(state.tasks).length;
-
-    for (const taskId of Object.keys(state.tasks)) {
-      if (!validTaskIds.has(taskId)) {
-        delete state.tasks[taskId];
-      }
-    }
-
-    let columnOrderChanged = false;
-    if (state.columnOrder) {
-      const cleaned: NonNullable<KanbanState['columnOrder']> = {};
-      for (const [colId, ids] of Object.entries(state.columnOrder)) {
-        const valid = ids.filter((id) => validTaskIds.has(id));
-        if (valid.length > 0) {
-          cleaned[colId as KanbanColumnId] = valid;
-        }
-        if (valid.length !== ids.length) {
-          columnOrderChanged = true;
+  /** Resolve authoritative task IDs under the board lock before pruning Kanban overlays. */
+  async garbageCollect(
+    teamName: string,
+    getValidTaskIds: () => Promise<ReadonlySet<string>>
+  ): Promise<{ staleKanbanEntriesRemoved: number; staleColumnOrderRefsRemoved: number }> {
+    return this.withTeamBoardLock(teamName, async () => {
+      const validTaskIds = await getValidTaskIds();
+      const state = await this.getState(teamName);
+      let staleKanbanEntriesRemoved = 0;
+      for (const taskId of Object.keys(state.tasks)) {
+        if (!validTaskIds.has(taskId)) {
+          delete state.tasks[taskId];
+          staleKanbanEntriesRemoved += 1;
         }
       }
-      if (columnOrderChanged) {
-        state.columnOrder = Object.keys(cleaned).length > 0 ? cleaned : undefined;
+
+      let staleColumnOrderRefsRemoved = 0;
+      if (state.columnOrder) {
+        const cleaned: NonNullable<KanbanState['columnOrder']> = {};
+        for (const [colId, ids] of Object.entries(state.columnOrder)) {
+          const valid = ids.filter((id) => validTaskIds.has(id));
+          staleColumnOrderRefsRemoved += ids.length - valid.length;
+          if (valid.length > 0) {
+            cleaned[colId as KanbanColumnId] = valid;
+          }
+        }
+        if (staleColumnOrderRefsRemoved > 0) {
+          state.columnOrder = Object.keys(cleaned).length > 0 ? cleaned : undefined;
+        }
       }
-    }
 
-    const after = Object.keys(state.tasks).length;
-    const tasksChanged = before !== after;
-    if (!tasksChanged && !columnOrderChanged) {
-      return;
-    }
+      if (staleKanbanEntriesRemoved > 0) {
+        logger.debug(
+          `Removed ${staleKanbanEntriesRemoved} stale kanban entries for team ${teamName}`
+        );
+      }
+      if (staleKanbanEntriesRemoved > 0 || staleColumnOrderRefsRemoved > 0) {
+        await this.writeState(teamName, state);
+      }
+      return { staleKanbanEntriesRemoved, staleColumnOrderRefsRemoved };
+    });
+  }
 
-    if (tasksChanged) {
-      logger.debug(`Removed ${before - after} stale kanban entries for team ${teamName}`);
-    }
-    await this.writeState(teamName, state);
+  /** Shares the controller's board-state lock so GC cannot overwrite concurrent board edits. */
+  private withTeamBoardLock<T>(teamName: string, operation: () => Promise<T>): Promise<T> {
+    const statePath = this.getStatePath(teamName);
+    return withFileLock(path.join(path.dirname(statePath), 'board-state'), operation);
   }
 
   private getStatePath(teamName: string): string {

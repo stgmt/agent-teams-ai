@@ -29,6 +29,8 @@ function buildRequest(overrides: Partial<TeamCreateRequest> = {}): TeamCreateReq
 describe('TeamProvisioningOpenCodeTeamConfigWriter', () => {
   it('builds the exact OpenCode team config shape with normalized providers and MCP policy', () => {
     const request = buildRequest({
+      specProject: 'sandbox/project',
+      specSlug: 'feature',
       providerId: 'not-a-provider' as TeamCreateRequest['providerId'],
     });
     const members: TeamCreateRequest['members'] = [
@@ -64,6 +66,8 @@ describe('TeamProvisioningOpenCodeTeamConfigWriter', () => {
 
     expect(buildOpenCodeTeamConfig(request, members)).toEqual({
       name: 'Runtime Team',
+      specProject: 'sandbox/project',
+      specSlug: 'feature',
       description: 'Build runtime features',
       color: '#336699',
       projectPath: '/repo',

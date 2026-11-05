@@ -97,6 +97,8 @@ import {
   type TeamRuntimeStopResult,
 } from '../../../../src/main/services/team/runtime/TeamRuntimeAdapter';
 import { TeamConfigReader } from '../../../../src/main/services/team/TeamConfigReader';
+import { TeamTaskActivityIntervalService } from '../../../../src/main/services/team/TeamTaskActivityIntervalService';
+import { RegistryTaskClient } from '../../../../src/main/services/team/registry/RegistryTaskClient';
 import {
   createPersistedLaunchSnapshot,
   normalizePersistedLaunchSnapshot,
@@ -139,6 +141,18 @@ import type {
 } from '../../../../src/shared/types';
 
 const LAUNCH_MATRIX_SAFE_E2E_TIMEOUT_MS = 60_000;
+// Each fixture team has its own test-only spec, and the registry client boundary is stubbed.
+function getLaunchMatrixSpecBinding(teamName: string): {
+  specProject: string;
+  specSlug: string;
+} {
+  const projectSlug = teamName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  return {
+    specProject: `sandbox/launch-matrix-${projectSlug}`,
+    specSlug: 'sandbox-spec',
+  };
+}
+
 const WORKSPACE_TRUST_TEST_ENV_NAMES = [
   'AGENT_TEAMS_WORKSPACE_TRUST',
   'AGENT_TEAMS_WORKSPACE_TRUST_PREFLIGHT',
@@ -149,6 +163,35 @@ const WORKSPACE_TRUST_TEST_ENV_NAMES = [
 ] as const;
 
 type WorkspaceTrustTestEnvName = (typeof WORKSPACE_TRUST_TEST_ENV_NAMES)[number];
+
+function stubLaunchMatrixTaskActivityBoundary(): { mockRestore(): void }[] {
+  // Launch-matrix cases exercise runtime behavior, not canonical task persistence.
+  // Keep task-activity IO at its ancillary service boundary rather than contacting a registry.
+  const intervalService = TeamTaskActivityIntervalService.prototype;
+  return [
+    vi.spyOn(intervalService, 'pauseActiveIntervalsForTeam').mockResolvedValue({ changedTasks: 0 }),
+    vi.spyOn(intervalService, 'pauseActiveIntervalsForMember').mockResolvedValue({ changedTasks: 0 }),
+    vi.spyOn(intervalService, 'resumeActiveIntervalsForMember').mockResolvedValue({ changedTasks: 0 }),
+    vi.spyOn(intervalService, 'resumeActiveIntervalsForMembers').mockResolvedValue({ changedTasks: 0 }),
+    vi.spyOn(intervalService, 'repairStaleIntervalsAfterCrash').mockResolvedValue({ changedTasks: 0 }),
+  ];
+}
+
+function stubLaunchMatrixRegistryReadBoundary(): { mockRestore(): void } {
+  const client = {
+    listTasks: async ({ project, spec }: { project: string; spec: string }) => {
+      if (
+        !project.startsWith('sandbox/launch-matrix-') ||
+        spec !== 'sandbox-spec'
+      ) {
+        throw new Error(`Unexpected launch-matrix registry scope: ${project}/${spec}`);
+      }
+      return [];
+    },
+  } as unknown as RegistryTaskClient;
+  return vi.spyOn(RegistryTaskClient, 'create').mockResolvedValue(client);
+}
+
 type RuntimeUsageStatsForTest = { rssBytes: number; cpuPercent?: number };
 type RuntimeUsageProcessRowForTest = RuntimeUsageStatsForTest & {
   pid: number;
@@ -318,6 +361,7 @@ describe(
     let originalOrchestratorCliPath: string | undefined;
     let originalWorkspaceTrustEnv: Partial<Record<WorkspaceTrustTestEnvName, string | undefined>>;
     let runtimePidProbe: ReturnType<typeof stubFakeOpenCodeRuntimePidProbes> | undefined;
+    let launchMatrixBoundarySpies: { mockRestore(): void }[] = [];
 
     const launchStateQueuesToDrain: { svc: TeamProvisioningService; teamName: string }[] = [];
 
@@ -339,6 +383,26 @@ describe(
       await fs.mkdir(projectPath, { recursive: true });
       await fs.mkdir(tempClaudeRoot, { recursive: true });
       setClaudeBasePathOverride(tempClaudeRoot);
+      // Keep the real provisioning path but bind every newly created matrix team to its test spec.
+      const originalCreateTeam = TeamProvisioningService.prototype.createTeam;
+      launchMatrixBoundarySpies = [
+        ...stubLaunchMatrixTaskActivityBoundary(),
+        stubLaunchMatrixRegistryReadBoundary(),
+        vi
+          .spyOn(TeamProvisioningService.prototype, 'createTeam')
+          .mockImplementation(function (this: TeamProvisioningService, request, onProgress) {
+            const specBinding = getLaunchMatrixSpecBinding(request.teamName);
+            return originalCreateTeam.call(
+              this,
+              {
+                ...request,
+                specProject: request.specProject ?? specBinding.specProject,
+                specSlug: request.specSlug ?? specBinding.specSlug,
+              },
+              onProgress
+            );
+          }),
+      ];
     });
 
     afterEach(async () => {
@@ -371,6 +435,9 @@ describe(
       ClaudeBinaryResolver.clearCache();
       setClaudeBasePathOverride(null);
       await removeTempDirWithRetries(tempDir);
+      for (const spy of launchMatrixBoundarySpies.splice(0)) {
+        spy.mockRestore();
+      }
       for (const result of [...launchResults, ...persistenceResults]) {
         if (result.status === 'rejected') {
           throw result.reason;
@@ -23643,12 +23710,15 @@ async function writeOpenCodeTeamConfig(input: {
   const teamDir = path.join(getTeamsBasePath(), input.teamName);
   const removedMembers = new Set(input.removedMembers ?? []);
   await fs.mkdir(teamDir, { recursive: true });
+  const specBinding = getLaunchMatrixSpecBinding(input.teamName);
   await fs.writeFile(
     path.join(teamDir, 'config.json'),
     `${JSON.stringify(
       {
         name: input.teamName,
         projectPath: input.projectPath,
+        specProject: specBinding.specProject,
+        specSlug: specBinding.specSlug,
         members: [
           {
             name: 'team-lead',
@@ -23678,9 +23748,12 @@ async function writeAnthropicTeamConfig(input: {
   members: string[];
 }): Promise<string> {
   const teamDir = path.join(getTeamsBasePath(), input.teamName);
+  const specBinding = getLaunchMatrixSpecBinding(input.teamName);
   const config = {
     name: input.teamName,
     projectPath: input.projectPath,
+    specProject: specBinding.specProject,
+    specSlug: specBinding.specSlug,
     color: 'blue',
     members: [
       {
@@ -23992,12 +24065,15 @@ async function writePureAnthropicTeamConfigWithMembers(input: {
 }): Promise<void> {
   const teamDir = path.join(getTeamsBasePath(), input.teamName);
   await fs.mkdir(teamDir, { recursive: true });
+  const specBinding = getLaunchMatrixSpecBinding(input.teamName);
   await fs.writeFile(
     path.join(teamDir, 'config.json'),
     `${JSON.stringify(
       {
         name: input.teamName,
         projectPath: input.projectPath,
+        specProject: specBinding.specProject,
+        specSlug: specBinding.specSlug,
         providerId: 'anthropic',
         model: 'sonnet',
         members: [
@@ -24036,12 +24112,15 @@ async function writeMixedTeamConfig(input: {
   const removedMembers = new Set(input.removedMembers ?? []);
   const extraMembers = input.extraMembers ?? [];
   await fs.mkdir(teamDir, { recursive: true });
+  const specBinding = getLaunchMatrixSpecBinding(input.teamName);
   await fs.writeFile(
     path.join(teamDir, 'config.json'),
     `${JSON.stringify(
       {
         name: input.teamName,
         projectPath: input.projectPath,
+        specProject: specBinding.specProject,
+        specSlug: specBinding.specSlug,
         providerId: primary.providerId,
         ...(primary.providerBackendId ? { providerBackendId: primary.providerBackendId } : {}),
         model: primary.leadModel,
@@ -24120,12 +24199,15 @@ async function writeMixedTeamConfigWithoutOpenCodeProviderMetadata(input: {
 }): Promise<void> {
   const teamDir = path.join(getTeamsBasePath(), input.teamName);
   await fs.mkdir(teamDir, { recursive: true });
+  const specBinding = getLaunchMatrixSpecBinding(input.teamName);
   await fs.writeFile(
     path.join(teamDir, 'config.json'),
     `${JSON.stringify(
       {
         name: input.teamName,
         projectPath: input.projectPath,
+        specProject: specBinding.specProject,
+        specSlug: specBinding.specSlug,
         providerId: 'codex',
         providerBackendId: 'codex-native',
         model: 'gpt-5.4',

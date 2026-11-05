@@ -53,6 +53,47 @@ describe('TeamConfigReader', () => {
     hoisted.teamsBase = '';
   });
 
+  it('keeps a draft registry binding after the runtime creates its team config', async () => {
+    const teamName = 'bound-after-launch';
+    const teamDir = path.join(tempDir, teamName);
+    await fs.mkdir(teamDir, { recursive: true });
+    await fs.writeFile(path.join(teamDir, 'team.meta.json'), JSON.stringify({
+      version: 1, cwd: tempDir, specProject: 'sandbox/project', specSlug: 'feature', createdAt: 1,
+    }));
+    await fs.writeFile(path.join(teamDir, 'config.json'), JSON.stringify({
+      name: teamName, members: [],
+    }));
+
+    const reader = new TeamConfigReader();
+    await expect(reader.getConfigSnapshot(teamName)).resolves.toMatchObject({
+      specProject: 'sandbox/project', specSlug: 'feature',
+    });
+    expect(await reader.listTeams()).toContainEqual(expect.objectContaining({
+      teamName, specProject: 'sandbox/project', specSlug: 'feature',
+    }));
+  });
+
+  it('does not fill a partially specified config binding from different metadata', async () => {
+    const teamName = 'incomplete-binding';
+    const teamDir = path.join(tempDir, teamName);
+    await fs.mkdir(teamDir, { recursive: true });
+    await fs.writeFile(path.join(teamDir, 'team.meta.json'), JSON.stringify({
+      version: 1, cwd: tempDir, specProject: 'sandbox/other', specSlug: 'other-feature', createdAt: 1,
+    }));
+    await fs.writeFile(path.join(teamDir, 'config.json'), JSON.stringify({
+      name: teamName, members: [], specProject: 'sandbox/project',
+    }));
+
+    const reader = new TeamConfigReader();
+    const config = await reader.getConfigSnapshot(teamName);
+    expect(config?.specProject).toBe('sandbox/project');
+    expect(config?.specSlug).toBeUndefined();
+    expect(await reader.listTeams()).toContainEqual(expect.objectContaining({
+      teamName, specProject: 'sandbox/project',
+    }));
+    expect((await reader.listTeams()).find((team) => team.teamName === teamName)?.specSlug).toBeUndefined();
+  });
+
   it('uses compact launch summary projection when launch-state.json is oversized', async () => {
     const teamName = 'mixed-team';
     const teamDir = path.join(tempDir, teamName);
@@ -545,7 +586,7 @@ describe('TeamConfigReader', () => {
 
     expect(second?.name).toBe('Cached Config Team');
     expect(third?.name).toBe('Cached Config Team');
-    expect(readFileSpy).toHaveBeenCalledTimes(2);
+    expect(readFileSpy.mock.calls.filter(([file]) => file === path.join(teamDir, 'config.json'))).toHaveLength(2);
   });
 
   it('uses fingerprint-validated snapshot cache without rereading unchanged config content', async () => {
@@ -572,8 +613,8 @@ describe('TeamConfigReader', () => {
     const second = await reader.getConfigSnapshot(teamName);
 
     expect(second?.name).toBe('Snapshot Cache Team');
-    expect(statSpy).toHaveBeenCalledTimes(2);
-    expect(readFileSpy).toHaveBeenCalledTimes(1);
+    expect(statSpy.mock.calls.filter(([file]) => file === path.join(teamDir, 'config.json'))).toHaveLength(2);
+    expect(readFileSpy.mock.calls.filter(([file]) => file === path.join(teamDir, 'config.json'))).toHaveLength(1);
   });
 
   it('logs slow config reads with mode, likely cause, generation, and caller diagnostics', async () => {
@@ -652,8 +693,8 @@ describe('TeamConfigReader', () => {
 
     expect(first?.name).toBe('Snapshot Inflight Team');
     expect(second?.name).toBe('Snapshot Inflight Team');
-    expect(statSpy).toHaveBeenCalledTimes(1);
-    expect(readFileSpy).toHaveBeenCalledTimes(1);
+    expect(statSpy.mock.calls.filter(([file]) => file === path.join(teamDir, 'config.json'))).toHaveLength(1);
+    expect(readFileSpy.mock.calls.filter(([file]) => file === path.join(teamDir, 'config.json'))).toHaveLength(1);
   });
 
   it('rereads snapshot when ctime changes even if mtime is unchanged', async () => {
@@ -698,7 +739,7 @@ describe('TeamConfigReader', () => {
     ctimeMs = 2000;
 
     expect((await reader.getConfigSnapshot(teamName))?.name).toBe('After Ctime');
-    expect(readFileSpy).toHaveBeenCalledTimes(2);
+    expect(readFileSpy.mock.calls.filter(([file]) => file === configPath)).toHaveLength(2);
   });
 
   it('rereads snapshot when the config fingerprint changes', async () => {
@@ -1165,6 +1206,6 @@ describe('TeamConfigReader', () => {
     expect((await reader.getConfigSnapshot(teamName))?.name).toBe('Alpha');
     vi.advanceTimersByTime(1_501);
     expect((await reader.getConfigSnapshot(teamName))?.name).toBe('Bravo');
-    expect(readFileSpy).toHaveBeenCalledTimes(2);
+    expect(readFileSpy.mock.calls.filter(([file]) => file === configPath)).toHaveLength(2);
   });
 });

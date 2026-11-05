@@ -2,7 +2,7 @@ import { promises as fs } from 'fs';
 import * as path from 'path';
 
 import { OpenCodeTeamRuntimeAdapter } from '../../../../src/main/services/team/runtime/OpenCodeTeamRuntimeAdapter';
-import { TeamTaskWriter } from '../../../../src/main/services/team/TeamTaskWriter';
+import type { RegistryTeamTaskCreateInput } from '../../../../src/main/services/team/registry/RegistryTeamTaskWriter';
 import type {
   OpenCodeLaunchTeamCommandBody,
   OpenCodeLaunchTeamCommandData,
@@ -172,32 +172,35 @@ export async function materializeOpenCodeScenarioTasks(input: {
   scenario: OpenCodeSemanticScenario;
   teamName: string;
   projectPath: string;
+  writer: {
+    createTask(input: RegistryTeamTaskCreateInput): Promise<{ task: Pick<TeamTask, 'id' | 'displayId'> }>;
+  };
 }): Promise<void> {
-  const writer = new TeamTaskWriter();
-  const createdAt = '2026-04-21T00:00:00.000Z';
   for (const task of input.scenario.tasks) {
-    const record: TeamTask = {
-      id: task.taskId,
-      displayId: task.displayId,
+    const previousDisplayId = task.displayId;
+    const { task: created } = await input.writer.createTask({
       subject: task.subject,
       description: task.comment,
+      requirements: ['FR-1'],
       owner: task.owner,
-      createdBy: 'lead',
+      actor: 'lead',
       status: 'in_progress',
       projectPath: input.projectPath,
-      createdAt,
-      updatedAt: createdAt,
-      comments: [
-        {
+      executionPatch: {
+        comments: [{
           id: `${task.taskId}-comment`,
           author: 'lead',
           text: task.comment,
-          createdAt,
+          createdAt: '2026-04-21T00:00:00.000Z',
           type: 'regular',
-        },
-      ],
-    };
-    await writer.createTask(input.teamName, record);
+        }],
+      },
+    });
+    task.taskId = created.id;
+    task.displayId = created.displayId ?? created.id;
+    for (const delivery of [input.scenario.directDelivery, input.scenario.peerDelivery]) {
+      delivery.textLines = delivery.textLines.map((line) => line.replaceAll(previousDisplayId, task.displayId));
+    }
   }
 }
 
@@ -207,10 +210,12 @@ export function buildOpenCodeScenarioTeamRequest(input: {
   projectPath: string;
   model: string;
   memberNames?: string[];
+  specBinding?: { project: string; spec: string };
 }): TeamCreateRequest {
   const memberNames = new Set(input.memberNames ?? input.scenario.members.map((member) => member.name));
   return {
     teamName: input.teamName,
+    ...(input.specBinding ? { specProject: input.specBinding.project, specSlug: input.specBinding.spec } : {}),
     displayName: input.scenario.displayName,
     description: input.scenario.description,
     cwd: input.projectPath,

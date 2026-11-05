@@ -14,7 +14,10 @@ export interface NativeTaskActivityRepairDependencies {
     pendingSnapshots: TaskActivityRepairSnapshotStorePort;
   };
   readRepairLaunchSnapshot(teamName: string): Promise<PersistedTeamLaunchSnapshot | null>;
-  repairOnce(teamName: string, launchSnapshot: PersistedTeamLaunchSnapshot | null): boolean;
+  repairOnce(
+    teamName: string,
+    launchSnapshot: PersistedTeamLaunchSnapshot | null
+  ): Promise<boolean>;
 }
 
 /**

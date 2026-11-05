@@ -27,6 +27,10 @@ const createTeamDraftMock = vi.hoisted(() => ({
     setRuntimeSelection: vi.fn(),
     teamName: 'team-alpha',
     setTeamName: vi.fn(),
+    specProject: 'registry-project',
+    setSpecProject: vi.fn(),
+    specSlug: 'team-spec',
+    setSpecSlug: vi.fn(),
     members: [
       {
         id: 'member-opencode',
@@ -121,6 +125,13 @@ vi.mock('@renderer/api', () => ({
       ),
     },
     teams: {
+      discoverSpecRegistry: vi.fn(async () => ({
+        url: 'http://registry.test',
+        projects: [
+          { id: 'registry-project', specs: [{ slug: 'team-spec' }] },
+          { id: 'copied-project', specs: [{ slug: 'copied-spec' }] },
+        ],
+      })),
       createConfig: vi.fn(async () => {}),
       getSavedRequest: vi.fn(async () => null),
       replaceMembers: vi.fn(async () => {}),
@@ -849,6 +860,10 @@ describe('LaunchTeamDialog', () => {
         });
         expect(api.teams.createConfig).toHaveBeenCalledTimes(1);
         const request = vi.mocked(api.teams.createConfig).mock.calls[0]?.[0];
+        expect(request).toMatchObject({
+          specProject: 'registry-project',
+          specSlug: 'team-spec',
+        });
         expect(request?.model).toBe(
           phase === 'confirmed'
             ? 'gateway/project-default'
@@ -1780,6 +1795,10 @@ describe('LaunchTeamDialog', () => {
     createTeamDraftMock.state.runtimeProviderId = undefined;
     createTeamDraftMock.state.runtimeModel = undefined;
     createTeamDraftMock.state.setRuntimeSelection.mockReset();
+    createTeamDraftMock.state.specProject = 'registry-project';
+    createTeamDraftMock.state.specSlug = 'team-spec';
+    createTeamDraftMock.state.setSpecProject.mockReset();
+    createTeamDraftMock.state.setSpecSlug.mockReset();
     createTeamDraftMock.state.setMembers.mockReset();
     storeState.cliStatus = { providers: [] };
     storeState.cliStatusLoading = false;
@@ -3288,6 +3307,119 @@ describe('LaunchTeamDialog', () => {
   });
 
   it.each([
+    [true, '', 'team-spec'],
+    [true, 'registry-project', '   '],
+    [false, '', 'team-spec'],
+    [false, 'registry-project', '   '],
+  ] as const)(
+    'blocks creation without a registry binding (launch=%s, project=%s, spec=%s)',
+    async (launch, project, slug) => {
+      vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+      createTeamDraftMock.state.launchTeam = launch;
+      createTeamDraftMock.state.specProject = project;
+      createTeamDraftMock.state.specSlug = slug;
+      const host = document.createElement('div');
+      document.body.appendChild(host);
+      const root = createRoot(host);
+      const onCreate = vi.fn(async () => {});
+      try {
+        await act(async () => {
+          root.render(
+            React.createElement(CreateTeamDialog, {
+              open: true,
+              canCreate: true,
+              provisioningErrorsByTeam: {},
+              existingTeamNames: [],
+              onCreate,
+              onClose: vi.fn(),
+              onOpenTeam: vi.fn(),
+            })
+          );
+          await flush();
+        });
+        const submit = Array.from(host.querySelectorAll('button')).find(
+          (button) => button.textContent?.trim() === 'Create'
+        );
+        expect(submit).toBeDefined();
+        expect(submit?.disabled).toBe(true);
+        await act(async () => {
+          submit?.click();
+          await flush();
+        });
+        expect(onCreate).not.toHaveBeenCalled();
+        expect(api.teams.createConfig).not.toHaveBeenCalled();
+      } finally {
+        await act(async () => root.unmount());
+      }
+    }
+  );
+
+  it.each([true, false])(
+    'copies registry binding into the actual config-only request (bound=%s)',
+    async (bound) => {
+      vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+      createTeamDraftMock.state.launchTeam = false;
+      createTeamDraftMock.state.soloTeam = true;
+      createTeamDraftMock.state.setSpecProject.mockImplementation((value: string) => {
+        createTeamDraftMock.state.specProject = value;
+      });
+      createTeamDraftMock.state.setSpecSlug.mockImplementation((value: string) => {
+        createTeamDraftMock.state.specSlug = value;
+      });
+      const host = document.createElement('div');
+      document.body.appendChild(host);
+      const root = createRoot(host);
+      const props = {
+        open: true,
+        canCreate: true,
+        provisioningErrorsByTeam: {},
+        existingTeamNames: [],
+        onCreate: vi.fn(async () => {}),
+        onClose: vi.fn(),
+        onOpenTeam: vi.fn(),
+        initialData: {
+          teamName: 'team-alpha',
+          specProject: bound ? 'copied-project' : undefined,
+          specSlug: bound ? 'copied-spec' : undefined,
+          members: [],
+        },
+      };
+      try {
+        await act(async () => {
+          root.render(React.createElement(CreateTeamDialog, props));
+          await flush();
+        });
+        await act(async () => {
+          root.render(React.createElement(CreateTeamDialog, props));
+          await flush();
+        });
+        if (bound) {
+          expect(host.textContent).toContain('copied-project');
+          expect(host.textContent).toContain('copied-spec');
+        }
+        const submit = Array.from(host.querySelectorAll('button')).find(
+          (button) => button.textContent?.trim() === 'Create'
+        )!;
+        expect(submit.disabled).toBe(!bound);
+        await act(async () => {
+          submit.click();
+          await flush();
+        });
+        if (bound) {
+          expect(api.teams.createConfig).toHaveBeenCalledWith(
+            expect.objectContaining({ specProject: 'copied-project', specSlug: 'copied-spec' })
+          );
+        } else {
+          expect(api.teams.createConfig).not.toHaveBeenCalled();
+        }
+        expect(props.onCreate).not.toHaveBeenCalled();
+      } finally {
+        await act(async () => root.unmount());
+      }
+    }
+  );
+
+  it.each([
     { source: 'draft', version: 1, model: undefined, expected: '' },
     { source: 'draft', version: 1, model: 'gpt-5.4', expected: 'gpt-5.4' },
     { source: 'copy', version: 1, model: undefined, expected: '' },
@@ -3323,6 +3455,8 @@ describe('LaunchTeamDialog', () => {
                 source === 'copy'
                   ? {
                       teamName: 'team-alpha',
+                      specProject: 'registry-project',
+                      specSlug: 'team-spec',
                       runtimeSelectionVersion: 1,
                       providerId: 'codex',
                       model,
@@ -3400,6 +3534,8 @@ describe('LaunchTeamDialog', () => {
             onCreate,
             initialData: {
               teamName: 'team-alpha',
+              specProject: 'registry-project',
+              specSlug: 'team-spec',
               runtimeSelectionVersion: 1,
               syncModelsWithLead: false,
               members: [
@@ -5906,6 +6042,10 @@ describe('LaunchTeamDialog', () => {
       await flush();
     }
     expect(onCreate).toHaveBeenCalledOnce();
+    expect(onCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ specProject: 'registry-project', specSlug: 'team-spec' }),
+      undefined
+    );
 
     await act(async () => {
       await renderDialog(['team-alpha'], ['team-alpha']);

@@ -303,6 +303,11 @@ export interface CliProviderStatus {
   effectiveDefaultModel?: string | null;
   modelCatalog?: CliProviderModelCatalog | null;
   modelCatalogRefreshState?: 'idle' | 'loading' | 'ready' | 'error';
+  /**
+   * Models served by a detected loopback model router. App-derived display evidence for
+   * Anthropic launch selection; it never authorizes a launch by itself.
+   */
+  localRouterModelIds?: string[];
   modelAvailability?: CliProviderModelAvailability[];
   runtimeCapabilities?: CliProviderRuntimeCapabilities | null;
   subscriptionRateLimits?: CliProviderSubscriptionRateLimitSnapshot | null;

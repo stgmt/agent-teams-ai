@@ -128,17 +128,42 @@ function flattenRawMessages(response: Awaited<ReturnType<BoardTaskLogStreamServi
 describe('BoardTaskLogStreamService integration', () => {
   const tempDirs: string[] = [];
 
-  afterEach(async () => {
-    await Promise.all(
-      tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })),
+  const bindTask = async (task: TeamTask) => {
+    // Integration fixtures replay historical transcripts whose task IDs predate registry IDs.
+    // The injected reader supplies task context while leaving those transcript bytes untouched.
+    return {
+      task,
+      taskReader: {
+        getTasks: async () => task.status === 'deleted' ? [] : [task],
+        getDeletedTasks: async () => task.status === 'deleted' ? [task] : [],
+      },
+    };
+  };
+
+  const createStreamService = (
+    recordSource: unknown,
+    taskReader: unknown,
+    transcriptSourceLocator?: unknown,
+  ) =>
+    new BoardTaskLogStreamService(
+      recordSource as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      taskReader as never,
+      transcriptSourceLocator as never,
     );
+
+  afterEach(async () => {
+    await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 })));
   });
 
   it('includes worker tool logs when transcript rows carry execution links with toolUseId', async () => {
     const dir = await mkdtemp(path.join(tmpdir(), 'task-log-stream-integration-'));
     tempDirs.push(dir);
     const transcriptPath = path.join(dir, 'session.jsonl');
-    const task = createTask();
+    const { task, taskReader } = await bindTask(createTask());
 
     const lines = [
       createUserEntry({
@@ -287,7 +312,7 @@ describe('BoardTaskLogStreamService integration', () => {
       getTaskRecords: async () => buildRecordsFromTranscript(transcriptPath, task),
     };
 
-    const service = new BoardTaskLogStreamService(recordSource as never);
+    const service = createStreamService(recordSource, taskReader);
     const response = await service.getTaskLogStream(TEAM_NAME, task.id);
     const rawMessages = flattenRawMessages(response);
     const toolNames = rawMessages.flatMap((message) =>
@@ -305,7 +330,7 @@ describe('BoardTaskLogStreamService integration', () => {
     const dir = await mkdtemp(path.join(tmpdir(), 'task-log-stream-board-tool-'));
     tempDirs.push(dir);
     const transcriptPath = path.join(dir, 'session.jsonl');
-    const task = createTask();
+    const { task, taskReader } = await bindTask(createTask());
 
     const lines = [
       createAssistantEntry({
@@ -386,7 +411,7 @@ describe('BoardTaskLogStreamService integration', () => {
       getTaskRecords: async () => buildRecordsFromTranscript(transcriptPath, task),
     };
 
-    const service = new BoardTaskLogStreamService(recordSource as never);
+    const service = createStreamService(recordSource, taskReader);
     const response = await service.getTaskLogStream(TEAM_NAME, task.id);
     const rawMessages = flattenRawMessages(response);
     const commentResult = rawMessages.find((message) => message.uuid === 'u-comment');
@@ -399,7 +424,7 @@ describe('BoardTaskLogStreamService integration', () => {
     const dir = await mkdtemp(path.join(tmpdir(), 'task-log-stream-historical-board-mcp-'));
     tempDirs.push(dir);
     const transcriptPath = path.join(dir, 'session.jsonl');
-    const task = createTask({ owner: 'tom' });
+    const { task, taskReader } = await bindTask(createTask({ owner: 'tom' }));
 
     const lines = [
       createAssistantEntry({
@@ -519,10 +544,6 @@ describe('BoardTaskLogStreamService integration', () => {
     const recordSource = {
       getTaskRecords: async () => buildRecordsFromTranscript(transcriptPath, task),
     };
-    const taskReader = {
-      getTasks: async () => [task],
-      getDeletedTasks: async () => [] as TeamTask[],
-    };
     const transcriptSourceLocator = {
       getContext: async () =>
         ({
@@ -533,15 +554,7 @@ describe('BoardTaskLogStreamService integration', () => {
         }) as never,
     };
 
-    const service = new BoardTaskLogStreamService(
-      recordSource as never,
-      undefined as never,
-      undefined as never,
-      undefined as never,
-      undefined as never,
-      taskReader as never,
-      transcriptSourceLocator as never,
-    );
+    const service = createStreamService(recordSource, taskReader, transcriptSourceLocator);
     const response = await service.getTaskLogStream(TEAM_NAME, task.id);
     const rawMessages = flattenRawMessages(response);
     const toolNames = rawMessages.flatMap((message) =>
@@ -564,7 +577,7 @@ describe('BoardTaskLogStreamService integration', () => {
     const dir = await mkdtemp(path.join(tmpdir(), 'task-log-stream-inferred-'));
     tempDirs.push(dir);
     const transcriptPath = path.join(dir, 'session.jsonl');
-    const task = createTask({
+    const { task, taskReader } = await bindTask(createTask({
       owner: 'tom',
       workIntervals: [
         {
@@ -572,7 +585,7 @@ describe('BoardTaskLogStreamService integration', () => {
           completedAt: '2026-04-12T15:40:00.000Z',
         },
       ],
-    });
+    }));
 
     const lines = [
       createAssistantEntry({
@@ -729,10 +742,6 @@ describe('BoardTaskLogStreamService integration', () => {
     const recordSource = {
       getTaskRecords: async () => buildRecordsFromTranscript(transcriptPath, task),
     };
-    const taskReader = {
-      getTasks: async () => [task],
-      getDeletedTasks: async () => [] as TeamTask[],
-    };
     const transcriptSourceLocator = {
       getContext: async () =>
         ({
@@ -743,15 +752,7 @@ describe('BoardTaskLogStreamService integration', () => {
         }) as never,
     };
 
-    const service = new BoardTaskLogStreamService(
-      recordSource as never,
-      undefined as never,
-      undefined as never,
-      undefined as never,
-      undefined as never,
-      taskReader as never,
-      transcriptSourceLocator as never,
-    );
+    const service = createStreamService(recordSource, taskReader, transcriptSourceLocator);
     const response = await service.getTaskLogStream(TEAM_NAME, task.id);
     const rawMessages = flattenRawMessages(response);
     const toolNames = rawMessages.flatMap((message) =>
@@ -768,7 +769,7 @@ describe('BoardTaskLogStreamService integration', () => {
     const dir = await mkdtemp(path.join(tmpdir(), 'task-log-stream-inferred-sendmessage-'));
     tempDirs.push(dir);
     const transcriptPath = path.join(dir, 'session.jsonl');
-    const task = createTask({
+    const { task, taskReader } = await bindTask(createTask({
       owner: 'tom',
       workIntervals: [
         {
@@ -776,7 +777,7 @@ describe('BoardTaskLogStreamService integration', () => {
           completedAt: '2026-04-12T15:40:00.000Z',
         },
       ],
-    });
+    }));
 
     const lines = [
       createAssistantEntry({
@@ -897,10 +898,6 @@ describe('BoardTaskLogStreamService integration', () => {
     const recordSource = {
       getTaskRecords: async () => buildRecordsFromTranscript(transcriptPath, task),
     };
-    const taskReader = {
-      getTasks: async () => [task],
-      getDeletedTasks: async () => [] as TeamTask[],
-    };
     const transcriptSourceLocator = {
       getContext: async () =>
         ({
@@ -911,15 +908,7 @@ describe('BoardTaskLogStreamService integration', () => {
         }) as never,
     };
 
-    const service = new BoardTaskLogStreamService(
-      recordSource as never,
-      undefined as never,
-      undefined as never,
-      undefined as never,
-      undefined as never,
-      taskReader as never,
-      transcriptSourceLocator as never,
-    );
+    const service = createStreamService(recordSource, taskReader, transcriptSourceLocator);
     const response = await service.getTaskLogStream(TEAM_NAME, task.id);
     const rawMessages = flattenRawMessages(response);
     const sendResult = rawMessages.find((message) => message.uuid === 'u-send');
@@ -951,7 +940,7 @@ describe('BoardTaskLogStreamService integration', () => {
     const dir = await mkdtemp(path.join(tmpdir(), 'task-log-stream-agent-teams-envelope-'));
     tempDirs.push(dir);
     const transcriptPath = path.join(dir, 'session.jsonl');
-    const task = createTask({
+    const { task, taskReader } = await bindTask(createTask({
       owner: 'bob',
       workIntervals: [
         {
@@ -959,7 +948,7 @@ describe('BoardTaskLogStreamService integration', () => {
           completedAt: '2026-04-27T20:10:00.000Z',
         },
       ],
-    });
+    }));
     const payload = {
       agent_teams_task_add_comment_response: {
         comment: {
@@ -1046,10 +1035,6 @@ describe('BoardTaskLogStreamService integration', () => {
     const recordSource = {
       getTaskRecords: async () => buildRecordsFromTranscript(transcriptPath, task),
     };
-    const taskReader = {
-      getTasks: async () => [task],
-      getDeletedTasks: async () => [] as TeamTask[],
-    };
     const transcriptSourceLocator = {
       getContext: async () =>
         ({
@@ -1060,15 +1045,7 @@ describe('BoardTaskLogStreamService integration', () => {
         }) as never,
     };
 
-    const service = new BoardTaskLogStreamService(
-      recordSource as never,
-      undefined as never,
-      undefined as never,
-      undefined as never,
-      undefined as never,
-      taskReader as never,
-      transcriptSourceLocator as never,
-    );
+    const service = createStreamService(recordSource, taskReader, transcriptSourceLocator);
     const response = await service.getTaskLogStream(TEAM_NAME, task.id);
     const rawMessages = flattenRawMessages(response);
     const commentResult = rawMessages.find((message) => message.uuid === 'u-comment');
@@ -1101,7 +1078,7 @@ describe('BoardTaskLogStreamService integration', () => {
     const fixtureText = await readFile(REAL_FIXTURE_PATH, 'utf8');
     await writeFile(transcriptPath, fixtureText, 'utf8');
 
-    const task = createTask({
+    const { task, taskReader } = await bindTask(createTask({
       owner: 'tom',
       workIntervals: [
         {
@@ -1109,14 +1086,10 @@ describe('BoardTaskLogStreamService integration', () => {
           completedAt: '2026-04-12T15:40:00.000Z',
         },
       ],
-    });
+    }));
 
     const recordSource = {
       getTaskRecords: async () => buildRecordsFromTranscript(transcriptPath, task),
-    };
-    const taskReader = {
-      getTasks: async () => [task],
-      getDeletedTasks: async () => [] as TeamTask[],
     };
     const transcriptSourceLocator = {
       getContext: async () =>
@@ -1128,15 +1101,7 @@ describe('BoardTaskLogStreamService integration', () => {
         }) as never,
     };
 
-    const service = new BoardTaskLogStreamService(
-      recordSource as never,
-      undefined as never,
-      undefined as never,
-      undefined as never,
-      undefined as never,
-      taskReader as never,
-      transcriptSourceLocator as never,
-    );
+    const service = createStreamService(recordSource, taskReader, transcriptSourceLocator);
     const response = await service.getTaskLogStream(TEAM_NAME, task.id);
     const rawMessages = flattenRawMessages(response);
     const bashCommands = rawMessages.flatMap((message) =>
@@ -1159,12 +1124,12 @@ describe('BoardTaskLogStreamService integration', () => {
     const fixtureText = await readFile(ANNOTATED_REAL_FIXTURE_PATH, 'utf8');
     await writeFile(transcriptPath, fixtureText, 'utf8');
 
-    const task = createTask();
+    const { task, taskReader } = await bindTask(createTask());
     const recordSource = {
       getTaskRecords: async () => buildRecordsFromTranscript(transcriptPath, task),
     };
 
-    const service = new BoardTaskLogStreamService(recordSource as never);
+    const service = createStreamService(recordSource, taskReader);
     const response = await service.getTaskLogStream(TEAM_NAME, task.id);
     const rawMessages = flattenRawMessages(response);
     const toolNames = rawMessages.flatMap((message) =>
@@ -1190,12 +1155,12 @@ describe('BoardTaskLogStreamService integration', () => {
     const fixtureText = await readFile(ANNOTATED_MULTI_TASK_REAL_FIXTURE_PATH, 'utf8');
     await writeFile(transcriptPath, fixtureText, 'utf8');
 
-    const task = createTask();
+    const { task, taskReader } = await bindTask(createTask());
     const recordSource = {
       getTaskRecords: async () => buildRecordsFromTranscript(transcriptPath, task),
     };
 
-    const service = new BoardTaskLogStreamService(recordSource as never);
+    const service = createStreamService(recordSource, taskReader);
     const response = await service.getTaskLogStream(TEAM_NAME, task.id);
     const rawMessages = flattenRawMessages(response);
     const toolInputs = rawMessages.flatMap((message) =>
@@ -1221,13 +1186,9 @@ describe('BoardTaskLogStreamService integration', () => {
     const fixtureText = await readFile(HISTORICAL_REAL_FIXTURE_PATH, 'utf8');
     await writeFile(transcriptPath, fixtureText, 'utf8');
 
-    const task = createTask({ owner: 'tom' });
+    const { task, taskReader } = await bindTask(createTask({ owner: 'tom' }));
     const recordSource = {
       getTaskRecords: async () => buildRecordsFromTranscript(transcriptPath, task),
-    };
-    const taskReader = {
-      getTasks: async () => [task],
-      getDeletedTasks: async () => [] as TeamTask[],
     };
     const transcriptSourceLocator = {
       getContext: async () =>
@@ -1239,15 +1200,7 @@ describe('BoardTaskLogStreamService integration', () => {
         }) as never,
     };
 
-    const service = new BoardTaskLogStreamService(
-      recordSource as never,
-      undefined as never,
-      undefined as never,
-      undefined as never,
-      undefined as never,
-      taskReader as never,
-      transcriptSourceLocator as never,
-    );
+    const service = createStreamService(recordSource, taskReader, transcriptSourceLocator);
     const response = await service.getTaskLogStream(TEAM_NAME, task.id);
     const rawMessages = flattenRawMessages(response);
     const toolNames = rawMessages.flatMap((message) =>
@@ -1274,19 +1227,15 @@ describe('BoardTaskLogStreamService integration', () => {
     const fixtureText = await readFile(REAL_FIXTURE_PATH, 'utf8');
     await writeFile(transcriptPath, fixtureText, 'utf8');
 
-    const task = createTask({
+    const { task, taskReader } = await bindTask(createTask({
       owner: 'tom',
       createdAt: '2026-04-12T15:35:50.000Z',
       updatedAt: '2026-04-12T15:37:00.000Z',
       workIntervals: undefined,
-    });
+    }));
 
     const recordSource = {
       getTaskRecords: async () => buildRecordsFromTranscript(transcriptPath, task),
-    };
-    const taskReader = {
-      getTasks: async () => [task],
-      getDeletedTasks: async () => [] as TeamTask[],
     };
     const transcriptSourceLocator = {
       getContext: async () =>
@@ -1298,15 +1247,7 @@ describe('BoardTaskLogStreamService integration', () => {
         }) as never,
     };
 
-    const service = new BoardTaskLogStreamService(
-      recordSource as never,
-      undefined as never,
-      undefined as never,
-      undefined as never,
-      undefined as never,
-      taskReader as never,
-      transcriptSourceLocator as never,
-    );
+    const service = createStreamService(recordSource, taskReader, transcriptSourceLocator);
     const response = await service.getTaskLogStream(TEAM_NAME, task.id);
     const rawMessages = flattenRawMessages(response);
 

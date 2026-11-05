@@ -33,6 +33,7 @@ async function setup() {
     runtimeRoot: join(root, 'attempts'),
     workspaceRoot: join(root, 'workspaces'),
     teamsRoot,
+    readStartupTasks: async () => [],
     settings: {
       metadata: {
         getMeta: () =>
@@ -130,6 +131,7 @@ describe('public native lead authority query', () => {
     const reporting = createNodeLeadReporting({
       teamsRoot,
       members: { getMeta: () => Promise.reject(new Error('TEST ordinary reply needs no roster')) },
+      taskReader: { getTasks: async () => [] },
       resolveLead: (credential) => lifecycle.resolveLeadCredential(credential),
       lifecycle: async (expected) => {
         const snapshot = await lifecycle.queries.snapshot(request);

@@ -325,10 +325,34 @@ Existing product evidence was checked on August 27, 2026. OpenRig was checked on
 
 1. **Download** the app for your platform (see [Installation](#installation))
 2. **Launch the desktop app** - start with the free model with no auth, or let the setup wizard detect runtimes and guide provider authentication
-3. **Create a team** — Pick a project, define roles, write a provisioning prompt
+3. **Create a team** — Pick a working directory, connect a specification registry project and specification, define roles, and write a provisioning prompt
 4. **Watch** — Agents spawn, create tasks, and work. You see it all on the kanban board
 
 The desktop app is the main product. The web version is currently in active development.
+
+Team tasks use the selected `omp-spec-kit`
+registry specification. Start the existing registry and configure its token
+before creating or connecting a team. The desktop app discovers projects and
+specifications automatically; `OMP_SPEC_REGISTRY_URL` overrides the default
+`http://127.0.0.1:8650/mcp`. The token is read from the file specified by
+`OMP_SPEC_REGISTRY_TOKEN_FILE`, or `~/.spec-registry/mcp-token.txt` by default;
+`OMP_SPEC_REGISTRY_TOKEN` is used when that file is absent or empty. The token
+is not sent to the renderer.
+Projects that the registry cannot read are shown as unavailable without hiding
+other projects; repair their registry setup and refresh to select them.
+
+Existing local task files are not imported or deleted when a team is connected.
+Once a team is connected, use a separate team for a different specification:
+local execution history belongs to the original team and must not be mixed.
+If the registry is unavailable, task operations fail rather than switching to
+local files. New tasks require at least one requirement reference. A compatible
+registry supports multiline descriptions, clearing an assignee, and moving
+tasks to or from trash. These operations require the accompanying registry
+changes; an older running registry must be updated before they can be used.
+If a creation response is lost, the app checks the authoritative registry
+branch before recovering the task; it does not submit a duplicate while the
+result is unknown. Related-task changes involve multiple writes; if a write is
+unconfirmed or partly applied, reload both tasks and reconcile before retrying.
 
 ---
 
@@ -513,6 +537,12 @@ local packaging.
 | `pnpm check`                  | Full quality gate (types + lint + test + build)                              |
 | `pnpm fix`                    | Lint fix + format                                                            |
 | `pnpm quality`                | Full check + format check + knip                                             |
+
+The task-board integration suite also needs an `omp-spec-kit` source checkout.
+Set `AGENT_TEAMS_TEST_REGISTRY_SOURCE` to its absolute path before running the
+tests; without it, those real-registry scenarios are skipped. They create
+disposable local Git repositories and a loopback-only registry with test
+credentials, and do not connect to the configured production registry.
 
 </details>
 

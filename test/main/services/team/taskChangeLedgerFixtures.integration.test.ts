@@ -20,29 +20,21 @@ const SUMMARY_OPTIONS = {
   summaryOnly: true,
 };
 
-async function writeTaskFile(baseDir: string, taskId: string, projectPath: string): Promise<void> {
-  const taskPath = path.join(baseDir, 'tasks', TEAM_NAME, `${taskId}.json`);
-  await fs.mkdir(path.dirname(taskPath), { recursive: true });
-  await fs.writeFile(
-    taskPath,
-    JSON.stringify(
-      {
-        id: taskId,
-        owner: 'alice',
-        status: 'completed',
-        createdAt: '2026-03-01T09:55:00.000Z',
-        updatedAt: '2026-03-01T10:10:00.000Z',
-        projectPath,
-        workIntervals: [
-          { startedAt: '2026-03-01T10:00:00.000Z', completedAt: '2026-03-01T10:10:00.000Z' },
-        ],
-        historyEvents: [],
-      },
-      null,
-      2
-    ),
-    'utf8'
-  );
+const registryTasks = new Map<string, Record<string, unknown>>();
+
+async function setRegistryTask(_baseDir: string, taskId: string, projectPath: string): Promise<void> {
+  registryTasks.set(taskId, {
+    id: taskId,
+    owner: 'alice',
+    status: 'completed',
+    createdAt: '2026-03-01T09:55:00.000Z',
+    updatedAt: '2026-03-01T10:10:00.000Z',
+    projectPath,
+    workIntervals: [
+      { startedAt: '2026-03-01T10:00:00.000Z', completedAt: '2026-03-01T10:10:00.000Z' },
+    ],
+    historyEvents: [],
+  });
 }
 
 function createLedgerBackedChangeExtractorService(params: {
@@ -84,7 +76,13 @@ function createLedgerBackedChangeExtractorService(params: {
     {
       isAvailable: vi.fn(() => true),
       computeTaskChanges,
-    } as any
+    } as any,
+    undefined,
+    undefined,
+    // Ledger fixtures only need the task fields used by review.
+    { getTasks: async () => [...registryTasks.values()] } as unknown as NonNullable<
+      ConstructorParameters<typeof ChangeExtractorService>[7]
+    >
   );
 
   if (params.taskChangePresenceRepository && params.teamLogSourceTracker) {
@@ -102,6 +100,7 @@ describe('task change ledger golden fixtures', () => {
 
   afterEach(async () => {
     setClaudeBasePathOverride(null);
+    registryTasks.clear();
     vi.restoreAllMocks();
     while (cleanups.length > 0) {
       await cleanups.pop()?.();
@@ -158,8 +157,8 @@ describe('task change ledger golden fixtures', () => {
       await fs.rm(claudeBaseDir, { recursive: true, force: true });
     });
     setClaudeBasePathOverride(claudeBaseDir);
-    await writeTaskFile(claudeBaseDir, renameFixture.manifest.taskId, renameFixture.projectDir);
-    await writeTaskFile(claudeBaseDir, copyFixture.manifest.taskId, copyFixture.projectDir);
+    await setRegistryTask(claudeBaseDir, renameFixture.manifest.taskId, renameFixture.projectDir);
+    await setRegistryTask(claudeBaseDir, copyFixture.manifest.taskId, copyFixture.projectDir);
 
     const renameService = createLedgerBackedChangeExtractorService({
       projectDir: renameFixture.projectDir,
@@ -736,7 +735,7 @@ describe('task change ledger golden fixtures', () => {
       await fs.rm(claudeBaseDir, { recursive: true, force: true });
     });
     setClaudeBasePathOverride(claudeBaseDir);
-    await writeTaskFile(claudeBaseDir, fixture.manifest.taskId, fixture.projectDir);
+    await setRegistryTask(claudeBaseDir, fixture.manifest.taskId, fixture.projectDir);
 
     const { service, findLogFileRefsForTask, computeTaskChanges } =
       createLedgerBackedChangeExtractorService({
@@ -763,7 +762,7 @@ describe('task change ledger golden fixtures', () => {
       await fs.rm(claudeBaseDir, { recursive: true, force: true });
     });
     setClaudeBasePathOverride(claudeBaseDir);
-    await writeTaskFile(claudeBaseDir, fixture.manifest.taskId, fixture.projectDir);
+    await setRegistryTask(claudeBaseDir, fixture.manifest.taskId, fixture.projectDir);
 
     const upsertEntry = vi.fn(() => Promise.resolve(undefined));
     const deleteEntry = vi.fn(() => Promise.resolve(undefined));

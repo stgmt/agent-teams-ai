@@ -118,12 +118,14 @@ function createHarness(options: {
       persistedCacheTtlMs: 1_000,
     },
     persisted: {
-      readTaskActivityRepairLaunchSnapshot: forbidden(
-        'readTaskActivityRepairLaunchSnapshot'
-      ) as never,
-      repairStaleTaskActivityIntervalsOnce: forbidden(
-        'repairStaleTaskActivityIntervalsOnce'
-      ) as never,
+      readTaskActivityRepairLaunchSnapshot: async (...args) => {
+        forbidden('readTaskActivityRepairLaunchSnapshot')(...args);
+        return null;
+      },
+      repairStaleTaskActivityIntervalsOnce: async (...args) => {
+        forbidden('repairStaleTaskActivityIntervalsOnce')(...args);
+        return true;
+      },
       reconcilePersistedLaunchState: (async () => {
         if (!options.allowWrites) {
           throw new Error('read-only snapshot must not call reconcilePersistedLaunchState');
@@ -157,7 +159,10 @@ function createHarness(options: {
           })
         ),
       getOpenCodeSecondaryBootstrapPendingMemberNames: () => new Set<string>(),
-      resumeActiveTaskActivityForMembers: forbidden('resumeActiveTaskActivityForMembers') as never,
+      resumeActiveTaskActivityForMembers: async (...args) => {
+        forbidden('resumeActiveTaskActivityForMembers')(...args);
+        return {};
+      },
       readLaunchFreshness: async () => options.freshness ?? null,
     },
     live: {

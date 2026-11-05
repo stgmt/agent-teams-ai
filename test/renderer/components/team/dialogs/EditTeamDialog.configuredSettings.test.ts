@@ -10,6 +10,13 @@ vi.mock('@renderer/api', () => ({
       unbindGatewayMember: vi.fn(async () => {}),
     },
     teams: {
+      discoverSpecRegistry: vi.fn(async () => ({
+        url: 'http://registry.test',
+        projects: [
+          { id: 'registry-project', specs: [{ slug: 'team-spec' }, { slug: 'other-spec' }] },
+          { id: 'other-project', specs: [] },
+        ],
+      })),
       updateConfig: vi.fn(() => Promise.resolve()),
       replaceMembers: vi.fn(() => Promise.resolve()),
       removeMember: vi.fn(() => Promise.resolve()),
@@ -103,6 +110,15 @@ vi.mock('@renderer/components/ui/button', () => ({
   }) => React.createElement('button', { type: type ?? 'button', onClick, disabled }, children),
 }));
 
+vi.mock('@renderer/components/ui/select', () => ({
+  Select: ({ value, onValueChange, disabled, children }: { value: string; onValueChange: (value: string) => void; disabled?: boolean; children: React.ReactNode }) =>
+    React.createElement('select', { value, disabled, onChange: (event: React.ChangeEvent<HTMLSelectElement>) => onValueChange(event.target.value) }, children),
+  SelectTrigger: ({ children }: { children: React.ReactNode }) => React.createElement(React.Fragment, null, children),
+  SelectValue: ({ placeholder }: { placeholder: string }) => React.createElement('option', { value: '' }, placeholder),
+  SelectContent: ({ children }: { children: React.ReactNode }) => React.createElement(React.Fragment, null, children),
+  SelectItem: ({ value, disabled, children }: { value: string; disabled?: boolean; children: React.ReactNode }) => React.createElement('option', { value, disabled }, children),
+}));
+
 vi.mock('@renderer/components/ui/dialog', () => ({
   Dialog: ({ open, children }: { open: boolean; children: React.ReactNode }) =>
     open ? React.createElement('div', null, children) : null,
@@ -170,7 +186,9 @@ describe('EditTeamDialog canonical settings', () => {
     vi.unstubAllGlobals();
   });
 
-  async function setup() {
+  async function setup(
+    binding = { specProject: 'registry-project', specSlug: 'team-spec' }
+  ) {
     vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
     const host = document.createElement('div');
     document.body.appendChild(host);
@@ -186,6 +204,8 @@ describe('EditTeamDialog canonical settings', () => {
             currentName: 'Sandbox',
             currentDescription: '',
             currentColor: 'blue',
+            currentSpecProject: binding.specProject,
+            currentSpecSlug: binding.specSlug,
             currentMembers,
             onClose,
             onSaved: vi.fn(),
@@ -207,6 +227,35 @@ describe('EditTeamDialog canonical settings', () => {
     await render();
     return { host, root, render, click, members, onClose };
   }
+
+  it('repairs an unbound team by selecting registry choices without changing its roster', async () => {
+    const { host, root, click } = await setup({ specProject: '', specSlug: '' });
+    try {
+      const save = () =>
+        Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Save')!;
+      const [project, spec] = host.querySelectorAll('select');
+      expect(save().disabled).toBe(true);
+      await act(async () => {
+        project.value = 'registry-project';
+        project.dispatchEvent(new Event('change', { bubbles: true }));
+      });
+      expect(save().disabled).toBe(true);
+      expect(api.teams.updateConfig).not.toHaveBeenCalled();
+      await act(async () => {
+        spec.value = 'team-spec';
+        spec.dispatchEvent(new Event('change', { bubbles: true }));
+      });
+      expect(save().disabled).toBe(false);
+      await click('Save');
+      expect(api.teams.updateConfig).toHaveBeenCalledWith(
+        'sandbox-team',
+        expect.objectContaining({ specProject: 'registry-project', specSlug: 'team-spec' })
+      );
+      expect(api.teams.replaceMembers).not.toHaveBeenCalled();
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
 
   it('shows canonical 5.3, inherited blanks and legacy fallback without changing effective display data', async () => {
     const { host, root, members } = await setup();
@@ -243,6 +292,8 @@ describe('EditTeamDialog canonical settings', () => {
         name: 'Sandbox',
         description: '',
         color: 'blue',
+        specProject: 'registry-project',
+        specSlug: 'team-spec',
       });
       expect(api.teams.restartMember).not.toHaveBeenCalled();
     } finally {

@@ -6,11 +6,14 @@ import {
   whenOpenCodeStartupRuntimeSweepSettled,
 } from '../opencode/bridge/OpenCodeStartupSweepGate';
 
+import type { RegistryTaskTransition } from '../registry/RegistryTaskClientTypes';
+import type { ExecutionTaskPatch } from '../execution/ExecutionTaskStore';
 import type { OpenCodeRuntimeControlAck, OpenCodeRuntimeControlApi } from '../runtime-control';
 import type { TeamProvisioningStatusApi as FeatureTeamProvisioningStatusApi } from '@features/team-provisioning/contracts';
 import type {
   AgentActionMode,
   AttachmentPayload,
+  CreateTaskRequest,
   InboxMessage,
   LeadActivitySnapshot,
   LeadContextUsageSnapshot,
@@ -18,6 +21,7 @@ import type {
   OpenCodeRuntimeDeliveryStatus,
   OpenCodeRuntimeDeliveryUserVisibleImpact,
   RetryFailedOpenCodeSecondaryLanesResult,
+  TaskFieldUpdates,
   TaskRef,
   TeamAgentRuntimeSnapshot,
   TeamClaudeLogsQuery,
@@ -34,6 +38,8 @@ import type {
   TeamProvisioningProgress,
   TeamRuntimeState,
   TeamSummary,
+  TeamTask,
+  TeamTaskStatus,
   TeamViewSnapshot,
   ToolApprovalSettings,
 } from '@shared/types/team';
@@ -126,6 +132,8 @@ export interface TeamHttpRuntimeApi {
   getAliveTeams(): string[];
 }
 
+export type TeamHttpTaskRelationshipType = 'blockedBy' | 'blocks' | 'related';
+
 export interface TeamHttpDataApi {
   listTeams(): Promise<TeamSummary[]>;
   getTeamData(teamName: string): Promise<TeamViewSnapshot>;
@@ -135,6 +143,58 @@ export interface TeamHttpDataApi {
     oldTeamName: string,
     newTeamName: string,
     afterRename?: () => Promise<void>
+  ): Promise<void>;
+  /**
+   * Task surface of the HTTP sidecar. The MCP child process has no access to
+   * the registry token or the task files, so it reads and writes tasks through
+   * these methods; canonical fields always use the spec registry.
+   */
+  getTasks(teamName: string): Promise<TeamTask[]>;
+  getDeletedTasks(teamName: string): Promise<TeamTask[]>;
+  getTask(teamName: string, taskId: string): Promise<TeamTask | null>;
+  createTask(teamName: string, request: CreateTaskRequest): Promise<TeamTask>;
+  createTaskWithOutcome(
+    teamName: string,
+    request: CreateTaskRequest & { status?: TeamTaskStatus; actor?: string },
+    executionPatch?: ExecutionTaskPatch
+  ): Promise<{ task: TeamTask; outcome: 'APPLIED' | 'REPLAY' }>;
+  updateTaskStatus(
+    teamName: string,
+    taskId: string,
+    status: TeamTaskStatus,
+    actor?: string
+  ): Promise<void>;
+  /** Registry transition receipts are required for every team. */
+  updateTaskStatusWithReceipt(
+    teamName: string,
+    taskId: string,
+    status: TeamTaskStatus,
+    actor?: string,
+    expectedStatus?: TeamTaskStatus
+  ): Promise<readonly RegistryTaskTransition[]>;
+  updateTaskOwner(
+    teamName: string,
+    taskId: string,
+    owner: string | null,
+    actor?: string
+  ): Promise<void>;
+  updateTaskFields(teamName: string, taskId: string, fields: TaskFieldUpdates): Promise<void>;
+  applyTaskExecutionPatch(
+    teamName: string,
+    taskId: string,
+    patch: ExecutionTaskPatch
+  ): Promise<void>;
+  addTaskRelationship(
+    teamName: string,
+    taskId: string,
+    targetId: string,
+    type: TeamHttpTaskRelationshipType
+  ): Promise<void>;
+  removeTaskRelationship(
+    teamName: string,
+    taskId: string,
+    targetId: string,
+    type: TeamHttpTaskRelationshipType
   ): Promise<void>;
 }
 
@@ -552,6 +612,18 @@ export function bindTeamHttpDataApi(source: TeamHttpDataApi): TeamHttpDataApi {
     getSavedRequest: source.getSavedRequest.bind(source),
     createTeamConfig: source.createTeamConfig.bind(source),
     renameDraftTeam: source.renameDraftTeam.bind(source),
+    getTasks: source.getTasks.bind(source),
+    getDeletedTasks: source.getDeletedTasks.bind(source),
+    getTask: source.getTask.bind(source),
+    createTask: source.createTask.bind(source),
+    createTaskWithOutcome: source.createTaskWithOutcome.bind(source),
+    updateTaskStatus: source.updateTaskStatus.bind(source),
+    updateTaskStatusWithReceipt: source.updateTaskStatusWithReceipt.bind(source),
+    updateTaskOwner: source.updateTaskOwner.bind(source),
+    updateTaskFields: source.updateTaskFields.bind(source),
+    applyTaskExecutionPatch: source.applyTaskExecutionPatch.bind(source),
+    addTaskRelationship: source.addTaskRelationship.bind(source),
+    removeTaskRelationship: source.removeTaskRelationship.bind(source),
   };
 }
 

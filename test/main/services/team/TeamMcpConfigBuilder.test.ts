@@ -173,6 +173,7 @@ describe('TeamMcpConfigBuilder', () => {
   }
 
   beforeEach(() => {
+    vi.stubEnv('OMP_SPEC_REGISTRY_TOKEN', 'sandbox-registry-token');
     clearResolvedNodePathForTests();
     originalResourcesPath = (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath;
     originalControlUrl = process.env.CLAUDE_TEAM_CONTROL_URL;
@@ -220,6 +221,7 @@ describe('TeamMcpConfigBuilder', () => {
       process.env.CLAUDE_TEAM_CONTROL_URL = originalControlUrl;
     }
     moduleInternal._load = originalModuleLoad;
+    vi.unstubAllEnvs();
     vi.restoreAllMocks();
     for (const filePath of createdPaths.splice(0)) {
       try {
@@ -239,6 +241,29 @@ describe('TeamMcpConfigBuilder', () => {
   });
 
   // ── Config storage ──
+
+  it('makes the selected registry and credential available to team members', async () => {
+    vi.stubEnv('OMP_SPEC_REGISTRY_URL', 'http://127.0.0.1:28650/mcp');
+    const builder = new TeamMcpConfigBuilder();
+    const configPath = await builder.writeConfigFile();
+    createdPaths.push(configPath);
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    expect(config.mcpServers['omp-spec-kit']).toEqual({
+      type: 'http',
+      url: 'http://127.0.0.1:28650/mcp',
+      headers: { Authorization: 'Bearer sandbox-registry-token' },
+      enabled: true,
+    });
+  });
+
+  it('refuses to write a team MCP config when registry credentials are missing', async () => {
+    mockHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'team-mcp-empty-home-'));
+    createdDirs.push(mockHomeDir);
+    vi.stubEnv('OMP_SPEC_REGISTRY_TOKEN', '');
+    await expect(new TeamMcpConfigBuilder().writeConfigFile()).rejects.toMatchObject({
+      code: 'MISSING_TOKEN',
+    });
+  });
 
   it('writes config to userData/mcp-configs/, not the system default tmp', async () => {
     const builder = new TeamMcpConfigBuilder();
@@ -1054,7 +1079,7 @@ describe('TeamMcpConfigBuilder', () => {
       >;
     };
 
-    expect(Object.keys(parsed.mcpServers)).toEqual(['agent-teams']);
+    expect(Object.keys(parsed.mcpServers)).toEqual(['agent-teams', 'omp-spec-kit']);
     expect(parsed.mcpServers.globalOnly).toBeUndefined();
     expect(parsed.mcpServers.duplicateServer).toBeUndefined();
   });
@@ -1129,7 +1154,7 @@ describe('TeamMcpConfigBuilder', () => {
       >;
     };
 
-    expect(Object.keys(parsed.mcpServers)).toEqual(['agent-teams']);
+    expect(Object.keys(parsed.mcpServers)).toEqual(['agent-teams', 'omp-spec-kit']);
     expectNodeEntry(parsed.mcpServers['agent-teams'], builtEntry);
     expect(parsed.mcpServers['agent-teams']).toMatchObject({
       enabled: true,
@@ -1175,7 +1200,7 @@ describe('TeamMcpConfigBuilder', () => {
     };
 
     expect(parsed.mcpServers.projectOnly).toBeUndefined();
-    expect(Object.keys(parsed.mcpServers)).toEqual(['agent-teams']);
+    expect(Object.keys(parsed.mcpServers)).toEqual(['agent-teams', 'omp-spec-kit']);
   });
 
   it('inlines allowlisted MCP servers for strict member policies with Claude precedence', async () => {
@@ -1233,7 +1258,7 @@ describe('TeamMcpConfigBuilder', () => {
       >;
     };
 
-    expect(Object.keys(parsed.mcpServers).sort()).toEqual(['agent-teams', 'github', 'linear']);
+    expect(Object.keys(parsed.mcpServers).sort()).toEqual(['agent-teams', 'github', 'linear', 'omp-spec-kit']);
     expect(parsed.mcpServers.github).toEqual({
       type: 'http',
       url: 'https://local.example.com/mcp',
@@ -1373,7 +1398,7 @@ describe('TeamMcpConfigBuilder', () => {
       mcpServers: Record<string, { command?: string; args?: string[]; enabled?: boolean }>;
     };
 
-    expect(Object.keys(parsed.mcpServers)).toEqual(['agent-teams']);
+    expect(Object.keys(parsed.mcpServers)).toEqual(['agent-teams', 'omp-spec-kit']);
     expectNodeEntry(parsed.mcpServers['agent-teams'], builtEntry);
     expect(parsed.mcpServers['agent-teams']?.enabled).toBe(true);
   });
@@ -1425,7 +1450,7 @@ describe('TeamMcpConfigBuilder', () => {
       mcpServers: Record<string, { command?: string; args?: string[]; enabled?: boolean }>;
     };
 
-    expect(Object.keys(parsed.mcpServers)).toEqual(['agent-teams']);
+    expect(Object.keys(parsed.mcpServers)).toEqual(['agent-teams', 'omp-spec-kit']);
     expect(parsed.mcpServers['agent-teams']?.enabled).toBe(true);
     expectNodeEntry(parsed.mcpServers['agent-teams'], builtEntry);
   });
@@ -1509,7 +1534,7 @@ describe('TeamMcpConfigBuilder', () => {
       mcpServers: Record<string, { command?: string; args?: string[] }>;
     };
 
-    expect(Object.keys(parsed.mcpServers)).toEqual(['agent-teams']);
+    expect(Object.keys(parsed.mcpServers)).toEqual(['agent-teams', 'omp-spec-kit']);
   });
 
   // ── Cleanup: removeConfigFile ──

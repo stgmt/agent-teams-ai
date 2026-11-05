@@ -131,6 +131,10 @@ function mockCallArg(call: readonly unknown[] | undefined, index: number): unkno
 const TEST_PROJECT_PATH = path.join(os.tmpdir(), 'project');
 const DRAFT_TEAM_CWD = path.join(os.tmpdir(), 'draft-team');
 const TASK_LOG_JSONL_PATH = path.join(os.tmpdir(), 'task.jsonl');
+const TEST_SPEC_BINDING = {
+  specProject: 'sandbox/agent-teams-tests',
+  specSlug: 'sandbox-spec',
+} as const;
 const TASK_LOG_BUNDLE_ID = `tool:${TASK_LOG_JSONL_PATH}:tool-1`;
 const TRANSCRIPT_JSONL_PATH = path.join(os.tmpdir(), 'transcript.jsonl');
 
@@ -202,6 +206,7 @@ import {
   TEAM_DELETE_TASK_ATTACHMENT,
   TEAM_DELETE_TEAM,
   TEAM_DISCARD_QUEUED_USER_MESSAGES,
+  TEAM_DISCOVER_SPEC_REGISTRY,
   TEAM_FORCE_STOP,
   TEAM_GET_AGENT_RUNTIME,
   TEAM_GET_ALL_TASKS,
@@ -310,6 +315,7 @@ const TEAM_HANDLER_KEYS = [
   TEAM_DELETE_TASK_ATTACHMENT,
   TEAM_DELETE_TEAM,
   TEAM_DISCARD_QUEUED_USER_MESSAGES,
+  TEAM_DISCOVER_SPEC_REGISTRY,
   TEAM_FORCE_STOP,
   TEAM_GET_AGENT_RUNTIME,
   TEAM_GET_ALL_TASKS,
@@ -2804,7 +2810,12 @@ describe('ipc teams handlers', () => {
         // Electron transports a plain result, not the original Error instance.
         return JSON.parse(JSON.stringify(result)) as unknown;
       });
-      const request = { teamName: 'cleanup-fixture', cwd: fixtureRoot, members: [] };
+      const request = {
+        teamName: 'cleanup-fixture',
+        ...TEST_SPEC_BINDING,
+        cwd: fixtureRoot,
+        members: [],
+      };
       const message = new OpenCodeStartupCleanupBusyError().message;
       for (const operation of ['createTeam', 'launchTeam'] as const) {
         await expect(api.teams[operation](request)).rejects.toThrow(message);
@@ -2853,6 +2864,7 @@ describe('ipc teams handlers', () => {
 
     const createResult = (await handlers.get(TEAM_CREATE)!({ sender: { send: vi.fn() } } as never, {
       teamName: 'my-team',
+      ...TEST_SPEC_BINDING,
       members: [{ name: 'alice' }],
       cwd: os.tmpdir(),
     })) as { success: boolean };
@@ -2901,6 +2913,7 @@ describe('ipc teams handlers', () => {
 
     const result = (await handlers.get(TEAM_CREATE)!({ sender: { send: vi.fn() } } as never, {
       teamName: createTeam,
+      ...TEST_SPEC_BINDING,
       members: [{ name: 'alice' }],
       cwd: os.tmpdir(),
     })) as { success: boolean };
@@ -3026,6 +3039,7 @@ describe('ipc teams handlers', () => {
 
     const createResult = (await handlers.get(TEAM_CREATE)!({ sender: { send: vi.fn() } } as never, {
       teamName: 'my-team',
+      ...TEST_SPEC_BINDING,
       members: [{ name: 'alice' }],
       cwd: os.tmpdir(),
     })) as { success: boolean };
@@ -7084,6 +7098,7 @@ describe('ipc teams handlers', () => {
       const handler = handlers.get(TEAM_CREATE)!;
       const result = (await handler({ sender: { send: vi.fn() } } as never, {
         teamName: 'test-team',
+        ...TEST_SPEC_BINDING,
         members: [{ name: 'alice' }],
         cwd: os.tmpdir(),
         prompt: 'Build a web app',
@@ -7097,6 +7112,7 @@ describe('ipc teams handlers', () => {
       const handler = handlers.get(TEAM_CREATE)!;
       const result = (await handler({ sender: { send: vi.fn() } } as never, {
         teamName: 'test-team',
+        ...TEST_SPEC_BINDING,
         members: [{ name: 'alice' }],
         cwd: os.tmpdir(),
         prompt: 123,
@@ -7109,6 +7125,7 @@ describe('ipc teams handlers', () => {
       const handler = handlers.get(TEAM_CREATE)!;
       const result = (await handler({ sender: { send: vi.fn() } } as never, {
         teamName: 'test-team',
+        ...TEST_SPEC_BINDING,
         members: [{ name: 'alice' }],
         cwd: os.tmpdir(),
         allowExperimentalLocalModels: 'yes',
@@ -7274,6 +7291,7 @@ describe('ipc teams handlers', () => {
       const handler = handlers.get(TEAM_CREATE)!;
       const result = (await handler({ sender: { send: vi.fn() } } as never, {
         teamName: 'solo-team',
+        ...TEST_SPEC_BINDING,
         members: [],
         cwd: os.tmpdir(),
       })) as { success: boolean };
@@ -7287,6 +7305,7 @@ describe('ipc teams handlers', () => {
       const handler = handlers.get(TEAM_CREATE)!;
       const result = (await handler({ sender: { send: vi.fn() } } as never, {
         teamName: 'runtime-team',
+        ...TEST_SPEC_BINDING,
         members: [
           {
             name: 'builder',
@@ -7330,6 +7349,7 @@ describe('ipc teams handlers', () => {
       const handler = handlers.get(TEAM_CREATE)!;
       const result = (await handler({ sender: { send: vi.fn() } } as never, {
         teamName: 'inherited-backend-team',
+        ...TEST_SPEC_BINDING,
         members: [
           {
             name: 'builder',
@@ -7362,6 +7382,7 @@ describe('ipc teams handlers', () => {
       const handler = handlers.get(TEAM_CREATE)!;
       const result = (await handler({ sender: { send: vi.fn() } } as never, {
         teamName: 'opencode-runtime-team',
+        ...TEST_SPEC_BINDING,
         members: [
           {
             name: 'builder',
@@ -7395,6 +7416,7 @@ describe('ipc teams handlers', () => {
       const handler = handlers.get(TEAM_CREATE_CONFIG)!;
       const result = (await handler({} as never, {
         teamName: 'solo-team',
+        ...TEST_SPEC_BINDING,
         members: [],
         cwd: os.tmpdir(),
       })) as { success: boolean };
@@ -7406,6 +7428,7 @@ describe('ipc teams handlers', () => {
       const handler = handlers.get(TEAM_CREATE_CONFIG)!;
       const result = (await handler({} as never, {
         teamName: 'draft-team',
+        ...TEST_SPEC_BINDING,
         displayName: ' Draft Team ',
         description: ' Saved draft ',
         color: '#3366ff',
@@ -7442,6 +7465,7 @@ describe('ipc teams handlers', () => {
       expect(result.success).toBe(true);
       expect(service.createTeamConfig).toHaveBeenCalledWith({
         teamName: 'draft-team',
+        ...TEST_SPEC_BINDING,
         displayName: 'Draft Team',
         description: 'Saved draft',
         color: '#3366ff',
@@ -7480,6 +7504,7 @@ describe('ipc teams handlers', () => {
       const handler = handlers.get(TEAM_CREATE_CONFIG)!;
       const result = (await handler({} as never, {
         teamName: 'draft-inherited-runtime',
+        ...TEST_SPEC_BINDING,
         members: [
           {
             name: 'builder',
@@ -7496,6 +7521,7 @@ describe('ipc teams handlers', () => {
       expect(service.createTeamConfig).toHaveBeenCalledWith(
         expect.objectContaining({
           teamName: 'draft-inherited-runtime',
+          ...TEST_SPEC_BINDING,
           providerId: 'codex',
           providerBackendId: 'codex-native',
           members: [
@@ -7517,6 +7543,7 @@ describe('ipc teams handlers', () => {
       const handler = handlers.get(TEAM_CREATE_CONFIG)!;
       const result = (await handler({} as never, {
         teamName: 'draft-stale-runtime',
+        ...TEST_SPEC_BINDING,
         members: [
           {
             name: 'builder',
@@ -7536,6 +7563,7 @@ describe('ipc teams handlers', () => {
       const handler = handlers.get(TEAM_CREATE_CONFIG)!;
       const result = (await handler({} as never, {
         teamName: 'draft-stale-top-level-runtime',
+        ...TEST_SPEC_BINDING,
         members: [{ name: 'builder' }],
         cwd: os.tmpdir(),
         providerBackendId: 'codex-native',
@@ -7545,6 +7573,7 @@ describe('ipc teams handlers', () => {
       expect(service.createTeamConfig).toHaveBeenCalledWith(
         expect.objectContaining({
           teamName: 'draft-stale-top-level-runtime',
+          ...TEST_SPEC_BINDING,
         })
       );
       const saved = mockCallArg(service.createTeamConfig.mock.calls[0], 0) as TeamCreateRequest;
@@ -7556,6 +7585,7 @@ describe('ipc teams handlers', () => {
       const handler = handlers.get(TEAM_CREATE_CONFIG)!;
       const result = (await handler({} as never, {
         teamName: 'draft-default-anthropic-runtime',
+        ...TEST_SPEC_BINDING,
         members: [
           {
             name: 'builder',
@@ -7569,6 +7599,7 @@ describe('ipc teams handlers', () => {
       expect(service.createTeamConfig).toHaveBeenCalledWith(
         expect.objectContaining({
           teamName: 'draft-default-anthropic-runtime',
+          ...TEST_SPEC_BINDING,
           members: [
             expect.objectContaining({
               name: 'builder',
@@ -7583,6 +7614,7 @@ describe('ipc teams handlers', () => {
       const handler = handlers.get(TEAM_CREATE_CONFIG)!;
       const result = (await handler({} as never, {
         teamName: 'draft-default-anthropic-effort',
+        ...TEST_SPEC_BINDING,
         members: [{ name: 'builder' }],
         cwd: os.tmpdir(),
         effort: 'max',
@@ -7592,6 +7624,7 @@ describe('ipc teams handlers', () => {
       expect(service.createTeamConfig).toHaveBeenCalledWith(
         expect.objectContaining({
           teamName: 'draft-default-anthropic-effort',
+          ...TEST_SPEC_BINDING,
           effort: 'max',
         })
       );
@@ -7621,9 +7654,13 @@ describe('ipc teams handlers', () => {
             fs.mkdirSync(teamDir, { recursive: true });
             fs.writeFileSync(path.join(teamDir, 'team.meta.json'), meta);
             if (entry !== 'draft')
-              fs.writeFileSync(path.join(teamDir, 'config.json'), JSON.stringify({ members: [] }));
+              fs.writeFileSync(
+                path.join(teamDir, 'config.json'),
+                JSON.stringify({ members: [], ...TEST_SPEC_BINDING })
+              );
             service.getSavedRequest.mockResolvedValueOnce({
               teamName,
+              ...TEST_SPEC_BINDING,
               cwd,
               runtimeSelectionVersion: 1,
               members: [{ name: 'builder' }],
@@ -7631,7 +7668,13 @@ describe('ipc teams handlers', () => {
           }
           const result = await handlers.get(entry === 'create' ? TEAM_CREATE : TEAM_LAUNCH)!(
             { sender: { send: vi.fn() } } as never,
-            { teamName, cwd, runtimeSelectionVersion: 1, members: [{ name: 'builder' }] }
+            {
+              teamName,
+              cwd,
+              runtimeSelectionVersion: 1,
+              members: [{ name: 'builder' }],
+              ...(entry === 'create' ? TEST_SPEC_BINDING : {}),
+            }
           );
           expect(result).toEqual({
             success: false,
@@ -7675,9 +7718,13 @@ describe('ipc teams handlers', () => {
             })
           );
           if (!draft)
-            fs.writeFileSync(path.join(teamDir, 'config.json'), JSON.stringify({ members: [] }));
+            fs.writeFileSync(
+              path.join(teamDir, 'config.json'),
+              JSON.stringify({ members: [], ...TEST_SPEC_BINDING })
+            );
           service.getSavedRequest.mockResolvedValueOnce({
             teamName: 'marker-team',
+            ...TEST_SPEC_BINDING,
             runtimeSelectionVersion: 1,
             providerId: 'codex',
             cwd: claudeRoot,
@@ -7720,6 +7767,7 @@ describe('ipc teams handlers', () => {
         );
         service.getSavedRequest.mockResolvedValueOnce({
           teamName: 'draft-team',
+          ...TEST_SPEC_BINDING,
           displayName: 'Draft Team',
           description: 'Saved draft',
           color: '#3366ff',
@@ -7762,6 +7810,7 @@ describe('ipc teams handlers', () => {
         expect(teamHandlerMocks.createTeam).toHaveBeenCalledWith(
           {
             teamName: 'draft-team',
+            ...TEST_SPEC_BINDING,
             displayName: 'Draft Team',
             description: 'Saved draft',
             color: '#3366ff',
@@ -7804,7 +7853,7 @@ describe('ipc teams handlers', () => {
         fs.mkdirSync(teamDir, { recursive: true });
         fs.writeFileSync(
           path.join(teamDir, 'config.json'),
-          JSON.stringify({ teamName: 'anthropic-team' })
+          JSON.stringify({ teamName: 'anthropic-team', ...TEST_SPEC_BINDING })
         );
         fs.writeFileSync(
           path.join(teamDir, 'team.meta.json'),
@@ -7859,7 +7908,7 @@ describe('ipc teams handlers', () => {
         fs.mkdirSync(teamDir, { recursive: true });
         fs.writeFileSync(
           path.join(teamDir, 'config.json'),
-          JSON.stringify({ teamName: 'anthropic-team' })
+          JSON.stringify({ teamName: 'anthropic-team', ...TEST_SPEC_BINDING })
         );
         fs.writeFileSync(
           path.join(teamDir, 'team.meta.json'),
@@ -7921,7 +7970,7 @@ describe('ipc teams handlers', () => {
         fs.mkdirSync(teamDir, { recursive: true });
         fs.writeFileSync(
           path.join(teamDir, 'config.json'),
-          JSON.stringify({ teamName: 'runtime-change-team' })
+          JSON.stringify({ teamName: 'runtime-change-team', ...TEST_SPEC_BINDING })
         );
         fs.writeFileSync(
           path.join(teamDir, 'team.meta.json'),
@@ -7989,7 +8038,7 @@ describe('ipc teams handlers', () => {
         fs.mkdirSync(teamDir, { recursive: true });
         fs.writeFileSync(
           path.join(teamDir, 'config.json'),
-          JSON.stringify({ teamName: 'runtime-default-change-team' })
+          JSON.stringify({ teamName: 'runtime-default-change-team', ...TEST_SPEC_BINDING })
         );
         fs.writeFileSync(
           path.join(teamDir, 'team.meta.json'),
@@ -8058,7 +8107,7 @@ describe('ipc teams handlers', () => {
         fs.mkdirSync(teamDir, { recursive: true });
         fs.writeFileSync(
           path.join(teamDir, 'config.json'),
-          JSON.stringify({ teamName: 'gemini-backend-team' })
+          JSON.stringify({ teamName: 'gemini-backend-team', ...TEST_SPEC_BINDING })
         );
         fs.writeFileSync(
           path.join(teamDir, 'team.meta.json'),
@@ -8105,7 +8154,7 @@ describe('ipc teams handlers', () => {
         fs.mkdirSync(teamDir, { recursive: true });
         fs.writeFileSync(
           path.join(teamDir, 'config.json'),
-          JSON.stringify({ teamName: 'codex-default-model-team' })
+          JSON.stringify({ teamName: 'codex-default-model-team', ...TEST_SPEC_BINDING })
         );
         fs.writeFileSync(
           path.join(teamDir, 'team.meta.json'),
@@ -8170,7 +8219,7 @@ describe('ipc teams handlers', () => {
         fs.mkdirSync(teamDir, { recursive: true });
         fs.writeFileSync(
           path.join(teamDir, 'config.json'),
-          JSON.stringify({ teamName: 'runtime-backend-change-team' })
+          JSON.stringify({ teamName: 'runtime-backend-change-team', ...TEST_SPEC_BINDING })
         );
         fs.writeFileSync(
           path.join(teamDir, 'team.meta.json'),
@@ -8296,6 +8345,7 @@ describe('ipc teams handlers', () => {
       const handler = handlers.get(TEAM_CREATE)!;
       const result = (await handler({ sender: { send: vi.fn() } } as never, {
         teamName: 'solo-team',
+        ...TEST_SPEC_BINDING,
         members: 'not-array',
         cwd: os.tmpdir(),
       })) as { success: boolean; error: string };
@@ -8308,6 +8358,7 @@ describe('ipc teams handlers', () => {
       const result = (await handler({} as never, {
         teamName: 'solo-team',
         members: 'not-array',
+        ...TEST_SPEC_BINDING,
       })) as { success: boolean; error: string };
       expect(result.success).toBe(false);
       expect(result.error).toContain('members must be an array');
@@ -8383,6 +8434,7 @@ describe('ipc teams handlers', () => {
       const handler = handlers.get(TEAM_CREATE)!;
       const result = (await handler({ sender: { send: vi.fn() } } as never, {
         teamName: 'solo-team',
+        ...TEST_SPEC_BINDING,
         members: [{ name: 'user' }],
         cwd: os.tmpdir(),
       })) as { success: boolean; error: string };
@@ -8394,6 +8446,7 @@ describe('ipc teams handlers', () => {
       const handler = handlers.get(TEAM_CREATE)!;
       const result = (await handler({ sender: { send: vi.fn() } } as never, {
         teamName: 'solo-team',
+        ...TEST_SPEC_BINDING,
         members: [{ name: 'team-lead' }],
         cwd: os.tmpdir(),
       })) as { success: boolean; error: string };

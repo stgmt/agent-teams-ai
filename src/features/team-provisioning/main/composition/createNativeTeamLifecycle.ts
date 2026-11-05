@@ -6,10 +6,13 @@ import { createOpenCodePromptDeliveryLedger } from '@main/services/team/provisio
 import { buildLeadMessageStdinPayload } from '@main/services/team/provisioning/TeamProvisioningLeadAttachments';
 import { TaskChangeLedgerReader } from '@main/services/team/TaskChangeLedgerReader';
 import { TeamInboxReader } from '@main/services/team/TeamInboxReader';
+import { getClaudeBasePath } from '@main/utils/pathDecoder';
 import { createLogger } from '@shared/utils/logger';
+import * as agentTeamsControllerModule from 'agent-teams-controller';
 
 import { SendLeadMessage } from '../../core/application/commands/SendLeadMessage';
 import { LeadMemberStartAuthority } from '../../core/application/LeadMemberStartAuthority';
+import { MemberLifecycleRegistry } from '../../core/domain/MemberLifecycleRegistry';
 import { LeadLaneInboxDelivery } from '../adapters/output/LeadLaneInboxDelivery';
 import { NativeClaudeLaunchPlanner } from '../adapters/output/NativeClaudeLaunchPlanner';
 import {
@@ -26,6 +29,7 @@ import { NativeLeadRuntimeRestart } from '../adapters/output/NativeLeadRuntimeRe
 import { NativeMemberInboxRelay } from '../adapters/output/NativeMemberInboxRelay';
 import { createObservedMemberPlanner } from '../adapters/output/NativeObservedMemberPlanner';
 import { NativeOpenCodePromptDeliverySupervisor } from '../adapters/output/NativeOpenCodePromptDeliverySupervisor';
+import { NativeStartupWorkDelivery } from '../adapters/output/NativeStartupWorkDelivery';
 import { NativeTeamLogStore } from '../adapters/output/NativeTeamLogStore';
 import { NativeTeamTaskLedgerReader } from '../adapters/output/NativeTeamTaskLedgerReader';
 import { NativeToolApprovalSettings } from '../adapters/output/NativeToolApprovalSettings';
@@ -61,6 +65,7 @@ import type {
   AttachmentPayload,
   InboxMessage,
   RetryFailedOpenCodeSecondaryLanesResult,
+  TeamTask,
 } from '@shared/types';
 
 export interface NativeTeamLifecycleDependencies {
@@ -72,6 +77,7 @@ export interface NativeTeamLifecycleDependencies {
   runtimeRoot: string;
   workspaceRoot: string;
   teamsRoot: string;
+  readStartupTasks(teamName: string): Promise<TeamTask[]>;
   mcp: ConstructorParameters<typeof NodeNativeLaunchArtifacts>[0]['mcp'];
   inbox: ConstructorParameters<typeof NodeNativeMemberRegistration>[0]['inbox'];
   controlUrl(): Promise<string>;
@@ -240,6 +246,18 @@ export function createNativeTeamLifecycle(
     requireProviderAuth: deps.requireProviderAuth === true,
   });
   const logs = new NativeTeamLogStore({ teamsRoot: deps.teamsRoot });
+  const registry = deps.registry ?? new MemberLifecycleRegistry(deps.owner);
+  const startupWorkDelivery = new NativeStartupWorkDelivery({
+    registry,
+    contextInvalidationSignal: (expected) => deps.contextInvalidationSignal(expected),
+    withExpectedContext: (expected, operation) => deps.withExpectedContext(expected, operation),
+    createController: (input) => agentTeamsControllerModule.createController(input),
+    readTasks: (teamName) => deps.readStartupTasks(teamName),
+    getClaudeBasePath,
+    appendDiagnostic: (run, memberName, text) =>
+      logs.append(run.runId, run.teamName, `[${memberName}] ${text}`),
+    logger: createLogger('team-provisioning:startup-work'),
+  });
   const toolApprovalSettings = new NativeToolApprovalSettings();
   let writeApprovalLine: (
     token: Readonly<MemberProcessToken>,
@@ -283,12 +301,13 @@ export function createNativeTeamLifecycle(
   const configuredProvidersByRun = new Map<string, ReadonlyMap<string, string>>();
   const lifecycle = createMemberLifecycle({
     owner: deps.owner,
-    ...(deps.registry ? { registry: deps.registry } : {}),
+    registry,
     settings,
     authority,
     runtime: routing.runtime,
     laneGroups: routing.laneGroups,
     registerConfiguredMember: (run, launch) => config.addMember(run, launch),
+    onMemberConnected: (launch, token) => startupWorkDelivery.confirmed(launch, token),
     ...(deps.onRuntimeFailure
       ? { reportRuntimeFailure: (input) => deps.onRuntimeFailure?.(input) }
       : {}),
@@ -305,6 +324,7 @@ export function createNativeTeamLifecycle(
         toolApprovalSettings.initializeForLaunch(run.teamName, lead?.launch.skipPermissions);
       },
       release: async (run) => {
+        startupWorkDelivery.release(run);
         configuredProvidersByRun.delete(run.runId);
         // Wakes belong to the run that armed them: a released team drops its
         // timers before anything else is torn down.

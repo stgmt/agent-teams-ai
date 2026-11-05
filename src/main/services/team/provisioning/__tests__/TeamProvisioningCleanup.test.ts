@@ -118,6 +118,7 @@ function makeCleanupPorts(
     persistLaunchStateSnapshot: vi.fn(() => Promise.resolve()),
     writeLaunchFailureArtifactPackBestEffort: vi.fn(),
     resetRuntimeToolActivity: vi.fn(),
+    clearStartupWorkDeliveryState: vi.fn(),
     setLeadActivity: vi.fn(),
     stopStallWatchdog: vi.fn(),
     stopFilesystemMonitor: vi.fn(),
@@ -293,6 +294,7 @@ describe('team provisioning cleanup policy', () => {
     expect(ports.clearSecondaryRuntimeRuns).toHaveBeenCalledWith(cleanup.teamName);
     expect(ports.invalidateRuntimeSnapshotCaches).toHaveBeenCalledWith(cleanup.teamName);
     expect(ports.invalidateMemberSpawnStatusesCache).toHaveBeenCalledWith(cleanup.teamName);
+    expect(ports.clearStartupWorkDeliveryState).toHaveBeenCalledWith(cleanup);
     expect(ports.leadInboxRelayInFlight.has(cleanup.teamName)).toBe(false);
     expect(ports.relayedLeadInboxMessageIds.has(cleanup.teamName)).toBe(false);
     expect(ports.leadRecoveryMessageIds.has(cleanup.teamName)).toBe(false);

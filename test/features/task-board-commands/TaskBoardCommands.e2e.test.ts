@@ -1,78 +1,180 @@
+// @vitest-environment node
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
-import {
-  ApplicationCommandBeginOutcome,
-  ApplicationCommandLedgerStatus,
-  ApplicationCommandRunOutcome,
-} from '@features/application-command-ledger/contracts';
-import {
-  createApplicationCommandLedgerFeature,
-  NodeApplicationCommandHasher,
-} from '@features/application-command-ledger/main';
-import { InternalStorageBackendSelector } from '@features/internal-storage/main/composition/InternalStorageBackendSelector';
-import { InternalStorageWorkerCore } from '@features/internal-storage/main/infrastructure/worker/InternalStorageWorkerCore';
-import {
-  TaskBoardCommandFacade,
-  type TaskBoardCreateTaskDestination,
-} from '@features/task-board-commands';
-import { type AgentTeamsController, createController } from 'agent-teams-controller';
-import Database from 'better-sqlite3-node';
-import { TeamDataService } from '../../../src/main/services/team/TeamDataService';
+import { RegistryTaskProviderError } from '@main/services/team/registry/RegistryTaskProvider';
+import { RegistryTeamTaskWriteError } from '@main/services/team/registry/RegistryTeamTaskWriter';
+import { TeamDataService } from '@main/services/team/TeamDataService';
+import { getLocalTasksBasePath, setClaudeBasePathOverride } from '@main/utils/pathDecoder';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { InProcessGateway } from '../internal-storage/helpers/InProcessGateway';
+import {
+  createRegistryLiveFixture,
+  type RegistryLiveFixture,
+} from '../../main/services/team/helpers/registryLiveFixture';
 
-import type { TeamTask } from '@shared/types';
 import type { TeamGroupChatDTO } from '@features/team-group-chats/contracts';
+import type { CreateTaskRequest } from '@shared/types';
 
-const TEAM_NAME = 'task-command-e2e';
-const CREATE_TASK_OPERATION = 'task.create';
+const TEAM_NAME = 'task-command-registry-e2e';
+vi.setConfig({ testTimeout: 120_000, hookTimeout: 60_000 });
+const REQUIREMENTS = ['FR-1', 'AC-1.1'];
 
-describe('task-board commands E2E', () => {
-  let tmpDir: string | null = null;
-  let core: InternalStorageWorkerCore | null = null;
+interface TaskBoardHarness {
+  claudeDir: string;
+  service: TeamDataService;
+}
 
-  afterEach(async () => {
-    core?.close();
-    core = null;
-    if (tmpDir) {
-      await fs.rm(tmpDir, { recursive: true, force: true });
-      tmpDir = null;
+let tempDir: string | null = null;
+let registryFixture: RegistryLiveFixture | null = null;
+
+afterEach(async () => {
+  const activeFixture = registryFixture;
+  registryFixture = null;
+  try {
+    await activeFixture?.dispose();
+  } finally {
+    setClaudeBasePathOverride(null);
+    if (tempDir) {
+      await fs.rm(tempDir, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
+      tempDir = null;
     }
-  });
+  }
+});
 
-  it('deduplicates one create intent across SQLite and the real controller taskBoard', async () => {
+const realRegistry = process.env.AGENT_TEAMS_TEST_REGISTRY_SOURCE ? describe : describe.skip;
+realRegistry('task-board commands E2E', () => {
+  it('creates and replays through the registry without reading legacy canonical task files', async () => {
     const harness = await makeHarness();
-    const identity = makeIdentity('11111111-1111-4111-8111-111111111111');
-    const command = {
-      teamName: TEAM_NAME,
-      identity,
-      payload: { subject: 'One durable task', createdBy: 'user' },
-      destination: harness.destination,
+    const legacyTaskPath = path.join(harness.claudeDir, 'tasks', TEAM_NAME, '999.json');
+    const legacyTask = JSON.stringify({ id: '999', subject: 'Obsolete local task', status: 'pending' });
+    await fs.mkdir(path.dirname(legacyTaskPath), { recursive: true });
+    await fs.writeFile(legacyTaskPath, legacyTask);
+
+    expect(await harness.service.getTasks(TEAM_NAME)).toEqual([]);
+
+    const request: CreateTaskRequest = {
+      command: makeCommand('11111111-1111-4111-8111-111111111111'),
+      subject: 'One registry task',
+      description: 'Created through the task board boundary.',
+      requirements: REQUIREMENTS,
     };
+    const first = await harness.service.createTaskWithOutcome(TEAM_NAME, request);
+    const replay = await harness.service.createTaskWithOutcome(TEAM_NAME, request);
 
-    const first = await harness.facade.createTask(command);
-    const replay = await harness.facade.createTask(command);
+    expect(first.outcome).toBe('APPLIED');
+    expect(first.task).toMatchObject({
+      id: '1',
+      displayId: '1',
+      subject: 'One registry task',
+      description: 'Created through the task board boundary.',
+      status: 'pending',
+    });
+    expect(replay.outcome).toBe('REPLAY');
+    expect(replay.task.id).toBe(first.task.id);
 
-    expect(first.outcome).toBe(ApplicationCommandRunOutcome.Executed);
-    expect(first.createdInAttempt).toBe(true);
-    expect(replay.outcome).toBe(ApplicationCommandRunOutcome.Replayed);
-    expect(replay.createdInAttempt).toBe(false);
-    expect(replay.task.id).toBe(identity.commandId);
-    expect(replay.task).not.toHaveProperty('creationCommand');
-    expect(
-      (
-        harness.controller.taskBoard.getTask(identity.commandId) as TeamTask & {
-          creationCommand?: { idempotencyKey?: string };
-        }
-      ).creationCommand?.idempotencyKey
-    ).toBe(identity.idempotencyKey);
-    expect(harness.controller.taskBoard.listTasks()).toHaveLength(1);
+    await expect(
+      harness.service.createTaskWithOutcome(TEAM_NAME, {
+        ...request,
+        subject: 'Conflicting command payload',
+      })
+    ).rejects.toMatchObject({
+      name: 'RegistryTeamTaskWriteError',
+      code: 'IDEMPOTENCY_CONFLICT',
+    });
+
+    const registryTasks = await harness.service.getTasks(TEAM_NAME);
+    expect(registryTasks).toHaveLength(1);
+    expect(registryTasks[0]).toMatchObject({
+      id: first.task.id,
+      subject: 'One registry task',
+      createdAt: first.task.createdAt,
+      description: 'Created through the task board boundary.',
+    });
+    expect(registryTasks[0]).not.toHaveProperty('creationCommand');
+    expect(await fs.readFile(legacyTaskPath, 'utf8')).toBe(legacyTask);
+    await expect(
+      fs.access(path.join(harness.claudeDir, 'tasks', TEAM_NAME, `${first.task.id}.json`))
+    ).rejects.toThrow();
   });
 
-  it('admits fresh group links without blocking committed replay or existing-link edits', async () => {
+  it('edits canonical fields and records owner and lifecycle transitions in registry', async () => {
+    const harness = await makeHarness();
+    const created = await harness.service.createTask(TEAM_NAME, taskRequest('Before edit'));
+
+    await harness.service.updateTaskFields(TEAM_NAME, created.id, {
+      subject: 'Edited registry title',
+      description: 'Edited registry description.',
+    });
+    await harness.service.updateTaskOwner(TEAM_NAME, created.id, 'worker', 'lead');
+
+    const startReceipt = await harness.service.updateTaskStatusWithReceipt(
+      TEAM_NAME,
+      created.id,
+      'in_progress',
+      'worker',
+      'pending'
+    );
+    expect(startReceipt).toContainEqual(
+      expect.objectContaining({ localId: `TASK-${created.id}`, from: 'todo', to: 'in-progress' })
+    );
+
+    await expect(
+      harness.service.updateTaskStatusWithReceipt(
+        TEAM_NAME,
+        created.id,
+        'completed',
+        'worker',
+        'pending'
+      )
+    ).rejects.toMatchObject({
+      name: 'RegistryTeamTaskWriteError',
+      code: 'STATUS_CONFLICT',
+    });
+
+    await harness.service.updateTaskStatusWithReceipt(
+      TEAM_NAME,
+      created.id,
+      'completed',
+      'worker',
+      'in_progress'
+    );
+    const updated = (await harness.service.getTasks(TEAM_NAME))[0];
+    expect(updated).toMatchObject({
+      id: created.id,
+      subject: 'Edited registry title',
+      description: 'Edited registry description.',
+      owner: 'worker',
+      status: 'completed',
+    });
+  });
+
+  it('persists comments in isolated execution metadata and merges them into registry task reads', async () => {
+    const harness = await makeHarness();
+    const created = await harness.service.createTask(TEAM_NAME, taskRequest('Commented task'));
+
+    const comment = await harness.service.addTaskComment(
+      TEAM_NAME,
+      created.id,
+      'The registry-backed task is ready for review.'
+    );
+    const reloaded = await harness.service.getTask(TEAM_NAME, created.id);
+    expect(comment).toMatchObject({ author: 'user', text: 'The registry-backed task is ready for review.' });
+    expect(reloaded?.comments).toContainEqual(expect.objectContaining({ id: comment.id, text: comment.text }));
+
+    const executionPath = path.join(getLocalTasksBasePath(), TEAM_NAME, `${created.id}.json`);
+    const executionRecord = JSON.parse(await fs.readFile(executionPath, 'utf8')) as Record<string, unknown>;
+    expect(executionRecord).toMatchObject({
+      taskId: created.id,
+      comments: [expect.objectContaining({ id: comment.id, text: comment.text })],
+    });
+    expect(executionRecord).not.toHaveProperty('subject');
+    expect(executionRecord).not.toHaveProperty('status');
+    expect(executionRecord).not.toHaveProperty('owner');
+  });
+
+  it('preserves group-chat admission and edits against the registry-backed task', async () => {
     const harness = await makeHarness();
     const group: TeamGroupChatDTO = {
       id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
@@ -84,729 +186,116 @@ describe('task-board commands E2E', () => {
       canSend: false,
       archivedAt: null,
     };
-    const catalog = vi.fn(() => Promise.resolve([group]));
-    const service = new TeamDataService(
-      { getConfigSnapshot: () => Promise.resolve({ name: TEAM_NAME, members: [] }) } as never,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      () => harness.controller
-    );
-    service.setTaskBoardCommandFacade(harness.facade);
-    service.setTaskGroupChatCatalog(catalog);
-    const request = {
-      subject: 'Associated durable task',
+    const catalog = vi.fn(async () => [group]);
+    harness.service.setTaskGroupChatCatalog(catalog);
+    const request: CreateTaskRequest = {
+      command: makeCommand('abababab-abab-4bab-8bab-abababababab'),
+      subject: 'Associated registry task',
+      requirements: REQUIREMENTS,
       groupChatId: group.id,
-      command: makeIdentity('abababab-abab-4bab-8bab-abababababab'),
     };
-    const first = await service.createTask(TEAM_NAME, request);
-    expect(first.groupChatId).toBe(group.id);
-    expect(catalog).toHaveBeenCalledWith(TEAM_NAME);
+    const created = await harness.service.createTask(TEAM_NAME, request);
+    expect((await harness.service.getTask(TEAM_NAME, created.id))?.groupChatId).toBe(group.id);
+    expect(catalog).toHaveBeenCalledExactlyOnceWith(TEAM_NAME);
 
     group.archivedAt = '2026-10-10T12:01:00.000Z';
     catalog.mockClear();
-    const replay = await service.createTask(TEAM_NAME, request);
-    expect(replay.id).toBe(first.id);
+    expect((await harness.service.createTask(TEAM_NAME, request)).id).toBe(created.id);
     expect(catalog).not.toHaveBeenCalled();
     await expect(
-      service.createTask(TEAM_NAME, {
-        ...request,
-        groupChatId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
-      })
-    ).rejects.toThrow(/conflict/i);
-    expect(catalog).not.toHaveBeenCalled();
-
-    await expect(
-      service.createTask(TEAM_NAME, {
+      harness.service.createTask(TEAM_NAME, {
         subject: 'Archived destination',
+        requirements: REQUIREMENTS,
         groupChatId: group.id,
       })
     ).rejects.toThrow('archived group chat');
     await expect(
-      service.createTask(TEAM_NAME, {
+      harness.service.createTask(TEAM_NAME, {
         subject: 'Foreign destination',
+        requirements: REQUIREMENTS,
         groupChatId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
       })
     ).rejects.toThrow('does not belong to this team');
     await expect(
-      service.createTask(TEAM_NAME, {
+      harness.service.createTask(TEAM_NAME, {
         subject: 'Malformed destination',
+        requirements: REQUIREMENTS,
         groupChatId: 'not-a-uuid',
       })
     ).rejects.toThrow('UUID');
     catalog.mockClear();
+
     catalog.mockRejectedValue(new Error('Catalog is unavailable'));
-    await service.updateTaskFields(TEAM_NAME, first.id, { subject: 'Edited title' });
-    await service.updateTaskFields(TEAM_NAME, first.id, { groupChatId: group.id });
-    expect((harness.controller.taskBoard.getTask(first.id) as TeamTask).groupChatId).toBe(group.id);
-    await service.updateTaskFields(TEAM_NAME, first.id, { groupChatId: null });
-    expect(harness.controller.taskBoard.getTask(first.id)).not.toHaveProperty('groupChatId');
+    await harness.service.updateTaskFields(TEAM_NAME, created.id, { subject: 'Edited associated task' });
+    await harness.service.updateTaskFields(TEAM_NAME, created.id, { groupChatId: group.id });
+    expect((await harness.service.getTask(TEAM_NAME, created.id))?.groupChatId).toBe(group.id);
+    await harness.service.updateTaskFields(TEAM_NAME, created.id, { groupChatId: null });
+    expect(await harness.service.getTask(TEAM_NAME, created.id)).not.toHaveProperty('groupChatId');
     expect(catalog).not.toHaveBeenCalled();
-    expect(harness.controller.taskBoard.listTasks()).toHaveLength(1);
+    expect(await harness.service.getTasks(TEAM_NAME)).toHaveLength(1);
   });
 
-  it('uses the legacy create path when the SQLite backend falls back after an ABI failure', async () => {
+  it('rejects task creation without requirement references', async () => {
     const harness = await makeHarness();
-    const destinationCreate = vi.spyOn(harness.destination, 'create');
-    vi.spyOn(console, 'error').mockImplementation(() => undefined);
-    const selector = new InternalStorageBackendSelector(() =>
-      Promise.reject(new Error('native module ABI mismatch'))
-    );
-    const runner = { run: vi.fn() };
-    const hasher = new NodeApplicationCommandHasher();
-    const facade = new TaskBoardCommandFacade(runner as never, {
-      isDurableStorageAvailable: () => selector.select(true, false),
-      hashPayload: (payload) => hasher.hashJson(payload),
-    });
-    const command = {
-      teamName: TEAM_NAME,
-      identity: makeIdentity('12121212-1212-4212-8212-121212121212'),
-      payload: { subject: 'Legacy fallback task', createdBy: 'user' },
-      destination: harness.destination,
-    };
-
-    const first = await facade.createTask(command);
-    const replay = await facade.createTask(command);
-
-    expect(selector.getBackendKind()).toBe('json-fallback');
-    expect(runner.run).not.toHaveBeenCalled();
-    expect(first.outcome).toBe(ApplicationCommandRunOutcome.Executed);
-    expect(first.createdInAttempt).toBe(true);
-    expect(first.task.id).toBe(command.identity.commandId);
-    expect(replay.outcome).toBe(ApplicationCommandRunOutcome.Replayed);
-    expect(replay.createdInAttempt).toBe(false);
-    expect(replay.task.id).toBe(command.identity.commandId);
-    expect(destinationCreate).toHaveBeenCalledOnce();
-    expect(harness.controller.taskBoard.listTasks()).toHaveLength(1);
-  });
-
-  it('preserves the create failure when JSON fallback recovery lookup also fails', async () => {
-    const harness = await makeHarness();
-    const hasher = new NodeApplicationCommandHasher();
-    const facade = new TaskBoardCommandFacade(null, {
-      hashPayload: (payload) => hasher.hashJson(payload),
-    });
-    const createError = new Error('destination create timed out');
-    const recoveryError = new Error('destination recovery lookup failed');
-    let findByIdCalls = 0;
-    const destination: TaskBoardCreateTaskDestination = {
-      ...harness.destination,
-      findById: vi.fn(() => {
-        findByIdCalls += 1;
-        if (findByIdCalls === 1) {
-          return null;
-        }
-        throw recoveryError;
-      }),
-      findByIdempotencyKey: vi.fn(() => []),
-      create: vi.fn(() => {
-        throw createError;
-      }),
-    };
 
     await expect(
-      facade.createTask({
-        teamName: TEAM_NAME,
-        identity: makeIdentity('19191919-1919-4919-8919-191919191919'),
-        payload: { subject: 'Unknown fallback lookup outcome', createdBy: 'user' },
-        destination,
-      })
+      harness.service.createTask(TEAM_NAME, { subject: 'No registry requirements', requirements: [] })
     ).rejects.toMatchObject({
-      name: 'TaskBoardCreateOutcomeUnknownError',
-      createError,
-      reconciliationError: recoveryError,
+      name: 'RegistryTeamTaskWriteError',
+      code: 'REQUIREMENTS_REQUIRED',
     });
-
-    expect(destination.create).toHaveBeenCalledOnce();
-    expect(destination.findById).toHaveBeenCalledTimes(2);
-    expect(harness.controller.taskBoard.listTasks()).toHaveLength(0);
+    expect(await harness.service.getTasks(TEAM_NAME)).toEqual([]);
   });
 
-  it('preserves the create failure when JSON fallback recovery reconciliation also fails', async () => {
-    const harness = await makeHarness();
-    const hasher = new NodeApplicationCommandHasher();
-    const facade = new TaskBoardCommandFacade(null, {
-      hashPayload: (payload) => hasher.hashJson(payload),
-    });
-    const createError = new Error('destination create response was lost');
-    const recoveryError = new Error('destination recovery reconciliation failed');
-    const destination: TaskBoardCreateTaskDestination = {
-      ...harness.destination,
-      create: vi.fn((input) => {
-        harness.destination.create(input);
-        throw createError;
-      }),
-      reconcile: vi.fn(() => {
-        throw recoveryError;
-      }),
-    };
+  it('fails closed without a registry binding instead of consulting local task files', async () => {
+    const harness = await makeHarness({ bound: false });
+    const legacyTaskPath = path.join(harness.claudeDir, 'tasks', TEAM_NAME, '1.json');
+    await fs.mkdir(path.dirname(legacyTaskPath), { recursive: true });
+    await fs.writeFile(legacyTaskPath, JSON.stringify({ id: '1', subject: 'Must not be read' }));
 
+    await expect(harness.service.getTasks(TEAM_NAME)).rejects.toMatchObject({
+      name: 'RegistryTaskProviderError',
+      code: 'REGISTRY_SCOPE_INCOMPLETE',
+      causeCode: 'SPEC_PROJECT_MISSING',
+    });
     await expect(
-      facade.createTask({
-        teamName: TEAM_NAME,
-        identity: makeIdentity('20202020-2020-4020-8020-202020202020'),
-        payload: { subject: 'Unknown fallback reconcile outcome', createdBy: 'user' },
-        destination,
-      })
+      harness.service.createTask(TEAM_NAME, taskRequest('Unbound task'))
     ).rejects.toMatchObject({
-      name: 'TaskBoardCreateOutcomeUnknownError',
-      createError,
-      reconciliationError: recoveryError,
+      name: 'TeamSpecBindingError',
+      code: 'SPEC_PROJECT_MISSING',
     });
-
-    expect(destination.create).toHaveBeenCalledOnce();
-    expect(destination.reconcile).toHaveBeenCalledOnce();
-    expect(harness.controller.taskBoard.listTasks()).toHaveLength(1);
+    expect(await fs.readFile(legacyTaskPath, 'utf8')).toContain('Must not be read');
   });
-
-  it('preserves terminal destination conflicts during JSON fallback recovery', async () => {
-    const harness = await makeHarness();
-    const hasher = new NodeApplicationCommandHasher();
-    const facade = new TaskBoardCommandFacade(null, {
-      hashPayload: (payload) => hasher.hashJson(payload),
-    });
-    const identity = makeIdentity('21212121-2121-4121-8121-212121212121');
-    const createError = new Error('destination create response was lost');
-    let recovering = false;
-    const recoveredById = { id: identity.commandId } as TeamTask;
-    const recoveredByIdempotencyKey = {
-      id: '22222222-2121-4121-8121-212121212121',
-    } as TeamTask;
-    const reconcile = vi.fn();
-    const destination: TaskBoardCreateTaskDestination = {
-      ...harness.destination,
-      findById: vi.fn(() => (recovering ? recoveredById : null)),
-      findByIdempotencyKey: vi.fn(() => (recovering ? [recoveredByIdempotencyKey] : [])),
-      create: vi.fn(() => {
-        recovering = true;
-        throw createError;
-      }),
-      reconcile,
-    };
-
-    await expect(
-      facade.createTask({
-        teamName: TEAM_NAME,
-        identity,
-        payload: { subject: 'Conflicting fallback recovery', createdBy: 'user' },
-        destination,
-      })
-    ).rejects.toMatchObject({
-      name: 'TaskBoardCreateDestinationConflictError',
-    });
-
-    expect(destination.create).toHaveBeenCalledOnce();
-    expect(destination.findById).toHaveBeenCalledTimes(2);
-    expect(reconcile).not.toHaveBeenCalled();
-    expect(harness.controller.taskBoard.listTasks()).toHaveLength(0);
-  });
-
-  it('preserves terminal destination conflicts during durable recovery', async () => {
-    const harness = await makeHarness();
-    const identity = makeIdentity('23232323-2323-4323-8323-232323232323');
-    const createError = new Error('destination create response was lost');
-    let recovering = false;
-    const recoveredById = { id: identity.commandId } as TeamTask;
-    const recoveredByIdempotencyKey = {
-      id: '24242424-2323-4323-8323-232323232323',
-    } as TeamTask;
-    const reconcile = vi.fn();
-    const destination: TaskBoardCreateTaskDestination = {
-      ...harness.destination,
-      findById: vi.fn(() => (recovering ? recoveredById : null)),
-      findByIdempotencyKey: vi.fn(() => (recovering ? [recoveredByIdempotencyKey] : [])),
-      create: vi.fn(() => {
-        recovering = true;
-        throw createError;
-      }),
-      reconcile,
-    };
-
-    await expect(
-      harness.facade.createTask({
-        teamName: TEAM_NAME,
-        identity,
-        payload: { subject: 'Conflicting durable recovery', createdBy: 'user' },
-        destination,
-      })
-    ).rejects.toMatchObject({
-      name: 'TaskBoardCreateDestinationConflictError',
-    });
-
-    expect(destination.create).toHaveBeenCalledOnce();
-    expect(destination.findById).toHaveBeenCalledTimes(2);
-    expect(reconcile).not.toHaveBeenCalled();
-    expect(harness.controller.taskBoard.listTasks()).toHaveLength(0);
-  });
-
-  it('keeps one logical create while switching between SQLite and JSON fallback', async () => {
-    const harness = await makeHarness();
-    const destinationCreate = vi.spyOn(harness.destination, 'create');
-    vi.spyOn(console, 'error').mockImplementation(() => undefined);
-    const selector = new InternalStorageBackendSelector(() =>
-      Promise.reject(new Error('native module ABI mismatch'))
-    );
-    const hasher = new NodeApplicationCommandHasher();
-    const fallbackFacade = new TaskBoardCommandFacade({ run: vi.fn() } as never, {
-      isDurableStorageAvailable: () => selector.select(true, false),
-      hashPayload: (payload) => hasher.hashJson(payload),
-    });
-
-    const sqliteFirst = {
-      commandId: '15151515-1515-4515-8515-151515151515',
-      idempotencyKey: 'sqlite-then-json-intent',
-    };
-    const sqliteRetry = {
-      commandId: '16161616-1616-4616-8616-161616161616',
-      idempotencyKey: sqliteFirst.idempotencyKey,
-    };
-    const sqlitePayload = { subject: 'SQLite then fallback', createdBy: 'user' };
-    await harness.facade.createTask({
-      teamName: TEAM_NAME,
-      identity: sqliteFirst,
-      payload: sqlitePayload,
-      destination: harness.destination,
-    });
-    const fallbackReplay = await fallbackFacade.createTask({
-      teamName: TEAM_NAME,
-      identity: sqliteRetry,
-      payload: sqlitePayload,
-      destination: harness.destination,
-    });
-
-    const fallbackFirst = {
-      commandId: '17171717-1717-4717-8717-171717171717',
-      idempotencyKey: 'json-then-sqlite-intent',
-    };
-    const fallbackRetry = {
-      commandId: '18181818-1818-4818-8818-181818181818',
-      idempotencyKey: fallbackFirst.idempotencyKey,
-    };
-    const fallbackPayload = { subject: 'Fallback then SQLite', createdBy: 'user' };
-    await fallbackFacade.createTask({
-      teamName: TEAM_NAME,
-      identity: fallbackFirst,
-      payload: fallbackPayload,
-      destination: harness.destination,
-    });
-    const sqliteReplay = await harness.facade.createTask({
-      teamName: TEAM_NAME,
-      identity: fallbackRetry,
-      payload: fallbackPayload,
-      destination: harness.destination,
-    });
-
-    expect(fallbackReplay).toMatchObject({
-      outcome: ApplicationCommandRunOutcome.Replayed,
-      createdInAttempt: false,
-      task: { id: sqliteFirst.commandId },
-    });
-    expect(sqliteReplay).toMatchObject({
-      outcome: ApplicationCommandRunOutcome.Executed,
-      createdInAttempt: false,
-      task: { id: fallbackFirst.commandId },
-    });
-    expect(harness.destination.findById(sqliteRetry.commandId)).toBeNull();
-    expect(harness.destination.findById(fallbackRetry.commandId)).toBeNull();
-    expect(destinationCreate).toHaveBeenCalledTimes(2);
-    expect(harness.controller.taskBoard.listTasks()).toHaveLength(2);
-  });
-
-  it('serializes and deduplicates concurrent JSON fallback retries by logical intent', async () => {
-    const harness = await makeHarness();
-    const destinationCreate = vi.spyOn(harness.destination, 'create');
-    vi.spyOn(console, 'error').mockImplementation(() => undefined);
-    const selector = new InternalStorageBackendSelector(() =>
-      Promise.reject(new Error('native module ABI mismatch'))
-    );
-    const hasher = new NodeApplicationCommandHasher();
-    const facade = new TaskBoardCommandFacade({ run: vi.fn() } as never, {
-      isDurableStorageAvailable: () => selector.select(true, false),
-      hashPayload: (payload) => hasher.hashJson(payload),
-    });
-    const payload = { subject: 'One fallback intent', createdBy: 'user' };
-    const idempotencyKey = 'one-logical-create-intent';
-    const original = {
-      commandId: '13131313-1313-4313-8313-131313131313',
-      idempotencyKey,
-    };
-    const retried = {
-      commandId: '14141414-1414-4414-8414-141414141414',
-      idempotencyKey,
-    };
-    let releaseCreate!: () => void;
-    const createRelease = new Promise<void>((resolve) => {
-      releaseCreate = resolve;
-    });
-    let announceCreate!: () => void;
-    const createStarted = new Promise<void>((resolve) => {
-      announceCreate = resolve;
-    });
-    const delayedCreate = vi.fn(async (input: Record<string, unknown>) => {
-      announceCreate();
-      await createRelease;
-      return harness.destination.create(input);
-    });
-    const destination: TaskBoardCreateTaskDestination = {
-      ...harness.destination,
-      create: delayedCreate,
-    };
-
-    const firstPromise = facade.createTask({
-      teamName: TEAM_NAME,
-      identity: original,
-      payload,
-      destination,
-    });
-    await createStarted;
-    const replayPromise = facade.createTask({
-      teamName: TEAM_NAME,
-      identity: retried,
-      payload,
-      destination,
-    });
-    await new Promise((resolve) => setTimeout(resolve, 10));
-    expect(delayedCreate).toHaveBeenCalledOnce();
-
-    releaseCreate();
-    const [first, replay] = await Promise.all([firstPromise, replayPromise]);
-
-    expect(first.outcome).toBe(ApplicationCommandRunOutcome.Executed);
-    expect(replay.outcome).toBe(ApplicationCommandRunOutcome.Replayed);
-    expect(replay.createdInAttempt).toBe(false);
-    expect(replay.task.id).toBe(original.commandId);
-    expect(harness.destination.findById(retried.commandId)).toBeNull();
-    expect(destinationCreate).toHaveBeenCalledOnce();
-    expect(harness.controller.taskBoard.listTasks()).toHaveLength(1);
-  });
-
-  it('repairs relationship backlinks before completing a recovered create attempt', async () => {
-    const harness = await makeHarness();
-    const dependency = harness.controller.taskBoard.createTask({
-      subject: 'Dependency',
-    }) as TeamTask;
-    const identity = makeIdentity('66666666-6666-4666-8666-666666666666');
-    const payload = {
-      subject: 'Task with recoverable backlink',
-      createdBy: 'user',
-      blockedBy: [dependency.id],
-    };
-    const destination: TaskBoardCreateTaskDestination = {
-      ...harness.destination,
-      create: async (input) => {
-        harness.controller.taskBoard.createTask(input);
-        const dependencyPath = path.join(
-          harness.claudeDir,
-          'tasks',
-          TEAM_NAME,
-          `${dependency.id}.json`
-        );
-        const dependencyRow = JSON.parse(await fs.readFile(dependencyPath, 'utf8')) as {
-          blocks?: string[];
-        };
-        dependencyRow.blocks = [];
-        await fs.writeFile(dependencyPath, JSON.stringify(dependencyRow));
-        throw new Error('Simulated failure after the task row was committed');
-      },
-    };
-
-    const result = await harness.facade.createTask({
-      teamName: TEAM_NAME,
-      identity,
-      payload,
-      destination,
-    });
-
-    const repairedDependency = harness.controller.taskBoard.getTask(dependency.id) as TeamTask;
-    expect(result.outcome).toBe(ApplicationCommandRunOutcome.Executed);
-    expect(result.createdInAttempt).toBe(true);
-    expect(repairedDependency.blocks).toContain(identity.commandId);
-  });
-
-  it('reconciles a stale started command with an existing destination task', async () => {
-    const harness = await makeHarness();
-    const identity = makeIdentity('22222222-2222-4222-8222-222222222222');
-    const payload = { subject: 'Already persisted task', createdBy: 'user' };
-    await seedStaleStarted(harness, identity, payload);
-    harness.destination.create({ ...payload, id: identity.commandId });
-
-    const result = await harness.facade.createTask({
-      teamName: TEAM_NAME,
-      identity,
-      payload,
-      destination: harness.destination,
-    });
-
-    expect(result.outcome).toBe(ApplicationCommandRunOutcome.Reconciled);
-    expect(result.createdInAttempt).toBe(false);
-    expect(result.task.id).toBe(identity.commandId);
-    expect(harness.controller.taskBoard.listTasks()).toHaveLength(1);
-  });
-
-  it('retries once when stale reconciliation proves the task was not created', async () => {
-    const harness = await makeHarness();
-    const identity = makeIdentity('33333333-3333-4333-8333-333333333333');
-    const payload = { subject: 'Recovered missing task', createdBy: 'user' };
-    await seedStaleStarted(harness, identity, payload);
-
-    const result = await harness.facade.createTask({
-      teamName: TEAM_NAME,
-      identity,
-      payload,
-      destination: harness.destination,
-    });
-
-    expect(result.outcome).toBe(ApplicationCommandRunOutcome.Retried);
-    expect(result.createdInAttempt).toBe(true);
-    expect(result.task.id).toBe(identity.commandId);
-    expect(harness.controller.taskBoard.listTasks()).toHaveLength(1);
-  });
-
-  it('uses the original ledger command id when the same idempotency key is retried', async () => {
-    const harness = await makeHarness();
-    const original = makeIdentity('44444444-4444-4444-8444-444444444444');
-    const retried = {
-      commandId: '55555555-5555-4555-8555-555555555555',
-      idempotencyKey: original.idempotencyKey,
-    };
-    const payload = { subject: 'Original destination identity', createdBy: 'user' };
-    await seedStaleStarted(harness, original, payload);
-    harness.destination.create({ ...payload, id: original.commandId });
-
-    const result = await harness.facade.createTask({
-      teamName: TEAM_NAME,
-      identity: retried,
-      payload,
-      destination: harness.destination,
-    });
-
-    expect(result.outcome).toBe(ApplicationCommandRunOutcome.Reconciled);
-    expect(result.task.id).toBe(original.commandId);
-    expect(harness.destination.findById(retried.commandId)).toBeNull();
-    expect(harness.controller.taskBoard.listTasks()).toHaveLength(1);
-  });
-
-  it('records a destination provenance conflict as terminal instead of retrying forever', async () => {
-    const harness = await makeHarness();
-    const identity = makeIdentity('77777777-7777-4777-8777-777777777777');
-    const payload = { subject: 'Conflicting destination', createdBy: 'user' };
-    harness.controller.taskBoard.createTask({
-      ...payload,
-      id: identity.commandId,
-      creationCommand: {
-        namespace: 'task-board',
-        scopeKey: TEAM_NAME,
-        operation: CREATE_TASK_OPERATION,
-        commandId: identity.commandId,
-        payloadHash: 'sha256:not-the-command-payload',
-      },
-    });
-
-    await expect(
-      harness.facade.createTask({
-        teamName: TEAM_NAME,
-        identity,
-        payload,
-        destination: harness.destination,
-      })
-    ).rejects.toThrow('Task creation conflicts with an existing destination task');
-
-    const record = await harness.ledgerStore.getByCommandId({
-      namespace: 'task-board',
-      scopeKey: TEAM_NAME,
-      commandId: identity.commandId,
-    });
-    expect(record?.status).toBe(ApplicationCommandLedgerStatus.FailedTerminal);
-    expect(record?.attemptCount).toBe(1);
-  });
-
-  it('terminalizes a stale command when reconciliation finds conflicting provenance', async () => {
-    const harness = await makeHarness();
-    const identity = makeIdentity('88888888-8888-4888-8888-888888888888');
-    const payload = { subject: 'Stale conflicting destination', createdBy: 'user' };
-    await seedStaleStarted(harness, identity, payload);
-    harness.controller.taskBoard.createTask({
-      ...payload,
-      id: identity.commandId,
-      creationCommand: {
-        namespace: 'task-board',
-        scopeKey: TEAM_NAME,
-        operation: CREATE_TASK_OPERATION,
-        commandId: identity.commandId,
-        payloadHash: 'sha256:not-the-command-payload',
-      },
-    });
-
-    await expect(
-      harness.facade.createTask({
-        teamName: TEAM_NAME,
-        identity,
-        payload,
-        destination: harness.destination,
-      })
-    ).rejects.toThrow('Task creation conflicts with an existing destination task');
-
-    const record = await harness.ledgerStore.getByCommandId({
-      namespace: 'task-board',
-      scopeKey: TEAM_NAME,
-      commandId: identity.commandId,
-    });
-    expect(record?.status).toBe(ApplicationCommandLedgerStatus.FailedTerminal);
-    expect(record?.attemptCount).toBe(2);
-  });
-
-  it('reconciles a stale command after the created task subject was edited', async () => {
-    const harness = await makeHarness();
-    const identity = makeIdentity('99999999-9999-4999-8999-999999999999');
-    const payload = { subject: 'Original subject', createdBy: 'user' };
-    const payloadHash = new NodeApplicationCommandHasher().hashJson(payload);
-    await seedStaleStarted(harness, identity, payload);
-    harness.controller.taskBoard.createTask({
-      ...payload,
-      id: identity.commandId,
-      creationCommand: {
-        namespace: 'task-board',
-        scopeKey: TEAM_NAME,
-        operation: CREATE_TASK_OPERATION,
-        commandId: identity.commandId,
-        payloadHash,
-      },
-    });
-    const taskPath = path.join(harness.claudeDir, 'tasks', TEAM_NAME, `${identity.commandId}.json`);
-    const taskRow = JSON.parse(await fs.readFile(taskPath, 'utf8')) as TeamTask;
-    taskRow.subject = 'Edited subject';
-    await fs.writeFile(taskPath, JSON.stringify(taskRow));
-
-    const result = await harness.facade.createTask({
-      teamName: TEAM_NAME,
-      identity,
-      payload,
-      destination: harness.destination,
-    });
-
-    expect(result.outcome).toBe(ApplicationCommandRunOutcome.Reconciled);
-    expect(result.task.subject).toBe('Edited subject');
-  });
-
-  it('records a destination scope mismatch as terminal before creating a task', async () => {
-    const harness = await makeHarness();
-    const identity = makeIdentity('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
-    const scopeKey = 'another-team';
-
-    await expect(
-      harness.facade.createTask({
-        teamName: scopeKey,
-        identity,
-        payload: { subject: 'Wrong destination scope', createdBy: 'user' },
-        destination: harness.destination,
-      })
-    ).rejects.toThrow('Task creation command conflict: scope does not match team');
-
-    const record = await harness.ledgerStore.getByCommandId({
-      namespace: 'task-board',
-      scopeKey,
-      commandId: identity.commandId,
-    });
-    expect(record?.status).toBe(ApplicationCommandLedgerStatus.FailedTerminal);
-    expect(harness.controller.taskBoard.listTasks()).toHaveLength(0);
-  });
-
-  async function makeHarness(): Promise<{
-    claudeDir: string;
-    controller: AgentTeamsController;
-    destination: TaskBoardCreateTaskDestination;
-    facade: TaskBoardCommandFacade;
-    ledgerStore: ReturnType<typeof createApplicationCommandLedgerFeature>['ledgerStore'];
-  }> {
-    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'task-board-command-e2e-'));
-    const claudeDir = path.join(tmpDir, 'claude');
-    await fs.mkdir(path.join(claudeDir, 'teams', TEAM_NAME), { recursive: true });
-    await fs.mkdir(path.join(claudeDir, 'tasks', TEAM_NAME), { recursive: true });
-    await fs.writeFile(
-      path.join(claudeDir, 'teams', TEAM_NAME, 'config.json'),
-      JSON.stringify({
-        name: TEAM_NAME,
-        leadSessionId: 'test-lead-session',
-        members: [{ name: 'lead', role: 'team-lead' }],
-      })
-    );
-
-    core = new InternalStorageWorkerCore({
-      databasePath: path.join(tmpDir, 'storage', 'app.db'),
-      createDatabase: (file) => new Database(file),
-    });
-    const feature = createApplicationCommandLedgerFeature({
-      storageGateway: new InProcessGateway(core),
-    });
-    const controller = createController({ teamName: TEAM_NAME, claudeDir });
-    const destination = makeDestination(controller);
-    return {
-      claudeDir,
-      controller,
-      destination,
-      facade: new TaskBoardCommandFacade(feature.runner),
-      ledgerStore: feature.ledgerStore,
-    };
-  }
 });
 
-function makeDestination(controller: AgentTeamsController): TaskBoardCreateTaskDestination {
-  return {
-    findById: (taskId) => {
-      try {
-        return controller.taskBoard.getTask(taskId) as TeamTask;
-      } catch (error) {
-        if (error instanceof Error && error.message === `Task not found: ${taskId}`) {
-          return null;
-        }
-        throw error;
-      }
-    },
-    findByIdempotencyKey: (idempotencyKey) =>
-      (
-        [
-          ...controller.taskBoard.listTasks(),
-          ...controller.taskBoard.listDeletedTasks(),
-        ] as TeamTask[]
-      ).filter(
-        (task) =>
-          (
-            task as TeamTask & {
-              creationCommand?: { idempotencyKey?: unknown };
-            }
-          ).creationCommand?.idempotencyKey === idempotencyKey
-      ),
-    create: (input) => controller.taskBoard.createTask(input) as TeamTask,
-    reconcile: (input) => controller.taskBoard.reconcileTaskCreation(input) as TeamTask,
+async function makeHarness(options: { bound?: boolean } = {}): Promise<TaskBoardHarness> {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'task-board-registry-e2e-'));
+  tempDir = root;
+  const claudeDir = path.join(root, 'claude');
+  await fs.mkdir(claudeDir, { recursive: true });
+  setClaudeBasePathOverride(claudeDir);
+  const fixture = await createRegistryLiveFixture(root);
+  registryFixture = fixture;
+
+  const config = {
+    name: TEAM_NAME,
+    leadSessionId: 'test-lead-session',
+    members: [{ name: 'lead', role: 'team-lead' }, { name: 'worker', role: 'worker' }],
+    ...(options.bound === false
+      ? {}
+      : { specProject: fixture.binding.project, specSlug: fixture.binding.spec }),
   };
+  const configReader = {
+    getConfig: async (teamName: string) => (teamName === TEAM_NAME ? config : null),
+    getConfigSnapshot: async (teamName: string) => (teamName === TEAM_NAME ? config : null),
+  };
+  return { claudeDir, service: new TeamDataService(configReader as never) };
 }
 
-function makeIdentity(commandId: string): { commandId: string; idempotencyKey: string } {
+function taskRequest(subject: string): CreateTaskRequest {
+  return { subject, requirements: REQUIREMENTS };
+}
+
+function makeCommand(commandId: string): { commandId: string; idempotencyKey: string } {
   return { commandId, idempotencyKey: commandId };
-}
-
-async function seedStaleStarted(
-  harness: {
-    ledgerStore: ReturnType<typeof createApplicationCommandLedgerFeature>['ledgerStore'];
-  },
-  identity: { commandId: string; idempotencyKey: string },
-  payload: Record<string, unknown>
-): Promise<void> {
-  const begin = await harness.ledgerStore.begin({
-    namespace: 'task-board',
-    scopeKey: TEAM_NAME,
-    ...identity,
-    operation: CREATE_TASK_OPERATION,
-    payloadHash: new NodeApplicationCommandHasher().hashJson(payload),
-    metadataJson: null,
-    nowIso: '2020-01-01T00:00:00.000Z',
-    startedStaleAfterMs: 60_000,
-  });
-  expect(begin.outcome).toBe(ApplicationCommandBeginOutcome.Started);
 }

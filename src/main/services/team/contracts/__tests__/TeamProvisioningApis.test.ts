@@ -55,6 +55,7 @@ import type {
   TeamProvisioningProgress,
   TeamRuntimeState,
   TeamSummary,
+  TeamTask,
   TeamViewSnapshot,
   ToolApprovalSettings,
 } from '@shared/types/team';
@@ -404,6 +405,55 @@ describe('TeamProvisioning API binders', () => {
         this.renamedDraft = `${oldTeamName}->${newTeamName}-${this.suffix}`;
         return Promise.resolve();
       },
+      getTasks(): Promise<TeamTask[]> {
+        return Promise.resolve([]);
+      },
+      getDeletedTasks(): Promise<TeamTask[]> {
+        return Promise.resolve([]);
+      },
+      getTask(): Promise<TeamTask | null> {
+        return Promise.resolve(null);
+      },
+      createTask(): Promise<TeamTask> {
+        return Promise.resolve({ id: '1', subject: 'bound task', status: 'pending' });
+      },
+      createTaskWithOutcome(this: TeamDataSource) {
+        return Promise.resolve({
+          task: { id: '1', subject: `task-${this.suffix}`, status: 'pending' as const },
+          outcome: 'APPLIED' as const,
+        });
+      },
+      updateTaskStatus(): Promise<void> {
+        return Promise.resolve();
+      },
+      updateTaskStatusWithReceipt(this: TeamDataSource) {
+        return Promise.resolve([
+          {
+            localId: this.suffix,
+            from: 'todo',
+            to: 'done',
+            requestId: null,
+            actor: null,
+            at: null,
+          },
+        ]);
+      },
+      updateTaskOwner(): Promise<void> {
+        return Promise.resolve();
+      },
+      updateTaskFields(): Promise<void> {
+        return Promise.resolve();
+      },
+      applyTaskExecutionPatch(this: TeamDataSource): Promise<void> {
+        this.renamedDraft = `execution-${this.suffix}`;
+        return Promise.resolve();
+      },
+      addTaskRelationship(): Promise<void> {
+        return Promise.resolve();
+      },
+      removeTaskRelationship(): Promise<void> {
+        return Promise.resolve();
+      },
     };
 
     const api = bindTeamHttpDataApi(source);
@@ -426,6 +476,18 @@ describe('TeamProvisioning API binders', () => {
       members: [],
     } as TeamCreateConfigRequest);
     expect(source.createdTeamName).toBe('created-team');
+    const createTaskWithOutcome = api.createTaskWithOutcome.bind(undefined);
+    const updateTaskStatusWithReceipt = api.updateTaskStatusWithReceipt.bind(undefined);
+    const applyTaskExecutionPatch = api.applyTaskExecutionPatch.bind(undefined);
+    await expect(createTaskWithOutcome('team', { subject: 'task' })).resolves.toMatchObject({
+      task: { subject: 'task-bound' },
+      outcome: 'APPLIED',
+    });
+    await expect(updateTaskStatusWithReceipt('team', '1', 'completed')).resolves.toMatchObject([
+      { localId: 'bound' },
+    ]);
+    await applyTaskExecutionPatch('team', '1', { prompt: 'prompt' });
+    expect(source.renamedDraft).toBe('execution-bound');
     const renameDraftTeam = api.renameDraftTeam.bind(undefined);
     await renameDraftTeam('old-draft', 'new-draft');
     expect(source.renamedDraft).toBe('old-draft->new-draft-bound');

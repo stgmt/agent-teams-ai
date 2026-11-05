@@ -458,6 +458,7 @@ export const TEAM_TOOL_APPROVAL_SETTINGS = 'team:toolApprovalSettings';
 export const TEAM_TOOL_APPROVAL_READ_FILE = 'team:toolApprovalReadFile';
 
 export const TEAM_GET_SAVED_REQUEST = 'team:getSavedRequest';
+export const TEAM_DISCOVER_SPEC_REGISTRY = 'team:discoverSpecRegistry';
 export const TEAM_DELETE_DRAFT = 'team:deleteDraft';
 
 // =============================================================================

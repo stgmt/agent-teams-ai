@@ -9,6 +9,7 @@ import * as path from 'path';
 import { TeamConfigReader } from './TeamConfigReader';
 import { parseCreateTeamRequest } from './TeamRequestValidation';
 import { applyDistinctRosterColors } from './teamRosterColors';
+import { resolveTeamSpecBinding } from './registry/TeamSpecBinding';
 
 import type { TeamMembersMetaStore } from './TeamMembersMetaStore';
 import type { TeamMetaFile, TeamMetaStore } from './TeamMetaStore';
@@ -19,6 +20,7 @@ export async function createDraftTeamConfig(
   stores: { teamMetaStore: TeamMetaStore; membersMetaStore: TeamMembersMetaStore }
 ): Promise<void> {
   request = parseCreateTeamRequest(request);
+  const binding = resolveTeamSpecBinding(request, request.teamName);
   const teamsBasePath = getTeamsBasePath();
   const tasksBasePath = getTasksBasePath();
   const teamDir = path.join(teamsBasePath, request.teamName);
@@ -62,6 +64,8 @@ export async function createDraftTeamConfig(
     // team.meta.json preserves user's configuration for the Launch flow.
     const metadata: Omit<TeamMetaFile, 'version'> = {
       runtimeSelectionVersion: request.runtimeSelectionVersion,
+      specProject: binding.project,
+      specSlug: binding.spec,
       displayName: request.displayName,
       description: request.description,
       color: request.color,

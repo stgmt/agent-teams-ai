@@ -206,8 +206,15 @@ function sendMessage(context, flags) {
   );
 }
 
-async function sendMessageAsync(context, flags) {
-  return messageStore.sendInboxMessageAsync(context.paths, prepareMessageSend(context, flags));
+async function sendMessageAsync(context, flags, options = {}) {
+  if (options.isCurrent !== undefined && typeof options.isCurrent !== 'function') {
+    throw new Error('Invalid async message authorization check');
+  }
+  return messageStore.sendInboxMessageAsync(
+    context.paths,
+    prepareMessageSend(context, flags),
+    options.isCurrent
+  );
 }
 
 function sendTrustedMessage(context, flags) {

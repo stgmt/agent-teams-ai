@@ -11,8 +11,10 @@ import {
 import * as fs from 'fs';
 import * as path from 'path';
 
+import { bindingFromTeamMetadata } from './registry/TeamSpecBinding';
 import { readBootstrapLaunchSnapshot } from './TeamBootstrapStateReader';
 import { isReadableTeamConfigPayload } from './TeamConfigPayload';
+import { readDraftTeamSummary } from './TeamDraftSummary';
 import { getTeamFsWorkerClient } from './TeamFsWorkerClient';
 import { normalizePersistedLaunchSnapshot } from './TeamLaunchStateEvaluator';
 import {
@@ -375,6 +377,22 @@ export class TeamConfigReader {
     private readonly teamMetaStore: TeamMetaStore = new TeamMetaStore()
   ) {}
 
+  /**
+   * Cheap census for callers that only need team names: one directory read, no
+   * config parsing and no summary build. Dot-directories are service state, not teams.
+   */
+  async listTeamNames(): Promise<string[]> {
+    let entries: fs.Dirent[];
+    try {
+      entries = await fs.promises.readdir(getTeamsBasePath(), { withFileTypes: true });
+    } catch {
+      return [];
+    }
+    return entries
+      .filter((entry) => entry.isDirectory() && !entry.name.startsWith('.'))
+      .map((entry) => entry.name);
+  }
+
   async listTeams(): Promise<TeamSummary[]> {
     const teamsBasePath = getTeamsBasePath();
     const cached = TeamConfigReader.listTeamsCacheByBasePath.get(teamsBasePath);
@@ -504,6 +522,8 @@ export class TeamConfigReader {
       let deletedAt: string | undefined;
       let projectPathHistory: TeamConfig['projectPathHistory'] | undefined;
       let sessionHistory: TeamConfig['sessionHistory'] | undefined;
+      let specProject: string | undefined;
+      let specSlug: string | undefined;
 
       let stat: fs.Stats | null = null;
       try {
@@ -515,7 +535,12 @@ export class TeamConfigReader {
       // Skip non-regular files (pipes, sockets, etc.) — readFile could hang on them
       if (!stat?.isFile()) {
         // Fallback: check for draft team (team.meta.json without config.json)
-        return this.readDraftTeamSummary(teamsDir, teamName);
+        return readDraftTeamSummary(
+          teamsDir,
+          teamName,
+          this.membersMetaStore,
+          PER_TEAM_READ_TIMEOUT_MS
+        );
       }
 
       // Safety: refuse to touch extremely large configs. Even "head" parsing can be misleading,
@@ -552,6 +577,14 @@ export class TeamConfigReader {
           ? config.sessionHistory.slice(-MAX_SESSION_HISTORY_IN_SUMMARY)
           : undefined;
         deletedAt = typeof config.deletedAt === 'string' ? config.deletedAt : undefined;
+        specProject =
+          typeof config.specProject === 'string' && config.specProject.trim().length > 0
+            ? config.specProject.trim()
+            : undefined;
+        specSlug =
+          typeof config.specSlug === 'string' && config.specSlug.trim().length > 0
+            ? config.specSlug.trim()
+            : undefined;
       }
 
       if (typeof displayName !== 'string' || displayName.trim() === '') {
@@ -621,7 +654,11 @@ export class TeamConfigReader {
       }
 
       try {
-        leadProviderId = (await this.teamMetaStore.getMeta(teamName))?.providerId;
+        const meta = await this.teamMetaStore.getMeta(teamName);
+        leadProviderId = meta?.providerId;
+        const inheritedBinding = config ? bindingFromTeamMetadata(config, meta) : {};
+        specProject ??= inheritedBinding.specProject;
+        specSlug ??= inheritedBinding.specSlug;
       } catch {
         leadProviderId = undefined;
       }
@@ -714,81 +751,14 @@ export class TeamConfigReader {
         ...(leadSessionId ? { leadSessionId } : {}),
         ...(projectPathHistory ? { projectPathHistory } : {}),
         ...(sessionHistory ? { sessionHistory } : {}),
+        ...(specProject ? { specProject } : {}),
+        ...(specSlug ? { specSlug } : {}),
         ...(deletedAt ? { deletedAt } : {}),
         ...(launchStateSummary ?? {}),
       };
       return summary;
     } catch {
       logger.debug(`Skipping team dir without valid config: ${teamName}`);
-      return null;
-    }
-  }
-
-  /**
-   * Checks for a draft team (team.meta.json exists without config.json).
-   * This happens when provisioning failed before CLI's TeamCreate could run.
-   */
-  private async readDraftTeamSummary(
-    teamsDir: string,
-    teamName: string
-  ): Promise<TeamSummary | null> {
-    const metaPath = path.join(teamsDir, teamName, 'team.meta.json');
-    try {
-      const metaStat = await fs.promises.stat(metaPath);
-      if (!metaStat.isFile() || metaStat.size > 256 * 1024) {
-        return null;
-      }
-      const metaRaw = await readFileUtf8WithTimeout(metaPath, PER_TEAM_READ_TIMEOUT_MS);
-      const meta = JSON.parse(metaRaw) as Record<string, unknown>;
-      if (meta?.version !== 1 || typeof meta?.cwd !== 'string') {
-        return null;
-      }
-      const displayName =
-        typeof meta.displayName === 'string' && meta.displayName.trim()
-          ? meta.displayName.trim()
-          : teamName;
-
-      let memberCount = 0;
-      let leadName: string | undefined;
-      let leadColor: string | undefined;
-      try {
-        const members = await this.membersMetaStore.getMembers(teamName);
-        memberCount = members.filter((member) => {
-          const name = member.name?.trim() ?? '';
-          if (!member.removedAt && isLeadMember(member)) {
-            if (name) {
-              leadName = name;
-            }
-            const color = member.color?.trim();
-            if (color) {
-              leadColor = color;
-            }
-          }
-          if (!name || name === 'user' || isLeadMember(member)) {
-            return false;
-          }
-          return !member.removedAt;
-        }).length;
-      } catch {
-        // best-effort
-      }
-
-      return {
-        teamName,
-        displayName,
-        description: typeof meta.description === 'string' ? meta.description : '',
-        memberCount,
-        taskCount: 0,
-        lastActivity:
-          typeof meta.createdAt === 'number' ? new Date(meta.createdAt).toISOString() : null,
-        color: typeof meta.color === 'string' ? meta.color : undefined,
-        ...(leadName ? { leadName } : {}),
-        ...(leadColor ? { leadColor } : {}),
-        projectPath: typeof meta.cwd === 'string' ? meta.cwd : undefined,
-        pendingCreate: true,
-        deletedAt: typeof meta.deletedAt === 'string' ? meta.deletedAt : undefined,
-      };
-    } catch {
       return null;
     }
   }
@@ -801,7 +771,7 @@ export class TeamConfigReader {
     const configPath = path.join(getTeamsBasePath(), teamName, 'config.json');
     const existingRead = TeamConfigReader.configReadInFlightByPath.get(configPath);
     if (existingRead) {
-      return this.resolveConfigRead(teamName, configPath, existingRead);
+      return this.resolveConfigRead(existingRead);
     }
 
     const generation = TeamConfigReader.getConfigGeneration(configPath);
@@ -816,7 +786,7 @@ export class TeamConfigReader {
     TeamConfigReader.configReadInFlightByPath.set(configPath, readPromise);
 
     try {
-      return await this.resolveConfigRead(teamName, configPath, readPromise);
+      return await this.resolveConfigRead(readPromise);
     } finally {
       if (TeamConfigReader.configReadInFlightByPath.get(configPath) === readPromise) {
         TeamConfigReader.configReadInFlightByPath.delete(configPath);
@@ -882,7 +852,7 @@ export class TeamConfigReader {
 
       const existingRead = TeamConfigReader.configReadInFlightByPath.get(configPath);
       if (existingRead) {
-        return this.resolveConfigRead(teamName, configPath, existingRead);
+        return this.resolveConfigRead(existingRead);
       }
 
       const generation = TeamConfigReader.getConfigGeneration(configPath);
@@ -896,7 +866,7 @@ export class TeamConfigReader {
       );
       TeamConfigReader.configReadInFlightByPath.set(configPath, readPromise);
       try {
-        return await this.resolveConfigRead(teamName, configPath, readPromise);
+        return await this.resolveConfigRead(readPromise);
       } finally {
         if (TeamConfigReader.configReadInFlightByPath.get(configPath) === readPromise) {
           TeamConfigReader.configReadInFlightByPath.delete(configPath);
@@ -908,8 +878,6 @@ export class TeamConfigReader {
   }
 
   private async resolveConfigRead(
-    teamName: string,
-    configPath: string,
     readPromise: Promise<TeamConfig | null>
   ): Promise<TeamConfig | null> {
     try {
@@ -1090,10 +1058,19 @@ export class TeamConfigReader {
         TeamConfigReader.invalidatePathForGeneration(configPath, cacheGeneration);
         return null;
       }
+      const metadataBinding =
+        config.specProject === undefined && config.specSlug === undefined
+          ? bindingFromTeamMetadata(config, await this.teamMetaStore.getMeta(teamName))
+          : {};
       const resolvedProjectPath = resolveProjectPathFromConfig(config);
-      const resolvedConfig = resolvedProjectPath
-        ? { ...config, projectPath: resolvedProjectPath }
-        : config;
+      const resolvedConfig =
+        resolvedProjectPath || metadataBinding.specProject
+          ? {
+              ...config,
+              ...metadataBinding,
+              ...(resolvedProjectPath ? { projectPath: resolvedProjectPath } : {}),
+            }
+          : config;
 
       const totalMs = performance.now() - startedAt;
       if (totalMs >= GET_CONFIG_SLOW_READ_WARN_MS) {
@@ -1124,7 +1101,14 @@ export class TeamConfigReader {
 
   async updateConfig(
     teamName: string,
-    updates: { name?: string; description?: string; color?: string; language?: string }
+    updates: {
+      name?: string;
+      description?: string;
+      color?: string;
+      language?: string;
+      specProject?: string;
+      specSlug?: string;
+    }
   ): Promise<TeamConfig | null> {
     const config = await this.getConfig(teamName);
     if (!config) {
@@ -1141,6 +1125,12 @@ export class TeamConfigReader {
     }
     if (updates.language !== undefined) {
       config.language = updates.language.trim() || undefined;
+    }
+    if (updates.specProject !== undefined) {
+      config.specProject = updates.specProject.trim() || undefined;
+    }
+    if (updates.specSlug !== undefined) {
+      config.specSlug = updates.specSlug.trim() || undefined;
     }
     const configPath = path.join(getTeamsBasePath(), teamName, 'config.json');
     await atomicWriteAsync(configPath, JSON.stringify(config, null, 2));

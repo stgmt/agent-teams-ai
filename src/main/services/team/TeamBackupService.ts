@@ -12,6 +12,7 @@ import {
 import {
   getAppDataPath,
   getBackupsBasePath,
+  getLocalTasksBasePath,
   getTasksBasePath,
   getTeamsBasePath,
 } from '@main/utils/pathDecoder';
@@ -729,6 +730,9 @@ export class TeamBackupService {
 
     for (const backupRelPath of backupFiles) {
       if (backupRelPath === 'manifest.json') continue;
+      // Historical canonical task snapshots are archival only. Never prune them
+      // merely because the registry-owned task store is no longer enumerated.
+      if (backupRelPath.startsWith('tasks/')) continue;
       if (!sourceRelPaths.has(backupRelPath)) {
         const backupPath = path.join(backupDir, backupRelPath);
         try {
@@ -763,7 +767,6 @@ export class TeamBackupService {
     const files: BackupFileDescriptor[] = [];
     let hasErrors = false;
     const teamDir = path.join(getTeamsBasePath(), teamName);
-    const tasksDir = path.join(getTasksBasePath(), teamName);
 
     // Root files
     for (const fileName of TEAM_ROOT_FILES) {
@@ -848,19 +851,14 @@ export class TeamBackupService {
         if (!isEnoent(err)) hasErrors = true;
       }
     }
-
-    // Tasks (from separate dir)
+    // Execution metadata is local; canonical tasks belong to the registry.
     try {
-      const entries = await fs.promises.readdir(tasksDir, { withFileTypes: true });
-      for (const entry of entries) {
-        if (entry.isFile() && entry.name.endsWith('.json')) {
-          files.push({
-            sourcePath: path.join(tasksDir, entry.name),
-            relPath: `tasks/${entry.name}`,
-          });
-        }
-        // Skip _internal/ directory
-      }
+      files.push(
+        ...(await collectRecursiveFiles(
+          path.join(getLocalTasksBasePath(), teamName),
+          'tasks-local'
+        ))
+      );
     } catch (err: unknown) {
       if (!isEnoent(err)) hasErrors = true;
     }
@@ -871,7 +869,6 @@ export class TeamBackupService {
   private enumerateTeamFilesSync(teamName: string): BackupFileDescriptor[] {
     const files: BackupFileDescriptor[] = [];
     const teamDir = path.join(getTeamsBasePath(), teamName);
-    const tasksDir = path.join(getTasksBasePath(), teamName);
 
     for (const fileName of TEAM_ROOT_FILES) {
       const sourcePath = path.join(teamDir, fileName);
@@ -956,19 +953,12 @@ export class TeamBackupService {
         // skip
       }
     }
-
     try {
-      const entries = fs.readdirSync(tasksDir, { withFileTypes: true });
-      for (const entry of entries) {
-        if (entry.isFile() && entry.name.endsWith('.json')) {
-          files.push({
-            sourcePath: path.join(tasksDir, entry.name),
-            relPath: `tasks/${entry.name}`,
-          });
-        }
-      }
+      files.push(
+        ...collectRecursiveFilesSync(path.join(getLocalTasksBasePath(), teamName), 'tasks-local')
+      );
     } catch {
-      // skip
+      // best-effort during shutdown
     }
 
     return files;
@@ -1011,6 +1001,9 @@ export class TeamBackupService {
   private getSourcePathForRelPath(teamName: string, relPath: string): string {
     if (relPath.startsWith('tasks/')) {
       return path.join(getTasksBasePath(), teamName, relPath.slice('tasks/'.length));
+    }
+    if (relPath.startsWith('tasks-local/')) {
+      return path.join(getLocalTasksBasePath(), teamName, relPath.slice('tasks-local/'.length));
     }
     if (relPath.startsWith('attachments/')) {
       return path.join(

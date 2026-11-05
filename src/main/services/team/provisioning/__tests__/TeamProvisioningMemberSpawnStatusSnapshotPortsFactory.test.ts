@@ -63,11 +63,11 @@ describe('TeamProvisioningMemberSpawnStatusSnapshotPortsFactory', () => {
       },
       persisted: {
         readTaskActivityRepairLaunchSnapshot: vi.fn(),
-        repairStaleTaskActivityIntervalsOnce: vi.fn(),
+        repairStaleTaskActivityIntervalsOnce: vi.fn(async () => true),
         reconcilePersistedLaunchState: vi.fn(),
         attachLiveRuntimeMetadataToStatuses: vi.fn(),
         getOpenCodeSecondaryBootstrapPendingMemberNames: vi.fn(),
-        resumeActiveTaskActivityForMembers: vi.fn(),
+        resumeActiveTaskActivityForMembers: vi.fn(async () => ({})),
         readLaunchFreshness: vi.fn(),
       },
       live: {
@@ -103,14 +103,14 @@ describe('TeamProvisioningMemberSpawnStatusSnapshotPortsFactory', () => {
     const getTrackedRunId = vi.fn(() => 'run-1');
     const nowMs = vi.fn(() => 123);
     const readTaskActivityRepairLaunchSnapshot = vi.fn(async () => launchSnapshot);
-    const repairStaleTaskActivityIntervalsOnce = vi.fn();
+    const repairStaleTaskActivityIntervalsOnce = vi.fn(async () => true);
     const reconcilePersistedLaunchState = vi.fn(async () => ({
       snapshot: launchSnapshot,
       statuses: { Builder: status() },
     }));
     const attachLiveRuntimeMetadataToStatuses = vi.fn(async (_teamName, statuses) => statuses);
     const getOpenCodeSecondaryBootstrapPendingMemberNames = vi.fn(() => pendingMembers);
-    const resumeActiveTaskActivityForMembers = vi.fn();
+    const resumeActiveTaskActivityForMembers = vi.fn(async () => ({}));
     const readLaunchFreshness = vi.fn(async () => null);
     const refreshMemberSpawnStatusesFromLeadInbox = vi.fn(async () => undefined);
     const maybeAuditMemberSpawnStatuses = vi.fn(async () => undefined);
@@ -172,7 +172,7 @@ describe('TeamProvisioningMemberSpawnStatusSnapshotPortsFactory', () => {
     await expect(ports.persisted.readTaskActivityRepairLaunchSnapshot('team-a')).resolves.toBe(
       launchSnapshot
     );
-    ports.persisted.repairStaleTaskActivityIntervalsOnce('team-a', launchSnapshot);
+    await ports.persisted.repairStaleTaskActivityIntervalsOnce('team-a', launchSnapshot);
     await expect(ports.persisted.reconcilePersistedLaunchState('team-a')).resolves.toEqual({
       snapshot: launchSnapshot,
       statuses: { Builder: status() },
@@ -183,7 +183,7 @@ describe('TeamProvisioningMemberSpawnStatusSnapshotPortsFactory', () => {
     expect(ports.persisted.getOpenCodeSecondaryBootstrapPendingMemberNames(launchSnapshot)).toBe(
       pendingMembers
     );
-    ports.persisted.resumeActiveTaskActivityForMembers('team-a', ['Builder'], NOW);
+    await ports.persisted.resumeActiveTaskActivityForMembers('team-a', ['Builder'], NOW);
     await expect(ports.persisted.readLaunchFreshness('team-a')).resolves.toBeNull();
     await ports.live.refreshMemberSpawnStatusesFromLeadInbox(targetRun);
     await ports.live.maybeAuditMemberSpawnStatuses(targetRun);
@@ -237,7 +237,7 @@ describe('TeamProvisioningMemberSpawnStatusSnapshotPortsFactory', () => {
     const getCacheGeneration = vi.fn(() => 11);
     const getTrackedRunId = vi.fn(() => 'run-1');
     const readTaskActivityRepairLaunchSnapshot = vi.fn(async () => persistedSnapshot);
-    const repairStaleTaskActivityIntervalsOnce = vi.fn();
+    const repairStaleTaskActivityIntervalsOnce = vi.fn(async () => true);
     const reconcilePersistedLaunchState = vi.fn(async () => ({
       snapshot: persistedSnapshot,
       statuses: { Builder: status() },
@@ -311,7 +311,7 @@ describe('TeamProvisioningMemberSpawnStatusSnapshotPortsFactory', () => {
     await expect(ports.persisted.readTaskActivityRepairLaunchSnapshot('team-a')).resolves.toBe(
       persistedSnapshot
     );
-    ports.persisted.resumeActiveTaskActivityForMembers('team-a', ['Builder'], NOW);
+    await ports.persisted.resumeActiveTaskActivityForMembers('team-a', ['Builder'], NOW);
     await ports.live.refreshMemberSpawnStatusesFromLeadInbox(targetRun);
     await ports.live.maybeAuditMemberSpawnStatuses(targetRun);
     await ports.live.persistLaunchStateSnapshot(targetRun, 'active');
@@ -348,8 +348,8 @@ describe('TeamProvisioningMemberSpawnStatusSnapshotPortsFactory', () => {
     const inFlightByTeam = new Map();
     const persistedSnapshot = createLaunchSnapshot();
     const readTaskActivityRepairLaunchSnapshot = vi.fn(async () => persistedSnapshot);
-    const repairStaleTaskActivityIntervalsOnce = vi.fn();
-    const resumeActiveIntervalsForMembers = vi.fn();
+    const repairStaleTaskActivityIntervalsOnce = vi.fn(async () => true);
+    const resumeActiveIntervalsForMembers = vi.fn(async () => ({}));
     const service = {
       runs: new Map([['run-1', targetRun]]),
       memberSpawnStatusesSnapshotCache: snapshotCache,
@@ -398,8 +398,8 @@ describe('TeamProvisioningMemberSpawnStatusSnapshotPortsFactory', () => {
     await expect(ports.persisted.readTaskActivityRepairLaunchSnapshot('team-a')).resolves.toBe(
       persistedSnapshot
     );
-    ports.persisted.repairStaleTaskActivityIntervalsOnce('team-a', persistedSnapshot);
-    ports.persisted.resumeActiveTaskActivityForMembers('team-a', ['Builder'], NOW);
+    await ports.persisted.repairStaleTaskActivityIntervalsOnce('team-a', persistedSnapshot);
+    await ports.persisted.resumeActiveTaskActivityForMembers('team-a', ['Builder'], NOW);
     expect(ports.live.buildRuntimeSpawnStatusRecord(targetRun).Builder.status).toBe('online');
     expect(ports.live.filterRemovedMembersFromLaunchSnapshot(persistedSnapshot, [])).toBe(
       persistedSnapshot

@@ -45,6 +45,7 @@ describe('native lifecycle composition admission', () => {
       runtimeRoot: join(root, 'attempts'),
       workspaceRoot: join(root, 'workspaces'),
       teamsRoot,
+      readStartupTasks: async () => [],
       provider: {
         prepareWorkspaceTrust: (launch, signal) =>
           prepareTrust(launch.providerId, launch.workingDirectory, signal),
@@ -204,6 +205,7 @@ describe('native lifecycle composition admission', () => {
       runtimeRoot: join(root, 'attempts'),
       workspaceRoot: join(root, 'workspaces'),
       teamsRoot,
+      readStartupTasks: async () => [],
       provider: {
         prepareWorkspaceTrust: () => Promise.resolve([]),
         executable: () => Promise.reject(new Error('TEST no CLI')),
@@ -290,6 +292,7 @@ describe('native lifecycle composition admission', () => {
       runtimeRoot: join(root, 'attempts'),
       workspaceRoot: join(root, 'workspaces'),
       teamsRoot,
+      readStartupTasks: async () => [],
       provider: {
         prepareWorkspaceTrust: () => Promise.resolve([]),
         executable,

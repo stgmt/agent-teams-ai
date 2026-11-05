@@ -18,7 +18,7 @@ vi.mock('@renderer/services/createTeamDraftStorage', () => ({
   },
 }));
 
-import { useCreateTeamDraft } from './useCreateTeamDraft';
+import { useCreateTeamDraft, type UseCreateTeamDraftResult } from './useCreateTeamDraft';
 
 const HookProbe = ({ onLoaded }: { onLoaded: () => void }): React.JSX.Element | null => {
   const draft = useCreateTeamDraft();
@@ -193,6 +193,83 @@ describe('useCreateTeamDraft', () => {
       act(() => root.unmount());
     }
   );
+
+  it('preserves registry-only inputs across unmount and remount, then clears them', async () => {
+    loadSnapshotMock.mockResolvedValue(null);
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    let root = createRoot(host);
+    let loadedDraft: UseCreateTeamDraftResult | null = null;
+    const render = async () => {
+      await act(async () => {
+        root.render(
+          React.createElement(HookProbeWithDraft, {
+            onLoaded: (draft) => {
+              loadedDraft = draft;
+            },
+          })
+        );
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+    };
+    await render();
+    act(() => {
+      loadedDraft?.setSpecProject('project-alpha');
+      loadedDraft?.setSpecSlug('delivery-plan');
+    });
+    act(() => root.unmount());
+    const saved = saveSnapshotMock.mock.calls.at(-1)?.[0];
+    expect(saved).toEqual(
+      expect.objectContaining({
+        teamName: '',
+        members: [],
+        specProject: 'project-alpha',
+        specSlug: 'delivery-plan',
+      })
+    );
+    expect(deleteSnapshotMock).not.toHaveBeenCalled();
+
+    loadSnapshotMock.mockResolvedValue(saved);
+    loadedDraft = null;
+    root = createRoot(host);
+    await render();
+    expect(loadedDraft).toEqual(
+      expect.objectContaining({ specProject: 'project-alpha', specSlug: 'delivery-plan' })
+    );
+    act(() => loadedDraft?.clearDraft());
+    expect(loadedDraft).toEqual(expect.objectContaining({ specProject: '', specSlug: '' }));
+    expect(deleteSnapshotMock).toHaveBeenCalledOnce();
+    act(() => root.unmount());
+  });
+
+  it('keeps fresh registry input when the initial draft load finishes late', async () => {
+    let finishLoad!: (value: unknown) => void;
+    const promise = new Promise<unknown>((resolve) => {
+      finishLoad = resolve;
+    });
+    loadSnapshotMock.mockReturnValue(promise);
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    let currentDraft: UseCreateTeamDraftResult | undefined;
+    const Probe = () => {
+      currentDraft = useCreateTeamDraft();
+      return null;
+    };
+    act(() => root.render(React.createElement(Probe)));
+    act(() => currentDraft?.setSpecProject('fresh-project'));
+    await act(async () => {
+      finishLoad({ specProject: 'old-project', specSlug: 'old-spec' });
+      await Promise.resolve();
+    });
+    expect(currentDraft?.specProject).toBe('fresh-project');
+    expect(currentDraft?.specSlug).toBe('');
+    act(() => root.unmount());
+    expect(saveSnapshotMock).toHaveBeenCalledWith(
+      expect.objectContaining({ specProject: 'fresh-project', specSlug: '' })
+    );
+  });
 
   it('preserves per-member MCP policy in saved create-team drafts', async () => {
     loadSnapshotMock.mockResolvedValue({

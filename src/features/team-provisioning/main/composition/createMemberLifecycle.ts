@@ -9,6 +9,7 @@ import { MemberLifecycleRegistry } from '../../core/domain/MemberLifecycleRegist
 
 import type {
   ConfiguredMemberIdentity,
+  MemberProcessToken,
   TeamLaneGroup,
   TeamLifecycleFeed,
   TeamLifecycleSnapshot,
@@ -40,6 +41,10 @@ export interface MemberLifecycleDependencies {
   registerConfiguredMember?(
     team: TeamRunIdentity,
     launch: Readonly<ConfiguredMemberLaunch>
+  ): Promise<void>;
+  onMemberConnected?(
+    launch: Readonly<ConfiguredMemberLaunch>,
+    token: Readonly<MemberProcessToken>
   ): Promise<void>;
   /** A member runtime failed; the recovery feature decides what to do with it. */
   reportRuntimeFailure?(input: {
@@ -76,6 +81,9 @@ export function createMemberLifecycle(dependencies: MemberLifecycleDependencies)
       : {}),
     ...(dependencies.reportRuntimeFailure
       ? { reportRuntimeFailure: dependencies.reportRuntimeFailure }
+      : {}),
+    ...(dependencies.onMemberConnected
+      ? { onMemberConnected: dependencies.onMemberConnected }
       : {}),
   });
   return {

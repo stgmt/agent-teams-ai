@@ -122,6 +122,7 @@ import { MemberDetailDialog } from './members/MemberDetailDialog';
 import { type MemberActivityFilter, type MemberDetailTab } from './members/memberDetailTypes';
 import { deriveMetrics } from './context-metric-alias';
 import { showTeamDeleteError } from './teamDeleteErrorDialog';
+import { SpecRegistryConnectButton, TeamLoadError } from './TeamLoadError';
 import { resolvePinnedTeamActionTop } from './teamDetailLayout';
 import { TeamStatusBadge } from './TeamStatusBadge';
 import { useTeamStopControl } from './useTeamStopControl';
@@ -2717,6 +2718,10 @@ export const TeamDetailView = memo(function TeamDetailView({
                 >
                   {t('detail.actions.launch')}
                 </button>
+                <SpecRegistryConnectButton
+                  teamName={teamName}
+                  onSaved={() => void selectTeam(teamName)}
+                />
                 <button
                   className="rounded-md bg-surface-raised px-4 py-1.5 text-xs font-medium text-text-secondary transition-colors hover:text-text"
                   onClick={() => {
@@ -2734,12 +2739,11 @@ export const TeamDetailView = memo(function TeamDetailView({
 
     if (error) {
       return (
-        <div className="flex size-full items-center justify-center p-6">
-          <div className="text-center">
-            <p className="text-sm font-medium text-red-400">{t('detail.loadFailed')}</p>
-            <p className="mt-2 text-xs text-[var(--color-text-muted)]">{error}</p>
-          </div>
-        </div>
+        <TeamLoadError
+          teamName={teamName}
+          error={error}
+          onRetry={() => void selectTeam(teamName)}
+        />
       );
     }
 
@@ -3340,6 +3344,8 @@ export const TeamDetailView = memo(function TeamDetailView({
                   currentName={data.config.name}
                   currentDescription={data.config.description ?? ''}
                   currentColor={data.config.color ?? ''}
+                  currentSpecProject={data.config.specProject ?? ''}
+                  currentSpecSlug={data.config.specSlug ?? ''}
                   currentMembers={membersWithLiveBranches.filter((m) => !isLeadMember(m))}
                   leadMember={membersWithLiveBranches.find((m) => isLeadMember(m)) ?? null}
                   resolvedMemberColorMap={resolvedMemberColorMap}

@@ -64,6 +64,7 @@ function makeDeps(): TeamProvisioningCleanupRunPortsFactoryDeps<CleanupRunWithLo
     persistLaunchStateSnapshot: vi.fn(() => Promise.resolve()),
     writeLaunchFailureArtifactPackBestEffort: vi.fn(),
     resetRuntimeToolActivity: vi.fn(),
+    clearStartupWorkDeliveryState: vi.fn(),
     setLeadActivity: vi.fn(),
     stopStallWatchdog: vi.fn(),
     stopFilesystemMonitor: vi.fn(),
@@ -164,6 +165,7 @@ describe('createTeamProvisioningCleanupRunPorts', () => {
       removeRunMemberMcpConfigFilesLater: deps.removeRunMemberMcpConfigFilesLater,
       retainedClaudeLogsByTeam: deps.retainedClaudeLogsByTeam,
       retainProvisioningProgress: deps.retainProvisioningProgress,
+      clearStartupWorkDeliveryState: deps.clearStartupWorkDeliveryState,
     } satisfies TeamProvisioningCleanupRunServiceHost<CleanupRunWithLogs>;
     const builtDeps = createTeamProvisioningCleanupRunPortsDepsFromService(service);
 
@@ -177,6 +179,7 @@ describe('createTeamProvisioningCleanupRunPorts', () => {
       reason: 'launch_progress_failed',
     });
     builtDeps.resetRuntimeToolActivity(run);
+    builtDeps.clearStartupWorkDeliveryState(run);
     builtDeps.setLeadActivity(run, 'offline');
     builtDeps.stopStallWatchdog(run);
     builtDeps.stopFilesystemMonitor(run);
@@ -193,6 +196,7 @@ describe('createTeamProvisioningCleanupRunPorts', () => {
     builtDeps.emitToolApprovalEvent({ dismissed: true, teamName: 'team-a', runId: 'run-1' });
     builtDeps.removeRunMemberMcpConfigFilesLater(run);
     builtDeps.retainProvisioningProgress('run-1', run.progress);
+    expect(deps.clearStartupWorkDeliveryState).toHaveBeenCalledWith(run);
 
     expect(runTracking.getTrackedRunId).toHaveBeenCalledWith('team-a');
     expect(deps.markIncompleteLaunchStateFinalized).toHaveBeenCalledWith(run, 'cleanup');

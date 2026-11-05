@@ -1,11 +1,36 @@
 const taskStore = require('./taskStore.js');
 const { hasExplicitCreationCommand } = require('./taskCreationCommand.js');
 const { normalizeTaskGroupChatId } = require('./taskGroupAssociation.js');
+const { readTeamConfig } = require('./runtimeHelpers.js');
 
 const TASK_CREATE_DEDUP_WINDOW_MS = 10 * 60 * 1000;
 
 function normalizeDedupText(value) {
   return typeof value === 'string' ? value.trim().toLowerCase().replace(/\s+/g, ' ') : '';
+}
+
+// Match TeamConfigReader.resolveProjectPathFromConfig: the app stores this
+// effective project on newly created registry tasks.
+function resolveDefaultProjectPath(config) {
+  const clean = (value) => typeof value === 'string' && value.trim() ? value.trim() : undefined;
+  const direct = clean(config?.projectPath);
+  if (direct) return direct;
+  const members = Array.isArray(config?.members) ? config.members : [];
+  const lead = members.find((member) => {
+    const type = typeof member?.agentType === 'string' ? member.agentType.trim().toLowerCase() : '';
+    const name = typeof member?.name === 'string' ? member.name.trim().toLowerCase() : '';
+    return type === 'team-lead' || type === 'lead' || type === 'orchestrator' || name === 'team-lead';
+  });
+  const leadPath = clean(lead?.cwd);
+  if (leadPath) return leadPath;
+  const paths = [...new Set(members.map((member) => clean(member?.cwd)).filter(Boolean))];
+  if (paths.length === 1) return paths[0];
+  const history = Array.isArray(config?.projectPathHistory) ? config.projectPathHistory : [];
+  for (let index = history.length - 1; index >= 0; index -= 1) {
+    const path = clean(history[index]);
+    if (path) return path;
+  }
+  return undefined;
 }
 
 function normalizeDedupList(value) {
@@ -81,7 +106,7 @@ function normalizeInitialTaskStatus(taskInput) {
 // task_create set with fresh task ids. Deduplicate only when the complete
 // semantic creation payload matches, so same-title tasks with different work
 // are never collapsed into one row.
-function buildTaskCreationDedupKey(context, taskInput) {
+function buildTaskCreationDedupKey(context, taskInput, defaultProjectPath) {
   const subject = normalizeDedupText(taskInput && taskInput.subject);
   if (!subject) return null;
   const createdBy =
@@ -105,7 +130,7 @@ function buildTaskCreationDedupKey(context, taskInput) {
     descriptionTaskRefs: normalizeDedupRefs(taskInput && taskInput.descriptionTaskRefs),
     promptTaskRefs: normalizeDedupRefs(taskInput && taskInput.promptTaskRefs),
     activeForm: normalizeDedupText(taskInput && (taskInput.activeForm ?? taskInput['active-form'])),
-    projectPath: normalizeDedupText(taskInput && taskInput.projectPath),
+    projectPath: normalizeDedupText(taskInput?.projectPath ?? defaultProjectPath),
     needsClarification: normalizeDedupText(taskInput && taskInput.needsClarification),
     attachments: normalizeDedupJson(taskInput && taskInput.attachments),
     sourceMessageId: normalizeDedupText(taskInput && taskInput.sourceMessageId),
@@ -116,7 +141,8 @@ function buildTaskCreationDedupKey(context, taskInput) {
 
 function findRecentDuplicateTask(context, taskInput) {
   normalizeTaskGroupChatId(taskInput?.groupChatId);
-  const creationKey = buildTaskCreationDedupKey(context, taskInput);
+  const defaultProjectPath = resolveDefaultProjectPath(readTeamConfig(context.paths));
+  const creationKey = buildTaskCreationDedupKey(context, taskInput, defaultProjectPath);
   const hasExplicitTaskId =
     typeof taskInput?.id === 'string' && taskInput.id.trim().length > 0;
   if (!creationKey || hasExplicitTaskId || hasExplicitCreationCommand(taskInput)) {

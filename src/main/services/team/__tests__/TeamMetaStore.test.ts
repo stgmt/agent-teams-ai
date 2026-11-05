@@ -77,4 +77,17 @@ describe('TeamMetaStore', () => {
       syncModelsWithLead: false,
     });
   });
+
+  it('persists the registry binding needed to reopen and launch a draft', async () => {
+    await new TeamMetaStore().writeMeta('alpha', {
+      cwd: '/sandbox/team',
+      specProject: ' sandbox/demo ',
+      specSlug: ' sandbox-spec ',
+      createdAt: 1,
+    });
+    expect(JSON.parse(atomicWriteAsync.mock.calls[0]?.[1])).toMatchObject({
+      specProject: 'sandbox/demo',
+      specSlug: 'sandbox-spec',
+    });
+  });
 });

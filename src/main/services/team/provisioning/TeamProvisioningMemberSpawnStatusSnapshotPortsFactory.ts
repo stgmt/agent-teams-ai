@@ -67,7 +67,7 @@ export interface TeamProvisioningMemberSpawnStatusesSnapshotPortsHost<
       teamName: string,
       memberNames: readonly string[],
       observedAt: string
-    ): void;
+    ): Promise<{ failed?: boolean }>;
   };
   refreshMemberSpawnStatusesFromLeadInbox: MemberSpawnStatusesSnapshotPorts<TRun>['live']['refreshMemberSpawnStatusesFromLeadInbox'];
   maybeAuditMemberSpawnStatuses: MemberSpawnStatusesSnapshotPorts<TRun>['live']['maybeAuditMemberSpawnStatuses'];

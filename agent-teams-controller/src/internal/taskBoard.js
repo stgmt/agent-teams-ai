@@ -121,6 +121,10 @@ function deliverStartupWork(context, memberName, options) {
   return startupWork.deliverStartupWork(context, memberName, options);
 }
 
+function deliverStartupWorkAsync(context, memberName, options) {
+  return startupWork.deliverStartupWorkAsync(context, memberName, options);
+}
+
 function leadBriefing(context) {
   // A bound lead reads through the app so a management briefing never becomes a publishable
   // report operation, and an admitted human request gets the app's own inspection.
@@ -204,6 +208,7 @@ module.exports = {
   listTasks,
   deferredTaskBriefing,
   deliverStartupWork,
+  deliverStartupWorkAsync,
   memberBriefing,
   removeReviewer,
   removeTaskAttachment,

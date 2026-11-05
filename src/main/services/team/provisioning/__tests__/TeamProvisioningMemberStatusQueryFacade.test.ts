@@ -1,11 +1,14 @@
-import * as agentTeamsControllerModule from 'agent-teams-controller';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
-import { tmpdir } from 'os';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { TeamProvisioningMemberStatusQueryFacade } from '../TeamProvisioningMemberStatusQueryFacade';
+import { registryOnlyTaskControlFixture } from '../../../../../../test/main/services/team/helpers/registryOnlyTaskControlFixture';
+import {
+  createRegistryTaskTestBoundary,
+  type RegistryTaskTestBoundary,
+} from '../../../../../../test/main/services/team/helpers/registryTaskTestBoundary';
 
+import type { TeamProvisioningMemberStatusQueryFacade } from '../TeamProvisioningMemberStatusQueryFacade';
 import type { TeamProvisioningCompatibilityDelegation } from '../TeamProvisioningCompatibilityFacade';
 import type { TeamProvisioningMemberLifecyclePublicFacade } from '../TeamProvisioningMemberLifecycleCompatibilityFacade';
 import type { ProvisioningRun } from '../TeamProvisioningRunModel';
@@ -13,12 +16,12 @@ import type {
   InboxMessage,
   MemberSpawnStatus,
   MemberSpawnStatusEntry,
+  MemberSpawnStatusesSnapshot,
   TeamAgentRuntimeSnapshot,
   TeamConfig,
+  TeamTask,
   TeamProvisioningProgress,
 } from '@shared/types';
-
-const { createController } = agentTeamsControllerModule;
 
 // The folder the startup work hand-over reads and writes: a real Claude root in a temp dir.
 const claudeRoot = vi.hoisted(() => ({ dir: '' }));
@@ -26,147 +29,182 @@ vi.mock('@main/utils/pathDecoder', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@main/utils/pathDecoder')>()),
   getClaudeBasePath: () => claudeRoot.dir,
 }));
+let registryBoundary: RegistryTaskTestBoundary;
 
-class TestMemberStatusQueryFacade extends TeamProvisioningMemberStatusQueryFacade<ProvisioningRun> {
-  readonly readConfigSnapshotMock = vi.fn(async () => {
-    return {
-      members: [{ name: 'Worker', providerId: 'opencode' }],
-    } as TeamConfig;
-  });
-  readonly getMembersMock = vi.fn(async () => []);
-  readonly getTeamAgentRuntimeSnapshotMock = vi.fn(async () => {
-    return { teamName: 'alpha' } as unknown as TeamAgentRuntimeSnapshot;
-  });
-  readonly getMessagesForMock = vi.fn<
-    (teamName: string, memberName: string) => Promise<InboxMessage[]>
-  >(async () => []);
-  readonly reevaluateMemberLaunchStatusMock = vi.fn(async () => undefined);
-  readonly mutationPorts = {
-    syncMemberTaskActivityForRuntimeTransition: vi.fn(),
-    syncMemberLaunchGraceCheck: vi.fn(),
-    updateLaunchDiagnostics: vi.fn(),
-    appendMemberBootstrapDiagnostic: vi.fn(),
-    emitMemberSpawnChange: vi.fn(),
-    persistLaunchStateSnapshot: vi.fn(async () => undefined),
-  };
-
-  protected readonly compatibilityDelegation = {
-    configFacade: {
-      readConfigSnapshot: this.readConfigSnapshotMock,
-    },
-  } as unknown as TeamProvisioningCompatibilityDelegation<ProvisioningRun>;
-  protected readonly memberLifecycleFacade = {
-    isMemberLifecycleOperationActive: vi.fn(() => false),
-  } as unknown as TeamProvisioningMemberLifecyclePublicFacade;
-  protected readonly runTracking = {
-    getTrackedRunId: vi.fn((teamName: string) => (teamName === 'alpha' ? 'run-1' : null)),
-  };
-  protected readonly runs = new Map<string, ProvisioningRun>();
-  protected readonly membersMetaStore = {
-    getMembers: this.getMembersMock,
-  };
-  protected readonly inboxReader = {
-    getMessagesFor: this.getMessagesForMock,
-  };
-  protected readonly runtimeToolActivity = {
-    startRuntimeToolActivity: vi.fn(),
-    finishRuntimeToolActivity: vi.fn(),
-    appendMemberBootstrapDiagnostic: vi.fn(),
-    resetRuntimeToolActivity: vi.fn(),
-    clearMemberSpawnToolTracking: vi.fn(),
-    pauseMemberTaskActivityForRuntimeLoss: vi.fn(),
-    syncMemberTaskActivityForRuntimeTransition: vi.fn(),
-    emitToolActivity: vi.fn(),
-  };
-  protected readonly memberSpawnStatusMutationPorts = {
-    nowIso: () => '2026-07-08T00:00:00.000Z',
-    syncMemberTaskActivityForRuntimeTransition:
-      this.mutationPorts.syncMemberTaskActivityForRuntimeTransition,
-    syncMemberLaunchGraceCheck: this.mutationPorts.syncMemberLaunchGraceCheck,
-    updateLaunchDiagnostics: this.mutationPorts.updateLaunchDiagnostics,
-    appendMemberBootstrapDiagnostic: this.mutationPorts.appendMemberBootstrapDiagnostic,
-    isCurrentTrackedRun: (run: ProvisioningRun) => this.isCurrentTrackedRun(run),
-    emitMemberSpawnChange: this.mutationPorts.emitMemberSpawnChange,
-    persistLaunchStateSnapshot: this.mutationPorts.persistLaunchStateSnapshot,
-    reportBackgroundPersistenceError: vi.fn(),
-  };
-  protected readonly memberSpawnStatusAuditPorts = {} as never;
-  protected readonly runtimeSnapshotFacade = {
-    getTeamAgentRuntimeSnapshot: this.getTeamAgentRuntimeSnapshotMock,
-    getTeamAgentRuntimeSnapshotReadOnly: this.getTeamAgentRuntimeSnapshotMock,
-  };
-  protected readonly reevaluateMemberLaunchStatusBoundary = {
-    createPorts: vi.fn(),
-    reevaluateMemberLaunchStatus: this.reevaluateMemberLaunchStatusMock,
-  };
-  protected readonly pendingTimeouts = new Map<string, NodeJS.Timeout>();
-
-  getGraceKey(run: ProvisioningRun, memberName: string): string {
-    return this.getMemberLaunchGraceKey(run, memberName);
-  }
-
-  syncGrace(run: ProvisioningRun, memberName: string, entry: MemberSpawnStatusEntry): void {
-    this.syncMemberLaunchGraceCheck(run, memberName, entry);
-  }
-
-  pendingTimeoutCount(): number {
-    return this.pendingTimeouts.size;
-  }
-
-  transition(
-    run: ProvisioningRun,
-    memberName: string,
-    previous: MemberSpawnStatusEntry,
-    next: MemberSpawnStatusEntry
-  ): void {
-    this.syncMemberTaskActivityForRuntimeTransition(
-      run,
-      memberName,
-      previous,
-      next,
-      '2026-07-08T00:01:00.000Z'
+function createTestFacadeClass(Base: typeof TeamProvisioningMemberStatusQueryFacade) {
+  return class TestMemberStatusQueryFacade extends Base<ProvisioningRun> {
+    readonly readConfigSnapshotMock = vi.fn(async () => {
+      return {
+        members: [{ name: 'Worker', providerId: 'opencode' }],
+      } as TeamConfig;
+    });
+    readonly getMembersMock = vi.fn(async () => []);
+    readonly getTeamAgentRuntimeSnapshotMock = vi.fn(async () => {
+      return { teamName: 'alpha' } as unknown as TeamAgentRuntimeSnapshot;
+    });
+    readonly getMessagesForMock = vi.fn<
+      (teamName: string, memberName: string) => Promise<InboxMessage[]>
+    >(async () => []);
+    readonly reevaluateMemberLaunchStatusMock = vi.fn(async () => undefined);
+    readonly readMemberSpawnStatusesSnapshotMock = vi.fn(
+      async (_teamName: string): Promise<MemberSpawnStatusesSnapshot> => ({
+        statuses: {},
+        runId: null,
+      })
     );
-  }
+    readonly readTeamTasksMock = vi.fn((teamName: string) =>
+      registryBoundary.taskReader.getTasks(teamName)
+    );
+    readonly appendMemberBootstrapDiagnosticMock = vi.fn();
+    readonly mutationPorts = {
+      syncMemberTaskActivityForRuntimeTransition: vi.fn(),
+      syncMemberLaunchGraceCheck: vi.fn(),
+      updateLaunchDiagnostics: vi.fn(),
+      appendMemberBootstrapDiagnostic: vi.fn(),
+      emitMemberSpawnChange: vi.fn(),
+      persistLaunchStateSnapshot: vi.fn(async () => undefined),
+    };
 
-  setSpawn(run: ProvisioningRun, memberName: string, status: MemberSpawnStatus): void {
-    this.setMemberSpawnStatus(run, memberName, status);
-  }
+    protected readonly compatibilityDelegation = {
+      configFacade: {
+        readConfigSnapshot: this.readConfigSnapshotMock,
+      },
+    } as unknown as TeamProvisioningCompatibilityDelegation<ProvisioningRun>;
+    protected readonly memberLifecycleFacade = {
+      isMemberLifecycleOperationActive: vi.fn(() => false),
+    } as unknown as TeamProvisioningMemberLifecyclePublicFacade;
+    protected readonly runTracking = {
+      getTrackedRunId: vi.fn((teamName: string) => (teamName === 'alpha' ? 'run-1' : null)),
+    };
+    protected readonly runs = new Map<string, ProvisioningRun>();
+    protected readonly membersMetaStore = {
+      getMembers: this.getMembersMock,
+    };
+    protected readonly inboxReader = {
+      getMessagesFor: this.getMessagesForMock,
+    };
+    protected readonly runtimeToolActivity = {
+      startRuntimeToolActivity: vi.fn(),
+      finishRuntimeToolActivity: vi.fn(),
+      appendMemberBootstrapDiagnostic: this.appendMemberBootstrapDiagnosticMock,
+      resetRuntimeToolActivity: vi.fn(),
+      clearMemberSpawnToolTracking: vi.fn(),
+      pauseMemberTaskActivityForRuntimeLoss: vi.fn(),
+      syncMemberTaskActivityForRuntimeTransition: vi.fn(),
+      emitToolActivity: vi.fn(),
+    };
+    protected readonly memberSpawnStatusMutationPorts = {
+      nowIso: () => '2026-07-08T00:00:00.000Z',
+      syncMemberTaskActivityForRuntimeTransition:
+        this.mutationPorts.syncMemberTaskActivityForRuntimeTransition,
+      syncMemberLaunchGraceCheck: this.mutationPorts.syncMemberLaunchGraceCheck,
+      updateLaunchDiagnostics: this.mutationPorts.updateLaunchDiagnostics,
+      appendMemberBootstrapDiagnostic: this.mutationPorts.appendMemberBootstrapDiagnostic,
+      isCurrentTrackedRun: (run: ProvisioningRun) => this.isCurrentTrackedRun(run),
+      emitMemberSpawnChange: this.mutationPorts.emitMemberSpawnChange,
+      persistLaunchStateSnapshot: this.mutationPorts.persistLaunchStateSnapshot,
+      reportBackgroundPersistenceError: vi.fn(),
+    };
+    protected readonly memberSpawnStatusAuditPorts = {} as never;
+    protected readonly runtimeSnapshotFacade = {
+      getTeamAgentRuntimeSnapshot: this.getTeamAgentRuntimeSnapshotMock,
+      getTeamAgentRuntimeSnapshotReadOnly: this.getTeamAgentRuntimeSnapshotMock,
+    };
+    protected readonly reevaluateMemberLaunchStatusBoundary = {
+      createPorts: vi.fn(),
+      reevaluateMemberLaunchStatus: this.reevaluateMemberLaunchStatusMock,
+    };
+    protected readonly pendingTimeouts = new Map<string, NodeJS.Timeout>();
+    protected override loadMemberSpawnStatusesSnapshot(
+      teamName: string
+    ): Promise<MemberSpawnStatusesSnapshot> {
+      return this.readMemberSpawnStatusesSnapshotMock(teamName);
+    }
+    protected override readTeamTasks(teamName: string) {
+      return this.readTeamTasksMock(teamName);
+    }
 
-  failUnconfirmedBootstrapMembers(run: ProvisioningRun, reason: string): void {
-    this.markUnconfirmedBootstrapMembersFailed(run, reason);
-  }
+    getGraceKey(run: ProvisioningRun, memberName: string): string {
+      return this.getMemberLaunchGraceKey(run, memberName);
+    }
 
-  refreshFromLeadInbox(run: ProvisioningRun): Promise<void> {
-    return this.refreshMemberSpawnStatusesFromLeadInbox(run);
-  }
+    syncGrace(run: ProvisioningRun, memberName: string, entry: MemberSpawnStatusEntry): void {
+      this.syncMemberLaunchGraceCheck(run, memberName, entry);
+    }
 
-  resolveExpected(
-    expectedMembers: readonly string[] | undefined,
-    candidateName: string
-  ): string | null {
-    return this.resolveExpectedLaunchMemberName(expectedMembers, candidateName);
-  }
+    pendingTimeoutCount(): number {
+      return this.pendingTimeouts.size;
+    }
+    trackRun(run: ProvisioningRun): void {
+      this.runs.set(run.runId, run);
+    }
 
-  protected getRunLeadName(): string {
-    return 'Lead';
-  }
+    transition(
+      run: ProvisioningRun,
+      memberName: string,
+      previous: MemberSpawnStatusEntry,
+      next: MemberSpawnStatusEntry
+    ): Promise<void> {
+      return this.syncMemberTaskActivityForRuntimeTransition(
+        run,
+        memberName,
+        previous,
+        next,
+        '2026-07-08T00:01:00.000Z'
+      );
+    }
 
-  protected async findBootstrapTranscriptOutcome() {
-    return null;
-  }
+    setSpawn(run: ProvisioningRun, memberName: string, status: MemberSpawnStatus): void {
+      this.setMemberSpawnStatus(run, memberName, status);
+    }
 
-  protected async sendOpenCodeMemberMessageToRuntimeSerialized() {
-    return {} as never;
-  }
+    failUnconfirmedBootstrapMembers(run: ProvisioningRun, reason: string): void {
+      this.markUnconfirmedBootstrapMembersFailed(run, reason);
+    }
 
-  protected emitMemberSpawnChange(run: ProvisioningRun, memberName: string): void {
-    this.mutationPorts.emitMemberSpawnChange(run, memberName);
-  }
+    refreshFromLeadInbox(run: ProvisioningRun): Promise<void> {
+      return this.refreshMemberSpawnStatusesFromLeadInbox(run);
+    }
 
-  protected async persistLaunchStateSnapshot(): Promise<unknown> {
-    return null;
-  }
+    resolveExpected(
+      expectedMembers: readonly string[] | undefined,
+      candidateName: string
+    ): string | null {
+      return this.resolveExpectedLaunchMemberName(expectedMembers, candidateName);
+    }
+
+    protected getRunLeadName(): string {
+      return 'Lead';
+    }
+
+    protected async findBootstrapTranscriptOutcome() {
+      return null;
+    }
+
+    protected async sendOpenCodeMemberMessageToRuntimeSerialized() {
+      return {} as never;
+    }
+
+    protected emitMemberSpawnChange(run: ProvisioningRun, memberName: string): void {
+      this.mutationPorts.emitMemberSpawnChange(run, memberName);
+    }
+
+    protected async persistLaunchStateSnapshot(): Promise<unknown> {
+      return null;
+    }
+  };
 }
+type TestFacadeConstructor = ReturnType<typeof createTestFacadeClass>;
+
+let TestMemberStatusQueryFacade: TestFacadeConstructor;
+
+beforeAll(async () => {
+  const { TeamProvisioningMemberStatusQueryFacade } =
+    await import('../TeamProvisioningMemberStatusQueryFacade');
+  TestMemberStatusQueryFacade = createTestFacadeClass(TeamProvisioningMemberStatusQueryFacade);
+});
+
+afterAll(() => registryOnlyTaskControlFixture.dispose());
 
 function createRun(): ProvisioningRun {
   return {
@@ -333,13 +371,16 @@ describe('TeamProvisioningMemberStatusQueryFacade', () => {
         allEffectiveMembers: [{ name: 'Worker', role: 'developer' }],
       }) as unknown as ProvisioningRun;
 
-    beforeEach(() => {
-      claudeRoot.dir = mkdtempSync(join(tmpdir(), 'status-facade-funnel-'));
+    beforeEach(async () => {
+      claudeRoot.dir = registryOnlyTaskControlFixture.claudeDir;
+      await registryOnlyTaskControlFixture.clearTeam('alpha');
       mkdirSync(teamDir(), { recursive: true });
       writeFileSync(
         join(teamDir(), 'config.json'),
         JSON.stringify({
           name: 'alpha',
+          specProject: 'sandbox/project',
+          specSlug: 'sandbox-spec',
           leadSessionId: 'lead-session-1',
           members: [
             { name: 'Lead', role: 'team-lead' },
@@ -347,21 +388,39 @@ describe('TeamProvisioningMemberStatusQueryFacade', () => {
           ],
         })
       );
-      createController({ teamName: 'alpha', claudeDir: claudeRoot.dir }).taskBoard.createTask({
-        subject: 'Job for the worker',
-        owner: 'Worker',
-      });
+      const task = registryOnlyTaskControlFixture
+        .createController({ teamName: 'alpha', claudeDir: claudeRoot.dir })
+        .taskBoard.createTask({
+          requirements: ['FR-1'],
+          subject: 'Job for the worker',
+          owner: 'Worker',
+        });
+      const createdTask = task as TeamTask;
+      registryOnlyTaskControlFixture.trackTask('alpha', String(createdTask.id));
+      registryBoundary = await createRegistryTaskTestBoundary({ teamName: 'alpha' });
+      await registryBoundary.replaceTasks([
+        {
+          ...createdTask,
+          historyEvents: createdTask.historyEvents?.map((event) => ({
+            ...event,
+            id: String(event.id),
+          })),
+        },
+      ]);
       // Creating the task already told the member; the hand-over skips a task whose notice is
       // still unread, so the notice is read, as it is for a member that has since been started.
       markInboxRead();
     });
 
-    afterEach(() => rmSync(claudeRoot.dir, { recursive: true, force: true }));
+    afterEach(async () => {
+      await registryBoundary.dispose();
+      await registryOnlyTaskControlFixture.clearTeam('alpha');
+    });
 
-    it('S1.3: the first confirmation puts the work in the inbox, keyed by the launch attempt', () => {
+    it('S1.3: the first confirmation puts the work in the inbox, keyed by the launch attempt', async () => {
       const facade = new TestMemberStatusQueryFacade();
 
-      facade.transition(runWithMember(), 'Worker', waiting, confirmed);
+      await facade.transition(runWithMember(), 'Worker', waiting, confirmed);
 
       expect(startupRows()).toHaveLength(1);
       expect(startupRows()[0]?.messageId).toMatch(
@@ -369,13 +428,59 @@ describe('TeamProvisioningMemberStatusQueryFacade', () => {
       );
     });
 
-    it('S1.12: a status that stays confirmed hands nothing over again', () => {
+    it('retries an unchanged confirmed member after failure and deduplicates per launch attempt', async () => {
+      const facade = new TestMemberStatusQueryFacade();
+      const run = runWithMember();
+      facade.trackRun(run);
+      facade.readTeamTasksMock.mockRejectedValueOnce(new Error('temporary task registry failure'));
+      const snapshotFor = (status: MemberSpawnStatusEntry): MemberSpawnStatusesSnapshot => ({
+        statuses: { Worker: status },
+        runId: run.runId,
+      });
+      facade.readMemberSpawnStatusesSnapshotMock.mockResolvedValue(snapshotFor(confirmed));
+
+      await facade.transition(run, 'Worker', waiting, confirmed);
+
+      expect(startupRows()).toEqual([]);
+      expect(facade.readTeamTasksMock).toHaveBeenCalledTimes(1);
+      expect(facade.appendMemberBootstrapDiagnosticMock).toHaveBeenCalledWith(
+        run,
+        'Worker',
+        expect.stringContaining('temporary task registry failure')
+      );
+      expect(facade.appendMemberBootstrapDiagnosticMock).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(console.warn).mock.calls.flat().join(' ')).toContain(
+        'temporary task registry failure'
+      );
+      vi.mocked(console.warn).mockClear();
+
+      await facade.getMemberSpawnStatuses('alpha');
+
+      expect(startupRows()).toHaveLength(1);
+      expect(facade.readTeamTasksMock).toHaveBeenCalledTimes(2);
+      await facade.getMemberSpawnStatuses('alpha');
+      expect(facade.readTeamTasksMock).toHaveBeenCalledTimes(2);
+      expect(facade.appendMemberBootstrapDiagnosticMock).toHaveBeenCalledTimes(2);
+
+      markInboxRead();
+      const restartedAt = '2026-07-08T00:20:00.000Z';
+      facade.readMemberSpawnStatusesSnapshotMock.mockResolvedValue(
+        snapshotFor({ ...confirmed, firstSpawnAcceptedAt: restartedAt })
+      );
+      await facade.getMemberSpawnStatuses('alpha');
+
+      expect(startupRows()).toHaveLength(2);
+      expect(startupRows()[1]?.messageId).toContain(`startup-work:run-1@${restartedAt}:worker:`);
+      expect(facade.readTeamTasksMock).toHaveBeenCalledTimes(3);
+    });
+
+    it('S1.12: a status that stays confirmed hands nothing over again', async () => {
       const facade = new TestMemberStatusQueryFacade();
       const run = runWithMember();
 
-      facade.transition(run, 'Worker', waiting, confirmed);
+      await facade.transition(run, 'Worker', waiting, confirmed);
       markInboxRead();
-      facade.transition(run, 'Worker', confirmed, {
+      await facade.transition(run, 'Worker', confirmed, {
         ...confirmed,
         updatedAt: '2026-07-08T00:02:00.000Z',
       });
@@ -383,10 +488,10 @@ describe('TeamProvisioningMemberStatusQueryFacade', () => {
       expect(startupRows()).toHaveLength(1);
     });
 
-    it('S1.13: a live process alone is not a confirmation, so no work is handed over', () => {
+    it('S1.13: a live process alone is not a confirmation, so no work is handed over', async () => {
       const facade = new TestMemberStatusQueryFacade();
 
-      facade.transition(runWithMember(), 'Worker', waiting, {
+      await facade.transition(runWithMember(), 'Worker', waiting, {
         ...waiting,
         status: 'online',
         livenessSource: 'process',
@@ -395,14 +500,14 @@ describe('TeamProvisioningMemberStatusQueryFacade', () => {
       expect(startupRows()).toEqual([]);
     });
 
-    it('S1.18: a restart inside the run is a new launch attempt and hands the work over again', () => {
+    it('S1.18: a restart inside the run is a new launch attempt and hands the work over again', async () => {
       const facade = new TestMemberStatusQueryFacade();
       const run = runWithMember();
 
-      facade.transition(run, 'Worker', waiting, confirmed);
+      await facade.transition(run, 'Worker', waiting, confirmed);
       markInboxRead();
       const restartedAt = '2026-07-08T00:20:00.000Z';
-      facade.transition(
+      await facade.transition(
         run,
         'Worker',
         { ...waiting, firstSpawnAcceptedAt: restartedAt },
@@ -415,10 +520,10 @@ describe('TeamProvisioningMemberStatusQueryFacade', () => {
       ]);
     });
 
-    it('a run that is no longer the tracked one hands nothing over', () => {
+    it('a run that is no longer the tracked one hands nothing over', async () => {
       const facade = new TestMemberStatusQueryFacade();
 
-      facade.transition(
+      await facade.transition(
         { ...runWithMember(), runId: 'run-0' } as ProvisioningRun,
         'Worker',
         waiting,

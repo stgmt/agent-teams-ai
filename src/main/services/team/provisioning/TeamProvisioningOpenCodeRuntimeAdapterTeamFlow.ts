@@ -101,6 +101,8 @@ export async function createOpenCodeTeamThroughRuntimeAdapterFlow(
   await ports.mkdir(path.join(ports.getTasksBasePath(), launchRequest.teamName));
   if (createdTeamDirectory) await ports.mkdir(path.join(teamDir, 'inboxes'));
   await ports.writeTeamMeta(launchRequest.teamName, {
+    specProject: launchRequest.specProject,
+    specSlug: launchRequest.specSlug,
     displayName: launchRequest.displayName,
     description: launchRequest.description,
     color: launchRequest.color,

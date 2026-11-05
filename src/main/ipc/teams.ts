@@ -19,6 +19,8 @@ import { addMainBreadcrumb } from '@main/sentry';
 import { setCurrentMainOp } from '@main/services/infrastructure/EventLoopLagMonitor';
 import { markTeamEngaged } from '@main/services/infrastructure/teamWatchScope';
 import { OpenCodeRetainedPrimaryRestartError } from '@main/services/team/provisioning/OpenCodeRetainedPrimaryRestartError';
+import { discoverSpecRegistry } from '@main/services/team/registry/SpecRegistryDiscovery';
+import { resolveTeamSpecBinding } from '@main/services/team/registry/TeamSpecBinding';
 import {
   getTeamDataWorkerClient,
   isTeamDataWorkerFatalError,
@@ -45,6 +47,7 @@ import {
   TEAM_DELETE_DRAFT,
   TEAM_DELETE_TASK_ATTACHMENT,
   TEAM_DELETE_TEAM,
+  TEAM_DISCOVER_SPEC_REGISTRY,
   TEAM_DISCARD_QUEUED_USER_MESSAGES,
   TEAM_FORCE_STOP,
   TEAM_GET_AGENT_RUNTIME,
@@ -141,7 +144,6 @@ import {
   buildStandaloneSlashCommandMeta,
   parseStandaloneSlashCommand,
 } from '@shared/utils/slashCommands';
-import { looksLikeCanonicalTaskId } from '@shared/utils/taskIdentity';
 import { normalizeTeamMemberMcpPolicy } from '@shared/utils/teamMemberMcpPolicy';
 import { isTeamProviderId, normalizeOptionalTeamProviderId } from '@shared/utils/teamProvider';
 import {
@@ -207,6 +209,7 @@ import { TeamPermanentDeletionTransactionCoordinator } from './teams/TeamPermane
 import { discardQueuedUserMessages, listQueuedUserMessages } from './teams/teamQueuedUserMessages';
 import { softDeleteTeamWithBestEffortStop } from './teams/teamSoftDeleteFlow';
 import { withTimeoutValue } from './teams/withTimeoutValue';
+import { createTeamTaskIpcHandlers, validateTaskRefs } from './teamTaskIpcHandlers';
 import {
   validateFromField,
   validateMemberName,
@@ -268,7 +271,6 @@ import type {
   BoardTaskExactLogSummariesResponse,
   BoardTaskLogStreamResponse,
   BoardTaskLogStreamSummary,
-  CreateTaskRequest,
   DiscardQueuedUserMessagesResult,
   EffortLevel,
   GlobalTask,
@@ -290,7 +292,6 @@ import type {
   TaskChangePresenceState,
   TaskComment,
   TaskFieldUpdates,
-  TaskRef,
   TeamAgentRuntimeSnapshot,
   TeamClaudeLogsQuery,
   TeamClaudeLogsResponse,
@@ -314,7 +315,6 @@ import type {
   TeamSummary,
   TeamTask,
   TeamTaskStatus,
-  TeamTaskWithKanban,
   TeamUpdateConfigRequest,
   TeamViewSnapshot,
   TeamWorktreeGitStatus,
@@ -689,6 +689,14 @@ export function initializeTeamHandlers(
 }
 
 export function registerTeamHandlers(ipcMain: IpcMain): void {
+  const { handleCreateTask, handleGetTask } = createTeamTaskIpcHandlers({
+    getTeamDataService,
+    wrapTeamHandler,
+  });
+
+  ipcMain.handle(TEAM_DISCOVER_SPEC_REGISTRY, () =>
+    wrapTeamHandler('discoverSpecRegistry', () => discoverSpecRegistry())
+  );
   ipcMain.handle(TEAM_LIST, handleListTeams);
   ipcMain.handle(TEAM_GET_DATA, handleGetData);
   ipcMain.handle(TEAM_GET_TASK_CHANGE_PRESENCE, handleGetTaskChangePresence);
@@ -781,6 +789,7 @@ export function registerTeamHandlers(ipcMain: IpcMain): void {
 }
 
 export function removeTeamHandlers(ipcMain: IpcMain): void {
+  ipcMain.removeHandler(TEAM_DISCOVER_SPEC_REGISTRY);
   ipcMain.removeHandler(TEAM_LIST);
   ipcMain.removeHandler(TEAM_GET_DATA);
   ipcMain.removeHandler(TEAM_GET_TASK_CHANGE_PRESENCE);
@@ -1472,7 +1481,7 @@ async function handleUpdateConfig(
   _event: IpcMainInvokeEvent,
   teamName: unknown,
   updates: unknown
-): Promise<IpcResult<TeamConfig>> {
+): Promise<IpcResult<TeamConfig | null>> {
   const validated = validateTeamName(teamName);
   if (!validated.valid) {
     return { success: false, error: validated.error ?? 'Invalid teamName' };
@@ -1480,7 +1489,7 @@ async function handleUpdateConfig(
   if (!updates || typeof updates !== 'object') {
     return { success: false, error: 'Invalid updates object' };
   }
-  const { name, description, color } = updates as TeamUpdateConfigRequest;
+  const { name, description, color, specProject, specSlug } = updates as TeamUpdateConfigRequest;
   if (name !== undefined && typeof name !== 'string') {
     return { success: false, error: 'name must be a string' };
   }
@@ -1489,6 +1498,12 @@ async function handleUpdateConfig(
   }
   if (color !== undefined && typeof color !== 'string') {
     return { success: false, error: 'color must be a string' };
+  }
+  if (specProject !== undefined && typeof specProject !== 'string') {
+    return { success: false, error: 'specProject must be a string' };
+  }
+  if (specSlug !== undefined && typeof specSlug !== 'string') {
+    return { success: false, error: 'specSlug must be a string' };
   }
   return wrapTeamHandler('updateConfig', async () => {
     const tn = validated.value!;
@@ -1499,10 +1514,9 @@ async function handleUpdateConfig(
       name,
       description,
       color,
+      specProject,
+      specSlug,
     });
-    if (!result) {
-      throw new Error('Team config not found');
-    }
 
     // Notify running lead about the rename so it stays aware of current team name
     if (requestedName && requestedName !== (previousDisplayName?.trim() || tn)) {
@@ -1797,6 +1811,12 @@ async function validateProvisioningRequest(
   if (!isProvisioningTeamName(teamName)) {
     return { valid: false, error: 'teamName must be kebab-case [a-z0-9-], max 64 chars' };
   }
+  let taskBinding: ReturnType<typeof resolveTeamSpecBinding>;
+  try {
+    taskBinding = resolveTeamSpecBinding(payload, teamName);
+  } catch (error) {
+    return { valid: false, error: error instanceof Error ? error.message : String(error) };
+  }
 
   if (payload.displayName !== undefined && typeof payload.displayName !== 'string') {
     return { valid: false, error: 'displayName must be string' };
@@ -1968,6 +1988,8 @@ async function validateProvisioningRequest(
     value: {
       runtimeSelectionVersion: normalizeRuntimeSelectionVersion(payload.runtimeSelectionVersion),
       teamName,
+      specProject: taskBinding.project,
+      specSlug: taskBinding.spec,
       displayName: payload.displayName?.trim() || undefined,
       description: payload.description?.trim() || undefined,
       color: typeof payload.color === 'string' ? payload.color.trim() || undefined : undefined,
@@ -2231,6 +2253,8 @@ async function handleLaunchTeamUnlocked(
 
     const createRequest: TeamCreateRequest = {
       teamName: tn,
+      specProject: savedRequest.specProject,
+      specSlug: savedRequest.specSlug,
       runtimeSelectionVersion,
       displayName: savedRequest.displayName,
       description: savedRequest.description,
@@ -2624,46 +2648,6 @@ function isUpdateKanbanPatch(value: unknown): value is UpdateKanbanPatch {
   }
 
   return patch.op === 'set_column' && (patch.column === 'review' || patch.column === 'approved');
-}
-
-function validateTaskRefs(
-  value: unknown
-): { valid: true; value: TaskRef[] | undefined } | { valid: false; error: string } {
-  if (value === undefined) {
-    return { valid: true, value: undefined };
-  }
-  if (!Array.isArray(value)) {
-    return { valid: false, error: 'taskRefs must be an array' };
-  }
-
-  const taskRefs: TaskRef[] = [];
-  for (const entry of value) {
-    if (!entry || typeof entry !== 'object') {
-      return { valid: false, error: 'taskRefs entries must be objects' };
-    }
-    const row = entry as Partial<TaskRef>;
-    const taskId = typeof row.taskId === 'string' ? row.taskId.trim() : '';
-    const displayId = typeof row.displayId === 'string' ? row.displayId.trim() : '';
-    const teamName = typeof row.teamName === 'string' ? row.teamName.trim() : '';
-    if (!taskId || !displayId || !teamName) {
-      return { valid: false, error: 'Each taskRef must include taskId, displayId, and teamName' };
-    }
-    const validatedTaskId = validateTaskId(taskId);
-    if (!validatedTaskId.valid) {
-      return { valid: false, error: validatedTaskId.error ?? 'Invalid taskRef taskId' };
-    }
-    const validatedTeamName = validateTeamName(teamName);
-    if (!validatedTeamName.valid) {
-      return { valid: false, error: validatedTeamName.error ?? 'Invalid taskRef teamName' };
-    }
-    taskRefs.push({
-      taskId: validatedTaskId.value!,
-      displayId,
-      teamName: validatedTeamName.value!,
-    });
-  }
-
-  return { valid: true, value: taskRefs };
 }
 
 async function handleGetAttachments(
@@ -3167,120 +3151,6 @@ async function handleGetOpenCodeRuntimeDeliveryStatus(
   );
 }
 
-async function handleCreateTask(
-  _event: IpcMainInvokeEvent,
-  teamName: unknown,
-  request: unknown
-): Promise<IpcResult<TeamTask>> {
-  const validatedTeamName = validateTeamName(teamName);
-  if (!validatedTeamName.valid) {
-    return { success: false, error: validatedTeamName.error ?? 'Invalid teamName' };
-  }
-
-  if (!request || typeof request !== 'object') {
-    return { success: false, error: 'Invalid create task request' };
-  }
-
-  const payload = request as Partial<CreateTaskRequest>;
-  let command: CreateTaskRequest['command'];
-  if (payload.command !== undefined) {
-    if (!payload.command || typeof payload.command !== 'object') {
-      return { success: false, error: 'command must be an object' };
-    }
-    const commandId = payload.command.commandId;
-    const idempotencyKey = payload.command.idempotencyKey;
-    if (typeof commandId !== 'string' || !looksLikeCanonicalTaskId(commandId)) {
-      return { success: false, error: 'command.commandId must be a UUID' };
-    }
-    if (
-      typeof idempotencyKey !== 'string' ||
-      idempotencyKey.trim().length === 0 ||
-      idempotencyKey.trim().length > 200
-    ) {
-      return {
-        success: false,
-        error: 'command.idempotencyKey must be a non-empty string up to 200 characters',
-      };
-    }
-    command = {
-      commandId: commandId.trim(),
-      idempotencyKey: idempotencyKey.trim(),
-    };
-  }
-  if (typeof payload.subject !== 'string' || payload.subject.trim().length === 0) {
-    return { success: false, error: 'subject must be a non-empty string' };
-  }
-  if (payload.subject.trim().length > 500) {
-    return { success: false, error: 'subject exceeds max length (500)' };
-  }
-  if (payload.description !== undefined && typeof payload.description !== 'string') {
-    return { success: false, error: 'description must be string' };
-  }
-  const validatedDescriptionTaskRefs = validateTaskRefs(payload.descriptionTaskRefs);
-  if (!validatedDescriptionTaskRefs.valid) {
-    return { success: false, error: validatedDescriptionTaskRefs.error };
-  }
-  if (payload.groupChatId !== undefined && typeof payload.groupChatId !== 'string') {
-    return { success: false, error: 'groupChatId must be a UUID string' };
-  }
-  if (payload.owner !== undefined) {
-    const validatedOwner = validateMemberName(payload.owner);
-    if (!validatedOwner.valid) {
-      return { success: false, error: validatedOwner.error ?? 'Invalid owner' };
-    }
-  }
-  if (payload.blockedBy !== undefined) {
-    if (
-      !Array.isArray(payload.blockedBy) ||
-      payload.blockedBy.some((id) => typeof id !== 'string')
-    ) {
-      return { success: false, error: 'blockedBy must be an array of task ID strings' };
-    }
-  }
-  if (payload.related !== undefined) {
-    if (!Array.isArray(payload.related) || payload.related.some((id) => typeof id !== 'string')) {
-      return { success: false, error: 'related must be an array of task ID strings' };
-    }
-    for (const id of payload.related) {
-      const validated = validateTaskId(id);
-      if (!validated.valid) {
-        return { success: false, error: validated.error ?? 'Invalid related task id' };
-      }
-    }
-  }
-  if (payload.prompt !== undefined) {
-    if (typeof payload.prompt !== 'string') {
-      return { success: false, error: 'prompt must be a string' };
-    }
-    if (payload.prompt.length > 5000) {
-      return { success: false, error: 'prompt exceeds max length (5000)' };
-    }
-  }
-  const validatedPromptTaskRefs = validateTaskRefs(payload.promptTaskRefs);
-  if (!validatedPromptTaskRefs.valid) {
-    return { success: false, error: validatedPromptTaskRefs.error };
-  }
-  if (payload.startImmediately !== undefined && typeof payload.startImmediately !== 'boolean') {
-    return { success: false, error: 'startImmediately must be a boolean' };
-  }
-
-  return wrapTeamHandler('createTask', () =>
-    getTeamDataService().createTask(validatedTeamName.value!, {
-      ...(command ? { command } : {}),
-      subject: payload.subject!.trim(),
-      description: payload.description?.trim(),
-      groupChatId: payload.groupChatId,
-      owner: payload.owner?.trim() || undefined,
-      blockedBy: payload.blockedBy,
-      related: payload.related,
-      descriptionTaskRefs: validatedDescriptionTaskRefs.value,
-      prompt: payload.prompt?.trim() || undefined,
-      promptTaskRefs: validatedPromptTaskRefs.value,
-      startImmediately: payload.startImmediately,
-    })
-  );
-}
-
 async function handleRequestReview(
   _event: IpcMainInvokeEvent,
   teamName: unknown,
@@ -3298,26 +3168,6 @@ async function handleRequestReview(
 
   return wrapTeamHandler('requestReview', () =>
     getTeamDataService().requestReview(validatedTeamName.value!, validatedTaskId.value!)
-  );
-}
-
-async function handleGetTask(
-  _event: IpcMainInvokeEvent,
-  teamName: unknown,
-  taskId: unknown
-): Promise<IpcResult<TeamTaskWithKanban | null>> {
-  const validatedTeamName = validateTeamName(teamName);
-  if (!validatedTeamName.valid) {
-    return { success: false, error: validatedTeamName.error ?? 'Invalid teamName' };
-  }
-
-  const validatedTaskId = validateTaskId(taskId);
-  if (!validatedTaskId.valid) {
-    return { success: false, error: validatedTaskId.error ?? 'Invalid taskId' };
-  }
-
-  return wrapTeamHandler('getTask', () =>
-    getTeamDataService().getTask(validatedTeamName.value!, validatedTaskId.value!)
   );
 }
 

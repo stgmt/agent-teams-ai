@@ -1,6 +1,7 @@
 const path = require('path');
 
 const { withFileLockSync } = require('./fileLock.js');
+const { isReadOnlyTaskSnapshot } = require('./taskBackendSelection.js');
 
 const reentrantLockStateByScope = new Map();
 
@@ -38,8 +39,17 @@ function withTeamBoardLock(paths, fn) {
   });
 }
 
+/**
+ * Snapshot reads use detached task data and atomically replaced Kanban state.
+ * They must not synchronously wait behind an app-main async lock holder.
+ */
+function withTeamBoardReadLock(paths, fn) {
+  return isReadOnlyTaskSnapshot(paths) ? fn() : withTeamBoardLock(paths, fn);
+}
+
 module.exports = {
   getTeamBoardLockContext,
   getTeamBoardLockScope,
   withTeamBoardLock,
+  withTeamBoardReadLock,
 };

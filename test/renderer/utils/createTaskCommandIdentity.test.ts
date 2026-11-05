@@ -73,6 +73,22 @@ describe('resolveCreateTaskCommand', () => {
     expect(createCommandId).toHaveBeenCalledTimes(1);
   });
 
+  it('starts a new command when the linked specification requirements change', () => {
+    const createCommandId = vi.fn<() => string>()
+      .mockReturnValueOnce('first').mockReturnValueOnce('second');
+    const first = resolveCreateTaskCommand(null, 'team-a', {
+      subject: 'Task', requirements: ['FR-1', 'AC-2'],
+    }, createCommandId);
+    const reordered = resolveCreateTaskCommand(first, 'team-a', {
+      subject: 'Task', requirements: ['AC-2', 'FR-1'],
+    }, createCommandId);
+    const changed = resolveCreateTaskCommand(reordered, 'team-a', {
+      subject: 'Task', requirements: ['FR-2'],
+    }, createCommandId);
+    expect(reordered).toBe(first);
+    expect(changed.identity.commandId).toBe('second');
+  });
+
   it('allows only one submit until the caller reports completion', () => {
     const gate = { inFlight: false };
 

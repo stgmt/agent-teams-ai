@@ -18,12 +18,15 @@ import { TeamMetaStore } from '../../../../src/main/services/team/TeamMetaStore'
 import { TeamProvisioningService } from '../../../../src/main/services/team/TeamProvisioningService';
 import { TeamSentMessagesStore } from '../../../../src/main/services/team/TeamSentMessagesStore';
 import { TeamTaskReader } from '../../../../src/main/services/team/TeamTaskReader';
+import { ExecutionTaskStore } from '../../../../src/main/services/team/execution/ExecutionTaskStore';
+import { RegistryTeamTaskWriter } from '../../../../src/main/services/team/registry/RegistryTeamTaskWriter';
 import { encodePath, setClaudeBasePathOverride } from '../../../../src/main/utils/pathDecoder';
 
 import type {
   InboxMessageCursor,
   InboxMessagesWindow,
 } from '../../../../src/main/services/team/TeamInboxReader';
+import type { RegistryTask, UpsertRegistryTaskInput } from '../../../../src/main/services/team/registry/RegistryTaskClientTypes';
 import type { TeamMetaFile } from '../../../../src/main/services/team/TeamMetaStore';
 import type {
   InboxMessage,
@@ -36,6 +39,121 @@ import type {
 
 const TASK_COMMENT_FORWARDING_ENV = 'CLAUDE_TEAM_TASK_COMMENT_FORWARDING';
 const tempPaths: string[] = [];
+
+function createRegistryCreationFixture(configReader: {
+  getConfig: (teamName: string) => Promise<unknown>;
+  getConfigSnapshot?: (teamName: string) => Promise<unknown>;
+}) {
+  const root = nodeFs.mkdtempSync(path.join(os.tmpdir(), 'team-registry-create-'));
+  tempPaths.push(root);
+  const store = new ExecutionTaskStore({ basePath: root });
+  const tasks: RegistryTask[] = [];
+  const upsertTask = vi.fn(async (input: UpsertRegistryTaskInput) => {
+    tasks.push({
+      canonicalId: `${input.spec}:TASK-${input.localId}`, localId: input.localId,
+      title: input.title, status: input.status ?? 'todo', owner: input.owner ?? null,
+      tracking: input.tracking ?? null, requirements: [...input.requirements],
+      dependsOn: [...(input.dependsOn ?? [])], blocks: [], blockedBy: [],
+      refs: [...(input.refs ?? [])], contentHash: null, body: input.body,
+    });
+    return { outcome: 'APPLIED' as const, transitions: [], refusal: null };
+  });
+  const client = {
+    readTasksDocumentSha: vi.fn(async () => 'a'.repeat(64)),
+    listTasks: vi.fn(async () => tasks),
+    upsertTask,
+    replaceTaskStatus: vi.fn(),
+    replaceTaskOwner: vi.fn(),
+    replaceTaskLinks: vi.fn(),
+  };
+  const writer = new RegistryTeamTaskWriter({
+    teamName: 'my-team',
+    binding: { project: 'sandbox/project', spec: 'sandbox-spec' },
+    client: client as never,
+    executionStore: store,
+  });
+  const service = new TeamDataService(
+    configReader as never, undefined, undefined, undefined, undefined, undefined,
+    undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+    undefined, undefined, undefined, { invalidate: vi.fn() } as never, async () => writer
+  );
+  return { service, store, upsertTask };
+}
+
+// These in-memory task rows stand in for registry projection responses; no
+// canonical task files or real registry are consulted by these unit fixtures.
+function createRegistryProjectionFixture(...args: ConstructorParameters<typeof TeamDataService>) {
+  const sourceConfig = args[0]!;
+  const taskRows = args[1]!;
+  const config = Object.create(sourceConfig) as TeamConfigReader;
+  const bind = (value: TeamConfig | null) => value === null ? null : ({
+    specProject: 'sandbox/project', specSlug: 'sandbox-spec', ...value,
+  });
+  if (typeof sourceConfig.getConfig === 'function') {
+    config.getConfig = async (...input) => bind(await sourceConfig.getConfig(...input));
+  }
+  if (typeof sourceConfig.getConfigSnapshot === 'function') {
+    config.getConfigSnapshot = async (...input) => bind(await sourceConfig.getConfigSnapshot(...input));
+  }
+  if (typeof sourceConfig.listTeams === 'function') {
+    config.listTeams = async (...input) =>
+      (await sourceConfig.listTeams(...input)).map((team) => ({
+        specProject: 'sandbox/project', specSlug: 'sandbox-spec', ...team,
+      }));
+  }
+  args[0] = config;
+  args[1] = undefined;
+  args[16] = {
+    getTasks: async (teamName: string) => ({ backed: true, tasks: await taskRows.getTasks(teamName) }),
+    getTask: async (teamName: string, taskId: string) => ({
+      backed: true, task: (await taskRows.getTasks(teamName)).find((task) => task.id === taskId) ?? null,
+    }),
+    getScope: async () => ({ project: 'sandbox/project', spec: 'sandbox-spec' }),
+    invalidate: vi.fn(),
+  } as never;
+  return new TeamDataService(...args);
+}
+
+function createGlobalRegistryFixture(input: {
+  names: string[];
+  getConfigSnapshot: (teamName: string) => Promise<TeamConfig | null>;
+  getTasks: (teamName: string) => Promise<TeamTask[]>;
+  getState: (teamName: string) => Promise<KanbanState>;
+  listTeams?: () => Promise<unknown>;
+}) {
+  const registry = { getTasks: vi.fn(async (name: string) => ({
+    backed: true, tasks: await input.getTasks(name),
+  })), invalidate: vi.fn() };
+  const service = new TeamDataService(
+    { listTeamNames: vi.fn(async () => input.names), getConfigSnapshot: input.getConfigSnapshot,
+      listTeams: input.listTeams } as never,
+    undefined, undefined, undefined, undefined, { getState: input.getState } as never,
+    undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+    undefined, undefined, undefined, registry as never
+  );
+  return { service, registry };
+}
+
+function createRegistryReviewFixture(members: TeamConfig['members'], task: TeamTask) {
+  const transitionReview = vi.fn(async () => undefined);
+  const replaceStatus = vi.fn(async () => ({ outcome: 'APPLIED', transitions: [] }));
+  const sendMessageAsync = vi.fn(async () => ({ deliveredToInbox: true }));
+  const updateTask = vi.fn(async () => undefined);
+  const kanban = {
+    getState: vi.fn(async () => ({ teamName: 'my-team', reviewers: ['reviewer'], tasks: {} })),
+    updateTask,
+  };
+  const service = new TeamDataService(
+    { getConfig: async () => ({ name: 'My team', members, leadSessionId: 'lead-1',
+      specProject: 'sandbox/project', specSlug: 'sandbox-spec' }) } as never,
+    undefined, undefined, undefined, undefined, kanban as never,
+    undefined, undefined, undefined, (() => ({ messages: { sendMessageAsync } })) as never,
+    undefined, undefined, undefined, undefined, undefined, undefined,
+    { getTask: async () => ({ backed: true, task }), invalidate: vi.fn() } as never,
+    async () => ({ transitionReview, replaceStatus }) as never
+  );
+  return { service, transitionReview, replaceStatus, sendMessageAsync, updateTask };
+}
 
 type TeamDataServicePrivate = {
   extractLeadAssistantTextsFromJsonlLines(
@@ -305,7 +423,6 @@ function createResolverBackedService(): TeamDataService {
       getMessagesWindow: vi.fn(createMockInboxMessagesWindowReader(async () => [])),
     } as never,
     {} as never,
-    {} as never,
     { resolveMembers: vi.fn(() => []) } as never,
     { getState: vi.fn(async () => ({ teamName: 'my-team', reviewers: [], tasks: {} })) } as never,
     {} as never,
@@ -334,7 +451,6 @@ function createLeadSessionCachingService(
       listInboxNames: vi.fn(async () => []),
       getMessages: vi.fn(async () => []),
     } as never,
-    {} as never,
     {} as never,
     {
       resolveMembers: vi.fn(() => []),
@@ -374,87 +490,6 @@ afterEach(async () => {
 });
 
 describe('TeamDataService task projection cache invalidation', () => {
-  it('invalidates global task projection cache after direct task mutations', async () => {
-    const task: TeamTask = {
-      id: 'task-1',
-      subject: 'Task 1',
-      status: 'pending',
-      createdAt: '2026-05-02T12:00:00.000Z',
-      updatedAt: '2026-05-02T12:00:00.000Z',
-    };
-    const taskController = {
-      createTask: vi.fn(() => task),
-      startTask: vi.fn(),
-      setTaskStatus: vi.fn(),
-      softDeleteTask: vi.fn(),
-      restoreTask: vi.fn(),
-      setTaskOwner: vi.fn(),
-      updateTaskFields: vi.fn(),
-      addTaskAttachmentMeta: vi.fn(),
-      removeTaskAttachment: vi.fn(),
-      setNeedsClarification: vi.fn(),
-      linkTask: vi.fn(),
-      unlinkTask: vi.fn(),
-      addTaskComment: vi.fn(() => ({
-        comment: {
-          id: 'comment-1',
-          author: 'user',
-          text: 'Comment',
-          createdAt: '2026-05-02T12:01:00.000Z',
-          type: 'regular',
-        },
-      })),
-    };
-    const service = new TeamDataService(
-      {
-        getConfig: vi.fn(async () => ({
-          name: 'my-team',
-          projectPath: '/repo',
-          members: [{ name: 'team-lead', role: 'Lead' }],
-        })),
-      } as never,
-      {
-        getTasks: vi.fn(async () => [task]),
-      } as never,
-      {
-        listInboxNames: vi.fn(async () => []),
-        getMessages: vi.fn(async () => []),
-      } as never,
-      {} as never,
-      {} as never,
-      { resolveMembers: vi.fn(() => []) } as never,
-      { getState: vi.fn(async () => ({ teamName: 'my-team', reviewers: [], tasks: {} })) } as never,
-      {} as never,
-      { getMembers: vi.fn(async () => []) } as never,
-      { readMessages: vi.fn(async () => []) } as never,
-      (() => ({ taskBoard: taskController })) as never
-    );
-    const invalidateSpy = vi.spyOn(TeamTaskReader, 'invalidateAllTasksCache');
-
-    await service.createTask('my-team', { subject: 'Task 1' });
-    await service.startTask('my-team', 'task-1');
-    await service.startTaskByUser('my-team', 'task-1');
-    await service.updateTaskStatus('my-team', 'task-1', 'completed');
-    await service.softDeleteTask('my-team', 'task-1');
-    await service.restoreTask('my-team', 'task-1');
-    await service.updateTaskOwner('my-team', 'task-1', 'alice');
-    await service.updateTaskFields('my-team', 'task-1', { subject: 'Task 1 updated' });
-    await service.addTaskAttachment('my-team', 'task-1', {
-      id: 'att-1',
-      filename: 'note.txt',
-      mimeType: 'text/plain',
-      size: 1,
-      createdAt: '2026-05-02T12:02:00.000Z',
-    } as never);
-    await service.removeTaskAttachment('my-team', 'task-1', 'att-1');
-    await service.setTaskNeedsClarification('my-team', 'task-1', 'lead');
-    await service.addTaskRelationship('my-team', 'task-1', 'task-2', 'related');
-    await service.removeTaskRelationship('my-team', 'task-1', 'task-2', 'related');
-    await service.addTaskComment('my-team', 'task-1', 'Comment');
-
-    expect(invalidateSpy).toHaveBeenCalledTimes(14);
-  });
-
   it('removes detached trees, never recursively removes public paths, and stays idempotent', async () => {
     const claudeRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'team-data-delete-cache-'));
     tempPaths.push(claudeRoot);
@@ -558,8 +593,8 @@ describe('TeamDataService draft metadata', () => {
     service.setConfigurationGate((name, operation) =>
       lifecycle.runLiveRosterMutation(name, operation)
     );
-    await service.createTeamConfig({ teamName: 'draft-a', members: [] });
-    await service.createTeamConfig({ teamName: 'draft-b', members: [] });
+    await service.createTeamConfig({ teamName: 'draft-a', specProject: 'sandbox/project', specSlug: 'sandbox-spec', members: [] });
+    await service.createTeamConfig({ teamName: 'draft-b', specProject: 'sandbox/project', specSlug: 'sandbox-spec', members: [] });
     const outcomes = await Promise.allSettled([
       service.renameDraftTeam('draft-a', 'draft-b'),
       service.renameDraftTeam('draft-b', 'draft-a'),
@@ -594,6 +629,7 @@ describe('TeamDataService draft metadata', () => {
 
     await new TeamDataService().createTeamConfig({
       teamName: 'test-empty-inbox',
+      specProject: 'sandbox/project', specSlug: 'sandbox-spec',
       providerId: 'opencode',
       members: [{ name: 'researcher' }],
     });
@@ -619,7 +655,7 @@ describe('TeamDataService draft metadata', () => {
     const publishDraft = vi.spyOn(TeamMetaStore.prototype, 'writeMeta');
 
     await expect(
-      new TeamDataService().createTeamConfig({ teamName: 'test-inbox-rollback', members: [] })
+      new TeamDataService().createTeamConfig({ teamName: 'test-inbox-rollback', specProject: 'sandbox/project', specSlug: 'sandbox-spec', members: [] })
     ).rejects.toThrow('TEST inbox initialization failed');
 
     expect(publishDraft).not.toHaveBeenCalled();
@@ -642,6 +678,7 @@ describe('TeamDataService draft metadata', () => {
     await expect(
       new TeamDataService().createTeamConfig({
         teamName: 'draft-team',
+        specProject: 'sandbox/project', specSlug: 'sandbox-spec',
         members: [{ name: 'replacement' }],
       })
     ).rejects.toThrow('Team already exists');
@@ -661,7 +698,7 @@ describe('TeamDataService draft metadata', () => {
     await fs.mkdir(path.join(claudeRoot, 'tasks', 'draft-team'), { recursive: true });
 
     await expect(
-      new TeamDataService().createTeamConfig({ teamName: 'draft-team', members: [] })
+      new TeamDataService().createTeamConfig({ teamName: 'draft-team', specProject: 'sandbox/project', specSlug: 'sandbox-spec', members: [] })
     ).rejects.toThrow('Team already exists');
     await expect(fs.access(path.join(claudeRoot, 'teams', 'draft-team'))).rejects.toThrow();
   });
@@ -673,8 +710,8 @@ describe('TeamDataService draft metadata', () => {
     const service = new TeamDataService();
 
     const results = await Promise.allSettled([
-      service.createTeamConfig({ teamName: 'draft-team', members: [{ name: 'alpha' }] }),
-      service.createTeamConfig({ teamName: 'draft-team', members: [{ name: 'beta' }] }),
+      service.createTeamConfig({ teamName: 'draft-team', specProject: 'sandbox/project', specSlug: 'sandbox-spec', members: [{ name: 'alpha' }] }),
+      service.createTeamConfig({ teamName: 'draft-team', specProject: 'sandbox/project', specSlug: 'sandbox-spec', members: [{ name: 'beta' }] }),
     ]);
 
     expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
@@ -692,6 +729,7 @@ describe('TeamDataService draft metadata', () => {
     const service = new TeamDataService();
     await service.createTeamConfig({
       teamName: 'inheritance-team',
+      specProject: 'sandbox/project', specSlug: 'sandbox-spec',
       members: [{ name: 'inherited' }],
     });
     const metaPath = path.join(claudeRoot, 'teams', 'inheritance-team', 'members.meta.json');
@@ -716,6 +754,7 @@ describe('TeamDataService draft metadata', () => {
     const listCacheInvalidateSpy = vi.spyOn(TeamConfigReader, 'invalidateListTeamsCache');
     await service.createTeamConfig({
       teamName: 'draft-team',
+      specProject: 'sandbox/project', specSlug: 'sandbox-spec',
       displayName: 'Draft Team',
       description: 'Saved draft',
       color: '#3366ff',
@@ -782,6 +821,7 @@ describe('TeamDataService draft metadata', () => {
     const service = new TeamDataService();
     await service.createTeamConfig({
       teamName: 'byte-team',
+      specProject: 'sandbox/project', specSlug: 'sandbox-spec',
       prompt: 'Keep the saved instructions',
       members: [{ name: 'builder' }],
     });
@@ -811,6 +851,7 @@ describe('TeamDataService draft metadata', () => {
     const prompt = 'p'.repeat(100_000);
     await service.createTeamConfig({
       teamName: 'byte-team',
+      specProject: 'sandbox/project', specSlug: 'sandbox-spec',
       displayName: 'Previous name',
       description: 'Previous description',
       prompt,
@@ -821,6 +862,7 @@ describe('TeamDataService draft metadata', () => {
     const previousConfig = JSON.stringify({
       name: 'Previous name',
       description: 'Previous description',
+      specProject: 'sandbox/project', specSlug: 'sandbox-spec',
       members: [{ name: 'builder' }],
     });
     await fs.writeFile(configPath, previousConfig);
@@ -850,6 +892,7 @@ describe('TeamDataService draft metadata', () => {
     const workflow = 'ж'.repeat(100_000);
     await service.createTeamConfig({
       teamName: 'byte-team',
+      specProject: 'sandbox/project', specSlug: 'sandbox-spec',
       members: [{ name: 'previous', workflow }],
     });
     const membersPath = path.join(claudeRoot, 'teams', 'byte-team', 'members.meta.json');
@@ -871,6 +914,7 @@ describe('TeamDataService draft metadata', () => {
     setClaudeBasePathOverride(claudeRoot);
     await new TeamDataService().createTeamConfig({
       teamName: 'unresolved-team',
+      specProject: 'sandbox/project', specSlug: 'sandbox-spec',
       runtimeSelectionVersion: 1,
       prompt: 'Coordinate the investigation',
       members: [{ name: 'investigator', role: 'Researcher' }],
@@ -915,6 +959,7 @@ describe('TeamDataService draft metadata', () => {
     });
     await new TeamDataService().createTeamConfig({
       teamName: 'captured-team',
+      specProject: 'sandbox/project', specSlug: 'sandbox-spec',
       runtimeSelectionVersion: 1,
       members: [{ name: 'investigator', workflow: 'Read and report evidence' }],
     });
@@ -946,6 +991,7 @@ describe('TeamDataService draft metadata', () => {
     const service = new TeamDataService();
     await service.createTeamConfig({
       teamName: 'draft-team',
+      specProject: 'sandbox/project', specSlug: 'sandbox-spec',
       cwd: '/Users/test/project',
       providerId: 'anthropic',
       members: [
@@ -986,6 +1032,7 @@ describe('TeamDataService draft metadata', () => {
     const service = new TeamDataService();
     await service.createTeamConfig({
       teamName: 'signal-ops',
+      specProject: 'sandbox/project', specSlug: 'sandbox-spec',
       displayName: 'Signal Ops',
       cwd: '/Users/test/project',
       members: [{ name: 'builder', role: 'Engineer' }],
@@ -1019,6 +1066,7 @@ describe('TeamDataService draft metadata', () => {
     const service = new TeamDataService();
     await service.createTeamConfig({
       teamName: 'signal-ops',
+      specProject: 'sandbox/project', specSlug: 'sandbox-spec',
       cwd: '/Users/test/project',
       members: [],
     });
@@ -1038,11 +1086,13 @@ describe('TeamDataService draft metadata', () => {
     const service = new TeamDataService();
     await service.createTeamConfig({
       teamName: 'signal-ops',
+      specProject: 'sandbox/project', specSlug: 'sandbox-spec',
       cwd: '/Users/test/project',
       members: [],
     });
     await service.createTeamConfig({
       teamName: 'fixteam-test',
+      specProject: 'sandbox/project', specSlug: 'sandbox-spec',
       cwd: '/Users/test/project',
       members: [],
     });
@@ -1181,12 +1231,12 @@ function createTaskCommentForwardingService(options: {
       getConfig: vi.fn(async () => ({
         name: 'My team',
         members: options.members ?? [{ name: 'team-lead', role: 'Lead' }],
+        specProject: 'sandbox/project',
+        specSlug: 'sandbox-spec',
         leadSessionId: 'lead-1',
       })),
     } as never,
-    {
-      getTasks: vi.fn(async () => options.tasks),
-    } as never,
+    undefined,
     {
       listInboxNames: vi.fn(async () => []),
       getMessages: vi.fn(async () => []),
@@ -1198,9 +1248,10 @@ function createTaskCommentForwardingService(options: {
     {} as never,
     {} as never,
     {} as never,
-    {} as never,
     (() => ({}) as never) as never,
-    journal as never
+    journal as never,
+    undefined, undefined, undefined, undefined, undefined,
+    { getTasks: vi.fn(async () => ({ backed: true, tasks: options.tasks })), invalidate: vi.fn() } as never
   );
 
   return { service, inboxWriter, journal };
@@ -1256,12 +1307,12 @@ function createGetTeamDataHarness(
     getMemberAdvisories?: () => Promise<Map<string, unknown>>;
   } = {}
 ) {
-  const getConfig = vi.fn(async () =>
-    options.config === undefined ? buildDefaultTeamConfig() : options.config
-  );
-  const getConfigSnapshot = vi.fn(async () =>
-    options.config === undefined ? buildDefaultTeamConfig() : options.config
-  );
+  const boundConfig = options.config === undefined ? buildDefaultTeamConfig() : options.config;
+  const config = boundConfig === null ? null : {
+    specProject: 'sandbox/project', specSlug: 'sandbox-spec', ...boundConfig,
+  };
+  const getConfig = vi.fn(async () => config);
+  const getConfigSnapshot = vi.fn(async () => config);
   const getTasks =
     options.getTasks ??
     (async () => {
@@ -1305,8 +1356,12 @@ function createGetTeamDataHarness(
       return new Map<string, unknown>();
     });
 
-  const taskReader = {
-    getTasks: vi.fn(getTasks),
+  const registryTaskProvider = {
+    getTasks: vi.fn(async () => ({ backed: true, tasks: await getTasks() })),
+    getTask: vi.fn(async (_teamName: string, taskId: string) => ({
+      backed: true, task: options.getTask?.(taskId) ?? null,
+    })),
+    invalidate: vi.fn(),
   };
   const inboxReader = {
     listInboxNames: vi.fn(listInboxNames),
@@ -1338,9 +1393,8 @@ function createGetTeamDataHarness(
       getConfig,
       getConfigSnapshot,
     } as never,
-    taskReader as never,
+    undefined,
     inboxReader as never,
-    {} as never,
     {} as never,
     {
       resolveMembers: resolveMembersSpy,
@@ -1360,14 +1414,16 @@ function createGetTeamDataHarness(
       }) as never) as never,
     {} as never,
     teamMetaStore as never,
-    advisoryService as never
+    advisoryService as never,
+    undefined, undefined, undefined,
+    registryTaskProvider as never
   );
 
   return {
     service,
     getConfig,
     getConfigSnapshot,
-    taskReader,
+    registryTaskProvider,
     inboxReader,
     membersMetaStore,
     teamMetaStore,
@@ -1393,12 +1449,12 @@ function buildResolvedMember(name: string): ResolvedTeamMember {
 function createDurableTaskStartNotificationHarness(options: {
   task: TeamTask;
   commandResults?: Array<{ outcome: string; createdInAttempt: boolean }>;
-  commandFacadeCreateTask?: ReturnType<typeof vi.fn>;
+  registryCreateTask?: ReturnType<typeof vi.fn>;
   sendMessage?: ReturnType<typeof vi.fn>;
 }): {
   service: TeamDataService;
   sendMessage: ReturnType<typeof vi.fn>;
-  commandFacadeCreateTask: ReturnType<typeof vi.fn>;
+  registryCreateTask: ReturnType<typeof vi.fn>;
 } {
   const sendMessage =
     options.sendMessage ??
@@ -1410,8 +1466,8 @@ function createDurableTaskStartNotificationHarness(options: {
     { outcome: 'executed', createdInAttempt: true },
   ];
   let commandAttempt = 0;
-  const commandFacadeCreateTask =
-    options.commandFacadeCreateTask ??
+  const registryCreateTask =
+    options.registryCreateTask ??
     vi.fn(async () => {
       const result = commandResults[Math.min(commandAttempt, commandResults.length - 1)];
       commandAttempt += 1;
@@ -1426,13 +1482,14 @@ function createDurableTaskStartNotificationHarness(options: {
       getConfig: vi.fn(async () => ({
         name: 'My team',
         members: [{ name: 'lead-agent', agentType: 'team-lead', role: 'Lead' }],
+        specProject: 'sandbox/project',
+        specSlug: 'sandbox-spec',
         leadSessionId: 'lead-session-1',
       })),
     } as never,
     {} as never,
     {} as never,
     { sendMessage } as never,
-    {} as never,
     {} as never,
     {} as never,
     null,
@@ -1445,10 +1502,13 @@ function createDurableTaskStartNotificationHarness(options: {
           createTask: vi.fn(() => options.task),
           reconcileTaskCreation: vi.fn(() => options.task),
         },
-      }) as never
+        messages: { sendMessageAsync: (request: unknown) => sendMessage('my-team', request) },
+      }) as never,
+    undefined, undefined, undefined, undefined, undefined, undefined,
+    { invalidate: vi.fn() } as never,
+    async () => ({ createTask: registryCreateTask }) as never
   );
-  service.setTaskBoardCommandFacade({ createTask: commandFacadeCreateTask } as never);
-  return { service, sendMessage, commandFacadeCreateTask };
+  return { service, sendMessage, registryCreateTask };
 }
 
 describe('TeamDataService', () => {
@@ -1465,7 +1525,6 @@ describe('TeamDataService', () => {
       { getConfig: vi.fn(), listTeams: vi.fn() } as never,
       { getTasks: vi.fn(async () => []) } as never,
       { listInboxNames: vi.fn(async () => []), getMessages: vi.fn(async () => []) } as never,
-      {} as never,
       {} as never,
       { resolveMembers: vi.fn(() => []) } as never,
       {
@@ -1501,7 +1560,6 @@ describe('TeamDataService', () => {
       { getConfig: vi.fn(), listTeams: vi.fn() } as never,
       { getTasks: vi.fn(async () => []) } as never,
       { listInboxNames: vi.fn(async () => []), getMessages: vi.fn(async () => []) } as never,
-      {} as never,
       {} as never,
       { resolveMembers: vi.fn(() => []) } as never,
       {
@@ -1556,7 +1614,6 @@ describe('TeamDataService', () => {
       { getTasks: vi.fn(async () => []) } as never,
       { listInboxNames: vi.fn(async () => []), getMessages: vi.fn(async () => []) } as never,
       {} as never,
-      {} as never,
       { resolveMembers: vi.fn(() => []) } as never,
       {
         getState: vi.fn(async () => ({ teamName: 'runtime-team', reviewers: [], tasks: {} })),
@@ -1608,7 +1665,6 @@ describe('TeamDataService', () => {
       { getTasks: vi.fn(async () => []) } as never,
       { listInboxNames: vi.fn(async () => []), getMessages: vi.fn(async () => []) } as never,
       {} as never,
-      {} as never,
       { resolveMembers: vi.fn(() => []) } as never,
       {
         getState: vi.fn(async () => ({ teamName: 'runtime-team', reviewers: [], tasks: {} })),
@@ -1654,7 +1710,6 @@ describe('TeamDataService', () => {
       { getConfig: vi.fn(), listTeams: vi.fn() } as never,
       { getTasks: vi.fn(async () => []) } as never,
       { listInboxNames: vi.fn(async () => []), getMessages: vi.fn(async () => []) } as never,
-      {} as never,
       {} as never,
       { resolveMembers: vi.fn(() => []) } as never,
       {
@@ -1709,7 +1764,6 @@ describe('TeamDataService', () => {
       { getTasks: vi.fn(async () => []) } as never,
       { listInboxNames: vi.fn(async () => []), getMessages: vi.fn(async () => []) } as never,
       {} as never,
-      {} as never,
       { resolveMembers: vi.fn(() => []) } as never,
       {
         getState: vi.fn(async () => ({ teamName: 'runtime-team', reviewers: [], tasks: {} })),
@@ -1755,7 +1809,6 @@ describe('TeamDataService', () => {
       { getConfig: vi.fn(), listTeams: vi.fn() } as never,
       { getTasks: vi.fn(async () => []) } as never,
       { listInboxNames: vi.fn(async () => []), getMessages: vi.fn(async () => []) } as never,
-      {} as never,
       {} as never,
       { resolveMembers: vi.fn(() => []) } as never,
       {
@@ -1808,7 +1861,6 @@ describe('TeamDataService', () => {
       { getConfig: vi.fn(), listTeams: vi.fn() } as never,
       { getTasks: vi.fn(async () => []) } as never,
       { listInboxNames: vi.fn(async () => []), getMessages: vi.fn(async () => []) } as never,
-      {} as never,
       {} as never,
       { resolveMembers: vi.fn(() => []) } as never,
       {
@@ -1871,7 +1923,6 @@ describe('TeamDataService', () => {
       { getTasks: vi.fn(async () => []) } as never,
       { listInboxNames: vi.fn(async () => []), getMessages: vi.fn(async () => []) } as never,
       {} as never,
-      {} as never,
       { resolveMembers: vi.fn(() => []) } as never,
       {
         getState: vi.fn(async () => ({ teamName: 'mixed-team', reviewers: [], tasks: {} })),
@@ -1927,7 +1978,6 @@ describe('TeamDataService', () => {
       { getTasks: vi.fn(async () => []) } as never,
       { listInboxNames: vi.fn(async () => []), getMessages: vi.fn(async () => []) } as never,
       {} as never,
-      {} as never,
       { resolveMembers: vi.fn(() => []) } as never,
       {
         getState: vi.fn(async () => ({ teamName: 'mixed-team', reviewers: [], tasks: {} })),
@@ -1982,7 +2032,6 @@ describe('TeamDataService', () => {
       { getConfig: vi.fn(), listTeams: vi.fn() } as never,
       { getTasks: vi.fn(async () => []) } as never,
       { listInboxNames: vi.fn(async () => []), getMessages: vi.fn(async () => []) } as never,
-      {} as never,
       {} as never,
       { resolveMembers: vi.fn(() => []) } as never,
       {
@@ -2055,7 +2104,6 @@ describe('TeamDataService', () => {
       { getConfig: vi.fn(), listTeams: vi.fn() } as never,
       { getTasks: vi.fn(async () => []) } as never,
       { listInboxNames: vi.fn(async () => []), getMessages: vi.fn(async () => []) } as never,
-      {} as never,
       {} as never,
       { resolveMembers: vi.fn(() => []) } as never,
       {
@@ -2259,7 +2307,7 @@ describe('TeamDataService', () => {
       },
     ];
 
-    const service = new TeamDataService(
+    const service = createRegistryProjectionFixture(
       {
         listTeams: vi.fn(),
         getConfig: vi.fn(async () => ({ name: 'My team', members: [] })),
@@ -2274,7 +2322,6 @@ describe('TeamDataService', () => {
         listInboxNames: vi.fn(async () => []),
         getMessages: vi.fn(async () => []),
       } as never,
-      {} as never,
       {} as never,
       {
         resolveMembers: vi.fn(() => []),
@@ -2291,44 +2338,251 @@ describe('TeamDataService', () => {
     expect(order).toEqual(['tasks']);
   });
 
-  it('delegates explicit reconcile to controller maintenance API', async () => {
-    const reconcileArtifacts = vi.fn();
+  it('reconciles linked task comments through async registry and execution APIs idempotently', async () => {
+    const executionRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'team-linked-comment-reconcile-'));
+    tempPaths.push(executionRoot);
+    setClaudeBasePathOverride(executionRoot);
+    const inboxDir = path.join(executionRoot, 'teams', 'my-team', 'inboxes');
+    await fs.mkdir(inboxDir, { recursive: true });
+    await fs.writeFile(
+      path.join(inboxDir, 'team-lead.json'),
+      JSON.stringify([
+        {
+          from: 'alice',
+          to: 'team-lead',
+          text: 'The implementation is ready for review.',
+          timestamp: '2026-11-05T12:00:00.000Z',
+          read: false,
+          messageId: '456',
+          summary: 'Implementation update for #123',
+        },
+        {
+          from: 'bob',
+          to: 'team-lead',
+          text: 'A legacy message without a persisted ID.',
+          timestamp: '2026-11-05T11:00:00.000Z',
+          summary: 'Legacy update for #123',
+        },
+      ])
+    );
+    const executionStore = new ExecutionTaskStore({ basePath: executionRoot });
+    const task: TeamTask = {
+      id: '123',
+      displayId: '123',
+      subject: 'Write the implementation',
+      status: 'pending',
+      comments: [],
+    };
+    const registryTask: RegistryTask = {
+      canonicalId: 'sandbox-spec:TASK-123',
+      localId: '123',
+      title: task.subject,
+      status: 'todo',
+      owner: 'alice',
+      tracking: null,
+      requirements: ['FR-1'],
+      dependsOn: [],
+      blocks: [],
+      blockedBy: [],
+      refs: [],
+      contentHash: null,
+    };
+    const writer = new RegistryTeamTaskWriter({
+      teamName: 'my-team',
+      binding: { project: 'sandbox/project', spec: 'sandbox-spec' },
+      client: { listTasks: vi.fn(async () => [registryTask]) } as never,
+      executionStore,
+    });
+    const config = {
+      name: 'My team',
+      members: [],
+      specProject: 'sandbox/project',
+      specSlug: 'sandbox-spec',
+    };
+    const getTasks = vi.fn(async () => ({
+      backed: true as const,
+      tasks: [task],
+    }));
+    const binding = { project: 'sandbox/project', spec: 'sandbox-spec' };
+    const getScope = vi.fn(async () => binding);
+    const garbageCollect = vi.fn(
+      async (_teamName: string, getValidTaskIds: () => Promise<ReadonlySet<string>>) => {
+        await getValidTaskIds();
+        return {
+          staleKanbanEntriesRemoved: 0,
+          staleColumnOrderRefsRemoved: 0,
+        };
+      }
+    );
+    const invalidate = vi.fn();
+    const registryProvider = { getScope, getTasks, invalidate };
     const service = new TeamDataService(
       {
-        listTeams: vi.fn(),
-        getConfig: vi.fn(async () => ({
-          name: 'My team',
-          members: [{ name: 'team-lead', role: 'Lead' }],
-        })),
+        getConfig: vi.fn(async () => config),
+        getConfigSnapshot: vi.fn(async () => config),
       } as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {
-        resolveMembers: vi.fn(() => []),
-      } as never,
-      {
-        getState: vi.fn(async () => ({ teamName: 'my-team', reviewers: [], tasks: {} })),
-        garbageCollect: vi.fn(async () => undefined),
-      } as never,
-      {} as never,
-      {
-        readMembers: vi.fn(async () => []),
-      } as never,
-      {
-        readMessages: vi.fn(async () => []),
-      } as never,
-      () =>
-        ({
-          maintenance: {
-            reconcileArtifacts,
-          },
-        }) as never
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { garbageCollect } as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      registryProvider as never,
+      async () => writer
+    );
+    const addCommentIfAbsent = vi.spyOn(executionStore, 'addCommentIfAbsent');
+
+    await Promise.all([
+      service.reconcileTeamArtifacts('my-team', { source: 'task', detail: '123' }),
+      service.reconcileTeamArtifacts('my-team', { source: 'task', detail: '123' }),
+    ]);
+    await service.reconcileTeamArtifacts('my-team', { source: 'task', detail: '123' });
+
+    expect(getTasks).toHaveBeenCalledTimes(3);
+    expect(garbageCollect).toHaveBeenCalledTimes(3);
+    expect(garbageCollect).toHaveBeenCalledWith('my-team', expect.any(Function));
+    expect(invalidate).toHaveBeenCalledWith(binding);
+    expect(getTasks).toHaveBeenCalledWith('my-team', { binding });
+    expect(addCommentIfAbsent).toHaveBeenCalledTimes(3);
+    expect(
+      addCommentIfAbsent.mock.results.filter(
+        (result) => result.type === 'return' && result.value.added
+      )
+    ).toHaveLength(1);
+    expect(executionStore.read('my-team', '123')?.comments).toEqual([
+      expect.objectContaining({
+        id: 'msg-456',
+        author: 'alice',
+        text: 'The implementation is ready for review.',
+        createdAt: '2026-11-05T12:00:00.000Z',
+        type: 'regular',
+      }),
+    ]);
+  });
+
+  it('invalidates stale registry reads before pruning a newly created Kanban overlay', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'team-kanban-cache-race-'));
+    tempPaths.push(root);
+    setClaudeBasePathOverride(root);
+    const config = {
+      name: 'My team',
+      members: [],
+      specProject: 'sandbox/project',
+      specSlug: 'sandbox-spec',
+    };
+    const binding = { project: 'sandbox/project', spec: 'sandbox-spec' };
+    const task: TeamTask = {
+      id: '123',
+      displayId: '123',
+      subject: 'New task',
+      status: 'pending',
+      comments: [],
+    };
+    let cachedTasks: TeamTask[] = [];
+    const getScope = vi.fn(async () => binding);
+    const getTasks = vi.fn(async (_teamName: string, _options: { binding: typeof binding }) => ({
+      backed: true as const,
+      tasks: cachedTasks,
+    }));
+    const invalidate = vi.fn(() => {
+      cachedTasks = [task];
+    });
+    const overlayTaskIds = new Set<string>();
+    const garbageCollect = vi.fn(
+      async (_teamName: string, getValidTaskIds: () => Promise<ReadonlySet<string>>) => {
+        // Simulate a competing task and overlay publication before the task-ID callback runs.
+        overlayTaskIds.add('123');
+        const validTaskIds = await getValidTaskIds();
+        let staleKanbanEntriesRemoved = 0;
+        for (const taskId of overlayTaskIds) {
+          if (!validTaskIds.has(taskId)) {
+            overlayTaskIds.delete(taskId);
+            staleKanbanEntriesRemoved += 1;
+          }
+        }
+        return { staleKanbanEntriesRemoved, staleColumnOrderRefsRemoved: 0 };
+      }
+    );
+    expect((await getTasks('my-team', { binding })).tasks).toEqual([]);
+
+    const service = new TeamDataService(
+      { getConfig: vi.fn(async () => config) } as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { garbageCollect } as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { getScope, getTasks, invalidate } as never,
+      undefined
     );
 
     await service.reconcileTeamArtifacts('my-team');
-    expect(reconcileArtifacts).toHaveBeenCalledWith({ reason: 'file-watch' });
+
+    expect(invalidate).toHaveBeenCalledWith(binding);
+    expect(getTasks).toHaveBeenCalledTimes(2);
+    expect(getTasks).toHaveBeenLastCalledWith('my-team', { binding });
+    expect(overlayTaskIds).toEqual(new Set(['123']));
+  });
+
+  it('propagates inbox directory permission failures during artifact reconciliation', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'team-inbox-permission-'));
+    tempPaths.push(root);
+    setClaudeBasePathOverride(root);
+    const inboxError = Object.assign(new Error('inbox listing denied'), { code: 'EACCES' });
+    const readdirSpy = vi.spyOn(nodeFs.promises, 'readdir').mockRejectedValueOnce(inboxError);
+    const binding = { project: 'sandbox/project', spec: 'sandbox-spec' };
+    const getTasks = vi.fn(async () => ({ backed: true as const, tasks: [] as TeamTask[] }));
+    const getScope = vi.fn(async () => binding);
+    const garbageCollect = vi.fn(
+      async (_teamName: string, getValidTaskIds: () => Promise<ReadonlySet<string>>) => {
+        await getValidTaskIds();
+        return { staleKanbanEntriesRemoved: 0, staleColumnOrderRefsRemoved: 0 };
+      }
+    );
+    const service = new TeamDataService(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { garbageCollect } as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { getScope, getTasks, invalidate: vi.fn() } as never
+    );
+
+    try {
+      await expect(service.reconcileTeamArtifacts('my-team')).rejects.toBe(inboxError);
+    } finally {
+      readdirSpy.mockRestore();
+    }
   });
 
   it('starts and stops task change presence tracking outside getTeamData', async () => {
@@ -2340,7 +2594,6 @@ describe('TeamDataService', () => {
         listTeams: vi.fn(),
         getConfig: vi.fn(async () => ({ name: 'My team', members: [] })),
       } as never,
-      {} as never,
       {} as never,
       {} as never,
       {} as never,
@@ -2373,339 +2626,116 @@ describe('TeamDataService', () => {
     expect(disableTracking).toHaveBeenNthCalledWith(1, 'my-team', 'change_presence');
   });
 
-  it('surfaces controller reconcile failures', async () => {
-    const reconcileArtifacts = vi.fn(() => {
-      throw new Error('reconcile failed');
+  it('surfaces registry task read failures during artifact reconciliation', async () => {
+    const registryError = new Error('registry unavailable');
+    const getTasks = vi.fn(async () => {
+      throw registryError;
     });
-    const service = new TeamDataService(
-      {
-        listTeams: vi.fn(),
-        getConfig: vi.fn(async () => ({ name: 'My team', members: [] })),
-      } as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {
-        resolveMembers: vi.fn(() => []),
-      } as never,
-      {
-        getState: vi.fn(async () => ({ teamName: 'my-team', reviewers: [], tasks: {} })),
-        garbageCollect: vi.fn(async () => undefined),
-      } as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      () =>
-        ({
-          maintenance: {
-            reconcileArtifacts,
-          },
-        }) as never
-    );
-
-    await expect(service.reconcileTeamArtifacts('my-team')).rejects.toThrow('reconcile failed');
-  });
-
-  it('writes UI task comments with author user', async () => {
-    const addTaskComment = vi.fn(() => ({
-      comment: {
-        id: 'comment-1',
-        author: 'user',
-        text: 'Need clarification',
-        createdAt: '2026-03-07T20:00:00.000Z',
-        type: 'regular',
-      },
-      task: {
-        id: 'task-1',
-        subject: 'Investigate',
-        status: 'pending',
-        owner: 'team-lead',
-      },
-    }));
-
-    const service = new TeamDataService(
-      {
-        listTeams: vi.fn(),
-        getConfig: vi.fn(async () => ({
-          name: 'My team',
-          members: [{ name: 'team-lead', role: 'Lead' }],
-        })),
-      } as never,
-      {
-        getTasks: vi.fn(async () => []),
-      } as never,
-      {
-        listInboxNames: vi.fn(async () => []),
-        getMessages: vi.fn(async () => []),
-      } as never,
-      {} as never,
-      {} as never,
-      {
-        resolveMembers: vi.fn(() => []),
-      } as never,
-      {
-        getState: vi.fn(async () => ({ teamName: 'my-team', reviewers: [], tasks: {} })),
-        garbageCollect: vi.fn(async () => undefined),
-      } as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      () =>
-        ({
-          taskBoard: {
-            addTaskComment,
-            setNeedsClarification: vi.fn(),
-          },
-        }) as never
-    );
-
-    await service.addTaskComment('my-team', 'task-1', 'Need clarification');
-
-    expect(addTaskComment).toHaveBeenCalledWith('task-1', {
-      from: 'user',
-      text: 'Need clarification',
-      attachments: undefined,
-    });
-  });
-
-  it('includes projectPath from config when creating a task', async () => {
-    const createTaskMock = vi.fn((task) => task);
-    const getConfig = vi.fn(async () => {
-      throw new Error('verified config read should not be used for task enrichment');
-    });
-    const getConfigSnapshot = vi.fn(async () => ({
-      name: 'My team',
-      members: [],
-      projectPath: '/Users/dev/my-project',
-    }));
-
-    const service = new TeamDataService(
-      {
-        listTeams: vi.fn(),
-        getConfig,
-        getConfigSnapshot,
-      } as never,
-      {
-        getNextTaskId: vi.fn(async () => '1'),
-        getTasks: vi.fn(async () => []),
-      } as never,
-      {
-        listInboxNames: vi.fn(async () => []),
-        getMessages: vi.fn(async () => []),
-      } as never,
-      {} as never,
-      {
-        createTask: createTaskMock,
-        addBlocksEntry: vi.fn(async () => undefined),
-      } as never,
-      {
-        resolveMembers: vi.fn(() => []),
-      } as never,
-      {
-        getState: vi.fn(async () => ({ teamName: 'my-team', reviewers: [], tasks: {} })),
-        garbageCollect: vi.fn(async () => undefined),
-      } as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      (_teamName: string) =>
-        ({
-          taskBoard: {
-            createTask: createTaskMock,
-          },
-        }) as never
-    );
-
-    const result = await service.createTask('my-team', { subject: 'Test' });
-
-    expect(result.projectPath).toBe('/Users/dev/my-project');
-    expect(createTaskMock).toHaveBeenCalledWith(
-      expect.objectContaining({ projectPath: '/Users/dev/my-project' })
-    );
-    expect(getConfigSnapshot).toHaveBeenCalledWith('my-team');
-    expect(getConfig).not.toHaveBeenCalled();
-  });
-
-  it('routes identified task creates through the durable command facade without legacy fallback', async () => {
-    const directCreate = vi.fn();
-    const durableTask = {
-      id: '11111111-1111-4111-8111-111111111111',
-      subject: 'Durable task',
-      status: 'pending' as const,
-    };
-    const commandFacade = {
-      createTask: vi.fn(async () => ({
-        task: durableTask,
-        outcome: 'executed',
-        createdInAttempt: true,
-      })),
-    };
-    let supportsReconciliation = true;
-    const reconcileTaskCreation = vi.fn();
-    const service = new TeamDataService(
-      {
-        getConfig: vi.fn(async () => ({ name: 'My team', members: [] })),
-      } as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      null,
-      {} as never,
-      {} as never,
-      () =>
-        ({
-          taskBoard: {
-            getTask: vi.fn(),
-            createTask: directCreate,
-            reconcileTaskCreation: supportsReconciliation ? reconcileTaskCreation : undefined,
-          },
-        }) as never
-    );
-    service.setTaskBoardCommandFacade(commandFacade as never);
-    const command = {
-      commandId: durableTask.id,
-      idempotencyKey: 'create-task-intent-1',
-    };
-
-    await expect(
-      service.createTask('my-team', { subject: durableTask.subject, command })
-    ).resolves.toEqual(durableTask);
-    expect(commandFacade.createTask).toHaveBeenCalledWith(
-      expect.objectContaining({
-        teamName: 'my-team',
-        identity: command,
-        payload: expect.objectContaining({ subject: durableTask.subject, createdBy: 'user' }),
-        destination: expect.objectContaining({
-          findById: expect.any(Function),
-          findByIdempotencyKey: expect.any(Function),
-          create: expect.any(Function),
-          reconcile: expect.any(Function),
-        }),
-      })
-    );
-    expect(directCreate).not.toHaveBeenCalled();
-
-    supportsReconciliation = false;
-    await expect(
-      service.createTask('my-team', {
-        subject: 'Mixed controller must fail before create',
-        command: {
-          commandId: '22222222-2222-4222-8222-222222222222',
-          idempotencyKey: 'create-task-intent-2',
-        },
-      })
-    ).rejects.toThrow('Durable task-board commands are unavailable');
-    expect(commandFacade.createTask).toHaveBeenCalledTimes(1);
-    expect(directCreate).not.toHaveBeenCalled();
-  });
-
-  it('uses one legacy create when durable task commands are unavailable', async () => {
-    const commandId = '33333333-3333-4333-8333-333333333333';
-    const legacyTask: TeamTask = {
-      id: commandId,
-      subject: 'Legacy task',
-      status: 'pending',
-    };
-    let storedTask: (TeamTask & { creationCommand?: unknown }) | null = null;
-    const directCreate = vi.fn((input: Record<string, unknown>) => {
-      storedTask = {
-        ...legacyTask,
-        creationCommand: input.creationCommand,
-      };
-      return storedTask;
-    });
-    const getTask = vi.fn((taskId: string) => {
-      if (!storedTask || storedTask.id !== taskId) {
-        throw new Error(`Task not found: ${taskId}`);
+    const binding = { project: 'sandbox/project', spec: 'sandbox-spec' };
+    const getScope = vi.fn(async () => binding);
+    const invalidate = vi.fn();
+    const garbageCollect = vi.fn(
+      async (_teamName: string, getValidTaskIds: () => Promise<ReadonlySet<string>>) => {
+        await getValidTaskIds();
       }
-      return storedTask;
-    });
-    const reconcileTaskCreation = vi.fn(() => storedTask);
-    const listTasks = vi.fn(() => (storedTask ? [storedTask] : []));
-    const listDeletedTasks = vi.fn(() => []);
+    );
     const service = new TeamDataService(
       {
         getConfig: vi.fn(async () => ({
           name: 'My team',
           members: [],
-          projectPath: '/projects/legacy',
+          specProject: 'sandbox/project',
+          specSlug: 'sandbox-spec',
         })),
       } as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      null,
-      {} as never,
-      {} as never,
-      () =>
-        ({
-          taskBoard: {
-            getTask,
-            listTasks,
-            listDeletedTasks,
-            createTask: directCreate,
-            reconcileTaskCreation,
-          },
-        }) as never
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { garbageCollect } as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { getScope, getTasks, invalidate } as never
     );
 
-    await expect(
-      service.createTask('my-team', {
-        subject: legacyTask.subject,
-        command: {
-          commandId,
-          idempotencyKey: 'create-task-intent-3',
-        },
-      })
-    ).resolves.toEqual(legacyTask);
-    await expect(
-      service.createTask('my-team', {
-        subject: legacyTask.subject,
-        command: {
-          commandId: '34343434-3434-4434-8434-343434343434',
-          idempotencyKey: 'create-task-intent-3',
-        },
-      })
-    ).resolves.toEqual(legacyTask);
+    await expect(service.reconcileTeamArtifacts('my-team')).rejects.toBe(registryError);
+    expect(garbageCollect).toHaveBeenCalledTimes(1);
+    expect(invalidate).toHaveBeenCalledWith(binding);
+  });
 
-    expect(directCreate).toHaveBeenCalledOnce();
-    expect(directCreate).toHaveBeenCalledWith({
-      subject: legacyTask.subject,
-      createdBy: 'user',
-      projectPath: '/projects/legacy',
-      id: commandId,
-      creationCommand: {
-        namespace: 'task-board',
-        scopeKey: 'my-team',
-        operation: 'task.create',
-        commandId,
-        payloadHash: expect.stringMatching(/^sha256:/),
-        idempotencyKey: 'create-task-intent-3',
-      },
+  it('writes UI task comments with author user', async () => {
+    const config = { name: 'My team', members: [], specProject: 'sandbox/project', specSlug: 'sandbox-spec' };
+    const { service, store } = createRegistryCreationFixture({ getConfig: async () => config });
+    const task = await service.createTask('my-team', { subject: 'Investigate', requirements: ['FR-1'] });
+    const comment = await service.addTaskComment('my-team', task.id, 'Need clarification');
+    expect(comment).toMatchObject({ author: 'user', text: 'Need clarification', type: 'regular' });
+    expect(store.read('my-team', task.id)?.comments).toEqual([expect.objectContaining({
+      id: comment.id, author: 'user', text: 'Need clarification',
+    })]);
+  });
+
+  it('includes projectPath from config when creating a task', async () => {
+    const getConfig = vi.fn(async () => {
+      throw new Error('verified config read should not be used for task enrichment');
     });
-    expect(reconcileTaskCreation).toHaveBeenCalledTimes(2);
-    expect(reconcileTaskCreation).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        id: commandId,
-        creationCommand: expect.objectContaining({
-          commandId,
-          idempotencyKey: 'create-task-intent-3',
-        }),
-      })
-    );
+    const getConfigSnapshot = vi.fn(async () => ({
+      name: 'My team', members: [], specProject: 'sandbox/project', specSlug: 'sandbox-spec',
+      projectPath: '/Users/dev/my-project',
+    }));
+    const { service, store, upsertTask } = createRegistryCreationFixture({ getConfig, getConfigSnapshot });
+    const result = await service.createTask('my-team', { subject: 'Test', requirements: ['FR-1'] });
+
+    expect(result.projectPath).toBe('/Users/dev/my-project');
+    expect(store.read('my-team', result.id)?.projectPath).toBe('/Users/dev/my-project');
+    expect(upsertTask).toHaveBeenCalledWith(expect.objectContaining({ title: 'Test' }));
+    expect(getConfigSnapshot).toHaveBeenCalledWith('my-team');
+    expect(getConfig).not.toHaveBeenCalled();
+  });
+
+  it('replays a committed identified registry create and rejects a conflicting intent', async () => {
+    const config = { name: 'My team', members: [], specProject: 'sandbox/project', specSlug: 'sandbox-spec' };
+    const { service, upsertTask } = createRegistryCreationFixture({ getConfig: async () => config });
+    const command = { commandId: '11111111-1111-4111-8111-111111111111', idempotencyKey: 'create-task-intent-1' };
+    const request = { subject: 'Durable task', requirements: ['FR-1'], command };
+
+    const first = await service.createTaskWithOutcome('my-team', request);
+    const replay = await service.createTaskWithOutcome('my-team', request);
+    expect(first).toMatchObject({ outcome: 'APPLIED', task: { id: '1', subject: 'Durable task', createdBy: 'user' } });
+    expect(replay).toMatchObject({ outcome: 'REPLAY', task: { id: '1', subject: 'Durable task', createdBy: 'user' } });
+    expect(upsertTask).toHaveBeenCalledOnce();
+    await expect(service.createTaskWithOutcome('my-team', { ...request, subject: 'Conflicting task' }))
+      .rejects.toMatchObject({ code: 'IDEMPOTENCY_CONFLICT' });
+    expect(upsertTask).toHaveBeenCalledOnce();
+  });
+
+  it('does not repeat a registry create after an unknown submission outcome', async () => {
+    const config = { name: 'My team', members: [], specProject: 'sandbox/project', specSlug: 'sandbox-spec' };
+    const { service, upsertTask } = createRegistryCreationFixture({ getConfig: async () => config });
+    upsertTask.mockRejectedValueOnce(new Error('connection lost'));
+    const request = {
+      subject: 'Uncertain task', requirements: ['FR-1'],
+      command: { commandId: '33333333-3333-4333-8333-333333333333', idempotencyKey: 'uncertain-create' },
+    };
+
+    await expect(service.createTaskWithOutcome('my-team', request))
+      .rejects.toMatchObject({ code: 'CREATION_OUTCOME_UNKNOWN' });
+    await expect(service.createTaskWithOutcome('my-team', request))
+      .rejects.toMatchObject({ code: 'CREATION_OUTCOME_UNKNOWN' });
+    expect(upsertTask).toHaveBeenCalledOnce();
   });
 
   it('notifies a lead-owned task from the final started state on fresh durable execution', async () => {
     const task: TeamTask = {
-      id: '11111111-1111-4111-8111-111111111111',
-      displayId: '11111111',
+      id: '1',
+      displayId: '1',
       subject: 'Durable lead task',
       description: 'Use the final task description.',
       owner: 'lead-agent',
@@ -2719,7 +2749,7 @@ describe('TeamDataService', () => {
         owner: 'lead-agent',
         startImmediately: true,
         command: {
-          commandId: task.id,
+          commandId: '11111111-1111-4111-8111-111111111111',
           idempotencyKey: 'durable-lead-task',
         },
       })
@@ -2733,8 +2763,8 @@ describe('TeamDataService', () => {
         from: 'user',
         source: 'system_notification',
         leadSessionId: 'lead-session-1',
-        messageId: 'task-start:my-team:11111111-1111-4111-8111-111111111111',
-        summary: 'Start working on #11111111',
+        messageId: 'task-start:my-team:1',
+        summary: 'Start working on #1',
       })
     );
     expect(sendMessage.mock.calls[0]?.[1]?.text).toContain(
@@ -2744,7 +2774,7 @@ describe('TeamDataService', () => {
       'If the owner changed or the task is completed/deleted, do not start or reopen it'
     );
     expect(sendMessage.mock.calls[0]?.[1]?.text).toContain(
-      'task_complete { teamName: "my-team", taskId: "11111111-1111-4111-8111-111111111111", actor: "lead-agent" }'
+      'task_complete { teamName: "my-team", taskId: "1", actor: "lead-agent" }'
     );
   });
 
@@ -2752,7 +2782,7 @@ describe('TeamDataService', () => {
     'notifies from the resolved lead-owned started state when a durable command is %s',
     async (outcome) => {
       const task: TeamTask = {
-        id: '11111111-1111-4111-8111-111111111111',
+        id: '1',
         subject: 'Recovered lead task',
         owner: 'lead-agent',
         status: 'in_progress',
@@ -2767,7 +2797,7 @@ describe('TeamDataService', () => {
         owner: 'lead-agent',
         startImmediately: true,
         command: {
-          commandId: task.id,
+          commandId: '11111111-1111-4111-8111-111111111111',
           idempotencyKey: 'recovered-lead-task',
         },
       });
@@ -2775,7 +2805,7 @@ describe('TeamDataService', () => {
       expect(sendMessage).toHaveBeenCalledWith(
         'my-team',
         expect.objectContaining({
-          messageId: 'task-start:my-team:11111111-1111-4111-8111-111111111111',
+          messageId: 'task-start:my-team:1',
         })
       );
     }
@@ -2794,7 +2824,7 @@ describe('TeamDataService', () => {
     },
   ])('does not send the durable lead notification for $name', async ({ owner, status }) => {
     const task: TeamTask = {
-      id: '11111111-1111-4111-8111-111111111111',
+      id: '1',
       subject: 'No lead notification',
       owner,
       status,
@@ -2809,7 +2839,7 @@ describe('TeamDataService', () => {
       owner: 'lead-agent',
       startImmediately: true,
       command: {
-        commandId: task.id,
+        commandId: '11111111-1111-4111-8111-111111111111',
         idempotencyKey: 'no-lead-notification',
       },
     });
@@ -2819,7 +2849,7 @@ describe('TeamDataService', () => {
 
   it('attempts the same deterministic lead notification on every durable replay', async () => {
     const task: TeamTask = {
-      id: '11111111-1111-4111-8111-111111111111',
+      id: '1',
       subject: 'Replay notification',
       owner: 'lead-agent',
       status: 'in_progress',
@@ -2836,7 +2866,7 @@ describe('TeamDataService', () => {
       owner: 'lead-agent',
       startImmediately: true,
       command: {
-        commandId: task.id,
+        commandId: '11111111-1111-4111-8111-111111111111',
         idempotencyKey: 'replay-notification',
       },
     };
@@ -2846,14 +2876,14 @@ describe('TeamDataService', () => {
 
     expect(sendMessage).toHaveBeenCalledTimes(2);
     expect(sendMessage.mock.calls.map((call) => call[1]?.messageId)).toEqual([
-      'task-start:my-team:11111111-1111-4111-8111-111111111111',
-      'task-start:my-team:11111111-1111-4111-8111-111111111111',
+      'task-start:my-team:1',
+      'task-start:my-team:1',
     ]);
   });
 
   it('keeps a post-commit notification failure nonfatal and deduplicates its replay', async () => {
     const task: TeamTask = {
-      id: '11111111-1111-4111-8111-111111111111',
+      id: '1',
       subject: 'Retry notification',
       owner: 'lead-agent',
       status: 'in_progress',
@@ -2886,7 +2916,7 @@ describe('TeamDataService', () => {
       };
     });
     let commitFirstAttempt: ((value: unknown) => void) | undefined;
-    const commandFacadeCreateTask = vi
+    const registryCreateTask = vi
       .fn()
       .mockImplementationOnce(
         () =>
@@ -2902,20 +2932,20 @@ describe('TeamDataService', () => {
     const { service } = createDurableTaskStartNotificationHarness({
       task,
       sendMessage,
-      commandFacadeCreateTask,
+      registryCreateTask,
     });
     const request = {
       subject: task.subject,
       owner: 'lead-agent',
       startImmediately: true,
       command: {
-        commandId: task.id,
+        commandId: '11111111-1111-4111-8111-111111111111',
         idempotencyKey: 'retry-notification',
       },
     };
 
     const firstCreate = service.createTask('my-team', request);
-    expect(commandFacadeCreateTask).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(registryCreateTask).toHaveBeenCalledTimes(1));
     expect(sendMessage).not.toHaveBeenCalled();
 
     commitFirstAttempt?.({
@@ -2926,14 +2956,14 @@ describe('TeamDataService', () => {
     await expect(firstCreate).resolves.toEqual(task);
     await expect(service.createTask('my-team', request)).resolves.toEqual(task);
 
-    expect(commandFacadeCreateTask).toHaveBeenCalledTimes(2);
+    expect(registryCreateTask).toHaveBeenCalledTimes(2);
     expect(sendMessage).toHaveBeenCalledTimes(2);
     expect(sendMessage.mock.calls.map((call) => call[1]?.messageId)).toEqual([
-      'task-start:my-team:11111111-1111-4111-8111-111111111111',
-      'task-start:my-team:11111111-1111-4111-8111-111111111111',
+      'task-start:my-team:1',
+      'task-start:my-team:1',
     ]);
     expect([...deliveredMessageIds]).toEqual([
-      'task-start:my-team:11111111-1111-4111-8111-111111111111',
+      'task-start:my-team:1',
     ]);
     expect(deliveryDeduplication).toEqual([true]);
 
@@ -2941,7 +2971,7 @@ describe('TeamDataService', () => {
     expect(warningCalls).toEqual([
       [
         '[Service:TeamDataService]',
-        '[TeamDataService] category=post_commit_notification code=task_start_notification_failed team=my-team task=11111111-1111-4111-8111-111111111111',
+        '[TeamDataService] category=post_commit_notification code=task_start_notification_failed team=my-team task=1',
       ],
     ]);
     const warningOutput = warningCalls.flat().map(String).join('\n');
@@ -2962,21 +2992,21 @@ describe('TeamDataService', () => {
 
   it('rejects a pre-commit persistence failure without sending a notification', async () => {
     const task: TeamTask = {
-      id: '11111111-1111-4111-8111-111111111111',
+      id: '1',
       subject: 'Persistence retry',
       owner: 'lead-agent',
       status: 'in_progress',
     };
     const persistenceFailure = new Error('pre-commit-persistence-failure');
-    const { service, sendMessage, commandFacadeCreateTask } =
+    const { service, sendMessage, registryCreateTask } =
       createDurableTaskStartNotificationHarness({ task });
-    commandFacadeCreateTask.mockRejectedValueOnce(persistenceFailure);
+    registryCreateTask.mockRejectedValueOnce(persistenceFailure);
     const request = {
       subject: task.subject,
       owner: 'lead-agent',
       startImmediately: true,
       command: {
-        commandId: task.id,
+        commandId: '11111111-1111-4111-8111-111111111111',
         idempotencyKey: 'persistence-retry',
       },
     };
@@ -2985,48 +3015,27 @@ describe('TeamDataService', () => {
     expect(sendMessage).not.toHaveBeenCalled();
 
     await expect(service.createTask('my-team', request)).resolves.toEqual(task);
-    expect(commandFacadeCreateTask).toHaveBeenCalledTimes(2);
+    expect(registryCreateTask).toHaveBeenCalledTimes(2);
     expect(sendMessage).toHaveBeenCalledTimes(1);
     expect(sendMessage).toHaveBeenCalledWith(
       'my-team',
       expect.objectContaining({
-        messageId: 'task-start:my-team:11111111-1111-4111-8111-111111111111',
+        messageId: 'task-start:my-team:1',
       })
     );
   });
 
   it('keeps non-durable task-start notification failure best-effort', async () => {
     const task: TeamTask = {
-      id: 'legacy-task-1',
-      subject: 'Legacy best-effort task',
+      id: '1',
+      subject: 'Best-effort task',
       owner: 'lead-agent',
       status: 'in_progress',
     };
     const sendMessage = vi.fn(() => {
-      throw new Error('legacy inbox unavailable');
+      throw new Error('inbox unavailable');
     });
-    const service = new TeamDataService(
-      {
-        getConfig: vi.fn(async () => ({
-          name: 'My team',
-          members: [{ name: 'lead-agent', agentType: 'team-lead', role: 'Lead' }],
-        })),
-      } as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      null,
-      {} as never,
-      {} as never,
-      () =>
-        ({
-          taskBoard: { createTask: vi.fn(() => task) },
-          messages: { sendMessageAsync: sendMessage },
-        }) as never
-    );
+    const { service } = createDurableTaskStartNotificationHarness({ task, sendMessage });
 
     await expect(
       service.createTask('my-team', {
@@ -3038,86 +3047,25 @@ describe('TeamDataService', () => {
     expect(sendMessage).toHaveBeenCalledTimes(1);
   });
 
-  it('keeps derived projectPath outside the durable command payload', async () => {
-    const directCreate = vi.fn((input: Record<string, unknown>) => ({
-      ...input,
-      status: 'pending' as const,
-    }));
-    const commandFacade = {
-      createTask: vi.fn(
-        async (command: {
-          identity: { commandId: string };
-          payload: Record<string, unknown>;
-          destination: { create(input: Record<string, unknown>): Promise<TeamTask> | TeamTask };
-        }) => ({
-          task: await command.destination.create({
-            ...command.payload,
-            id: command.identity.commandId,
-            creationCommand: {
-              namespace: 'task-board',
-              scopeKey: 'my-team',
-              operation: 'task.create',
-              commandId: command.identity.commandId,
-              payloadHash: 'sha256:test',
-            },
-          }),
-          outcome: 'executed',
-          createdInAttempt: true,
-        })
-      ),
-    };
-    const service = new TeamDataService(
-      {
-        getConfig: vi.fn(() =>
-          Promise.resolve({
-            name: 'My team',
-            members: [],
-            projectPath: '/projects/current',
-          })
-        ),
-      } as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      null,
-      {} as never,
-      {} as never,
-      () =>
-        ({
-          taskBoard: {
-            getTask: vi.fn(),
-            createTask: directCreate,
-            reconcileTaskCreation: vi.fn(),
-          },
-        }) as never
-    );
-    service.setTaskBoardCommandFacade(commandFacade as never);
-
-    await service.createTask('my-team', {
-      subject: 'Stable intent',
-      blockedBy: ['task-b', 'task-a', 'task-b'],
-      related: ['task-d', 'task-c', 'task-d'],
-      command: {
-        commandId: '33333333-3333-4333-8333-333333333333',
-        idempotencyKey: 'stable-intent',
-      },
+  it('keeps derived projectPath outside the durable registry command identity', async () => {
+    let projectPath = '/projects/current';
+    const config = () => ({
+      name: 'My team', members: [], projectPath, specProject: 'sandbox/project', specSlug: 'sandbox-spec',
     });
-
-    expect(commandFacade.createTask).toHaveBeenCalledWith(
-      expect.objectContaining({
-        payload: expect.objectContaining({
-          blockedBy: ['task-a', 'task-b'],
-          related: ['task-c', 'task-d'],
-        }),
-      })
-    );
-    expect(commandFacade.createTask.mock.calls[0]?.[0].payload).not.toHaveProperty('projectPath');
-    expect(directCreate).toHaveBeenCalledWith(
-      expect.objectContaining({ projectPath: '/projects/current' })
-    );
+    const { service, upsertTask } = createRegistryCreationFixture({ getConfig: async () => config() });
+    const request = {
+      subject: 'Stable intent', requirements: ['FR-1'],
+      blockedBy: ['2', '1', '2'], related: ['4', '3', '4'],
+      command: { commandId: '33333333-3333-4333-8333-333333333333', idempotencyKey: 'stable-intent' },
+    };
+    const first = await service.createTaskWithOutcome('my-team', request);
+    expect(first.task.projectPath).toBe('/projects/current');
+    expect(first.task.blockedBy).toEqual(['1', '2']);
+    expect(first.task.related).toEqual(['3', '4']);
+    projectPath = '/projects/relocated';
+    const replay = await service.createTaskWithOutcome('my-team', request);
+    expect(replay).toMatchObject({ outcome: 'REPLAY', task: { id: first.task.id } });
+    expect(upsertTask).toHaveBeenCalledOnce();
   });
 
   it('returns lightweight notification context from config without hydrating team data', async () => {
@@ -3138,7 +3086,6 @@ describe('TeamDataService', () => {
         getConfig,
         getConfigSnapshot,
       } as never,
-      {} as never,
       {} as never,
       {} as never,
       {} as never,
@@ -3185,7 +3132,6 @@ describe('TeamDataService', () => {
       {} as never,
       {} as never,
       {} as never,
-      {} as never,
       (() => ({ processes: { listProcesses: vi.fn(() => []) } })) as never
     );
 
@@ -3206,162 +3152,43 @@ describe('TeamDataService', () => {
   });
 
   it('creates task with status pending when startImmediately is false', async () => {
-    const createTaskMock = vi.fn((task) => ({ ...task, status: 'pending' }));
-    const service = new TeamDataService(
-      {
-        listTeams: vi.fn(),
-        getConfig: vi.fn(async () => ({ name: 'My team', members: [] })),
-      } as never,
-      {
-        getNextTaskId: vi.fn(async () => '2'),
-        getTasks: vi.fn(async () => []),
-      } as never,
-      {
-        listInboxNames: vi.fn(async () => []),
-        getMessages: vi.fn(async () => []),
-      } as never,
-      {} as never,
-      {
-        createTask: createTaskMock,
-        addBlocksEntry: vi.fn(async () => undefined),
-      } as never,
-      {
-        resolveMembers: vi.fn(() => []),
-      } as never,
-      {
-        getState: vi.fn(async () => ({ teamName: 'my-team', reviewers: [], tasks: {} })),
-        garbageCollect: vi.fn(async () => undefined),
-      } as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      (_teamName: string) =>
-        ({
-          taskBoard: {
-            createTask: createTaskMock,
-          },
-        }) as never
-    );
-
+    const config = { name: 'My team', members: [], specProject: 'sandbox/project', specSlug: 'sandbox-spec' };
+    const { service, store, upsertTask } = createRegistryCreationFixture({ getConfig: async () => config });
     const result = await service.createTask('my-team', {
-      subject: 'Review main file',
-      owner: 'alice',
-      startImmediately: false,
+      subject: 'Review main file', owner: 'alice', startImmediately: false, requirements: ['FR-1'],
     });
 
-    expect(result.status).toBe('pending');
-    expect(createTaskMock).toHaveBeenCalledWith(
-      expect.objectContaining({ owner: 'alice', createdBy: 'user' })
-    );
-    expect(createTaskMock).not.toHaveBeenCalledWith(
-      expect.objectContaining({ startImmediately: true })
-    );
+    expect(result).toMatchObject({ status: 'pending', owner: 'alice', createdBy: 'user' });
+    expect(store.read('my-team', result.id)?.workIntervals).toEqual([]);
+    expect(upsertTask).toHaveBeenCalledWith(expect.objectContaining({ owner: 'alice', status: 'todo' }));
   });
 
   it('creates task with explicit immediate start only when startImmediately is true', async () => {
-    const createTaskMock = vi.fn((task) => ({ ...task, status: 'in_progress' }));
-    const service = new TeamDataService(
-      {
-        listTeams: vi.fn(),
-        getConfig: vi.fn(async () => ({ name: 'My team', members: [] })),
-      } as never,
-      {
-        getNextTaskId: vi.fn(async () => '2'),
-        getTasks: vi.fn(async () => []),
-      } as never,
-      {
-        listInboxNames: vi.fn(async () => []),
-        getMessages: vi.fn(async () => []),
-      } as never,
-      {} as never,
-      {
-        createTask: createTaskMock,
-        addBlocksEntry: vi.fn(async () => undefined),
-      } as never,
-      {
-        resolveMembers: vi.fn(() => []),
-      } as never,
-      {
-        getState: vi.fn(async () => ({ teamName: 'my-team', reviewers: [], tasks: {} })),
-        garbageCollect: vi.fn(async () => undefined),
-      } as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      (_teamName: string) =>
-        ({
-          taskBoard: {
-            createTask: createTaskMock,
-          },
-        }) as never
-    );
-
+    const config = { name: 'My team', members: [], specProject: 'sandbox/project', specSlug: 'sandbox-spec' };
+    const { service, store, upsertTask } = createRegistryCreationFixture({ getConfig: async () => config });
     const result = await service.createTask('my-team', {
-      subject: 'Start now',
-      owner: 'alice',
-      startImmediately: true,
-      prompt: 'Begin immediately.',
+      subject: 'Start now', owner: 'alice', startImmediately: true,
+      prompt: 'Begin immediately.', requirements: ['FR-1'],
     });
 
-    expect(result.status).toBe('in_progress');
-    expect(createTaskMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        owner: 'alice',
-        createdBy: 'user',
-        startImmediately: true,
-        prompt: 'Begin immediately.',
-      })
-    );
-    expect(createTaskMock).not.toHaveBeenCalledWith(
-      expect.objectContaining({ status: 'in_progress' })
-    );
+    expect(result).toMatchObject({
+      status: 'in_progress', owner: 'alice', createdBy: 'user', prompt: 'Begin immediately.',
+    });
+    expect(store.read('my-team', result.id)?.workIntervals).toHaveLength(1);
+    expect(upsertTask).toHaveBeenCalledWith(expect.objectContaining({ owner: 'alice', status: 'in-progress' }));
   });
 
   it('persists explicit related task links when creating a task', async () => {
-    const createTaskMock = vi.fn((task) => task);
-    const service = new TeamDataService(
-      {
-        listTeams: vi.fn(),
-        getConfig: vi.fn(async () => ({ name: 'My team', members: [] })),
-      } as never,
-      {
-        getNextTaskId: vi.fn(async () => '3'),
-        getTasks: vi.fn(async () => []),
-      } as never,
-      {
-        listInboxNames: vi.fn(async () => []),
-        getMessages: vi.fn(async () => []),
-      } as never,
-      {} as never,
-      {
-        createTask: createTaskMock,
-        addBlocksEntry: vi.fn(async () => undefined),
-      } as never,
-      {
-        resolveMembers: vi.fn(() => []),
-      } as never,
-      {
-        getState: vi.fn(async () => ({ teamName: 'my-team', reviewers: [], tasks: {} })),
-        garbageCollect: vi.fn(async () => undefined),
-      } as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      (_teamName: string) =>
-        ({
-          taskBoard: {
-            createTask: createTaskMock,
-          },
-        }) as never
-    );
-
+    const config = { name: 'My team', members: [], specProject: 'sandbox/project', specSlug: 'sandbox-spec' };
+    const { service, upsertTask } = createRegistryCreationFixture({ getConfig: async () => config });
     const result = await service.createTask('my-team', {
-      subject: 'Review work task',
-      related: ['1', '2'],
+      subject: 'Review work task', related: ['1', '2'], requirements: ['FR-1'],
     });
 
     expect(result.related).toEqual(['1', '2']);
-    expect(createTaskMock).toHaveBeenCalledWith(expect.objectContaining({ related: ['1', '2'] }));
+    expect(upsertTask).toHaveBeenCalledWith(expect.objectContaining({
+      refs: ['sandbox-spec:TASK-1', 'sandbox-spec:TASK-2'],
+    }));
   });
 
   it('awaits the async controller message API for durable inbox writes', async () => {
@@ -3378,7 +3205,6 @@ describe('TeamDataService', () => {
         listTeams: vi.fn(),
         getConfig: vi.fn(async () => ({ name: 'My team', members: [], leadSessionId: 'lead-1' })),
       } as never,
-      {} as never,
       {} as never,
       {} as never,
       {} as never,
@@ -3425,85 +3251,167 @@ describe('TeamDataService', () => {
     );
   });
 
-  it('delegates review entry to controller review API', async () => {
-    const requestReviewMock = vi.fn();
-
-    const service = new TeamDataService(
-      {
-        listTeams: vi.fn(),
-        getConfig: vi.fn(async () => ({
-          name: 'My team',
-          members: [{ name: 'lead', role: 'team lead' }],
-          leadSessionId: 'lead-1',
-        })),
-      } as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      () =>
-        ({
-          taskBoard: {
-            requestReview: requestReviewMock,
-          },
-        }) as never
+  it('uses the async task snapshot to guard repeated user-directed messages after board completion', async () => {
+    const claudeRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'team-message-board-guard-'));
+    tempPaths.push(claudeRoot);
+    setClaudeBasePathOverride(claudeRoot);
+    await fs.mkdir(path.join(claudeRoot, 'teams', 'my-team', 'inboxes'), { recursive: true });
+    await fs.writeFile(
+      path.join(claudeRoot, 'teams', 'my-team', 'config.json'),
+      JSON.stringify({ name: 'my-team', members: [{ name: 'alice', agentType: 'developer' }] })
     );
 
-    await service.requestReview('my-team', 'task-1');
+    const completedAt = new Date(Date.now() - 60_000).toISOString();
+    const task: TeamTask = {
+      id: '123',
+      displayId: '123',
+      subject: 'Finish the implementation',
+      status: 'completed',
+      createdAt: completedAt,
+      updatedAt: completedAt,
+      historyEvents: [
+        {
+          id: 'event-123-created',
+          type: 'task_created',
+          status: 'pending',
+          timestamp: completedAt,
+        },
+        {
+          id: 'event-123-completed',
+          type: 'status_changed',
+          from: 'in_progress',
+          to: 'completed',
+          timestamp: completedAt,
+        },
+      ],
+    };
+    const getTasks = vi.fn(async () => ({ backed: true as const, tasks: [task] }));
+    const taskReader = new TeamTaskReader(
+      { getConfigSnapshot: vi.fn(async () => null) } as never,
+      { getTasks, invalidate: vi.fn() } as never
+    );
+    const taskSnapshot = vi.spyOn(taskReader, 'getTasksProjectionSnapshot');
+    const service = new TeamDataService(
+      {
+        getConfig: vi.fn(async () => ({ name: 'My team', members: [] })),
+        getConfigSnapshot: vi.fn(async () => ({ name: 'My team', members: [] })),
+      } as never,
+      taskReader
+    );
+    const request = {
+      member: 'user',
+      from: 'alice',
+      to: 'team-lead',
+      leadSessionId: 'lead-session',
+    };
 
-    expect(requestReviewMock).toHaveBeenCalledWith('task-1', {
-      from: 'team-lead',
-      leadSessionId: 'lead-1',
+    const first = await service.sendMessage('my-team', {
+      ...request,
+      text: 'The implementation is complete.',
     });
+    const repeated = await service.sendMessage('my-team', {
+      ...request,
+      text: 'ALL DONE — no task is pending.',
+    });
+
+    expect(first.deduplicated).toBeUndefined();
+    expect(repeated.deduplicated).toBe(true);
+    expect(taskSnapshot).toHaveBeenCalledTimes(2);
+    expect(getTasks).toHaveBeenCalledTimes(2);
+  });
+
+  it('propagates guarded-send registry failures and skips task reads for unguarded sends', async () => {
+    const registryError = new Error('registry read unavailable');
+    const getTasks = vi.fn(async () => {
+      throw registryError;
+    });
+    const taskReader = new TeamTaskReader(
+      { getConfigSnapshot: vi.fn(async () => null) } as never,
+      { getTasks, invalidate: vi.fn() } as never
+    );
+    const sendMessageAsync = vi.fn(async () => ({ deliveredToInbox: true, messageId: '789' }));
+    const controllerFactory = vi.fn(
+      () => ({ messages: { sendMessageAsync } }) as never
+    );
+    const service = new TeamDataService(
+      {
+        getConfig: vi.fn(async () => ({ name: 'My team', members: [] })),
+        getConfigSnapshot: vi.fn(async () => ({ name: 'My team', members: [] })),
+      } as never,
+      taskReader,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      controllerFactory
+    );
+
+    await expect(
+      service.sendMessage('my-team', {
+        member: 'user',
+        from: 'alice',
+        to: 'team-lead',
+        text: 'The board is complete.',
+        leadSessionId: 'lead-session',
+      })
+    ).rejects.toBe(registryError);
+    expect(controllerFactory).not.toHaveBeenCalled();
+
+    await expect(
+      service.sendMessage('my-team', {
+        member: 'alice',
+        from: 'alice',
+        to: 'user',
+        text: 'This message goes to Alice.',
+        leadSessionId: 'lead-session',
+      })
+    ).resolves.toMatchObject({ deliveredToInbox: true });
+
+    await service.sendMessage('my-team', {
+      member: 'alice',
+      from: 'user',
+      text: 'Please review this task.',
+      leadSessionId: 'lead-session',
+    });
+    expect(getTasks).toHaveBeenCalledTimes(1);
+    expect(controllerFactory).toHaveBeenCalledTimes(2);
+    expect(sendMessageAsync).toHaveBeenCalledTimes(2);
+  });
+
+  it('requests review through the registry and notifies the reviewer with lead context', async () => {
+    const { service, transitionReview, sendMessageAsync, updateTask } = createRegistryReviewFixture(
+      [{ name: 'lead', role: 'team lead' }],
+      { id: '1', subject: 'Task', status: 'completed' }
+    );
+    await service.requestReview('my-team', '1');
+    expect(transitionReview).toHaveBeenCalledWith({
+      taskId: '1', action: 'request', actor: 'team-lead', reviewer: 'reviewer',
+    });
+    expect(updateTask).toHaveBeenCalledWith('my-team', '1', { op: 'set_column', column: 'review' });
+    expect(sendMessageAsync).toHaveBeenCalledWith(expect.objectContaining({
+      member: 'reviewer', from: 'team-lead', leadSessionId: 'lead-1',
+    }));
   });
 
   it('resolves the canonical lead instead of matching tech-lead role text', async () => {
-    const requestReviewMock = vi.fn();
-
-    const service = new TeamDataService(
-      {
-        listTeams: vi.fn(),
-        getConfig: vi.fn(async () => ({
-          name: 'My team',
-          members: [
-            { name: 'alice', role: 'tech lead' },
-            { name: 'team-lead', agentType: 'team-lead', role: 'lead' },
-          ],
-          leadSessionId: 'lead-1',
-        })),
-      } as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      () =>
-        ({
-          taskBoard: {
-            requestReview: requestReviewMock,
-          },
-        }) as never
+    const { service, transitionReview, sendMessageAsync } = createRegistryReviewFixture(
+      [{ name: 'alice', role: 'tech lead' }, { name: 'team-lead', agentType: 'team-lead', role: 'lead' }],
+      { id: '1', subject: 'Task', status: 'completed' }
     );
-
-    await service.requestReview('my-team', 'task-1');
-
-    expect(requestReviewMock).toHaveBeenCalledWith('task-1', {
-      from: 'team-lead',
-      leadSessionId: 'lead-1',
-    });
+    await service.requestReview('my-team', '1');
+    expect(transitionReview).toHaveBeenCalledWith(expect.objectContaining({
+      taskId: '1', actor: 'team-lead', action: 'request',
+    }));
+    expect(sendMessageAsync).toHaveBeenCalledWith(expect.objectContaining({
+      from: 'team-lead', leadSessionId: 'lead-1',
+    }));
   });
 
   it('preserves legacy kanban reviewer for tasks still in review without review history', async () => {
-    const service = new TeamDataService(
+    const service = createRegistryProjectionFixture(
       {
         listTeams: vi.fn(),
         getConfig: vi.fn(async () => ({
@@ -3539,7 +3447,6 @@ describe('TeamDataService', () => {
         getMessages: vi.fn(async () => []),
       } as never,
       {} as never,
-      {} as never,
       {
         resolveMembers: vi.fn(() => []),
       } as never,
@@ -3569,7 +3476,7 @@ describe('TeamDataService', () => {
   });
 
   it('does not leak stale reviewer after review is reset to pending', async () => {
-    const service = new TeamDataService(
+    const service = createRegistryProjectionFixture(
       {
         listTeams: vi.fn(),
         getConfig: vi.fn(async () => ({
@@ -3613,7 +3520,6 @@ describe('TeamDataService', () => {
         listInboxNames: vi.fn(async () => []),
         getMessages: vi.fn(async () => []),
       } as never,
-      {} as never,
       {} as never,
       {
         resolveMembers: vi.fn(() => []),
@@ -3815,54 +3721,21 @@ describe('TeamDataService', () => {
   });
 
   it('applies kanban overlay review state in global task projections', async () => {
-    const service = new TeamDataService(
-      {
-        listTeams: vi.fn(async () => [
-          {
-            teamName: 'my-team',
-            displayName: 'My team',
-            projectPath: '/repo',
-          },
-        ]),
-      } as never,
-      {
-        getAllTasks: vi.fn(async () => [
-          {
-            id: 'task-global-review',
-            teamName: 'my-team',
-            subject: 'Global review task',
-            status: 'completed',
-            owner: 'bob',
-            reviewState: 'none',
-            historyEvents: [
-              {
-                id: 'evt-created',
-                type: 'task_created',
-                status: 'completed',
-                timestamp: '2026-03-01T09:00:00.000Z',
-              },
-            ],
-          },
-        ]),
-      } as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {
-        getState: vi.fn(async () => ({
-          teamName: 'my-team',
-          reviewers: [],
-          tasks: {
-            'task-global-review': {
-              column: 'review',
-              reviewer: 'carol',
-              movedAt: '2026-03-01T10:00:00.000Z',
-            },
-          },
-        })),
-      } as never
-    );
+    const { service } = createGlobalRegistryFixture({
+      names: ['my-team'],
+      getConfigSnapshot: async () => ({ name: 'My team', members: [], specProject: 'sandbox/project', specSlug: 'sandbox-spec' }),
+      getTasks: async () => [{
+        id: 'task-global-review', subject: 'Global review task', status: 'completed', owner: 'bob',
+        reviewState: 'none', historyEvents: [{
+          id: 'evt-created', type: 'task_created', status: 'completed', timestamp: '2026-03-01T09:00:00.000Z',
+        }],
+      }],
+      getState: async () => ({
+        teamName: 'my-team', reviewers: [], tasks: {
+          'task-global-review': { column: 'review', reviewer: 'carol', movedAt: '2026-03-01T10:00:00.000Z' },
+        },
+      }),
+    });
 
     const tasks = await service.getAllTasks();
 
@@ -3886,48 +3759,25 @@ describe('TeamDataService', () => {
         ? {
             name: 'My team from config',
             members: [{ name: 'lead', role: 'Team Lead', cwd: '/repo-from-lead' }],
+            specProject: 'sandbox/project', specSlug: 'sandbox-spec',
             deletedAt: '2026-03-01T12:00:00.000Z',
           }
         : null
     );
-    const getAllTasks = vi.fn(async () => []);
-    const getAllTasksProjectionSnapshot = vi.fn(async () => [
-      {
-        id: 'task-global-config',
-        teamName: 'my-team',
-        subject: 'Global config task',
-        status: 'pending',
-        owner: 'bob',
-        blockedBy: ['old-blocker'],
-      },
-    ]);
-    const service = new TeamDataService(
-      {
-        listTeams,
-        getConfigSnapshot,
-      } as never,
-      {
-        getAllTasks,
-        getAllTasksProjectionSnapshot,
-      } as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {
-        getState: vi.fn(async () => ({
-          teamName: 'my-team',
-          reviewers: [],
-          tasks: {},
-        })),
-      } as never
-    );
+    const getTasks = vi.fn(async () => [{
+      id: 'task-global-config', subject: 'Global config task',
+      status: 'pending' as const, owner: 'bob', blockedBy: ['old-blocker'],
+    }]);
+    const { service, registry } = createGlobalRegistryFixture({
+      names: ['my-team'], listTeams, getConfigSnapshot, getTasks,
+      getState: async () => ({ teamName: 'my-team', reviewers: [], tasks: {} }),
+    });
 
     const tasks = await service.getAllTasks();
 
     expect(listTeams).not.toHaveBeenCalled();
-    expect(getAllTasksProjectionSnapshot).toHaveBeenCalledOnce();
-    expect(getAllTasks).not.toHaveBeenCalled();
+    expect(registry.getTasks).toHaveBeenCalledOnce();
+    expect(getTasks).toHaveBeenCalledWith('my-team');
     expect(getConfigSnapshot).toHaveBeenCalledWith('my-team');
     expect(tasks[0]).toMatchObject({
       id: 'task-global-config',
@@ -3955,7 +3805,7 @@ describe('TeamDataService', () => {
           author: 'bob',
           text: `Comment ${index}`,
           createdAt: '2026-03-01T09:00:00.000Z',
-          type: 'comment' as const,
+          type: 'regular' as const,
         },
       ],
     }));
@@ -3964,32 +3814,12 @@ describe('TeamDataService', () => {
       reviewers: [],
       tasks: {},
     }));
-    const service = new TeamDataService(
-      {
-        listTeams: vi.fn(async () => [
-          {
-            teamName: 'my-team',
-            displayName: 'My team',
-            projectPath: '/repo',
-          },
-          {
-            teamName: 'old-team',
-            displayName: 'Old team',
-            projectPath: '/old-repo',
-          },
-        ]),
-      } as never,
-      {
-        getAllTasks: vi.fn(async () => rawTasks),
-      } as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {
-        getState,
-      } as never
-    );
+    const { service } = createGlobalRegistryFixture({
+      names: ['my-team', 'old-team'],
+      getConfigSnapshot: async (name) => ({ name, members: [], specProject: 'sandbox/project', specSlug: 'sandbox-spec' }),
+      getTasks: async (teamName) => rawTasks.filter((task) => task.teamName === teamName),
+      getState,
+    });
 
     const tasks = await service.getAllTasks();
 
@@ -4004,55 +3834,21 @@ describe('TeamDataService', () => {
   });
 
   it('lets kanban approved overlay win over stale review history in global task projections', async () => {
-    const service = new TeamDataService(
-      {
-        listTeams: vi.fn(async () => [
-          {
-            teamName: 'my-team',
-            displayName: 'My team',
-            projectPath: '/repo',
-          },
-        ]),
-      } as never,
-      {
-        getAllTasks: vi.fn(async () => [
-          {
-            id: 'task-global-approved',
-            teamName: 'my-team',
-            subject: 'Global approved task',
-            status: 'completed',
-            owner: 'bob',
-            reviewState: 'none',
-            historyEvents: [
-              {
-                id: 'evt-review',
-                type: 'review_started',
-                from: 'none',
-                to: 'review',
-                timestamp: '2026-03-01T09:00:00.000Z',
-              },
-            ],
-          },
-        ]),
-      } as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {
-        getState: vi.fn(async () => ({
-          teamName: 'my-team',
-          reviewers: [],
-          tasks: {
-            'task-global-approved': {
-              column: 'approved',
-              reviewer: 'carol',
-              movedAt: '2026-03-01T10:00:00.000Z',
-            },
-          },
-        })),
-      } as never
-    );
+    const { service } = createGlobalRegistryFixture({
+      names: ['my-team'],
+      getConfigSnapshot: async () => ({ name: 'My team', members: [], specProject: 'sandbox/project', specSlug: 'sandbox-spec' }),
+      getTasks: async () => [{
+        id: 'task-global-approved', subject: 'Global approved task', status: 'completed', owner: 'bob',
+        reviewState: 'none', historyEvents: [{
+          id: 'evt-review', type: 'review_started', from: 'none', to: 'review', timestamp: '2026-03-01T09:00:00.000Z',
+        }],
+      }],
+      getState: async () => ({
+        teamName: 'my-team', reviewers: [], tasks: {
+          'task-global-approved': { column: 'approved', reviewer: 'carol', movedAt: '2026-03-01T10:00:00.000Z' },
+        },
+      }),
+    });
 
     const tasks = await service.getAllTasks();
 
@@ -4063,126 +3859,30 @@ describe('TeamDataService', () => {
     });
   });
 
-  it('propagates leadSessionId for kanban-driven review transitions', async () => {
-    const requestReviewMock = vi.fn();
-    const approveReviewMock = vi.fn();
-    const requestChangesMock = vi.fn();
-
-    const service = new TeamDataService(
-      {
-        listTeams: vi.fn(),
-        getConfig: vi.fn(async () => ({
-          name: 'My team',
-          members: [{ name: 'lead', role: 'team lead' }],
-          leadSessionId: 'lead-2',
-        })),
-      } as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      () =>
-        ({
-          taskBoard: {
-            getTask: vi.fn(() => ({
-              id: 'task-1',
-              status: 'completed',
-              reviewState: 'none',
-            })),
-            getKanbanState: vi.fn(() => ({
-              teamName: 'my-team',
-              reviewers: [],
-              tasks: {
-                'task-1': {
-                  column: 'review',
-                  movedAt: '2026-05-20T10:00:00.000Z',
-                },
-              },
-            })),
-            requestReview: requestReviewMock,
-            approveReview: approveReviewMock,
-            requestChanges: requestChangesMock,
-          },
-        }) as never
+  it('propagates lead context for kanban-driven review transitions', async () => {
+    const { service, transitionReview, replaceStatus, sendMessageAsync } = createRegistryReviewFixture(
+      [{ name: 'lead', role: 'team lead' }],
+      { id: '1', subject: 'Task', status: 'completed', owner: 'alice', reviewState: 'review' }
     );
-
-    await service.updateKanban('my-team', 'task-1', { op: 'set_column', column: 'review' });
-    await service.updateKanban('my-team', 'task-1', { op: 'set_column', column: 'approved' });
-    await service.updateKanban('my-team', 'task-1', {
-      op: 'request_changes',
-      comment: 'Needs fixes',
-    });
-
-    expect(requestReviewMock).toHaveBeenCalledWith('task-1', {
-      from: 'team-lead',
-      leadSessionId: 'lead-2',
-    });
-    expect(approveReviewMock).toHaveBeenCalledWith('task-1', {
-      from: 'team-lead',
-      suppressTaskComment: true,
-      'notify-owner': true,
-      leadSessionId: 'lead-2',
-    });
-    expect(requestChangesMock).toHaveBeenCalledWith('task-1', {
-      from: 'team-lead',
-      comment: 'Needs fixes',
-      leadSessionId: 'lead-2',
-    });
+    await service.updateKanban('my-team', '1', { op: 'set_column', column: 'review' });
+    await service.updateKanban('my-team', '1', { op: 'set_column', column: 'approved' });
+    await service.updateKanban('my-team', '1', { op: 'request_changes', comment: 'Needs fixes' });
+    expect(transitionReview).toHaveBeenCalledWith(expect.objectContaining({ action: 'request', actor: 'team-lead' }));
+    expect(transitionReview).toHaveBeenCalledWith(expect.objectContaining({ action: 'approve', actor: 'team-lead', manual: false }));
+    expect(transitionReview).toHaveBeenCalledWith(expect.objectContaining({ action: 'changes', actor: 'team-lead', note: 'Needs fixes' }));
+    expect(replaceStatus).toHaveBeenCalledWith({ taskId: '1', to: 'pending', actor: 'team-lead', expectedStatus: 'completed' });
+    expect(sendMessageAsync).toHaveBeenCalledWith(expect.objectContaining({ from: 'team-lead', leadSessionId: 'lead-1' }));
   });
 
-  it('uses direct kanban approval for completed tasks that are not in review', async () => {
-    const approveReviewMock = vi.fn();
-    const setKanbanColumnMock = vi.fn();
-
-    const service = new TeamDataService(
-      {
-        listTeams: vi.fn(),
-        getConfig: vi.fn(async () => ({
-          name: 'My team',
-          members: [{ name: 'lead', role: 'team lead' }],
-          leadSessionId: 'lead-2',
-        })),
-      } as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      () =>
-        ({
-          taskBoard: {
-            getTask: vi.fn(() => ({
-              id: 'task-1',
-              status: 'completed',
-              reviewState: 'none',
-              historyEvents: [],
-            })),
-            getKanbanState: vi.fn(() => ({
-              teamName: 'my-team',
-              reviewers: [],
-              tasks: {},
-            })),
-            setKanbanColumn: setKanbanColumnMock,
-            approveReview: approveReviewMock,
-          },
-        }) as never
+  it('marks approval as manual for completed tasks that are not in review', async () => {
+    const { service, transitionReview } = createRegistryReviewFixture(
+      [{ name: 'lead', role: 'team lead' }],
+      { id: '1', subject: 'Task', status: 'completed', reviewState: 'none', historyEvents: [] }
     );
-
-    await service.updateKanban('my-team', 'task-1', { op: 'set_column', column: 'approved' });
-
-    expect(setKanbanColumnMock).toHaveBeenCalledWith('task-1', 'approved', {
-      transition: 'manual_approve',
+    await service.updateKanban('my-team', '1', { op: 'set_column', column: 'approved' });
+    expect(transitionReview).toHaveBeenCalledWith({
+      taskId: '1', action: 'approve', actor: 'team-lead', manual: true,
     });
-    expect(approveReviewMock).not.toHaveBeenCalled();
   });
 
   it('seeds historical eligible task comments without sending when the journal is missing', async () => {
@@ -4205,7 +3905,7 @@ describe('TeamDataService', () => {
     };
 
     try {
-      const service = new TeamDataService(
+      const service = createRegistryProjectionFixture(
         {
           listTeams: vi.fn(async () => [
             {
@@ -4249,7 +3949,6 @@ describe('TeamDataService', () => {
           getMessagesFor: vi.fn(async () => []),
         } as never,
         inboxWriter as never,
-        {} as never,
         {} as never,
         {} as never,
         {} as never,
@@ -4300,7 +3999,7 @@ describe('TeamDataService', () => {
     };
 
     try {
-      const service = new TeamDataService(
+      const service = createRegistryProjectionFixture(
         {
           listTeams: vi.fn(async () => [
             {
@@ -4347,7 +4046,6 @@ describe('TeamDataService', () => {
         {} as never,
         {} as never,
         {} as never,
-        {} as never,
         (() => ({}) as never) as never,
         journal as never
       );
@@ -4388,7 +4086,7 @@ describe('TeamDataService', () => {
     };
 
     try {
-      const service = new TeamDataService(
+      const service = createRegistryProjectionFixture(
         {
           listTeams: vi.fn(),
           getConfig: vi.fn(async () => ({
@@ -4423,7 +4121,6 @@ describe('TeamDataService', () => {
           getMessagesFor: vi.fn(async () => []),
         } as never,
         inboxWriter as never,
-        {} as never,
         {} as never,
         {} as never,
         {} as never,
@@ -4485,7 +4182,7 @@ describe('TeamDataService', () => {
     };
 
     try {
-      const service = new TeamDataService(
+      const service = createRegistryProjectionFixture(
         {
           listTeams: vi.fn(),
           getConfig: vi.fn(async () => ({
@@ -4540,7 +4237,6 @@ describe('TeamDataService', () => {
         {} as never,
         {} as never,
         {} as never,
-        {} as never,
         (() => ({}) as never) as never,
         journal as never
       );
@@ -4586,7 +4282,7 @@ describe('TeamDataService', () => {
     };
 
     try {
-      const service = new TeamDataService(
+      const service = createRegistryProjectionFixture(
         {
           listTeams: vi.fn(),
           getConfig: vi.fn(async () => ({
@@ -4621,7 +4317,6 @@ describe('TeamDataService', () => {
           getMessagesFor: vi.fn(async () => []),
         } as never,
         inboxWriter as never,
-        {} as never,
         {} as never,
         {} as never,
         {} as never,
@@ -4669,7 +4364,7 @@ describe('TeamDataService', () => {
     };
 
     try {
-      const service = new TeamDataService(
+      const service = createRegistryProjectionFixture(
         {
           listTeams: vi.fn(async () => [
             {
@@ -4726,7 +4421,6 @@ describe('TeamDataService', () => {
         {} as never,
         {} as never,
         {} as never,
-        {} as never,
         (() => ({}) as never) as never,
         journal as never
       );
@@ -4777,7 +4471,7 @@ describe('TeamDataService', () => {
     };
 
     try {
-      const service = new TeamDataService(
+      const service = createRegistryProjectionFixture(
         {
           listTeams: vi.fn(async () => [
             {
@@ -4820,7 +4514,6 @@ describe('TeamDataService', () => {
           getMessagesFor: vi.fn(async () => []),
         } as never,
         inboxWriter as never,
-        {} as never,
         {} as never,
         {} as never,
         {} as never,
@@ -4876,7 +4569,7 @@ describe('TeamDataService', () => {
     };
 
     try {
-      const service = new TeamDataService(
+      const service = createRegistryProjectionFixture(
         {
           listTeams: vi.fn(),
           getConfig: vi.fn(async () => ({
@@ -4910,7 +4603,6 @@ describe('TeamDataService', () => {
           getMessagesFor: vi.fn(async () => []),
         } as never,
         inboxWriter as never,
-        {} as never,
         {} as never,
         {} as never,
         {} as never,
@@ -4978,7 +4670,7 @@ describe('TeamDataService', () => {
     };
 
     try {
-      const service = new TeamDataService(
+      const service = createRegistryProjectionFixture(
         {
           listTeams: vi.fn(),
           getConfig: vi.fn(async () => ({
@@ -5012,7 +4704,6 @@ describe('TeamDataService', () => {
           getMessagesFor: vi.fn(async () => []),
         } as never,
         inboxWriter as never,
-        {} as never,
         {} as never,
         {} as never,
         {} as never,
@@ -5112,7 +4803,7 @@ describe('TeamDataService', () => {
     };
 
     try {
-      const service = new TeamDataService(
+      const service = createRegistryProjectionFixture(
         {
           listTeams: vi.fn(),
           getConfig: vi.fn(async () => ({
@@ -5132,7 +4823,6 @@ describe('TeamDataService', () => {
           getMessagesFor: vi.fn(async () => []),
         } as never,
         inboxWriter as never,
-        {} as never,
         {} as never,
         {} as never,
         {} as never,
@@ -5211,7 +4901,7 @@ describe('TeamDataService', () => {
     };
 
     try {
-      const service = new TeamDataService(
+      const service = createRegistryProjectionFixture(
         {
           listTeams: vi.fn(),
           getConfig: vi.fn(async () => ({
@@ -5261,7 +4951,6 @@ describe('TeamDataService', () => {
           getMessagesFor: vi.fn(async () => []),
         } as never,
         inboxWriter as never,
-        {} as never,
         {} as never,
         {} as never,
         {} as never,
@@ -5320,7 +5009,7 @@ describe('TeamDataService', () => {
     };
 
     try {
-      const service = new TeamDataService(
+      const service = createRegistryProjectionFixture(
         {
           listTeams: vi.fn(),
           getConfig: vi.fn(async () => ({
@@ -5355,7 +5044,6 @@ describe('TeamDataService', () => {
           getMessagesFor: vi.fn(async () => []),
         } as never,
         inboxWriter as never,
-        {} as never,
         {} as never,
         {} as never,
         {} as never,
@@ -5572,7 +5260,7 @@ describe('TeamDataService', () => {
     };
 
     try {
-      const service = new TeamDataService(
+      const service = createRegistryProjectionFixture(
         {
           listTeams: vi.fn(async () => {
             await initGate;
@@ -5623,7 +5311,6 @@ describe('TeamDataService', () => {
         {} as never,
         {} as never,
         {} as never,
-        {} as never,
         (() => ({}) as never) as never,
         journal as never
       );
@@ -5658,7 +5345,7 @@ describe('TeamDataService', () => {
       historyEvents: [],
     };
 
-    const service = new TeamDataService(
+    const service = createRegistryProjectionFixture(
       {
         listTeams: vi.fn(),
         getConfig: vi.fn(async () => ({ name: 'My team', members: [], projectPath: '/repo' })),
@@ -5670,7 +5357,6 @@ describe('TeamDataService', () => {
         listInboxNames: vi.fn(async () => []),
         getMessages: vi.fn(async () => []),
       } as never,
-      {} as never,
       {} as never,
       {
         resolveMembers: vi.fn(() => []),
@@ -5722,7 +5408,7 @@ describe('TeamDataService', () => {
       load: ReturnType<typeof vi.fn>,
       trackerSnapshot: { projectFingerprint: string; logSourceGeneration: string } | null
     ) => {
-      const service = new TeamDataService(
+      const service = createRegistryProjectionFixture(
         {
           listTeams: vi.fn(),
           getConfig: vi.fn(async () => ({ name: 'My team', members: [], projectPath: '/repo' })),
@@ -5734,7 +5420,6 @@ describe('TeamDataService', () => {
           listInboxNames: vi.fn(async () => []),
           getMessages: vi.fn(async () => []),
         } as never,
-        {} as never,
         {} as never,
         {
           resolveMembers: vi.fn(() => []),
@@ -5836,7 +5521,7 @@ describe('TeamDataService', () => {
       reviewState: 'none',
     });
 
-    const service = new TeamDataService(
+    const service = createRegistryProjectionFixture(
       {
         listTeams: vi.fn(),
         getConfig: vi.fn(async () => ({ name: 'My team', members: [], projectPath: '/repo' })),
@@ -5848,7 +5533,6 @@ describe('TeamDataService', () => {
         listInboxNames: vi.fn(async () => []),
         getMessages: vi.fn(async () => []),
       } as never,
-      {} as never,
       {} as never,
       {
         resolveMembers: vi.fn(() => []),
@@ -5913,7 +5597,7 @@ describe('TeamDataService', () => {
     });
     const getMessages = vi.fn(async () => []);
 
-    const service = new TeamDataService(
+    const service = createRegistryProjectionFixture(
       {
         listTeams: vi.fn(),
         getConfig: vi.fn(async () => ({ name: 'My team', members: [], projectPath: '/repo' })),
@@ -5925,7 +5609,6 @@ describe('TeamDataService', () => {
         listInboxNames: vi.fn(async () => []),
         getMessages,
       } as never,
-      {} as never,
       {} as never,
       {
         resolveMembers: vi.fn(() => []),
@@ -5990,7 +5673,7 @@ describe('TeamDataService', () => {
       reviewState: 'none',
     });
 
-    const service = new TeamDataService(
+    const service = createRegistryProjectionFixture(
       {
         listTeams: vi.fn(),
         getConfig: vi.fn(async () => ({ name: 'My team', members: [], projectPath: '/repo' })),
@@ -6002,7 +5685,6 @@ describe('TeamDataService', () => {
         listInboxNames: vi.fn(async () => []),
         getMessages: vi.fn(async () => []),
       } as never,
-      {} as never,
       {} as never,
       {
         resolveMembers: vi.fn(() => []),
@@ -6113,7 +5795,6 @@ describe('TeamDataService', () => {
       {} as never,
       {} as never,
       {} as never,
-      {} as never,
       () =>
         ({
           messages: {
@@ -6169,7 +5850,6 @@ describe('TeamDataService', () => {
           },
         ]),
       } as never,
-      {} as never,
       {} as never,
       {
         resolveMembers: vi.fn(() => []),
@@ -6251,7 +5931,6 @@ describe('TeamDataService', () => {
         ]),
       } as never,
       {} as never,
-      {} as never,
       {
         resolveMembers: vi.fn(() => []),
       } as never,
@@ -6297,7 +5976,6 @@ describe('TeamDataService', () => {
         listInboxNames: vi.fn(async () => []),
         getMessages: vi.fn(async () => inboxMessages),
       } as never,
-      {} as never,
       {} as never,
       {
         resolveMembers: vi.fn(() => []),
@@ -7455,7 +7133,7 @@ describe('TeamDataService', () => {
       'Team not found: missing-team'
     );
 
-    expect(harness.taskReader.getTasks).not.toHaveBeenCalled();
+    expect(harness.registryTaskProvider.getTasks).not.toHaveBeenCalled();
     expect(harness.inboxReader.listInboxNames).not.toHaveBeenCalled();
     expect(harness.inboxReader.getMessages).not.toHaveBeenCalled();
     expect(harness.membersMetaStore.getMembers).not.toHaveBeenCalled();
@@ -8127,18 +7805,24 @@ describe('TeamDataService', () => {
     await flushMicrotasks();
 
     kanbanDeferred.reject(new Error('kanban failed'));
-    tasksDeferred.reject(new Error('tasks failed'));
+    tasksDeferred.resolve([]);
     metaDeferred.reject(new Error('meta failed'));
     inboxDeferred.reject(new Error('inbox failed'));
 
     const data = await pending;
 
     expect(data.warnings).toEqual([
-      'Tasks failed to load',
       'Inboxes failed to load',
       'Member metadata failed to load',
       'Kanban state failed to load',
     ]);
+  });
+
+  it('fails closed instead of returning an empty snapshot when registry tasks fail', async () => {
+    const harness = createGetTeamDataHarness({
+      getTasks: async () => { throw new Error('registry tasks failed'); },
+    });
+    await expect(harness.service.getTeamData('my-team')).rejects.toThrow('registry tasks failed');
   });
 
   it('preserves message assembly order across inbox, lead texts, and sent messages', async () => {
@@ -8239,7 +7923,7 @@ describe('TeamDataService', () => {
     expect(data.warnings).toEqual(expect.arrayContaining(['Kanban state failed to load']));
     expect(feed.messages.map((message) => message.messageId)).toEqual(['sent-1', 'lead-1']);
     expect(resolveMembersSpy).toHaveBeenCalledWith(
-      buildDefaultTeamConfig(),
+      { ...buildDefaultTeamConfig(), specProject: 'sandbox/project', specSlug: 'sandbox-spec' },
       metaMembers,
       inboxNames,
       expect.arrayContaining([
@@ -8432,7 +8116,6 @@ describe('TeamDataService', () => {
             )
           ),
         } as never,
-        {} as never,
         {} as never,
         { resolveMembers: vi.fn(() => []) } as never,
         {

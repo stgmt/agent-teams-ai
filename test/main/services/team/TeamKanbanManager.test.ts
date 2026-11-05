@@ -31,7 +31,20 @@ const hoisted = vi.hoisted(() => {
   const atomicWrite = vi.fn(async (filePath: string, data: string) => {
     files.set(norm(filePath), data);
   });
-  return { files, stat, readFile, atomicWrite };
+  const lock = {
+    locked: false,
+    beforeAcquire: undefined as (() => Promise<void>) | undefined,
+  };
+  const withFileLock = vi.fn(async (_scope: string, operation: () => Promise<unknown>) => {
+    await lock.beforeAcquire?.();
+    lock.locked = true;
+    try {
+      return await operation();
+    } finally {
+      lock.locked = false;
+    }
+  });
+  return { files, stat, readFile, atomicWrite, lock, withFileLock };
 });
 
 vi.mock('fs', async (importOriginal) => {
@@ -50,8 +63,12 @@ vi.mock('../../../../src/main/utils/pathDecoder', () => ({
   getTeamsBasePath: () => '/mock/teams',
 }));
 
-vi.mock('../../../../src/main/services/team/atomicWrite', () => ({
+vi.mock('../../../../src/main/utils/atomicWrite', () => ({
   atomicWriteAsync: hoisted.atomicWrite,
+}));
+
+vi.mock('../../../../src/main/services/team/fileLock', () => ({
+  withFileLock: hoisted.withFileLock,
 }));
 
 import { TeamKanbanManager } from '../../../../src/main/services/team/TeamKanbanManager';
@@ -62,6 +79,9 @@ describe('TeamKanbanManager', () => {
 
   beforeEach(() => {
     hoisted.files.clear();
+    hoisted.lock.locked = false;
+    hoisted.lock.beforeAcquire = undefined;
+    hoisted.withFileLock.mockClear();
     hoisted.readFile.mockClear();
     hoisted.atomicWrite.mockClear();
   });
@@ -125,14 +145,25 @@ describe('TeamKanbanManager', () => {
           '12': { column: 'review', movedAt: '2026-01-01T00:00:00.000Z' },
           '13': { column: 'approved', movedAt: '2026-01-01T00:00:00.000Z' },
         },
+        columnOrder: { review: ['12', '13'] },
       })
     );
 
-    await manager.garbageCollect('my-team', new Set(['12']));
+    await expect(manager.garbageCollect('my-team', async () => new Set(['12']))).resolves.toEqual({
+      staleKanbanEntriesRemoved: 1,
+      staleColumnOrderRefsRemoved: 1,
+    });
+
+    await expect(manager.garbageCollect('my-team', async () => new Set(['12']))).resolves.toEqual({
+      staleKanbanEntriesRemoved: 0,
+      staleColumnOrderRefsRemoved: 0,
+    });
     const persisted = JSON.parse(hoisted.files.get(statePath) ?? '{}') as {
       tasks?: Record<string, unknown>;
+      columnOrder?: { review?: string[] };
     };
     expect(Object.keys(persisted.tasks ?? {})).toEqual(['12']);
+    expect(persisted.columnOrder?.review).toEqual(['12']);
   });
 
   it('garbageCollect does not write when nothing to remove', async () => {
@@ -147,9 +178,57 @@ describe('TeamKanbanManager', () => {
       })
     );
 
-    await manager.garbageCollect('my-team', new Set(['12']));
+    await manager.garbageCollect('my-team', async () => new Set(['12']));
     expect(hoisted.atomicWrite).not.toHaveBeenCalled();
   });
+
+  it('resolves valid task IDs inside the board lock so a concurrent overlay survives', async () => {
+    const validTaskIds = new Set(['12']);
+    hoisted.files.set(
+      statePath,
+      JSON.stringify({
+        teamName: 'my-team',
+        reviewers: [],
+        tasks: {
+          '12': { column: 'review', movedAt: '2026-01-01T00:00:00.000Z' },
+        },
+        columnOrder: { review: ['12'] },
+      })
+    );
+    hoisted.lock.beforeAcquire = async () => {
+      validTaskIds.add('13');
+      hoisted.files.set(
+        statePath,
+        JSON.stringify({
+          teamName: 'my-team',
+          reviewers: [],
+          tasks: {
+            '12': { column: 'review', movedAt: '2026-01-01T00:00:00.000Z' },
+            '13': { column: 'approved', movedAt: '2026-01-02T00:00:00.000Z' },
+          },
+          columnOrder: { review: ['12', '13'] },
+        })
+      );
+    };
+
+    await expect(
+      manager.garbageCollect('my-team', async () => {
+        expect(hoisted.lock.locked).toBe(true);
+        return new Set(validTaskIds);
+      })
+    ).resolves.toEqual({
+      staleKanbanEntriesRemoved: 0,
+      staleColumnOrderRefsRemoved: 0,
+    });
+
+    const persisted = JSON.parse(hoisted.files.get(statePath) ?? '{}') as {
+      tasks?: Record<string, unknown>;
+      columnOrder?: { review?: string[] };
+    };
+    expect(Object.keys(persisted.tasks ?? {}).sort()).toEqual(['12', '13']);
+    expect(persisted.columnOrder?.review).toEqual(['12', '13']);
+  });
+
   it.each([
     '{bad',
     'null',

@@ -22,6 +22,7 @@ import type {
 } from '../../../core/application/ports';
 import type { TeamLifecycleSnapshot } from '@features/team-provisioning/contracts';
 import type { TeamMembersMetaStore } from '@main/services/team/TeamMembersMetaStore';
+import type { TeamTaskReader } from '@main/services/team/TeamTaskReader';
 import type { TaskChangeSetV2, TeamTask } from '@shared/types';
 
 interface AgendaItem {
@@ -39,6 +40,7 @@ interface AgendaItem {
 interface Dependencies {
   teamsRoot: string;
   members: Pick<TeamMembersMetaStore, 'getMeta'>;
+  taskReader: Pick<TeamTaskReader, 'getTasks'>;
   lifecycle(run: LeadReportRunIdentity): Promise<Readonly<TeamLifecycleSnapshot> | null>;
   taskChanges(input: {
     run: LeadReportRunIdentity;
@@ -60,7 +62,10 @@ const MAX_DESCRIPTION_CHARS = 600;
 function untrustedText(value: unknown): string {
   const text =
     typeof value === 'string'
-      ? value.replace(/[\p{Cc}]+/gu, ' ').replace(/\s+/gu, ' ').trim()
+      ? value
+          .replace(/[\p{Cc}]+/gu, ' ')
+          .replace(/\s+/gu, ' ')
+          .trim()
       : '';
   return text.length > MAX_DESCRIPTION_CHARS
     ? `${text.slice(0, MAX_DESCRIPTION_CHARS - 1)}…`
@@ -114,7 +119,7 @@ export class NodeLeadReportSources implements LeadReportSources {
   }
 
   async tasks(run: LeadReportRunIdentity): Promise<TasksRead> {
-    const items = this.board(run, 'tasks');
+    const items = await this.board(run, 'tasks');
     const source = this.stamp('task-board', items);
     const tasks: TasksRead['tasks'][number][] = [];
     for (const item of items) {
@@ -176,10 +181,10 @@ export class NodeLeadReportSources implements LeadReportSources {
   }
 
   async results(run: LeadReportRunIdentity): Promise<ResultsRead> {
-    const items = this.board(run, 'results');
-    const evidence: EvidenceRef[] = [];
+    const items = await this.board(run, 'results');
     const errors: SourceError[] = [];
     const source = this.stamp('task-results', items);
+    const evidence: EvidenceRef[] = [];
     for (const item of items) {
       const memberName = item.owner;
       if (!memberName) continue;
@@ -280,13 +285,18 @@ export class NodeLeadReportSources implements LeadReportSources {
     });
   }
 
-  private board(run: LeadReportRunIdentity, source: 'tasks' | 'results'): AgendaItem[] {
+  private async board(
+    run: LeadReportRunIdentity,
+    source: 'tasks' | 'results'
+  ): Promise<AgendaItem[]> {
     this.validate(run);
     try {
+      const readOnlyTaskSnapshot = await this.deps.taskReader.getTasks(run.teamName);
       const controller = agentTeamsController.createController({
         teamName: run.teamName,
         claudeDir: dirname(this.deps.teamsRoot),
         allowUserMessageSender: true,
+        readOnlyTaskSnapshot,
       });
       return controller.taskBoard.readLeadReportFacts() as AgendaItem[];
     } catch (error) {

@@ -17,8 +17,13 @@ import { buildNativeAppManagedBootstrapSpecs } from '../../../../src/main/servic
 import { TeamMembersMetaStore } from '../../../../src/main/services/team/TeamMembersMetaStore';
 import { TeamMetaStore } from '../../../../src/main/services/team/TeamMetaStore';
 import { setClaudeBasePathOverride } from '../../../../src/main/utils/pathDecoder';
+import {
+  createRegistryTaskTestBoundary,
+  type RegistryTaskTestBoundary,
+} from './helpers/registryTaskTestBoundary';
 
 const TEAM = 'restart-context-team';
+let registryBoundary: RegistryTaskTestBoundary;
 const LONG_WORKFLOW = [
   'Ты DEPLOY. Выкатываешь только готовый кандидат.',
   ...Array.from(
@@ -34,6 +39,7 @@ describe('стартовый контекст перезапущенного а�
   beforeEach(async () => {
     tempClaudeRoot = await mkdtemp(join(tmpdir(), 'restart-context-'));
     setClaudeBasePathOverride(tempClaudeRoot);
+    registryBoundary = await createRegistryTaskTestBoundary({ teamName: 'sandbox-spec' });
     await new TeamMetaStore().writeMeta(TEAM, {
       cwd: '/tmp/workspace',
       providerId: 'anthropic',
@@ -49,17 +55,21 @@ describe('стартовый контекст перезапущенного а�
 
   afterEach(async () => {
     setClaudeBasePathOverride(null);
+    await registryBoundary.dispose();
     await rm(tempClaudeRoot, { recursive: true, force: true });
   });
 
   it('SR-06 новый workflow доходит до агента целиком, вместе с последней строкой', async () => {
-    const specs = await buildNativeAppManagedBootstrapSpecs({
-      teamName: TEAM,
-      cwd: '/tmp/workspace',
-      members: [
-        { name: 'DEPLOY', providerId: 'anthropic', role: 'architect', workflow: LONG_WORKFLOW },
-      ],
-    });
+    const specs = await buildNativeAppManagedBootstrapSpecs(
+      {
+        teamName: TEAM,
+        cwd: '/tmp/workspace',
+        members: [
+          { name: 'DEPLOY', providerId: 'anthropic', role: 'architect', workflow: LONG_WORKFLOW },
+        ],
+      },
+      registryBoundary.taskReader
+    );
 
     const context = specs.get('DEPLOY')?.contextText ?? '';
     expect(context).toContain('Шаг 1:');
@@ -69,13 +79,16 @@ describe('стартовый контекст перезапущенного а�
   });
 
   it('SR-06b перезапущенный агент видит команду (состав), а не только себя', async () => {
-    const specs = await buildNativeAppManagedBootstrapSpecs({
-      teamName: TEAM,
-      cwd: '/tmp/workspace',
-      members: [
-        { name: 'DEPLOY', providerId: 'anthropic', role: 'architect', workflow: LONG_WORKFLOW },
-      ],
-    });
+    const specs = await buildNativeAppManagedBootstrapSpecs(
+      {
+        teamName: TEAM,
+        cwd: '/tmp/workspace',
+        members: [
+          { name: 'DEPLOY', providerId: 'anthropic', role: 'architect', workflow: LONG_WORKFLOW },
+        ],
+      },
+      registryBoundary.taskReader
+    );
 
     const context = specs.get('DEPLOY')?.contextText ?? '';
     expect(context).toContain('REVIWER');

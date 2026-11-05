@@ -435,6 +435,17 @@ export function getTasksBasePath(): string {
 }
 
 /**
+ * Get the local execution task directory (~/.claude/tasks-local).
+ *
+ * Execution-only task state (work/review intervals, comments, attachments,
+ * history events, clarification requests) lives here, one file per task and
+ * team. Canonical task fields stay in the canonical tasks directory.
+ */
+export function getLocalTasksBasePath(): string {
+  return path.join(getClaudeBasePath(), 'tasks-local');
+}
+
+/**
  * Get the tools directory path (~/.claude/tools).
  */
 export function getToolsBasePath(): string {

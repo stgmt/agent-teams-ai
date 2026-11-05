@@ -119,6 +119,14 @@ vi.mock('agent-teams-controller', async (importOriginal) => {
 };
 });
 
+vi.mock('@main/services/team/TeamTaskReader', () => ({
+  TeamTaskReader: class {
+    async getTasks() {
+      return [];
+    }
+  },
+}));
+
 import { ConfigManager } from '../../../../src/main/services/infrastructure/ConfigManager';
 import {
   clearAutoResumeService,
@@ -126,6 +134,9 @@ import {
   initializeAutoResumeService,
 } from '../../../../src/main/services/team/AutoResumeService';
 import { TeamProvisioningService } from '../../../../src/main/services/team/TeamProvisioningService';
+import {
+  isolateLeadTaskIntervalsForProvisioningTest,
+} from './provisioningHarness/ancillaryTaskServiceTestSeams';
 
 import type { TeamChangeEvent } from '@shared/types/team';
 
@@ -251,6 +262,7 @@ describe('TeamProvisioningService pre-ready live messages', () => {
     hoisted.files.clear();
     hoisted.appendSentMessage.mockClear();
     hoisted.sendInboxMessage.mockClear();
+    isolateLeadTaskIntervalsForProvisioningTest();
   });
 
   it('pre-ready assistant text is added to liveLeadProcessMessages', () => {

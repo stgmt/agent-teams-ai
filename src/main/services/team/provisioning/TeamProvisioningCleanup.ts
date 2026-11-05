@@ -107,6 +107,7 @@ export interface TeamProvisioningCleanupPorts<TRun extends TeamProvisioningClean
     options: { reason: 'launch_progress_failed' | 'launch_cleanup_unconfirmed_bootstrap' }
   ): void;
   resetRuntimeToolActivity(run: TRun): void;
+  clearStartupWorkDeliveryState(run: TRun): void;
   setLeadActivity(run: TRun, state: 'active' | 'idle' | 'offline'): void;
   stopStallWatchdog(run: TRun): void;
   stopFilesystemMonitor(run: TRun): void;
@@ -360,5 +361,6 @@ export function cleanupProvisioningRun<TRun extends TeamProvisioningCleanupRun>(
   if (run.progress) {
     ports.retainProvisioningProgress(run.runId, run.progress);
   }
+  ports.clearStartupWorkDeliveryState(run);
   ports.runs.delete(run.runId);
 }

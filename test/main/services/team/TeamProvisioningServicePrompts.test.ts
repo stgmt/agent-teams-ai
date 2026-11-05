@@ -26,6 +26,14 @@ vi.mock('@main/services/team/ClaudeBinaryResolver', () => ({
   ClaudeBinaryResolver: { resolve: vi.fn() },
 }));
 
+vi.mock('@main/services/team/TeamTaskReader', () => ({
+  TeamTaskReader: class {
+    async getTasks() {
+      return [];
+    }
+  },
+}));
+
 // Prompt construction uses the real config writer, with compilation isolated
 // from the provider-diagnostic execCli fixture below.
 vi.mock('@main/services/team/WorkspaceMcpBundle', () => ({
@@ -144,6 +152,10 @@ import { execCli, spawnCli } from '@main/utils/childProcess';
 import { setAppDataBasePath } from '@main/utils/pathDecoder';
 
 import { toMetaMembers } from './provisioningHarness';
+import {
+  isolateRegistryCredentialForProvisioningTest,
+  isolateTaskActivityRepairForProvisioningTest,
+} from './provisioningHarness/ancillaryTaskServiceTestSeams';
 
 import type { TeamCreateRequest, TeamMember, TeamProviderId } from '@shared/types';
 
@@ -375,6 +387,8 @@ function mockOpenCodeWorkspaceResolution(svc: TeamProvisioningService): void {
 describe('TeamProvisioningService prompt content (solo mode discipline)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    isolateTaskActivityRepairForProvisioningTest();
+
     tempClaudeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-team-prompts-'));
     tempTeamsBase = path.join(tempClaudeRoot, 'teams');
     tempTasksBase = path.join(tempClaudeRoot, 'tasks');
@@ -384,6 +398,7 @@ describe('TeamProvisioningService prompt content (solo mode discipline)', () => 
     setAppDataBasePath(tempClaudeRoot);
     fs.mkdirSync(tempTeamsBase, { recursive: true });
     fs.mkdirSync(tempTasksBase, { recursive: true });
+    isolateRegistryCredentialForProvisioningTest(tempClaudeRoot);
   });
 
   afterEach(() => {

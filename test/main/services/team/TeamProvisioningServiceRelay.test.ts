@@ -176,6 +176,14 @@ vi.mock('agent-teams-controller', async (importOriginal) => {
 };
 });
 
+vi.mock('@main/services/team/TeamTaskReader', () => ({
+  TeamTaskReader: class {
+    async getTasks() {
+      return [];
+    }
+  },
+}));
+
 import { buildLegacyInboxMessageId } from '../../../../src/main/services/team/inboxMessageIdentity';
 import { OpenCodePromptDeliveryContinuityScan } from '../../../../src/main/services/team/opencode/delivery/OpenCodePromptDeliveryContinuityScan';
 import { OpenCodePromptDeliveryLedgerStore } from '../../../../src/main/services/team/opencode/delivery/OpenCodePromptDeliveryLedger';
@@ -186,6 +194,8 @@ import { TeamRuntimeAdapterRegistry } from '../../../../src/main/services/team/r
 import { TeamConfigReader } from '../../../../src/main/services/team/TeamConfigReader';
 import { TeamProvisioningService } from '../../../../src/main/services/team/TeamProvisioningService';
 import { getTeamsBasePath } from '../../../../src/main/utils/pathDecoder';
+
+import { isolateLeadTaskIntervalsForProvisioningTest } from './provisioningHarness/ancillaryTaskServiceTestSeams';
 
 import type { OpenCodePromptDeliveryLedgerRecord } from '../../../../src/main/services/team/opencode/delivery/OpenCodePromptDeliveryLedger';
 
@@ -478,6 +488,7 @@ describe('TeamProvisioningService relayLeadInboxMessages', () => {
     hoisted.sendInboxMessage.mockClear();
     hoisted.setAtomicWriteShouldFail(false);
     vi.spyOn(fsPromises, 'mkdir').mockImplementation(hoisted.mkdir as never);
+    isolateLeadTaskIntervalsForProvisioningTest();
   });
 
   it('relays unread lead inbox messages into stdin', async () => {

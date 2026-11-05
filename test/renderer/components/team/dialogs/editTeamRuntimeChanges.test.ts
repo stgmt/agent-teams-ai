@@ -292,4 +292,23 @@ describe('getMembersRequiringRuntimeRestart', () => {
       isolation: 'worktree',
     });
   });
+  it('detects registry binding changes without treating missing old bindings as a new value', () => {
+    const source = {
+      name: 'Team A',
+      description: '',
+      color: 'blue',
+      members: [],
+      specProject: 'registry-project',
+      specSlug: 'team-spec',
+    };
+    expect(buildEditTeamSourceSnapshot(source)).not.toBe(
+      buildEditTeamSourceSnapshot({ ...source, specProject: 'another-project' })
+    );
+    expect(buildEditTeamSourceSnapshot(source)).not.toBe(
+      buildEditTeamSourceSnapshot({ ...source, specSlug: 'another-spec' })
+    );
+    expect(
+      buildEditTeamSourceSnapshot({ ...source, specProject: undefined, specSlug: undefined })
+    ).toBe(buildEditTeamSourceSnapshot({ ...source, specProject: '', specSlug: '' }));
+  });
 });

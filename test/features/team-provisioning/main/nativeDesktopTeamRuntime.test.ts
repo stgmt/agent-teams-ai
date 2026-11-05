@@ -48,6 +48,7 @@ function setup(
     } as never,
     provider: {} as never,
     runtimeRoot: 'C:/TEST/runtime',
+    readStartupTasks: async () => [],
     workspaceRoot: 'C:/TEST/workspace',
     mcp: {} as never,
     inbox: {} as never,

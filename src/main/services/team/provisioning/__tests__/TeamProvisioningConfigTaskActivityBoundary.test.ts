@@ -44,7 +44,7 @@ function createBoundary(): {
       cleanupPrelaunchBackup: vi.fn(async () => undefined),
     },
     taskActivityRepair: {
-      repairStaleTaskActivityIntervalsOnce: vi.fn(() => true),
+      repairStaleTaskActivityIntervalsOnce: vi.fn(async () => true),
       readTaskActivityRepairLaunchSnapshot: vi.fn(async () => launchSnapshot),
       writeLaunchFailureArtifactPackBestEffort: vi.fn(() => undefined),
       repairStaleTaskActivityIntervalsBeforeSnapshot: vi.fn(async () => undefined),
@@ -71,7 +71,7 @@ describe('TeamProvisioningConfigTaskActivityBoundary', () => {
     const service = {
       configFacade,
       taskActivityIntervalService: {
-        repairStaleIntervalsAfterCrash: vi.fn(() => ({})),
+        repairStaleIntervalsAfterCrash: vi.fn(async () => ({})),
       },
       runTracking: {
         getTrackedRunId: vi.fn(() => runId),
@@ -130,7 +130,7 @@ describe('TeamProvisioningConfigTaskActivityBoundary', () => {
     const launchSnapshot = snapshot();
     const run = { teamName: 'alpha', runId: 'run-1' } as LaunchFailureArtifactPackRun;
 
-    expect(boundary.repairStaleTaskActivityIntervalsOnce('alpha', launchSnapshot)).toBe(true);
+    expect(await boundary.repairStaleTaskActivityIntervalsOnce('alpha', launchSnapshot)).toBe(true);
     await expect(boundary.readTaskActivityRepairLaunchSnapshot('alpha')).resolves.toMatchObject({
       teamName: 'alpha',
     });
@@ -139,7 +139,8 @@ describe('TeamProvisioningConfigTaskActivityBoundary', () => {
 
     expect(ports.taskActivityRepair.repairStaleTaskActivityIntervalsOnce).toHaveBeenCalledWith(
       'alpha',
-      launchSnapshot
+      launchSnapshot,
+      undefined
     );
     expect(ports.taskActivityRepair.readTaskActivityRepairLaunchSnapshot).toHaveBeenCalledWith(
       'alpha'

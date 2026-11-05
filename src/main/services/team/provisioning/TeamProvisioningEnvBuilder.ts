@@ -416,6 +416,17 @@ export async function buildProvisioningEnv({
   }
   Object.assign(providerEnv, getDesktopMcpChildEnvironment());
 
+  // The desktop's registry selection is authoritative; a stale login shell must
+  // not point spawned teammates at a different project or credential file.
+  for (const key of [
+    'OMP_SPEC_REGISTRY_URL',
+    'OMP_SPEC_REGISTRY_TOKEN',
+    'OMP_SPEC_REGISTRY_TOKEN_FILE',
+  ]) {
+    if (processEnv[key] === undefined) delete providerEnv[key];
+    else providerEnv[key] = processEnv[key];
+  }
+
   // A teammate runs as its own process and does not inherit the desktop's Claude session.
   // Without a credential the orchestrator refuses the first turn, so the subscription
   // token the user already has on disk is handed to the member — an explicit key wins.

@@ -68,7 +68,10 @@ import { useShallow } from 'zustand/react/shallow';
 
 import { LaunchTeamDialogLoadingFallback } from './dialogs/LaunchTeamDialogLoadingFallback';
 import { executeTeamRelaunch } from './dialogs/teamRelaunchFlow';
-import { buildCopiedTeamMembers } from './teamCopyData';
+import {
+  buildTeamCopyDataFromSavedRequest,
+  buildTeamCopyDataFromTeamData,
+} from './teamCopyDataSources';
 import { showTeamDeleteError } from './teamDeleteErrorDialog';
 import { TeamEmptyState } from './TeamEmptyState';
 import { EMPTY_TEAM_FILTER, TeamListFilterPopover } from './TeamListFilterPopover';
@@ -865,22 +868,7 @@ export const TeamListView = memo(function TeamListView(): React.JSX.Element {
           const uniqueName = generateUniqueName(teamName, existingNames);
           const savedRequest = await api.teams.getSavedRequest(teamName);
           if (savedRequest) {
-            setCopyData({
-              teamName: uniqueName,
-              runtimeSelectionVersion: savedRequest.runtimeSelectionVersion,
-              description: savedRequest.description,
-              color: savedRequest.color,
-              cwd: savedRequest.cwd,
-              prompt: savedRequest.prompt,
-              providerId: savedRequest.providerId,
-              model: savedRequest.model,
-              effort: savedRequest.effort,
-              fastMode: savedRequest.fastMode,
-              syncModelsWithLead: savedRequest.syncModelsWithLead,
-              limitContext: savedRequest.limitContext,
-              skipPermissions: savedRequest.skipPermissions,
-              members: buildCopiedTeamMembers(savedRequest.members),
-            });
+            setCopyData(buildTeamCopyDataFromSavedRequest(uniqueName, savedRequest));
             setShowCreateDialog(true);
             return;
           }
@@ -888,13 +876,7 @@ export const TeamListView = memo(function TeamListView(): React.JSX.Element {
           const data = await api.teams.getData(teamName, {
             includeMemberBranches: false,
           });
-          setCopyData({
-            teamName: uniqueName,
-            description: data.config.description,
-            color: data.config.color,
-            cwd: data.config.projectPath,
-            members: buildCopiedTeamMembers(data.config.members, data.members),
-          });
+          setCopyData(buildTeamCopyDataFromTeamData(uniqueName, data));
           setShowCreateDialog(true);
         } catch {
           // silently ignore — team data may be unavailable

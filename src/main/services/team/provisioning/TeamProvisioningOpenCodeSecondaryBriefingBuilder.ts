@@ -4,6 +4,8 @@ import {
 } from './TeamProvisioningOpenCodeDiagnosticsPolicy';
 import { buildChatVisualizationBriefing } from './TeamProvisioningVisualizationPrompt';
 
+import type { TeamTask } from '@shared/types';
+
 export interface OpenCodeSecondaryBriefingController {
   taskBoard: {
     memberBriefing(
@@ -31,6 +33,7 @@ export interface OpenCodeSecondaryBriefingControllerInput {
   teamName: string;
   claudeDir: string;
   allowUserMessageSender: false;
+  readOnlyTaskSnapshot: TeamTask[];
 }
 
 export interface OpenCodeSecondaryBriefingBuilderPorts {
@@ -38,6 +41,7 @@ export interface OpenCodeSecondaryBriefingBuilderPorts {
     input: OpenCodeSecondaryBriefingControllerInput
   ): OpenCodeSecondaryBriefingController;
   getClaudeBasePath(): string;
+  readTasks(teamName: string): Promise<TeamTask[]>;
 }
 
 export interface BuildOpenCodeSecondaryAppManagedLaunchPromptInput {
@@ -64,10 +68,12 @@ export async function buildOpenCodeSecondaryAppManagedLaunchPromptWithPorts(
   input: BuildOpenCodeSecondaryAppManagedLaunchPromptInput,
   ports: OpenCodeSecondaryBriefingBuilderPorts
 ): Promise<string> {
+  const taskSnapshot = await ports.readTasks(input.teamName);
   const controller = ports.createController({
     teamName: input.teamName,
     claudeDir: ports.getClaudeBasePath(),
     allowUserMessageSender: false,
+    readOnlyTaskSnapshot: taskSnapshot,
   });
   const briefing = await controller.taskBoard.memberBriefing(input.memberName, {
     runtimeProvider: 'opencode',

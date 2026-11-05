@@ -171,6 +171,7 @@ function makeCleanupPorts(
     persistLaunchStateSnapshot: vi.fn(() => Promise.resolve()),
     writeLaunchFailureArtifactPackBestEffort: vi.fn(),
     resetRuntimeToolActivity: vi.fn(),
+    clearStartupWorkDeliveryState: vi.fn(),
     setLeadActivity: vi.fn(),
     stopStallWatchdog: vi.fn(),
     stopFilesystemMonitor: vi.fn(),

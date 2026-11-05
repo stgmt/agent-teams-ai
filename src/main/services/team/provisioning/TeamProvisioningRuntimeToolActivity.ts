@@ -1,3 +1,4 @@
+import { createLogger } from '@shared/utils/logger';
 import {
   extractToolPreview,
   extractToolResultPreview,
@@ -27,6 +28,18 @@ import type {
   TeamProvisioningState,
   ToolActivityEventPayload,
 } from '@shared/types';
+
+const intervalLogger = createLogger('Service:TeamRuntimeTaskActivity');
+type IntervalOperation = { failed?: boolean } | void | Promise<{ failed?: boolean } | void>;
+
+function observeIntervalOperation(operation: IntervalOperation, teamName: string): void {
+  void Promise.resolve(operation).then(
+    (result) => {
+      if (result?.failed) intervalLogger.warn(`[${teamName}] Could not synchronize task activity`);
+    },
+    () => intervalLogger.warn(`[${teamName}] Could not synchronize task activity`)
+  );
+}
 
 export interface RuntimeToolActivityRunLike {
   teamName: string;
@@ -97,7 +110,7 @@ export interface RuntimeLossTaskActivityPorts {
     teamName: string,
     memberName: string,
     at: string
-  ): { failed?: boolean };
+  ): IntervalOperation;
 }
 
 export interface RuntimeTransitionTaskActivityPorts extends RuntimeLossTaskActivityPorts {
@@ -105,7 +118,7 @@ export interface RuntimeTransitionTaskActivityPorts extends RuntimeLossTaskActiv
     teamName: string,
     memberName: string,
     at: string
-  ): { failed?: boolean };
+  ): IntervalOperation;
   nowIso(): string;
 }
 
@@ -496,11 +509,18 @@ export function pauseMemberTaskActivityForRuntimeLoss(
   ports: RuntimeLossTaskActivityPorts
 ): void {
   if (previous.runtimeAlive !== true) return;
-  ports.pauseActiveIntervalsForMember(
-    run.teamName,
-    memberName,
-    deriveTaskActivityPauseAt(previous, observedAt)
-  );
+  try {
+    observeIntervalOperation(
+      ports.pauseActiveIntervalsForMember(
+        run.teamName,
+        memberName,
+        deriveTaskActivityPauseAt(previous, observedAt)
+      ),
+      run.teamName
+    );
+  } catch {
+    intervalLogger.warn(`[${run.teamName}] Could not pause task activity`);
+  }
 }
 
 export function syncMemberTaskActivityForRuntimeTransition(
@@ -526,9 +546,16 @@ export function syncMemberTaskActivityForRuntimeTransition(
     nextUpdatedMs > 0 && (previousUpdatedMs <= 0 || nextUpdatedMs > previousUpdatedMs)
       ? next.updatedAt
       : ports.nowIso();
-  ports.resumeActiveIntervalsForMember(
-    run.teamName,
-    memberName,
-    deriveTaskActivityResumeAt(previous, observedAt, resumeFallbackAt)
-  );
+  try {
+    observeIntervalOperation(
+      ports.resumeActiveIntervalsForMember(
+        run.teamName,
+        memberName,
+        deriveTaskActivityResumeAt(previous, observedAt, resumeFallbackAt)
+      ),
+      run.teamName
+    );
+  } catch {
+    intervalLogger.warn(`[${run.teamName}] Could not resume task activity`);
+  }
 }

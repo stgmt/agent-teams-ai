@@ -186,6 +186,25 @@ describe('validateRuntimeLaunchSelection typed validation errors', () => {
     expect(run).not.toThrow();
   });
 
+  it('accepts a router-served model absent from the Anthropic runtime catalog', () => {
+    const validate = (routerModels: string[]): void =>
+      validateRuntimeLaunchSelection({
+        actorLabel: 'Member worker',
+        providerId: 'anthropic',
+        model: 'gpt-6.1-sol',
+        facts: {
+          ...emptyFacts,
+          modelIds: new Set(['claude-opus-4-6']),
+          localRouterModelIds: routerModels,
+        },
+        anthropicFastModeDefault: false,
+        getProviderLabel: () => 'Claude',
+      });
+
+    expect(() => validate(['gpt-6.1-sol'])).not.toThrow();
+    expect(() => validate(['gpt-6-luna'])).toThrow('does not list it as launchable');
+  });
+
   it('still rejects that effort when the router does not serve the model', () => {
     const run = (): void =>
       validateRuntimeLaunchSelection({

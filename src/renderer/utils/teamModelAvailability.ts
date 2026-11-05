@@ -1,4 +1,3 @@
-import { CLI_PROVIDER_STATUS_DEFERRED_MESSAGE } from '@shared/types/cliInstaller';
 import {
   isAnthropicClaudeCodeRemovedModel,
   isCurrentMiniMaxCatalogModel,
@@ -21,12 +20,24 @@ import {
 import { extractProviderScopedBaseModel } from './teamModelContext';
 import { getUnsupportedTeamModelRouteReason } from './teamModelLaunchSupport';
 export { OPENCODE_EXTENSION_BOUND_TEAM_LAUNCH_UNAVAILABLE_REASON } from './teamModelLaunchSupport';
+import {
+  hasTerminalAuthoritativeModelVerification,
+  isTeamProviderModelCatalogFresh,
+  isTeamProviderModelCatalogSettled,
+  isTeamProviderModelVerificationPending,
+  type TeamModelRuntimeProviderStatus,
+} from './teamModelVerification';
+export {
+  hasTerminalAuthoritativeModelVerification,
+  isTeamProviderModelCatalogFresh,
+  isTeamProviderModelCatalogSettled,
+  isTeamProviderModelVerificationPending,
+};
 
 import type {
   CliProviderId,
   CliProviderModelAvailability,
   CliProviderModelAvailabilityStatus,
-  CliProviderStatus,
   TeamProviderId,
 } from '@shared/types';
 
@@ -46,27 +57,7 @@ type SupportedProviderId = CliProviderId | TeamProviderId;
 export const OPENCODE_OPENAI_AUTH_UNAVAILABLE_REASON =
   'OpenCode OpenAI provider authentication failed. Reconnect OpenAI in provider settings, then refresh runtime status.';
 
-export type TeamModelRuntimeProviderStatus = Pick<
-  CliProviderStatus,
-  | 'providerId'
-  | 'models'
-  | 'modelCatalog'
-  | 'modelCatalogRefreshState'
-  | 'modelAvailability'
-  | 'modelVerificationState'
-  | 'runtimeCapabilities'
-  | 'authMethod'
-  | 'backend'
-  | 'authenticated'
-  | 'supported'
-  | 'detailMessage'
-  | 'availableBackends'
-  | 'externalRuntimeDiagnostics'
-  | 'connection'
-  | 'statusCheckOutcome'
-  | 'statusCheckErrorCode'
-> &
-  Partial<Pick<CliProviderStatus, 'verificationState' | 'statusMessage'>>;
+export type { TeamModelRuntimeProviderStatus };
 
 export type TeamRuntimeModelOption = TeamProviderModelOption & {
   availabilityStatus?: CliProviderModelAvailabilityStatus | null;
@@ -150,132 +141,6 @@ export function isTeamModelUiDisabled(
   return getTeamModelUiDisabledReason(providerId, model, providerStatus) !== null;
 }
 
-function hasTeamProviderRuntimeModelTruth(
-  providerStatus?: TeamModelRuntimeProviderStatus | null
-): boolean {
-  if (!providerStatus) {
-    return false;
-  }
-
-  if ((providerStatus.modelAvailability?.length ?? 0) > 0) {
-    return true;
-  }
-
-  // A static fallback only keeps the picker populated while the real Codex
-  // catalog loads. It must not make verification look complete.
-  if (providerStatus.modelCatalog?.source === 'static-fallback') {
-    return false;
-  }
-
-  return providerStatus.models.length > 0 || (providerStatus.modelCatalog?.models.length ?? 0) > 0;
-}
-
-export function isTeamProviderModelCatalogFresh(
-  providerId: SupportedProviderId | undefined,
-  providerStatus?: TeamModelRuntimeProviderStatus | null,
-  nowMs = Date.now()
-): boolean {
-  const catalog = providerStatus?.modelCatalog;
-  if (
-    !providerId ||
-    catalog?.providerId !== providerId ||
-    catalog.status !== 'ready' ||
-    providerStatus?.modelCatalogRefreshState !== 'ready'
-  ) {
-    return false;
-  }
-
-  const staleAtMs = Date.parse(catalog.staleAt);
-  return Number.isFinite(staleAtMs) && staleAtMs > nowMs;
-}
-
-export function isTeamProviderModelCatalogSettled(
-  providerId: SupportedProviderId | undefined,
-  providerStatus?: TeamModelRuntimeProviderStatus | null
-): boolean {
-  return Boolean(
-    providerId &&
-    providerStatus?.modelCatalog?.providerId === providerId &&
-    providerStatus.modelCatalogRefreshState === 'ready'
-  );
-}
-
-export function hasTerminalAuthoritativeModelVerification(
-  providerStatus?: TeamModelRuntimeProviderStatus | null
-): boolean {
-  return Boolean(
-    providerStatus?.statusCheckOutcome === 'authoritative' &&
-    providerStatus.statusCheckErrorCode == null &&
-    providerStatus.verificationState === 'verified' &&
-    providerStatus.modelCatalogRefreshState === 'ready' &&
-    providerStatus.modelCatalog?.status === 'ready' &&
-    providerStatus.modelVerificationState !== 'verifying'
-  );
-}
-
-export function isTeamProviderModelVerificationPending(
-  providerId: SupportedProviderId | undefined,
-  providerStatus?: TeamModelRuntimeProviderStatus | null
-): boolean {
-  if (!providerId || providerId === 'anthropic' || !providerStatus) {
-    return false;
-  }
-  if (providerStatus.modelVerificationState === 'verifying') {
-    return true;
-  }
-
-  const verificationState = providerStatus.verificationState;
-  if (verificationState === 'error' || providerStatus.modelCatalogRefreshState === 'error') {
-    return false;
-  }
-
-  const statusMessage = providerStatus.statusMessage?.trim().toLowerCase() ?? '';
-  const statusMessagePending =
-    statusMessage === 'checking...' ||
-    statusMessage === CLI_PROVIDER_STATUS_DEFERRED_MESSAGE.toLowerCase();
-  if (statusMessagePending && providerId !== 'opencode') {
-    return true;
-  }
-
-  // A terminal catalog must not become an endless initial load.
-  if (isTeamProviderModelCatalogSettled(providerId, providerStatus)) {
-    return false;
-  }
-
-  const hasRuntimeModelTruth = hasTeamProviderRuntimeModelTruth(providerStatus);
-  if (statusMessagePending || providerStatus.modelCatalogRefreshState === 'loading') {
-    return !hasRuntimeModelTruth;
-  }
-
-  if (!hasRuntimeModelTruth) {
-    if (
-      providerId === 'codex' &&
-      providerStatus.backend?.kind === 'codex-native' &&
-      providerStatus.supported
-    ) {
-      return true;
-    }
-
-    if (
-      providerId === 'opencode' &&
-      providerStatus.backend?.kind === 'opencode-cli' &&
-      providerStatus.supported
-    ) {
-      return true;
-    }
-  }
-
-  if (providerStatus.verificationState !== 'unknown') {
-    return false;
-  }
-
-  if (hasRuntimeModelTruth) {
-    return false;
-  }
-
-  return statusMessage.length === 0 || statusMessage === 'checking...';
-}
-
 function getFallbackTeamProviderModels(providerId: SupportedProviderId): string[] {
   return getVisibleTeamProviderModels(
     providerId,
@@ -335,7 +200,10 @@ export function isAnthropicCompatibleRuntime(
   return (
     hasAnthropicCompatibleRuntimeCatalog(providerStatus) ||
     providerStatus?.runtimeCapabilities?.modelCatalog?.source === 'anthropic-compatible-api' ||
-    providerStatus?.connection?.compatibleEndpoint?.enabled === true
+    providerStatus?.connection?.compatibleEndpoint?.enabled === true ||
+    // A detected loopback router serves Anthropic-shaped models the first-party catalog
+    // cannot describe, so the picker must treat them as compatible-runtime models.
+    (providerStatus?.localRouterModelIds?.length ?? 0) > 0
   );
 }
 
@@ -521,12 +389,17 @@ function getRuntimeSelectorModels(
     return [];
   }
 
+  const localRouterModelIds =
+    providerId === 'anthropic'
+      ? (providerStatus.localRouterModelIds ?? []).map((modelId) => modelId.trim()).filter(Boolean)
+      : [];
+
   const catalogModels = getRuntimeCatalogModels(providerId, providerStatus);
   if (catalogModels) {
     if (providerId === 'anthropic') {
       return sortTeamProviderModels(
         providerId,
-        catalogModels,
+        [...new Set([...catalogModels, ...localRouterModelIds])],
         providerStatus,
         includeRetiredMiniMaxModels
       );
@@ -546,7 +419,9 @@ function getRuntimeSelectorModels(
 
   return sortTeamProviderModels(
     providerId,
-    providerStatus.models,
+    providerId === 'anthropic'
+      ? [...new Set([...providerStatus.models, ...localRouterModelIds])]
+      : providerStatus.models,
     providerStatus,
     includeRetiredMiniMaxModels
   );
