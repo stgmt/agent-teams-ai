@@ -3817,6 +3817,9 @@ export default interface Resources {
     "artifact": {
       "anyName": "No filename is set: any filename is accepted. The check does not assess content quality.",
       "attach": "Attach file",
+      "checkOutcome": "Check current task",
+      "confirmMessage": "The task was read. This is only a snapshot; a delayed earlier request could still finish later. Allow new changes?",
+      "confirmOutcome": "Allow new changes",
       "download": "Download artifact",
       "failed": "Could not update the task artifact.",
       "hint": "Choose a file up to 20 MiB. A copy is stored with the task. For a larger video, you can attach a small manifest with its location and expected hash; only the manifest is checked.",
@@ -3825,7 +3828,8 @@ export default interface Resources {
       "reopen": "Reopen the completed task before changing its artifact.",
       "require": "Require a task artifact",
       "setName": "Set name",
-      "tooLarge": "The selected file exceeds 20 MiB."
+      "tooLarge": "The selected file exceeds 20 MiB.",
+      "unknown": "The action may have succeeded. Check the current task before changing it again; a delayed action could still finish later. No action will be repeated automatically."
     },
     "claudeLogs": {
       "clearSearch": "Clear search",

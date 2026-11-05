@@ -15,6 +15,11 @@ interface Props {
   canMutate: () => boolean;
   onUpdate: (fields: TaskFieldUpdates) => Promise<void>;
   onDownload: (attachmentId: string) => Promise<string | null>;
+  outcomeUnknown: boolean;
+  outcomeChecked: boolean;
+  onOutcomeUnknown: () => void;
+  onCheckOutcome: () => Promise<void>;
+  onConfirmOutcome: () => void;
 }
 
 function readBase64(file: File): Promise<string> {
@@ -38,6 +43,11 @@ export const TaskArtifactSettings = ({
   canMutate,
   onUpdate,
   onDownload,
+  outcomeUnknown,
+  outcomeChecked,
+  onOutcomeUnknown,
+  onCheckOutcome,
+  onConfirmOutcome,
 }: Readonly<Props>): React.JSX.Element => {
   const { t } = useAppTranslation('team');
   const [filename, setFilename] = useState(requirement?.expectedFilename ?? '');
@@ -46,20 +56,20 @@ export const TaskArtifactSettings = ({
   const fileInput = useRef<HTMLInputElement>(null);
 
   const update = async (fields: TaskFieldUpdates): Promise<void> => {
-    if (!canMutate()) return;
+    if (outcomeUnknown || !canMutate()) return;
     setError(null);
     setPending(true);
     try {
       await onUpdate(fields);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : t('artifact.failed'));
+    } catch {
+      onOutcomeUnknown();
     } finally {
       setPending(false);
     }
   };
 
   const attach = async (file?: File): Promise<void> => {
-    if (!file || !canMutate()) {
+    if (!file || outcomeUnknown || !canMutate()) {
       if (fileInput.current) fileInput.current.value = '';
       return;
     }
@@ -72,12 +82,30 @@ export const TaskArtifactSettings = ({
     setPending(true);
     try {
       const base64Data = await readBase64(file);
-      if (canMutate()) await onUpdate({ artifactFile: { filename: file.name, base64Data } });
+      if (canMutate()) {
+        try {
+          await onUpdate({ artifactFile: { filename: file.name, base64Data } });
+        } catch {
+          onOutcomeUnknown();
+        }
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : t('artifact.failed'));
     } finally {
       setPending(false);
       if (fileInput.current) fileInput.current.value = '';
+    }
+  };
+
+  const checkOutcome = async (): Promise<void> => {
+    setError(null);
+    setPending(true);
+    try {
+      await onCheckOutcome();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t('artifact.failed'));
+    } finally {
+      setPending(false);
     }
   };
 
@@ -114,13 +142,27 @@ export const TaskArtifactSettings = ({
       <label className="flex items-center gap-2">
         <Switch
           checked={requirement?.required === true}
-          disabled={pending || (completed && !requirement?.required)}
+          disabled={pending || outcomeUnknown || (completed && !requirement?.required)}
           onCheckedChange={(checked) => void update({ artifactRequired: checked })}
         />
         {t('artifact.require')}
       </label>
       {completed ? (
         <p className="text-xs text-[var(--color-text-muted)]">{t('artifact.reopen')}</p>
+      ) : null}
+      {outcomeUnknown ? (
+        <div role="alert" className="space-y-2 text-xs text-[var(--color-text-muted)]">
+          <p>{t(outcomeChecked ? 'artifact.confirmMessage' : 'artifact.unknown')}</p>
+          {outcomeChecked ? (
+            <Button type="button" size="sm" disabled={pending} onClick={onConfirmOutcome}>
+              {t('artifact.confirmOutcome')}
+            </Button>
+          ) : (
+            <Button type="button" size="sm" disabled={pending} onClick={() => void checkOutcome()}>
+              {t('artifact.checkOutcome')}
+            </Button>
+          )}
+        </div>
       ) : null}
       {requirement?.required ? (
         <>
@@ -133,13 +175,13 @@ export const TaskArtifactSettings = ({
               aria-label={t('artifact.name')}
               placeholder={t('artifact.name')}
               value={filename}
-              disabled={completed}
+              disabled={completed || outcomeUnknown}
               onChange={(event) => setFilename(event.target.value)}
             />
             <Button
               type="button"
               size="sm"
-              disabled={pending || completed || !filename.trim()}
+              disabled={pending || completed || outcomeUnknown || !filename.trim()}
               onClick={() => void update({ artifactExpectedFilename: filename.trim() })}
             >
               {t('artifact.setName')}
@@ -154,7 +196,7 @@ export const TaskArtifactSettings = ({
           <Button
             type="button"
             size="sm"
-            disabled={pending || completed}
+            disabled={pending || completed || outcomeUnknown}
             onClick={() => fileInput.current?.click()}
           >
             {t('artifact.attach')}

@@ -31,7 +31,7 @@ import type {
   TaskDetailSavePart,
   TaskDetailSession,
 } from '../../contracts';
-import type { CommentAttachmentPayload, TeamTaskWithKanban } from '@shared/types';
+import type { CommentAttachmentPayload, TaskFieldUpdates, TeamTaskWithKanban } from '@shared/types';
 import type { InlineChip } from '@shared/types/inlineChip';
 
 const MAX_ATTACHMENTS = 5;
@@ -43,6 +43,10 @@ export interface TaskDetailSessionController {
   session: TaskDetailSession;
   isOwner: boolean;
   canEditNow: () => boolean;
+  markArtifactOutcomeUnknown: () => void;
+  checkArtifactOutcome: () => Promise<void>;
+  confirmArtifactOutcome: () => void;
+  updateTaskArtifact: (fields: TaskFieldUpdates) => Promise<void>;
   isOriginCurrent: () => boolean;
   canSubmit: boolean;
   isDraftSaved: boolean;
@@ -235,6 +239,70 @@ export function useTaskDetailSession({
       currentTaskState.status !== 'deleted'
     );
   }, [identity, identityKey, isOriginCurrent, scope, session.ownerRevision, surfaceId]);
+
+  const markArtifactOutcomeUnknown = useCallback((): void => {
+    const state = useStore.getState();
+    const revision = state.taskDetailSessionById[identityKey]?.artifactOutcomeRevision ?? 0;
+    state.updateTaskDetailSession(identity, {
+      artifactOutcomeUnknown: true,
+      artifactOutcomeChecked: false,
+      artifactOutcomeRevision: revision + 1,
+    });
+  }, [identity, identityKey]);
+
+  const checkArtifactOutcome = useCallback(async (): Promise<void> => {
+    if (!isOriginCurrent()) throw new Error('Task context changed');
+    const before = useStore.getState();
+    const revision = before.taskDetailSessionById[identityKey]?.artifactOutcomeRevision ?? 0;
+    const previousToken = before.taskDetailById[identityKey]?.fullToken;
+    before.invalidateTaskDetailSource(identity);
+    await useStore.getState().ensureTaskDetail(identity);
+    const state = useStore.getState();
+    const entry = state.taskDetailById[identityKey];
+    if (
+      !isOriginCurrent() ||
+      !entry ||
+      entry.phase !== 'ready' ||
+      !entry.full ||
+      entry.loading ||
+      entry.refreshPending ||
+      !entry.fullToken ||
+      (previousToken &&
+        entry.fullToken.sourceEpoch === previousToken.sourceEpoch &&
+        entry.fullToken.serial === previousToken.serial)
+    ) {
+      throw new Error('Could not confirm the current task state');
+    }
+    const session = state.taskDetailSessionById[identityKey];
+    if ((session?.artifactOutcomeRevision ?? 0) !== revision)
+      throw new Error('Task outcome changed during the check');
+    if (session?.artifactOutcomeUnknown)
+      state.updateTaskDetailSession(identity, { artifactOutcomeChecked: true });
+  }, [identity, identityKey, isOriginCurrent]);
+
+  const confirmArtifactOutcome = useCallback((): void => {
+    if (!isOriginCurrent()) return;
+    const state = useStore.getState();
+    const session = state.taskDetailSessionById[identityKey];
+    if (session?.artifactOutcomeUnknown && session.artifactOutcomeChecked) {
+      state.updateTaskDetailSession(identity, {
+        artifactOutcomeUnknown: false,
+        artifactOutcomeChecked: false,
+      });
+    }
+  }, [identity, identityKey, isOriginCurrent]);
+
+  const updateTaskArtifact = useCallback(
+    async (fields: TaskFieldUpdates): Promise<void> => {
+      const state = useStore.getState();
+      if (!requireOwner() || state.taskDetailSessionById[identityKey]?.artifactOutcomeUnknown) {
+        throw new Error('Check the current task before changing its artifact');
+      }
+      await state.updateTaskFields(identity.teamName, identity.taskId, fields);
+      await checkArtifactOutcome();
+    },
+    [checkArtifactOutcome, identity, identityKey, requireOwner]
+  );
 
   const persistDraft = useCallback(
     (value: { text?: string; commentChips?: InlineChip[] }) => {
@@ -524,6 +592,10 @@ export function useTaskDetailSession({
       session,
       isOwner,
       canEditNow: requireOwner,
+      markArtifactOutcomeUnknown,
+      checkArtifactOutcome,
+      confirmArtifactOutcome,
+      updateTaskArtifact,
       isOriginCurrent,
       canSubmit:
         isOwner && !session.submitPending && session.pendingAttachmentPreparationIds.length === 0,
@@ -552,10 +624,14 @@ export function useTaskDetailSession({
       addCommentChip,
       addPendingFiles,
       attachmentError,
+      checkArtifactOutcome,
+      confirmArtifactOutcome,
+      updateTaskArtifact,
       identity,
       isDraftSaved,
       isOwner,
       isOriginCurrent,
+      markArtifactOutcomeUnknown,
       requireOwner,
       openInTaskTab,
       removeCommentChip,

@@ -48,6 +48,10 @@ export interface PendingAttachment {
 }
 
 export interface TaskDetailSession {
+  /** A task artifact mutation may have committed without a confirmed response. */
+  artifactOutcomeUnknown?: boolean;
+  artifactOutcomeChecked?: boolean;
+  artifactOutcomeRevision?: number;
   commentText: string;
   commentChips: InlineChip[];
   pendingAttachments: PendingAttachment[];

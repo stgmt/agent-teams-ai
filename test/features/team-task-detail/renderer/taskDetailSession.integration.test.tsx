@@ -18,12 +18,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { TaskDetailIdentity } from '@features/team-task-detail/contracts';
 import type { TaskDetailSessionController } from '@features/team-task-detail/renderer';
-import type {
-  TaskComment,
-  TeamSummary,
-  TeamTaskWithKanban,
-  TeamViewSnapshot,
-} from '@shared/types';
+import type { TaskComment, TeamSummary, TeamTaskWithKanban, TeamViewSnapshot } from '@shared/types';
 
 const apiMock = vi.hoisted(() => ({
   teams: {
@@ -160,6 +155,119 @@ describe('task session surface and origin integration', () => {
     });
     document.body.innerHTML = '';
     vi.unstubAllGlobals();
+  });
+
+  it('requires a fresh task read and an explicit decision before clearing an unknown artifact outcome', async () => {
+    let controller!: TaskDetailSessionController;
+    await act(async () => {
+      mount('dialog', (value) => {
+        controller = value;
+      });
+    });
+    await act(async () => {
+      controller.markArtifactOutcomeUnknown();
+    });
+    expect(useStore.getState().taskDetailSessionById[key].artifactOutcomeUnknown).toBe(true);
+    await act(async () => {
+      controller.confirmArtifactOutcome();
+    });
+    expect(useStore.getState().taskDetailSessionById[key].artifactOutcomeUnknown).toBe(true);
+    apiMock.teams.getTask.mockResolvedValueOnce({
+      ...task,
+      artifactRequirement: { required: true, expectedFilename: 'result.txt' },
+    });
+    await act(async () => {
+      await controller.checkArtifactOutcome();
+    });
+    expect(apiMock.teams.getTask).toHaveBeenCalledTimes(1);
+    expect(
+      useStore.getState().taskDetailById[key].full?.artifactRequirement?.expectedFilename
+    ).toBe('result.txt');
+    expect(useStore.getState().taskDetailSessionById[key].artifactOutcomeUnknown).toBe(true);
+    expect(useStore.getState().taskDetailSessionById[key].artifactOutcomeChecked).toBe(true);
+    await act(async () => {
+      controller.confirmArtifactOutcome();
+    });
+    expect(useStore.getState().taskDetailSessionById[key].artifactOutcomeUnknown).toBe(false);
+  });
+
+  it('keeps an unknown artifact outcome when the fresh task read fails', async () => {
+    let controller!: TaskDetailSessionController;
+    await act(async () => {
+      mount('dialog', (value) => {
+        controller = value;
+      });
+    });
+    await act(async () => {
+      controller.markArtifactOutcomeUnknown();
+    });
+    apiMock.teams.getTask.mockRejectedValueOnce(new Error('read failed'));
+    await act(async () => {
+      await expect(controller.checkArtifactOutcome()).rejects.toThrow(/confirm/);
+    });
+    expect(apiMock.teams.getTask).toHaveBeenCalledTimes(1);
+    expect(useStore.getState().taskDetailSessionById[key].artifactOutcomeUnknown).toBe(true);
+    expect(useStore.getState().taskDetailSessionById[key].artifactOutcomeChecked).toBe(false);
+    vi.mocked(console.error).mockClear();
+  });
+
+  it('does not issue another artifact write while the outcome is unknown', async () => {
+    let controller!: TaskDetailSessionController;
+    await act(async () => {
+      mount('dialog', (value) => {
+        controller = value;
+      });
+    });
+    const update = vi.fn(async () => undefined);
+    useStore.setState({ updateTaskFields: update });
+    await act(async () => {
+      controller.markArtifactOutcomeUnknown();
+    });
+    await expect(controller.updateTaskArtifact({ artifactRequired: true })).rejects.toThrow(
+      /Check the current task/
+    );
+    expect(update).not.toHaveBeenCalled();
+    await act(async () => {
+      controller.confirmArtifactOutcome();
+    });
+    expect(useStore.getState().taskDetailSessionById[key].artifactOutcomeUnknown).toBe(true);
+  });
+
+  it('does not confirm a newer unknown outcome with an older in-flight read', async () => {
+    let controller!: TaskDetailSessionController;
+    await act(async () => {
+      mount('dialog', (value) => {
+        controller = value;
+      });
+    });
+    await act(async () => {
+      controller.markArtifactOutcomeUnknown();
+    });
+    let resolveRead!: (value: TeamTaskWithKanban) => void;
+    let signalStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      signalStarted = resolve;
+    });
+    apiMock.teams.getTask.mockImplementationOnce(() => {
+      signalStarted();
+      return new Promise<TeamTaskWithKanban>((resolve) => {
+        resolveRead = resolve;
+      });
+    });
+    let checking!: Promise<void>;
+    await act(async () => {
+      checking = controller.checkArtifactOutcome();
+      await started;
+    });
+    await act(async () => {
+      controller.markArtifactOutcomeUnknown();
+    });
+    await act(async () => {
+      resolveRead(task);
+      await expect(checking).rejects.toThrow(/changed during the check/);
+    });
+    expect(useStore.getState().taskDetailSessionById[key].artifactOutcomeUnknown).toBe(true);
+    expect(useStore.getState().taskDetailSessionById[key].artifactOutcomeChecked).toBe(false);
   });
 
   it('refreshes same-ID tasks across teams once per identity from root interest', async () => {

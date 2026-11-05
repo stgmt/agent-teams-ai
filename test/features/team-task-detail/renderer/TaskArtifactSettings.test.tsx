@@ -1,4 +1,4 @@
-import React, { act } from 'react';
+import React, { act, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 
 import { TaskArtifactSettings } from '@features/team-task-detail/renderer/ui/TaskArtifactSettings';
@@ -9,6 +9,13 @@ vi.mock('@features/localization/renderer', () => ({
 }));
 
 const updateTaskFields = vi.fn(async () => undefined);
+const outcomeProps = {
+  outcomeUnknown: false,
+  outcomeChecked: false,
+  onOutcomeUnknown: vi.fn(),
+  onCheckOutcome: vi.fn(async () => undefined),
+  onConfirmOutcome: vi.fn(),
+};
 
 describe('task artifact settings', () => {
   afterEach(() => {
@@ -24,6 +31,7 @@ describe('task artifact settings', () => {
     document.body.appendChild(host);
     const root = createRoot(host);
     const props = {
+      ...outcomeProps,
       onUpdate: updateTaskFields,
       onDownload: vi.fn(async () => null),
       canMutate: () => true,
@@ -90,6 +98,7 @@ describe('task artifact settings', () => {
     await act(async () => {
       root.render(
         <TaskArtifactSettings
+          {...outcomeProps}
           onUpdate={updateTaskFields}
           onDownload={async () => null}
           canMutate={() => false}
@@ -111,6 +120,7 @@ describe('task artifact settings', () => {
     await act(async () => {
       root.render(
         <TaskArtifactSettings
+          {...outcomeProps}
           onUpdate={updateTaskFields}
           onDownload={async () => null}
           canMutate={() => true}
@@ -149,6 +159,7 @@ describe('task artifact settings', () => {
     await act(async () => {
       root.render(
         <TaskArtifactSettings
+          {...outcomeProps}
           onUpdate={updateTaskFields}
           onDownload={onDownload}
           canMutate={() => true}
@@ -183,6 +194,7 @@ describe('task artifact settings', () => {
     await act(async () => {
       root.render(
         <TaskArtifactSettings
+          {...outcomeProps}
           onUpdate={updateTaskFields}
           onDownload={onDownload}
           canMutate={() => true}
@@ -205,4 +217,76 @@ describe('task artifact settings', () => {
     expect(host.querySelector('[role="alert"]')?.textContent).toContain('Artifact has changed');
     await act(async () => root.unmount());
   });
+
+  it.each(['lost IPC response', 'refresh failed after commit'])(
+    'asks to check once when %s leaves the result unknown',
+    async (failure) => {
+      vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+      let serverRequired = false;
+      const mutate = vi.fn(async () => {
+        serverRequired = true;
+        throw new Error(failure);
+      });
+      const check = vi.fn(async () => undefined);
+      const View = (): React.JSX.Element => {
+        const [unknown, setUnknown] = useState(false);
+        const [checked, setChecked] = useState(false);
+        const [required, setRequired] = useState(false);
+        return (
+          <TaskArtifactSettings
+            outcomeUnknown={unknown}
+            outcomeChecked={checked}
+            onOutcomeUnknown={() => setUnknown(true)}
+            onCheckOutcome={async () => {
+              await check();
+              setRequired(serverRequired);
+              setChecked(true);
+            }}
+            onConfirmOutcome={() => setUnknown(false)}
+            onUpdate={mutate}
+            onDownload={async () => null}
+            canMutate={() => true}
+            completed={false}
+            requirement={{ required }}
+          />
+        );
+      };
+      const host = document.createElement('div');
+      document.body.appendChild(host);
+      const root = createRoot(host);
+      await act(async () => {
+        root.render(<View />);
+      });
+      const toggle = host.querySelector('[role="switch"]') as HTMLButtonElement;
+      await act(async () => {
+        toggle.click();
+      });
+      expect(mutate).toHaveBeenCalledTimes(1);
+      expect(toggle.disabled).toBe(true);
+      expect(host.textContent).toContain('artifact.unknown');
+      expect(check).not.toHaveBeenCalled();
+      const checkButton = Array.from(host.querySelectorAll('button')).find(
+        (item) => item.textContent === 'artifact.checkOutcome'
+      )!;
+      await act(async () => {
+        checkButton.click();
+      });
+      expect(check).toHaveBeenCalledTimes(1);
+      expect(mutate).toHaveBeenCalledTimes(1);
+      expect((host.querySelector('[role="switch"]') as HTMLButtonElement).disabled).toBe(true);
+      expect(host.textContent).toContain('artifact.confirmMessage');
+      const confirmButton = Array.from(host.querySelectorAll('button')).find(
+        (item) => item.textContent === 'artifact.confirmOutcome'
+      )!;
+      await act(async () => {
+        confirmButton.click();
+      });
+      expect(mutate).toHaveBeenCalledTimes(1);
+      expect(
+        (host.querySelector('[role="switch"]') as HTMLButtonElement).getAttribute('aria-checked')
+      ).toBe('true');
+      expect(host.textContent).not.toContain('artifact.unknown');
+      await act(async () => root.unmount());
+    }
+  );
 });

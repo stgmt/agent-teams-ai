@@ -223,6 +223,11 @@ export const TaskDetailBody = ({
           completed={currentTask.status === 'completed'}
           canMutate={sessionController.canEditNow}
           onUpdate={actions.updateTaskArtifact}
+          outcomeUnknown={sessionController.session.artifactOutcomeUnknown === true}
+          outcomeChecked={sessionController.session.artifactOutcomeChecked === true}
+          onOutcomeUnknown={sessionController.markArtifactOutcomeUnknown}
+          onCheckOutcome={sessionController.checkArtifactOutcome}
+          onConfirmOutcome={sessionController.confirmArtifactOutcome}
           onDownload={(attachmentId) =>
             actions.getTaskAttachmentData(
               teamName,

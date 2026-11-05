@@ -6,4 +6,6 @@ An agent can attach the requested filename with MCP `task_set_artifact_file` usi
 
 Completion and transitions into review or approval re-read the stored copy and reject a missing, unreadable, or changed artifact. Reopen a completed or approved task before enabling a new requirement, changing its filename, or attaching another copy. Existing tasks have no artifact requirement by default; the user can disable one. Hashing is synchronous and bounded to 20 MiB, so slow storage may still temporarily block the app or MCP server.
 
+If a UI update loses its response or the following refresh cannot be confirmed, the app marks its result as unknown and does not repeat the write. It lets you read the current task and then asks whether to allow new changes. The read is a snapshot; a delayed earlier request could still finish later.
+
 The server never reads an agent-provided project path when attaching an artifact. The team task-attachments directory is trusted storage; it is not isolated from an agent or another local process with write access under the same OS account. SHA-256 and size identify the bytes that were read, not their quality. Download verifies the returned bytes, but a separate check does not make later use of the file atomic; consumers must verify again immediately before using it.
