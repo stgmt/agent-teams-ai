@@ -3,7 +3,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   AGENT_TEAMS_ELECTRON_CLAUDE_ROOT_ENV,
@@ -50,7 +50,7 @@ describe('applyElectronDevPathOverrides', () => {
         name: 'userData',
         value: userDataDir,
       },
-      { name: 'sessionData', value: path.join(userDataDir, 'session') },
+      { name: 'sessionData', value: userDataDir },
       { name: 'logs', value: path.join(userDataDir, 'logs') },
       { name: 'crashDumps', value: path.join(userDataDir, 'crashes') },
     ]);
@@ -72,6 +72,53 @@ describe('applyElectronDevPathOverrides', () => {
     expect(setPathCalls).toEqual([]);
   });
 
+  it.each(['', '  '])('fails closed for an explicitly empty userData path', (value) => {
+    const setPath = vi.fn();
+    expect(() =>
+      applyElectronDevPathOverrides(
+        { setPath },
+        { [AGENT_TEAMS_ELECTRON_USER_DATA_DIR_ENV]: value }
+      )
+    ).toThrow('must be an absolute path');
+    expect(setPath).not.toHaveBeenCalled();
+  });
+
+  it('rejects a dev root that aliases the regular profile before creating children', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-teams-path-regular-'));
+    tempDirs.push(tempRoot);
+    const regular = path.join(tempRoot, 'regular');
+    const alias = path.join(tempRoot, 'alias');
+    fs.mkdirSync(regular);
+    fs.symlinkSync(regular, alias, process.platform === 'win32' ? 'junction' : 'dir');
+    const setPath = vi.fn();
+    expect(() =>
+      applyElectronDevPathOverrides(
+        { setPath, getPath: () => regular },
+        { [AGENT_TEAMS_ELECTRON_USER_DATA_DIR_ENV]: path.join(alias, 'nested') }
+      )
+    ).toThrow(/overlaps regular userData/);
+    expect(setPath).not.toHaveBeenCalled();
+    expect(fs.existsSync(path.join(regular, 'nested'))).toBe(false);
+  });
+
+  it('rejects a junction used as the dev profile root', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-teams-path-root-link-'));
+    tempDirs.push(tempRoot);
+    const target = path.join(tempRoot, 'target');
+    const alias = path.join(tempRoot, 'alias');
+    fs.mkdirSync(target);
+    fs.symlinkSync(target, alias, process.platform === 'win32' ? 'junction' : 'dir');
+    const setPath = vi.fn();
+    expect(() =>
+      applyElectronDevPathOverrides(
+        { setPath },
+        { [AGENT_TEAMS_ELECTRON_USER_DATA_DIR_ENV]: alias }
+      )
+    ).toThrow(/must not be a symlink or junction/);
+    expect(setPath).not.toHaveBeenCalled();
+    expect(fs.readdirSync(target)).toEqual([]);
+  });
+
   it('keeps the warning for a relative Claude root without changing Electron paths', () => {
     const setPathCalls: Array<{ name: string; value: string }> = [];
     const result = applyElectronDevPathOverrides(
@@ -88,7 +135,6 @@ describe('applyElectronDevPathOverrides', () => {
 
   it.each([
     ['userData', null],
-    ['sessionData', 'session'],
     ['logs', 'logs'],
     ['crashDumps', 'crashes'],
   ])('fails before changing Electron paths when %s cannot be created', (_name, suffix) => {
@@ -117,7 +163,7 @@ describe('applyElectronDevPathOverrides', () => {
     fs.mkdirSync(redirectedDir);
     fs.symlinkSync(
       redirectedDir,
-      path.join(userDataDir, 'session'),
+      path.join(userDataDir, 'logs'),
       process.platform === 'win32' ? 'junction' : 'dir'
     );
     const setPathCalls: Array<{ name: string; value: string }> = [];
@@ -127,7 +173,7 @@ describe('applyElectronDevPathOverrides', () => {
         { setPath: (name, value) => setPathCalls.push({ name, value }) },
         { [AGENT_TEAMS_ELECTRON_USER_DATA_DIR_ENV]: userDataDir }
       )
-    ).toThrow(/sessionData must be a real directory/);
+    ).toThrow(/logs must be a real directory/);
     expect(setPathCalls).toEqual([]);
   });
 
