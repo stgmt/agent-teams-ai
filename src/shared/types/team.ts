@@ -64,6 +64,14 @@ export interface TeamConfig {
   members?: TeamMember[];
   projectPath?: string;
   projectPathHistory?: string[];
+  /**
+   * Spec-registry project that owns this team's tasks, e.g. `stgmt/tokenplan`.
+   * When set together with `specSlug`, task canonical fields are read from and
+   * written to the registry instead of `~/.claude/tasks`.
+   */
+  specProject?: string;
+  /** Spec slug inside `specProject`, e.g. `balancer-consistency-hardening`. */
+  specSlug?: string;
   leadSessionId?: string;
   sessionHistory?: string[];
   /** ISO timestamp — soft delete marker. If set, the team is considered deleted. */
@@ -75,6 +83,8 @@ export interface TeamUpdateConfigRequest {
   description?: string;
   color?: string;
   language?: string;
+  specProject?: string;
+  specSlug?: string;
 }
 
 export interface TeamSummaryMember {
@@ -98,6 +108,10 @@ export interface TeamSummary {
   lastActivity: string | null;
   projectPath?: string;
   projectPathHistory?: string[];
+  /** Registry project when the team's tasks are registry-backed. */
+  specProject?: string;
+  /** Spec slug inside `specProject`. */
+  specSlug?: string;
   leadSessionId?: string;
   sessionHistory?: string[];
   /** Propagated from config.deletedAt — set when the team has been soft-deleted. */
@@ -929,6 +943,13 @@ export interface CreateTaskRequest {
   groupChatId?: string;
   subject: string;
   description?: string;
+  /**
+   * FR/NFR/AC ids the task implements. Required for registry-backed teams:
+   * the spec registry refuses a task that does not name its requirements.
+   */
+  requirements?: string[];
+  /** Free-form tracking note the registry stores on the task. */
+  tracking?: string;
   descriptionTaskRefs?: TaskRef[];
   owner?: string;
   blockedBy?: string[];

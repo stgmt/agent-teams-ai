@@ -358,6 +358,7 @@ function readTask(rawTask: unknown, index: number): RegistryTask {
     dependsOn: readLinkArray(rawTask.dependsOn, `task #${index}.dependsOn`),
     blocks: readLinkArray(rawTask.blocks, `task #${index}.blocks`),
     blockedBy: readLinkArray(rawTask.blockedBy, `task #${index}.blockedBy`),
+    refs: readLinkArray(rawTask.refs, `task #${index}.refs`),
     contentHash: stringOrNull(rawTask.contentHash),
   };
 }

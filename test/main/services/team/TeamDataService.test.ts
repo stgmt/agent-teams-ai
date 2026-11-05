@@ -2915,7 +2915,7 @@ describe('TeamDataService', () => {
     };
 
     const firstCreate = service.createTask('my-team', request);
-    expect(commandFacadeCreateTask).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(commandFacadeCreateTask).toHaveBeenCalledTimes(1));
     expect(sendMessage).not.toHaveBeenCalled();
 
     commitFirstAttempt?.({

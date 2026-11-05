@@ -15,7 +15,13 @@ export interface TeamConfigurationMutationStores {
 /** Canonical manual and external writes share metadata preservation, without inventing saved requests. */
 export async function updateTeamConfiguration(
   teamName: string,
-  updates: { name?: string; description?: string; color?: string },
+  updates: {
+    name?: string;
+    description?: string;
+    color?: string;
+    specProject?: string;
+    specSlug?: string;
+  },
   stores: TeamConfigurationMutationStores
 ): Promise<TeamConfig | null> {
   const config = await stores.configReader.getConfig(teamName);

@@ -39,6 +39,8 @@ export interface RegistryTask {
   dependsOn: string[];
   blocks: string[];
   blockedBy: string[];
+  /** Non-task node refs the task links to (team "related" links live here). */
+  refs: string[];
   contentHash: string | null;
 }
 

@@ -146,6 +146,7 @@ describe('RegistryTaskClient.listTasks', () => {
             dependsOn: ['balancer-consistency-hardening:TASK-3'],
             blocks: ['balancer-consistency-hardening:TASK-9'],
             blockedBy: [],
+            refs: ['balancer-consistency-hardening:AC-2'],
             contentHash: 'abc123',
           },
         ],
@@ -171,6 +172,7 @@ describe('RegistryTaskClient.listTasks', () => {
         dependsOn: ['balancer-consistency-hardening:TASK-3'],
         blocks: ['balancer-consistency-hardening:TASK-9'],
         blockedBy: [],
+        refs: ['balancer-consistency-hardening:AC-2'],
         contentHash: 'abc123',
       },
     ]);

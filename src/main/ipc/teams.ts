@@ -1480,7 +1480,7 @@ async function handleUpdateConfig(
   if (!updates || typeof updates !== 'object') {
     return { success: false, error: 'Invalid updates object' };
   }
-  const { name, description, color } = updates as TeamUpdateConfigRequest;
+  const { name, description, color, specProject, specSlug } = updates as TeamUpdateConfigRequest;
   if (name !== undefined && typeof name !== 'string') {
     return { success: false, error: 'name must be a string' };
   }
@@ -1489,6 +1489,12 @@ async function handleUpdateConfig(
   }
   if (color !== undefined && typeof color !== 'string') {
     return { success: false, error: 'color must be a string' };
+  }
+  if (specProject !== undefined && typeof specProject !== 'string') {
+    return { success: false, error: 'specProject must be a string' };
+  }
+  if (specSlug !== undefined && typeof specSlug !== 'string') {
+    return { success: false, error: 'specSlug must be a string' };
   }
   return wrapTeamHandler('updateConfig', async () => {
     const tn = validated.value!;
@@ -1499,6 +1505,8 @@ async function handleUpdateConfig(
       name,
       description,
       color,
+      specProject,
+      specSlug,
     });
     if (!result) {
       throw new Error('Team config not found');
@@ -3220,6 +3228,23 @@ async function handleCreateTask(
   if (!validatedDescriptionTaskRefs.valid) {
     return { success: false, error: validatedDescriptionTaskRefs.error };
   }
+  if (payload.requirements !== undefined) {
+    if (
+      !Array.isArray(payload.requirements) ||
+      payload.requirements.some((id) => typeof id !== 'string' || id.trim().length === 0) ||
+      payload.requirements.length > 50
+    ) {
+      return {
+        success: false,
+        error: 'requirements must be an array of up to 50 non-empty requirement ids',
+      };
+    }
+  }
+  if (payload.tracking !== undefined) {
+    if (typeof payload.tracking !== 'string' || payload.tracking.length > 2000) {
+      return { success: false, error: 'tracking must be a string up to 2000 characters' };
+    }
+  }
   if (payload.groupChatId !== undefined && typeof payload.groupChatId !== 'string') {
     return { success: false, error: 'groupChatId must be a UUID string' };
   }
@@ -3269,6 +3294,8 @@ async function handleCreateTask(
       ...(command ? { command } : {}),
       subject: payload.subject!.trim(),
       description: payload.description?.trim(),
+      requirements: payload.requirements?.map((id) => id.trim()),
+      tracking: payload.tracking?.trim() || undefined,
       groupChatId: payload.groupChatId,
       owner: payload.owner?.trim() || undefined,
       blockedBy: payload.blockedBy,

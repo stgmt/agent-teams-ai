@@ -50,3 +50,22 @@ export type {
   RegistryTaskClientErrorInit,
 } from './RegistryTaskClientErrors';
 export type { ResolvedRegistryTaskClientConfig } from './RegistryTaskClientConfig';
+export {
+  resolveTeamSpecBinding,
+  TeamSpecBindingError,
+  type TeamSpecBinding,
+  type TeamSpecBindingErrorCode,
+} from './TeamSpecBinding';
+export {
+  RegistryTeamTaskWriter,
+  RegistryTeamTaskWriteError,
+  type RegistryTeamTaskClientPort,
+  type RegistryTeamTaskCreateInput,
+  type RegistryTeamTaskWriteErrorCode,
+  type RegistryTeamTaskWriterOptions,
+} from './RegistryTeamTaskWriter';
+export {
+  createRegistryTeamTaskWriter,
+  type RegistryTeamTaskWriterProvider,
+  type RegistryTeamTaskWriterRequest,
+} from './RegistryTeamTaskWriterFactory';

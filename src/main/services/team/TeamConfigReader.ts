@@ -504,6 +504,8 @@ export class TeamConfigReader {
       let deletedAt: string | undefined;
       let projectPathHistory: TeamConfig['projectPathHistory'] | undefined;
       let sessionHistory: TeamConfig['sessionHistory'] | undefined;
+      let specProject: string | undefined;
+      let specSlug: string | undefined;
 
       let stat: fs.Stats | null = null;
       try {
@@ -552,6 +554,14 @@ export class TeamConfigReader {
           ? config.sessionHistory.slice(-MAX_SESSION_HISTORY_IN_SUMMARY)
           : undefined;
         deletedAt = typeof config.deletedAt === 'string' ? config.deletedAt : undefined;
+        specProject =
+          typeof config.specProject === 'string' && config.specProject.trim().length > 0
+            ? config.specProject.trim()
+            : undefined;
+        specSlug =
+          typeof config.specSlug === 'string' && config.specSlug.trim().length > 0
+            ? config.specSlug.trim()
+            : undefined;
       }
 
       if (typeof displayName !== 'string' || displayName.trim() === '') {
@@ -714,6 +724,8 @@ export class TeamConfigReader {
         ...(leadSessionId ? { leadSessionId } : {}),
         ...(projectPathHistory ? { projectPathHistory } : {}),
         ...(sessionHistory ? { sessionHistory } : {}),
+        ...(specProject ? { specProject } : {}),
+        ...(specSlug ? { specSlug } : {}),
         ...(deletedAt ? { deletedAt } : {}),
         ...(launchStateSummary ?? {}),
       };
@@ -1124,7 +1136,14 @@ export class TeamConfigReader {
 
   async updateConfig(
     teamName: string,
-    updates: { name?: string; description?: string; color?: string; language?: string }
+    updates: {
+      name?: string;
+      description?: string;
+      color?: string;
+      language?: string;
+      specProject?: string;
+      specSlug?: string;
+    }
   ): Promise<TeamConfig | null> {
     const config = await this.getConfig(teamName);
     if (!config) {
@@ -1141,6 +1160,12 @@ export class TeamConfigReader {
     }
     if (updates.language !== undefined) {
       config.language = updates.language.trim() || undefined;
+    }
+    if (updates.specProject !== undefined) {
+      config.specProject = updates.specProject.trim() || undefined;
+    }
+    if (updates.specSlug !== undefined) {
+      config.specSlug = updates.specSlug.trim() || undefined;
     }
     const configPath = path.join(getTeamsBasePath(), teamName, 'config.json');
     await atomicWriteAsync(configPath, JSON.stringify(config, null, 2));
