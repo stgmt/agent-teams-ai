@@ -32,8 +32,8 @@ import type {
   TaskDetailReplyDraft,
   TaskDetailSavePart,
   TaskDetailSession,
-  TaskWriteOperation,
   TaskWriteDecision,
+  TaskWriteOperation,
 } from '../../contracts';
 import type { AppConnectionContext } from '@features/external-agent-connection/contracts';
 import type { CommentAttachmentPayload, TaskFieldUpdates, TeamTaskWithKanban } from '@shared/types';

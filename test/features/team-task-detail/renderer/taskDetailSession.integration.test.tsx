@@ -193,6 +193,41 @@ describe('task session surface and origin integration', () => {
     return token;
   }
 
+  it('keeps the guard ready when another window already recorded the answer', async () => {
+    let controller!: TaskDetailSessionController;
+    await act(async () => {
+      mount('dialog', (value) => {
+        controller = value;
+      });
+    });
+    await waitForGuard();
+    const guardIdentity = { ...identity, dataRootFingerprint: guardContext.dataRootFingerprint };
+    const marker = {
+      version: 1 as const,
+      attemptId: 'other-window',
+      operation: 'manifest' as const,
+      decision: {
+        actionId: 'b'.repeat(64),
+        decisionId: '11111111-1111-4111-8111-111111111111',
+        decision: 'retry_once' as const,
+        stage: 'decision' as const,
+      },
+    };
+    await taskWriteGuardStorage.beginDecision(guardIdentity, null, marker);
+    await taskWriteGuardStorage.release(guardIdentity, marker);
+    await act(async () => {
+      await expect(
+        controller.beginGuardedTaskDecision(marker.decision.actionId, 'retry_once')
+      ).rejects.toThrow();
+    });
+    expect(controller.taskWriteGuard).toMatchObject({
+      status: 'ready',
+      markerId: null,
+      unknown: false,
+    });
+    expect(await controller.readGuardedTaskDecisionIds()).toContain(marker.decision.actionId);
+  });
+
   it('requires a fresh task read and an explicit decision before clearing an unknown artifact outcome', async () => {
     let controller!: TaskDetailSessionController;
     await act(async () => {

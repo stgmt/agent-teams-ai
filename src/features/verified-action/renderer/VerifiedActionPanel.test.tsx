@@ -236,6 +236,62 @@ describe('VerifiedActionPanel', () => {
     expect(mocks.decide).not.toHaveBeenCalled();
     await act(async () => root.unmount());
   });
+
+  it('reports when a new action could not be started', async () => {
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+    mocks.list.mockResolvedValue([action]);
+    guard.beginGuardedTaskWrite.mockRejectedValueOnce(new Error('storage unavailable'));
+    const host = document.createElement('div');
+    document.body.append(host);
+    const root = createRoot(host);
+    await act(async () =>
+      root.render(
+        <VerifiedActionPanel
+          contextId="local"
+          teamName="team"
+          taskId="task"
+          enabled
+          canMutate={() => true}
+          guard={guard}
+        />
+      )
+    );
+    await act(async () => button(host, 'verifiedAction.approve').click());
+    expect(mocks.approve).not.toHaveBeenCalled();
+    expect(host.textContent).toContain('verifiedAction.guardUnavailable');
+    await act(async () => root.unmount());
+  });
+
+  it('refreshes a stale question if another window already recorded its answer', async () => {
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+    mocks.list.mockResolvedValue([{ ...action, status: 'question', attempts: 1 }]);
+    guard.readGuardedTaskDecisionIds
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([action.id])
+      .mockResolvedValueOnce([action.id]);
+    guard.beginGuardedTaskDecision.mockRejectedValueOnce(new Error('already decided'));
+    const host = document.createElement('div');
+    document.body.append(host);
+    const root = createRoot(host);
+    await act(async () =>
+      root.render(
+        <VerifiedActionPanel
+          contextId="local"
+          teamName="team"
+          taskId="task"
+          enabled
+          canMutate={() => true}
+          guard={guard}
+        />
+      )
+    );
+    expect(host.textContent).toContain('verifiedAction.question');
+    await act(async () => button(host, 'verifiedAction.retry').click());
+    expect(mocks.decide).not.toHaveBeenCalled();
+    expect(host.textContent).not.toContain('verifiedAction.question');
+    expect(host.textContent).not.toContain('verifiedAction.guardUnavailable');
+    await act(async () => root.unmount());
+  });
   it('does not repeat a write when its response is lost and offers the saved question after a status read', async () => {
     vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
     mocks.list

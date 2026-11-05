@@ -8,6 +8,7 @@ import {
   ArtifactWriteOutcomeHandledError,
 } from '../../core/domain/taskArtifactOutcome';
 import {
+  TaskWriteActionDecidedError,
   TaskWriteGuardOccupiedError,
   taskWriteGuardStorage,
 } from '../adapters/taskWriteGuardStorage';
@@ -326,6 +327,19 @@ export function useTaskWriteGuard({
           )
         );
       } catch (error) {
+        let recordedMarker: Awaited<ReturnType<typeof taskWriteGuardStorage.read>> | undefined;
+        if (error instanceof TaskWriteActionDecidedError) {
+          try {
+            recordedMarker = await withArtifactOutcomeDeadline(
+              taskWriteGuardStorage.read({
+                ...identity,
+                dataRootFingerprint: session.taskWriteRootFingerprint,
+              })
+            );
+          } catch {
+            // A failed read remains unavailable; do not infer an empty guard.
+          }
+        }
         const latest = useStore.getState();
         if (latest.taskDetailSessionById[identityKey]?.artifactWriteId === token) {
           latest.updateTaskDetailSession(
@@ -339,7 +353,16 @@ export function useTaskWriteGuard({
                   artifactOutcomeUnknown: true,
                   artifactOutcomeChecked: false,
                 }
-              : { artifactWriteId: null, taskWriteGuardState: 'unavailable' }
+              : error instanceof TaskWriteActionDecidedError && recordedMarker !== undefined
+                ? {
+                    artifactWriteId: null,
+                    taskWriteMarkerId: recordedMarker?.attemptId ?? null,
+                    taskWriteOperation: recordedMarker?.operation ?? null,
+                    taskWriteDecision: recordedMarker?.decision ?? null,
+                    artifactOutcomeUnknown: recordedMarker !== null,
+                    artifactOutcomeChecked: false,
+                  }
+                : { artifactWriteId: null, taskWriteGuardState: 'unavailable' }
           );
         }
         throw new ArtifactWriteNotStartedError(

@@ -55,6 +55,7 @@ export const VerifiedActionPanel = ({
   const readGeneration = useRef(0);
   const bridge = api.verifiedAction;
   const guardState = guard.taskWriteGuard;
+  const { readGuardedTaskDecisionIds } = guard;
   const expectedRef = useRef(guardState.expectedContext);
   expectedRef.current = guardState.expectedContext;
   const rootRef = useRef(guardState.expectedRootFingerprint);
@@ -72,7 +73,7 @@ export const VerifiedActionPanel = ({
     try {
       const [result, decided] = await Promise.all([
         withDeadline(bridge.list(contextId, expected, root, teamName, taskId)),
-        guard.readGuardedTaskDecisionIds(),
+        readGuardedTaskDecisionIds(),
       ]);
       if (generation.current !== requestGeneration || readGeneration.current !== readId)
         return false;
@@ -91,16 +92,7 @@ export const VerifiedActionPanel = ({
       if (generation.current === requestGeneration && readGeneration.current === readId)
         setBusy(false);
     }
-  }, [
-    bridge,
-    contextId,
-    expectedKey,
-    rootKey,
-    t,
-    taskId,
-    teamName,
-    guard.readGuardedTaskDecisionIds,
-  ]);
+  }, [bridge, contextId, expectedKey, rootKey, t, taskId, teamName, readGuardedTaskDecisionIds]);
 
   useEffect(() => {
     generation.current += 1;
@@ -171,6 +163,14 @@ export const VerifiedActionPanel = ({
       if (token)
         await guard.settleGuardedTaskWrite(token, 'manifest', 'unknown').catch(() => false);
       if (generation.current !== requestGeneration) return;
+      if (!token && decision) {
+        try {
+          const decided = await readGuardedTaskDecisionIds();
+          if (decided.includes(decision.actionId) && (await refresh())) return;
+        } catch {
+          // A failed receipt read cannot prove another window handled this decision.
+        }
+      }
       setUncertain(Boolean(token));
       setError(t(token ? 'verifiedAction.resultUnknown' : 'verifiedAction.guardUnavailable'));
     } finally {
