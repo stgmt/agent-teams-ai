@@ -861,7 +861,6 @@ export interface ElectronAPI
     TokenUsageElectronApi,
     ProjectFolderElectronApi {
   teamGroupChats: TeamGroupChatsAPI;
-  verifiedAction?: VerifiedActionElectronApi;
   announcements: AnnouncementsApi;
   gatewayProvider: GatewayProviderApi;
   externalAgentConnection: ExternalAgentConnectionApi;
@@ -869,6 +868,7 @@ export interface ElectronAPI
   appCloseCoordination?: AppCloseCoordinationElectronApi;
   workspaceTrust?: WorkspaceTrustElectronApi['workspaceTrust'];
   telemetry: TelemetryAPI;
+  verifiedAction?: VerifiedActionElectronApi;
   getAppVersion: () => Promise<string>;
   getWindowsElevationStatus: () => Promise<WindowsElevationStatus>;
   getProjects: () => Promise<Project[]>;

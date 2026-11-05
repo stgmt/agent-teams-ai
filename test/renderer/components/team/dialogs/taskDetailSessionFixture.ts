@@ -55,7 +55,14 @@ export function createTaskDetailSessionFixture(taskId: string): TaskDetailSessio
     markGuardedDecisionFenceSent: vi.fn(async () => true),
     readGuardedTaskDecisionIds: vi.fn(async () => []),
     settleGuardedTaskWrite: vi.fn(async () => true),
-    checkGuardedTaskWriteOutcome: vi.fn(async () => {}),
+    checkGuardedTaskWriteOutcome: vi.fn(async () => ({
+      expectedContext: {
+        appInstanceId: 'test',
+        dataRootFingerprint: 'a'.repeat(64),
+        connectionGeneration: 1,
+      },
+      expectedRootFingerprint: 'a'.repeat(64),
+    })),
     confirmGuardedTaskWriteOutcome: vi.fn(async () => {}),
     isOriginCurrent: () => true,
     canSubmit: true,

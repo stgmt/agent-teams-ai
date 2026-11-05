@@ -88,6 +88,56 @@ describe('verified artifact action', () => {
       completion: 'queued',
     });
   });
+
+  it('allows a new action after the real controller replaces an unapproved artifact', async () => {
+    const { root, store } = await fixture();
+    const project = path.join(root, 'project');
+    const teamDir = path.join(root, 'teams', 'fixture');
+    await fs.promises.mkdir(project);
+    await fs.promises.mkdir(teamDir, { recursive: true });
+    await fs.promises.writeFile(
+      path.join(teamDir, 'config.json'),
+      JSON.stringify({
+        name: 'fixture',
+        projectPath: project,
+        members: [{ name: 'worker', role: 'developer' }],
+      })
+    );
+    const controller = requireFromTest(
+      path.resolve('agent-teams-controller/src/index.js')
+    ) as typeof import('agent-teams-controller');
+    const board = controller.createController({ teamName: 'fixture', claudeDir: root }).taskBoard;
+    const task = board.createTask({ subject: 'result', owner: 'worker' }) as { id: string };
+    const artifactFile = {
+      filename: 'result.txt',
+      base64Data: Buffer.from('same bytes').toString('base64'),
+    };
+    board.updateTaskFields(task.id, { artifactRequired: true, artifactFile });
+    const enqueue = vi.fn((item) => store.enqueue(item));
+    const service = new VerifiedActionService({
+      store,
+      verify: async () => board.verifyTaskArtifact(task.id),
+      enqueue,
+    });
+    const old = await service.prepare('scope', 'fixture', task.id);
+    board.updateTaskFields(task.id, { artifactFile });
+    const replacementProof = board.verifyTaskArtifact(task.id)!;
+    expect(replacementProof.sha256).toBe(old.proof.sha256);
+    expect(replacementProof.attachmentId).not.toBe(old.proof.attachmentId);
+    expect(await service.list('scope', 'fixture', task.id)).toMatchObject([
+      { id: old.id, status: 'stale', attempts: 0 },
+    ]);
+    expect(await service.approve('scope', old.id)).toMatchObject({ status: 'stale' });
+    expect(enqueue).not.toHaveBeenCalled();
+    const replacement = await service.prepare('scope', 'fixture', task.id);
+    expect(replacement.id).not.toBe(old.id);
+    expect(await service.approve('scope', replacement.id)).toMatchObject({
+      status: 'completed',
+      completion: 'queued',
+      attempts: 1,
+    });
+    expect(enqueue).toHaveBeenCalledTimes(1);
+  });
   it('requires explicit approval and writes one manifest even for concurrent duplicate approvals', async () => {
     const { root, service, enqueue } = await fixture();
     const [first, duplicate] = await Promise.all([
@@ -214,8 +264,10 @@ describe('verified artifact action', () => {
     const { store, verify, service, enqueue } = await fixture();
     const action = await service.prepare('scope', 'team', 'task');
     verify.mockResolvedValueOnce({ ...proof, sha256: 'b'.repeat(64) });
-    await expect(service.approve('scope', action.id)).rejects.toThrow('artifact changed');
+    expect(await service.approve('scope', action.id)).toMatchObject({ status: 'stale' });
     expect(enqueue).not.toHaveBeenCalled();
+    verify.mockResolvedValue({ ...proof, sha256: 'b'.repeat(64) });
+    const replacement = await service.prepare('scope', 'team', 'task');
     const lost = new VerifiedActionService({
       store,
       verify,
@@ -223,11 +275,44 @@ describe('verified artifact action', () => {
         throw new Error('unknown');
       },
     });
-    expect((await lost.approve('scope', action.id)).status).toBe('question');
-    expect((await lost.decide('scope', action.id, 'leave_unresolved')).status).toBe('manual');
-    await expect(lost.decide('scope', action.id, 'retry_once')).rejects.toThrow(
+    expect((await lost.approve('scope', replacement.id)).status).toBe('question');
+    expect((await lost.decide('scope', replacement.id, 'leave_unresolved')).status).toBe('manual');
+    await expect(lost.decide('scope', replacement.id, 'retry_once')).rejects.toThrow(
       'no pending question'
     );
+  });
+
+  it('retires an unapproved action only after a different proof is verified', async () => {
+    const { service, verify, enqueue } = await fixture();
+    const old = await service.prepare('scope', 'team', 'task');
+    // Identical content uploaded again still has a new attachment identity.
+    verify.mockResolvedValue({ ...proof, attachmentId: 'replacement' });
+    expect((await service.list('scope', 'team', 'task'))[0]).toMatchObject({
+      id: old.id,
+      status: 'stale',
+      attempts: 0,
+    });
+    expect(await service.approve('scope', old.id)).toMatchObject({ status: 'stale' });
+    expect(enqueue).not.toHaveBeenCalled();
+    const replacement = await service.prepare('scope', 'team', 'task');
+    expect(replacement.id).not.toBe(old.id);
+    expect(await service.approve('scope', replacement.id)).toMatchObject({ status: 'completed' });
+    expect(enqueue).toHaveBeenCalledOnce();
+    // A delayed approval of the old ID cannot queue after replacement.
+    verify.mockResolvedValue(proof);
+    expect(await service.approve('scope', old.id)).toMatchObject({ status: 'stale' });
+    expect(enqueue).toHaveBeenCalledOnce();
+  });
+
+  it('keeps approval pending when verification is unavailable', async () => {
+    const { service, verify, enqueue } = await fixture();
+    const action = await service.prepare('scope', 'team', 'task');
+    verify.mockRejectedValue(new Error('temporary read failure'));
+    expect((await service.list('scope', 'team', 'task'))[0].status).toBe('awaiting_approval');
+    await expect(service.approve('scope', action.id)).rejects.toThrow('temporary read failure');
+    expect(enqueue).not.toHaveBeenCalled();
+    verify.mockResolvedValue(proof);
+    expect(await service.approve('scope', action.id)).toMatchObject({ status: 'completed' });
   });
 
   it('consumes the only retry decision without executing when the artifact changed', async () => {

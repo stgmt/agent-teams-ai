@@ -35,6 +35,7 @@
     "retry": "I checked: not done; retry once",
     "unresolved": "Leave unresolved",
     "manual": "Unresolved; handle manually. No automatic retry will occur.",
+    "stale": "The artifact changed before approval. Prepare a new action for the current artifact.",
     "attested": "Marked complete based on your confirmation.",
     "queued": "Artifact manifest added to the local queue.",
     "running": "Checking action status…",

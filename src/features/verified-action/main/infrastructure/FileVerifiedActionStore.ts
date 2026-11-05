@@ -85,7 +85,7 @@ function isStoredAction(value: unknown): value is VerifiedAction {
     typeof item.taskId === 'string' &&
     typeof item.createdAt === 'string' &&
     typeof item.updatedAt === 'string' &&
-    ['awaiting_approval', 'running', 'question', 'manual', 'completed'].includes(
+    ['awaiting_approval', 'running', 'question', 'stale', 'manual', 'completed'].includes(
       String(item.status)
     ) &&
     [0, 1, 2].includes(item.attempts as number) &&

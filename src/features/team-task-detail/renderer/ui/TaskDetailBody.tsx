@@ -259,6 +259,7 @@ export const TaskDetailBody = ({
           teamName={teamName}
           taskId={currentTask.id}
           enabled={currentTask.artifactRequirement?.required === true}
+          artifactRevision={JSON.stringify(currentTask.artifactRequirement?.proof ?? null)}
           canMutate={sessionController.canEditNow}
         />
         {commentImageAttachments.length > 0 ? (

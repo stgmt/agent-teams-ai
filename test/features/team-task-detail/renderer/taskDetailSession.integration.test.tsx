@@ -1,17 +1,18 @@
+import 'fake-indexeddb/auto';
+
 import React, { act, useEffect } from 'react';
 import { createRoot } from 'react-dom/client';
-import 'fake-indexeddb/auto';
 
 import { createTaskDetailReadEntry, taskDetailKey } from '@features/team-task-detail/core';
 import { TaskDetailEditorActivationFeedback } from '@features/team-task-detail/renderer/adapters/TaskDetailEditorActivationFeedback';
 import { TaskDetailReadCoordinator } from '@features/team-task-detail/renderer/adapters/TaskDetailReadCoordinator';
-import { useTaskDetailEditorHost } from '@features/team-task-detail/renderer/hooks/useTaskDetailEditorHost';
-import { useTaskDetailReviewRoute } from '@features/team-task-detail/renderer/hooks/useTaskDetailReviewRoute';
-import { useTaskDetailSession } from '@features/team-task-detail/renderer/hooks/useTaskDetailSession';
 import {
   taskWriteGuardKey,
   taskWriteGuardStorage,
 } from '@features/team-task-detail/renderer/adapters/taskWriteGuardStorage';
+import { useTaskDetailEditorHost } from '@features/team-task-detail/renderer/hooks/useTaskDetailEditorHost';
+import { useTaskDetailReviewRoute } from '@features/team-task-detail/renderer/hooks/useTaskDetailReviewRoute';
+import { useTaskDetailSession } from '@features/team-task-detail/renderer/hooks/useTaskDetailSession';
 import { resetWorkspaceForRootChange } from '@renderer/components/settings/resetWorkspaceForRootChange';
 import { useStore } from '@renderer/store';
 import { __resetTeamSliceModuleStateForTests } from '@renderer/store/slices/teamSlice';
@@ -20,8 +21,8 @@ import {
   captureTaskDetailReadScope,
 } from '@renderer/store/team/taskDetailReadAuthority';
 import { invalidateContextScopedRequestEpoch } from '@renderer/store/utils/contextScopedRequestEpoch';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { del } from 'idb-keyval';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { TaskDetailIdentity } from '@features/team-task-detail/contracts';
 import type { TaskDetailSessionController } from '@features/team-task-detail/renderer';
@@ -459,7 +460,10 @@ describe('task session surface and origin integration', () => {
     });
     apiMock.teams.getTask.mockResolvedValueOnce({ ...task });
     await act(async () => {
-      await controller.checkGuardedTaskWriteOutcome('artifact');
+      expect(await controller.checkGuardedTaskWriteOutcome('artifact')).toEqual({
+        expectedContext: newContext,
+        expectedRootFingerprint: guardContext.dataRootFingerprint,
+      });
       expect(useStore.getState().taskDetailSessionById[key].taskWriteExpectedContext).toEqual(
         newContext
       );

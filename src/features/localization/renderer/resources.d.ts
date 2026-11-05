@@ -7023,6 +7023,7 @@ export default interface Resources {
       "resultUnknown": "The result could not be confirmed. Refresh status before taking another action; it will not be retried automatically.",
       "retry": "I checked: not done; retry once",
       "running": "Checking action status…",
+      "stale": "The artifact changed before approval. Prepare a new action for the current artifact.",
       "title": "Verified artifact queue",
       "unresolved": "Leave unresolved"
     },

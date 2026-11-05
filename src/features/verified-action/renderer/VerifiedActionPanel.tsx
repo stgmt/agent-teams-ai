@@ -35,6 +35,7 @@ export const VerifiedActionPanel = ({
   teamName,
   taskId,
   enabled,
+  artifactRevision,
   canMutate,
   guard,
 }: {
@@ -42,6 +43,7 @@ export const VerifiedActionPanel = ({
   teamName: string;
   taskId: string;
   enabled: boolean;
+  artifactRevision?: string;
   canMutate: () => boolean;
   guard: TaskGuard;
 }): React.JSX.Element | null => {
@@ -53,6 +55,8 @@ export const VerifiedActionPanel = ({
   const [error, setError] = useState<string | null>(null);
   const generation = useRef(0);
   const readGeneration = useRef(0);
+  const mounted = useRef(false);
+  const checkingOutcome = useRef<number | null>(null);
   const bridge = api.verifiedAction;
   const guardState = guard.taskWriteGuard;
   const { readGuardedTaskDecisionIds } = guard;
@@ -62,6 +66,18 @@ export const VerifiedActionPanel = ({
   rootRef.current = guardState.expectedRootFingerprint;
   const expectedKey = guardState.expectedContext ? JSON.stringify(guardState.expectedContext) : '';
   const rootKey = guardState.expectedRootFingerprint ?? '';
+  const identityKey = JSON.stringify([contextId, teamName, taskId, rootKey, artifactRevision]);
+  const identity = useRef({ key: identityKey, revision: 0 });
+  if (identity.current.key !== identityKey) {
+    identity.current = { key: identityKey, revision: identity.current.revision + 1 };
+  }
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
 
   const refresh = useCallback(async () => {
     const expected = expectedRef.current;
@@ -98,18 +114,27 @@ export const VerifiedActionPanel = ({
     generation.current += 1;
     setActions(null);
     setDecidedActionIds([]);
-    setBusy(false);
+    if (checkingOutcome.current !== identity.current.revision) setBusy(false);
     setError(null);
     setUncertain(false);
-    if (bridge && contextId === 'local' && expectedKey && rootKey) void refresh();
+    if (
+      bridge &&
+      contextId === 'local' &&
+      expectedKey &&
+      rootKey &&
+      checkingOutcome.current !== identity.current.revision
+    )
+      void refresh();
     return () => {
       generation.current += 1;
     };
-  }, [enabled, bridge, contextId, expectedKey, rootKey, refresh]);
+  }, [enabled, artifactRevision, bridge, contextId, expectedKey, rootKey, refresh]);
 
   useEffect(() => {
     if (!bridge || contextId !== 'local' || !expectedKey || !rootKey) return;
-    const onFocus = () => void refresh();
+    const onFocus = () => {
+      if (checkingOutcome.current !== identity.current.revision) void refresh();
+    };
     window.addEventListener('focus', onFocus);
     return () => window.removeEventListener('focus', onFocus);
   }, [bridge, contextId, expectedKey, rootKey, refresh]);
@@ -184,17 +209,33 @@ export const VerifiedActionPanel = ({
       !expectedRef.current ||
       !rootRef.current ||
       !guardState.markerId ||
-      guardState.operation !== 'manifest'
+      guardState.operation !== 'manifest' ||
+      checkingOutcome.current === identity.current.revision
     )
       return;
-    const requestGeneration = generation.current;
+    const requestIdentity = identity.current.revision;
+    const isCurrent = () => mounted.current && identity.current.revision === requestIdentity;
+    checkingOutcome.current = requestIdentity;
+    readGeneration.current += 1;
     setBusy(true);
     try {
-      const actions = await withDeadline(
-        bridge.list(contextId, expectedRef.current, rootRef.current, teamName, taskId)
-      );
-      await guard.checkGuardedTaskWriteOutcome('manifest');
-      if (generation.current !== requestGeneration) return;
+      // Rebind the same physical root first. A stale connection generation
+      // cannot safely be used to read or fence the saved manifest decision.
+      const binding = await guard.checkGuardedTaskWriteOutcome('manifest');
+      if (!isCurrent()) return;
+      const [actions, decided] = await Promise.all([
+        withDeadline(
+          bridge.list(
+            contextId,
+            binding.expectedContext,
+            binding.expectedRootFingerprint,
+            teamName,
+            taskId
+          )
+        ),
+        readGuardedTaskDecisionIds(),
+      ]);
+      if (!isCurrent()) return;
       let nextActions = actions;
       const decision = guardState.decision;
       if (decision) {
@@ -205,11 +246,12 @@ export const VerifiedActionPanel = ({
           (target.status === 'manual' || target.status === 'completed');
         if (!matches() && target?.status === 'question' && decision.stage === 'decision') {
           if (await guard.markGuardedDecisionFenceSent(guardState.markerId)) {
+            if (!isCurrent()) return;
             target = await withDeadline(
               bridge.fenceDecision(
                 contextId,
-                expectedRef.current!,
-                rootRef.current!,
+                binding.expectedContext,
+                binding.expectedRootFingerprint,
                 decision.actionId,
                 decision.decision,
                 decision.decisionId
@@ -218,8 +260,10 @@ export const VerifiedActionPanel = ({
             nextActions = [...actions.filter((item) => item.id !== target!.id), target];
           }
         }
+        if (!isCurrent()) return;
         if (matches()) {
           await guard.confirmGuardedTaskWriteOutcome(guardState.markerId, 'manifest');
+          if (!isCurrent()) return;
         } else {
           setActions(nextActions);
           setError(t('verifiedAction.manual'));
@@ -227,13 +271,16 @@ export const VerifiedActionPanel = ({
         }
       }
       setActions(nextActions);
+      setDecidedActionIds(decided);
       setUncertain(false);
       setError(null);
     } catch {
-      if (generation.current !== requestGeneration) return;
+      if (!isCurrent()) return;
+      setUncertain(true);
       setError(t('verifiedAction.refreshFailed'));
     } finally {
-      if (generation.current === requestGeneration) setBusy(false);
+      if (checkingOutcome.current === requestIdentity) checkingOutcome.current = null;
+      if (isCurrent()) setBusy(false);
     }
   };
 
@@ -323,6 +370,8 @@ export const VerifiedActionPanel = ({
           {guardState.checked ? <p className="mt-2">{t('verifiedAction.guardChecked')}</p> : null}
           {guardState.checked &&
           !guardState.decision &&
+          actions !== null &&
+          !uncertain &&
           !actions?.some((item) => item.status === 'question') ? (
             <Button
               size="sm"
@@ -396,6 +445,7 @@ export const VerifiedActionPanel = ({
             </div>
           ) : null}
           {action.status === 'manual' ? <p className="mt-2">{t('verifiedAction.manual')}</p> : null}
+          {action.status === 'stale' ? <p className="mt-2">{t('verifiedAction.stale')}</p> : null}
           {action.status === 'completed' ? (
             <p className="mt-2">
               {t(

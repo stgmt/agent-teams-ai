@@ -84,7 +84,10 @@ export interface TaskDetailSessionController {
     operation: TaskWriteOperation,
     outcome: 'confirmed' | 'unknown'
   ) => Promise<boolean>;
-  checkGuardedTaskWriteOutcome: (operation: TaskWriteOperation) => Promise<void>;
+  checkGuardedTaskWriteOutcome: (operation: TaskWriteOperation) => Promise<{
+    expectedContext: AppConnectionContext;
+    expectedRootFingerprint: string;
+  }>;
   confirmGuardedTaskWriteOutcome: (token: string, operation: TaskWriteOperation) => Promise<void>;
   isOriginCurrent: () => boolean;
   canSubmit: boolean;

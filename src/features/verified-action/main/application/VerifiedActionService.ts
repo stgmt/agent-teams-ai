@@ -2,6 +2,29 @@ import { createHash, randomUUID } from 'crypto';
 
 import type { VerifiedAction, VerifiedActionDecision, VerifiedActionProof } from '../../contracts';
 
+class ArtifactChangedError extends Error {
+  constructor() {
+    super('The artifact changed after this action was prepared');
+  }
+}
+
+function isValidProof(proof: VerifiedActionProof | null): proof is VerifiedActionProof {
+  return Boolean(
+    proof?.attachmentId &&
+    /^[a-f0-9]{64}$/.test(proof.sha256) &&
+    Number.isSafeInteger(proof.size) &&
+    proof.size >= 0
+  );
+}
+
+function matchesProof(left: VerifiedActionProof, right: VerifiedActionProof): boolean {
+  return (
+    left.attachmentId === right.attachmentId &&
+    left.sha256 === right.sha256 &&
+    left.size === right.size
+  );
+}
+
 export interface VerifiedActionTransaction {
   read(): Promise<VerifiedAction[]>;
   write(actions: VerifiedAction[]): Promise<void>;
@@ -46,6 +69,32 @@ export class VerifiedActionService {
           changed = true;
         }
       }
+      const pending = actions.filter(
+        (action) =>
+          action.scope === scope &&
+          action.teamName === teamName &&
+          action.taskId === taskId &&
+          action.status === 'awaiting_approval'
+      );
+      if (pending.length > 0) {
+        // A failed read proves nothing about the existing proof. Only a newly
+        // verified, different proof retires an approval that never executed.
+        let current: VerifiedActionProof | null = null;
+        try {
+          current = await this.options.verify(scope, teamName, taskId);
+        } catch {
+          // Keep the pending approval if verification is temporarily unavailable.
+        }
+        if (isValidProof(current)) {
+          for (const action of pending) {
+            if (!matchesProof(current, action.proof)) {
+              action.status = 'stale';
+              action.updatedAt = this.now();
+              changed = true;
+            }
+          }
+        }
+      }
       if (changed) await tx.write(actions);
       return actions.filter(
         (action) =>
@@ -88,7 +137,15 @@ export class VerifiedActionService {
       const actions = await tx.read();
       const action = this.get(actions, scope, id);
       if (action.status !== 'awaiting_approval') return action;
-      await this.assertProof(action);
+      try {
+        await this.assertProof(action);
+      } catch (error) {
+        if (!(error instanceof ArtifactChangedError)) throw error;
+        action.status = 'stale';
+        action.updatedAt = this.now();
+        await tx.write(actions);
+        return action;
+      }
       return this.execute(tx, actions, action, 1);
     });
   }
@@ -208,13 +265,7 @@ export class VerifiedActionService {
 
   private async assertProof(action: VerifiedAction): Promise<void> {
     const proof = await this.requireProof(action.scope, action.teamName, action.taskId);
-    if (
-      proof.attachmentId !== action.proof.attachmentId ||
-      proof.sha256 !== action.proof.sha256 ||
-      proof.size !== action.proof.size
-    ) {
-      throw new Error('The artifact changed after this action was prepared');
-    }
+    if (!matchesProof(proof, action.proof)) throw new ArtifactChangedError();
   }
 
   private async requireProof(
@@ -224,12 +275,7 @@ export class VerifiedActionService {
   ): Promise<VerifiedActionProof> {
     const proof = await this.options.verify(scope, teamName, taskId);
     if (!proof) throw new Error('A verified task artifact is required');
-    if (
-      !proof.attachmentId ||
-      !/^[a-f0-9]{64}$/.test(proof.sha256) ||
-      !Number.isSafeInteger(proof.size) ||
-      proof.size < 0
-    ) {
+    if (!isValidProof(proof)) {
       throw new Error('Invalid task artifact proof');
     }
     return proof;

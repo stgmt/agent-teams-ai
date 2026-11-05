@@ -9,6 +9,7 @@ export type VerifiedActionStatus =
   | 'awaiting_approval'
   | 'running'
   | 'question'
+  | 'stale'
   | 'manual'
   | 'completed';
 

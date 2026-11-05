@@ -570,7 +570,9 @@ export function useTaskWriteGuard({
   );
 
   const checkGuardedTaskWriteOutcome = useCallback(
-    async (operation: TaskWriteOperation): Promise<void> => {
+    async (
+      operation: TaskWriteOperation
+    ): Promise<{ expectedContext: AppConnectionContext; expectedRootFingerprint: string }> => {
       if (!isOriginCurrent()) throw new Error('Task context changed');
       const before = useStore.getState();
       const priorSession = before.taskDetailSessionById[identityKey];
@@ -584,7 +586,7 @@ export function useTaskWriteGuard({
       let expectedContext = priorSession?.taskWriteExpectedContext;
       const expectedRoot = priorSession?.taskWriteRootFingerprint;
       const liveContext = await readGuardContext();
-      if (!expectedContext) throw new Error('Task data root changed');
+      if (!expectedContext || !expectedRoot) throw new Error('Task data root changed');
       if (!sameGuardContext(expectedContext, expectedRoot, liveContext)) {
         if (
           !priorSession?.artifactOutcomeUnknown ||
@@ -651,6 +653,7 @@ export function useTaskWriteGuard({
         throw new Error('Task outcome changed during the check');
       if (session?.artifactOutcomeUnknown)
         state.updateTaskDetailSession(identity, { artifactOutcomeChecked: true });
+      return { expectedContext, expectedRootFingerprint: expectedRoot };
     },
     [identity, identityKey, isOriginCurrent, readGuardContext]
   );
@@ -709,10 +712,9 @@ export function useTaskWriteGuard({
     [identity, identityKey, isOriginCurrent, readGuardContext]
   );
 
-  const checkArtifactOutcome = useCallback(
-    () => checkGuardedTaskWriteOutcome('artifact'),
-    [checkGuardedTaskWriteOutcome]
-  );
+  const checkArtifactOutcome = useCallback(async () => {
+    await checkGuardedTaskWriteOutcome('artifact');
+  }, [checkGuardedTaskWriteOutcome]);
   const confirmArtifactOutcome = useCallback(async (): Promise<void> => {
     const token = useStore.getState().taskDetailSessionById[identityKey]?.taskWriteMarkerId;
     if (!token) throw new Error('Task write safety marker is unavailable');
