@@ -210,6 +210,7 @@ describe('CopyBuiltinTemplateUseCase', () => {
     await expect(
       useCaseFor(absent).execute({ builtinTemplateId: 'software-product', name: 'Copy' })
     ).resolves.toEqual({ status: 'unresolvedWriteOutcome', templateId: NEW_ID });
+    expect(absent.create).toHaveBeenCalledTimes(1);
   });
 
   it('retries an interruption that provably never started', async () => {

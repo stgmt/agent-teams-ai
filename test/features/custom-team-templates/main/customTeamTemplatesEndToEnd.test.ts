@@ -367,13 +367,12 @@ describe('custom team templates end to end', () => {
     expect(library.rows.size).toBe(0);
   });
 
-  it('re-checks a refused save by the same stable operation id', async () => {
+  it('rechecks an unknown save before a separate user-confirmed attempt', async () => {
     await writeTeam([{ name: 'alice', role: 'reviewer', workflow: 'Review.' }]);
     const library = fakeLibrary();
     let failCreate = true;
-    const gateway: CustomTeamTemplateStorageGateway = {
-      ...library.gateway,
-      customTeamTemplateCreate: (request) => {
+    const create = vi.fn<CustomTeamTemplateStorageGateway['customTeamTemplateCreate']>(
+      (request) => {
         if (failCreate) {
           return Promise.reject(
             new CustomTeamTemplateStorageInterruptedError(
@@ -384,7 +383,11 @@ describe('custom team templates end to end', () => {
           );
         }
         return library.gateway.customTeamTemplateCreate(request);
-      },
+      }
+    );
+    const gateway: CustomTeamTemplateStorageGateway = {
+      ...library.gateway,
+      customTeamTemplateCreate: create,
     };
     const app = createCustomTeamTemplatesFeature({
       backend: { gateway },
@@ -401,10 +404,8 @@ describe('custom team templates end to end', () => {
     const token = prepared.preview.previewToken;
 
     const saved = await app.saveTemplate.execute({ previewToken: token });
-    // Every attempt settled and the authoritative read proved the id absent,
-    // so the exhausted save reports refused storage — absence was proven, not
-    // left uncertain.
-    expect(saved).toEqual({ status: 'storageUnavailable' });
+    expect(saved).toEqual({ status: 'unresolvedWriteOutcome', templateId: expect.any(String) });
+    expect(create).toHaveBeenCalledTimes(1);
     // Nothing reached the store, and the retained operation keeps its identity.
     expect(library.requests).toEqual([]);
 
@@ -417,6 +418,7 @@ describe('custom team templates end to end', () => {
     const { templateId } = notSaved;
     // A re-check never writes: the confirmed-absence read is the whole action.
     expect(library.requests).toEqual([]);
+    expect(create).toHaveBeenCalledTimes(1);
 
     // The write turns out to have been possible after all: it lands once, and the
     // re-check then confirms the very same operation instead of writing again.
@@ -424,6 +426,7 @@ describe('custom team templates end to end', () => {
     await expect(app.saveTemplate.execute({ previewToken: token })).resolves.toMatchObject({
       status: 'created',
     });
+    expect(create).toHaveBeenCalledTimes(2);
     expect(library.rows.size).toBe(1);
     await expect(app.recheckSave.execute({ previewToken: token })).resolves.toEqual({
       status: 'saved',

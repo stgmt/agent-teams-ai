@@ -130,11 +130,6 @@ export class CopyBuiltinTemplateUseCase {
             };
             return { status: 'copied', template: saved };
           }
-          if (check.status === 'absent') {
-            if (attempt + 1 < MAX_CREATE_ATTEMPTS) {
-              continue;
-            }
-          }
           return { status: 'unresolvedWriteOutcome', templateId };
         }
         if (hadUnknownExecution) {

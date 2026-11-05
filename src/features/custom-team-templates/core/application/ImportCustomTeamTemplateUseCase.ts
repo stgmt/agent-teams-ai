@@ -326,11 +326,6 @@ export class ImportCustomTeamTemplateUseCase {
               template: { ...check.template, revision: check.template.revision ?? 1 },
             };
           }
-          if (check.status === 'absent') {
-            if (attempt + 1 < MAX_CREATE_ATTEMPTS) {
-              continue;
-            }
-          }
           return { status: 'unresolvedWriteOutcome', templateId };
         }
         if (hadUnknownExecution) {

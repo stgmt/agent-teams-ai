@@ -256,6 +256,7 @@ describe('DuplicateCustomTeamTemplateUseCase', () => {
     await expect(
       useCaseFor(absent).execute({ sourceTemplateId: 'tmpl-src', name: 'Copy' })
     ).resolves.toEqual({ status: 'unresolvedWriteOutcome', templateId: NEW_ID });
+    expect(absent.create).toHaveBeenCalledTimes(1);
   });
 
   it('retries an interruption that provably never started', async () => {

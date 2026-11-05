@@ -767,7 +767,7 @@ describe('SaveCustomTeamTemplateUseCase', () => {
     ).resolves.toEqual({ status: 'alreadySaved', template: recased });
   });
 
-  it('retries once when a reconciled absence proves the write did not persist', async () => {
+  it('does not retry an initially unknown write when a read reports absence', async () => {
     const fixture = gatewayFixture({
       create: [
         new CustomTeamTemplateStorageInterruptedError('worker died', 'unknown', Promise.resolve()),
@@ -779,32 +779,22 @@ describe('SaveCustomTeamTemplateUseCase', () => {
 
     await expect(
       useCase({ gateway: fixture.gateway }, preview.store).execute({ previewToken: preview.token })
-    ).resolves.toEqual({ status: 'created', template: storedTemplate() });
-    expect(fixture.create).toHaveBeenCalledTimes(2);
-    expect(fixture.requests[1]).toEqual(fixture.requests[0]);
+    ).resolves.toEqual({ status: 'unresolvedWriteOutcome', templateId: preview.stateTemplateId });
+    expect(fixture.create).toHaveBeenCalledTimes(1);
   });
 
-  it('reports refused storage when a reconciled absence cannot be followed by a successful retry', async () => {
+  it('does not retry an unclassified write error after a read reports absence', async () => {
     const fixture = gatewayFixture({
-      create: [
-        new CustomTeamTemplateStorageInterruptedError('worker died', 'unknown', Promise.resolve()),
-        new CustomTeamTemplateStorageInterruptedError(
-          'worker died again',
-          'unknown',
-          Promise.resolve()
-        ),
-      ],
+      create: [new Error('worker response unavailable')],
       getById: [{ status: 'notFound' }],
     });
     const preview = await preparedPreview({ gateway: fixture.gateway });
 
-    // Every attempt settled and the authoritative read proved the id absent,
-    // so the outcome is confirmed-not-saved, not an unknown one.
     await expect(
       useCase({ gateway: fixture.gateway }, preview.store).execute({ previewToken: preview.token })
-    ).resolves.toEqual({ status: 'storageUnavailable' });
-    // One pre-write identity probe plus one reconciliation read per attempt.
-    expect(fixture.getById).toHaveBeenCalledTimes(3);
+    ).resolves.toEqual({ status: 'unresolvedWriteOutcome', templateId: preview.stateTemplateId });
+    expect(fixture.create).toHaveBeenCalledTimes(1);
+    expect(fixture.getById).toHaveBeenCalledTimes(2);
   });
 
   it('never claims success when the stored record cannot be read back or verified', async () => {
@@ -1116,32 +1106,45 @@ describe('SaveCustomTeamTemplateUseCase', () => {
     expect(read).toHaveBeenCalledWith({ templateId: preview.stateTemplateId });
   });
 
-  it('allows only the identical request on an exact-identity retry after an uncertain write', async () => {
+  it('requires a recheck and a separate user save after an uncertain write', async () => {
     const fixture = gatewayFixture({
       create: [
         new CustomTeamTemplateStorageInterruptedError('worker died', 'unknown', Promise.resolve()),
-        { status: 'alreadySaved', template: storedTemplate(PREVIEW_ID) },
+        { status: 'created', template: storedTemplate(PREVIEW_ID) },
       ],
       getById: [{ status: 'notFound' }],
     });
     const preview = await preparedPreview({ gateway: fixture.gateway });
     const save = useCase({ gateway: fixture.gateway }, preview.store);
 
-    // First confirm: reconciled absence proves the write did not persist, so
-    // the identical request is retried once inside the same confirm.
     await expect(save.execute({ previewToken: preview.token })).resolves.toEqual({
-      status: 'alreadySaved',
+      status: 'unresolvedWriteOutcome',
+      templateId: preview.stateTemplateId,
+    });
+    expect(fixture.create).toHaveBeenCalledTimes(1);
+
+    // A duplicate API call does not start another write while it is unresolved.
+    await expect(save.execute({ previewToken: preview.token })).resolves.toEqual({
+      status: 'unresolvedWriteOutcome',
+      templateId: preview.stateTemplateId,
+    });
+    expect(fixture.create).toHaveBeenCalledTimes(1);
+
+    await expect(
+      new RecheckCustomTeamTemplateSaveUseCase({
+        gateway: fixture.gateway,
+        hasher,
+        previewStore: preview.store,
+      }).execute({ previewToken: preview.token })
+    ).resolves.toEqual({ status: 'notSaved', templateId: preview.stateTemplateId });
+    expect(fixture.create).toHaveBeenCalledTimes(1);
+
+    // Only a separate user-confirmed save after rechecking starts a new write.
+    await expect(save.execute({ previewToken: preview.token })).resolves.toEqual({
+      status: 'created',
       template: storedTemplate(PREVIEW_ID),
     });
     expect(fixture.create).toHaveBeenCalledTimes(2);
-
-    // A later confirm with the exact same identity stays the same idempotent
-    // create; it can never introduce a second id.
-    await expect(save.execute({ previewToken: preview.token })).resolves.toEqual({
-      status: 'alreadySaved',
-      template: storedTemplate(PREVIEW_ID),
-    });
-    expect(fixture.create).toHaveBeenCalledTimes(3);
     expect(
       fixture.requests.every((request) => request.template.templateId === preview.stateTemplateId)
     ).toBe(true);
@@ -1281,28 +1284,21 @@ describe('SaveCustomTeamTemplateUseCase', () => {
     expect(unreadable.create).toHaveBeenCalledTimes(1);
   });
 
-  it('reports confirmed absence on the final attempt only when the lookup proves it', async () => {
+  it('does not retry an unknown write following a known busy result', async () => {
     const fixture = gatewayFixture({
       create: [
+        { status: 'retryable', reason: 'databaseBusy' },
         new CustomTeamTemplateStorageInterruptedError('worker died', 'unknown', Promise.resolve()),
-        new CustomTeamTemplateStorageInterruptedError(
-          'worker died again',
-          'unknown',
-          Promise.resolve()
-        ),
       ],
       getById: [{ status: 'notFound' }],
     });
     const preview = await preparedPreview({ gateway: fixture.gateway });
 
-    // Both attempts settled and the authoritative lookup proved absence, so
-    // the exhausted final attempt reports refused storage — never an unknown
-    // outcome.
     await expect(
       useCase({ gateway: fixture.gateway }, preview.store).execute({ previewToken: preview.token })
-    ).resolves.toEqual({ status: 'storageUnavailable' });
-    // One pre-write identity probe plus one reconciliation read per attempt.
-    expect(fixture.getById).toHaveBeenCalledTimes(3);
+    ).resolves.toEqual({ status: 'unresolvedWriteOutcome', templateId: preview.stateTemplateId });
+    expect(fixture.create).toHaveBeenCalledTimes(2);
+    expect(fixture.getById).toHaveBeenCalledTimes(2);
   });
 
   it('preserves uncertainty when an unknown write is followed by a not-started retry', async () => {

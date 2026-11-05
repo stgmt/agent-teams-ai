@@ -564,7 +564,7 @@ describe('ImportCustomTeamTemplateUseCase', () => {
       expect(requests[0].contentHash).toBe(requests[1].contentHash);
     });
 
-    it('does not rotate identity after an unknown execution', async () => {
+    it('does not retry an unknown execution after a read reports absence', async () => {
       const ids = ['tmpl-uncertain'];
       const requests: CreateCustomTeamTemplateRecordRequest[] = [];
       const gateway = gatewayWith((request): CreateCustomTeamTemplateRecordResult => {
@@ -582,8 +582,8 @@ describe('ImportCustomTeamTemplateUseCase', () => {
           existingTemplateId: request.template.templateId,
         };
       });
-      // Reconciliation proves the first write is absent, so the use case retries
-      // before it observes the definitive conflict.
+      // Even when the follow-up read reports absence, only the user may choose
+      // whether to start another import.
       gateway.customTeamTemplateGetById = vi.fn(() =>
         Promise.resolve({ status: 'notFound' as const })
       );
@@ -601,10 +601,7 @@ describe('ImportCustomTeamTemplateUseCase', () => {
       const res = await uc.execute({ portable: validPortable({ teamPrompt: 'hi' }) });
 
       expect(res).toEqual({ status: 'unresolvedWriteOutcome', templateId: 'tmpl-uncertain' });
-      expect(requests.map((request) => request.template.templateId)).toEqual([
-        'tmpl-uncertain',
-        'tmpl-uncertain',
-      ]);
+      expect(requests.map((request) => request.template.templateId)).toEqual(['tmpl-uncertain']);
     });
 
     it('respects the bounded retry limit after repeated collisions', async () => {

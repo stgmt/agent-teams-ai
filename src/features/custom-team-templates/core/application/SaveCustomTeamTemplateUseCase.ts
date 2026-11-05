@@ -213,12 +213,12 @@ export class SaveCustomTeamTemplateUseCase {
       },
       contentHash: confirmed.contentHash,
     };
-    // A previous execute may have left an unresolved write for this token
-    // (an earlier attempt with execution 'unknown' whose writer never
-    // settled). That uncertainty must survive into this attempt: a later
-    // `not_started` failure proves nothing about the earlier writer.
-    const hadPriorUnresolvedWrite = this.deps.previewStore.hasUnresolvedWrite(state.token);
-    const result = await this.createWithRecovery(gateway, request, hadPriorUnresolvedWrite);
+    // Do not send another write for this token until the user rechecks the
+    // earlier unknown result and explicitly chooses to save again.
+    if (this.deps.previewStore.hasUnresolvedWrite(state.token)) {
+      return { status: 'unresolvedWriteOutcome', templateId };
+    }
+    const result = await this.createWithRecovery(gateway, request);
     if (result.status === 'unresolvedWriteOutcome') {
       this.deps.previewStore.markUnresolvedWrite(state.token);
     } else if (
@@ -360,39 +360,20 @@ export class SaveCustomTeamTemplateUseCase {
 
   private async createWithRecovery(
     gateway: CustomTeamTemplateStorageGateway,
-    request: CreateCustomTeamTemplateRecordRequest,
-    hadPriorUnresolvedWrite: boolean = false
+    request: CreateCustomTeamTemplateRecordRequest
   ): Promise<ConfirmCustomTeamTemplateSaveResult> {
-    const templateId = request.template.templateId;
-    // Track whether any attempt has had execution: 'unknown' (may have reached DB).
-    // Once set, we must never return storageUnavailable as a definitive answer,
-    // because the earlier write may still commit. We only return unresolvedWriteOutcome
-    // until reconciliation proves otherwise. Prior executes may have left the
-    // same uncertainty behind, so it is restored from the retained operation.
-    let hadUnknownExecution = hadPriorUnresolvedWrite;
     for (let attempt = 1; attempt <= TEMPLATE_CREATE_MAX_ATTEMPTS; attempt++) {
       let decision: WriteDecision;
       try {
         decision = mapCreateResult(await gateway.customTeamTemplateCreate(request));
       } catch (error) {
-        decision = await this.classifyFailure(gateway, request, error, hadUnknownExecution);
-      }
-      // If any attempt had unknown execution, remember it for subsequent attempts.
-      // We check the error in classifyFailure, but also need to track it here for
-      // successful create calls that might have had unknown execution internally.
-      if (!hadUnknownExecution && decision.result.status === 'unresolvedWriteOutcome') {
-        hadUnknownExecution = true;
+        decision = await this.classifyFailure(gateway, request, error);
       }
       if (!decision.retry || attempt === TEMPLATE_CREATE_MAX_ATTEMPTS) {
-        // If we had an unknown execution earlier, never return storageUnavailable
-        // as a definitive answer - the earlier write may still commit.
-        if (hadUnknownExecution && decision.result.status === 'storageUnavailable') {
-          return { status: 'unresolvedWriteOutcome', templateId };
-        }
         return decision.result;
       }
     }
-    return { status: 'unresolvedWriteOutcome', templateId };
+    return { status: 'storageUnavailable' };
   }
 
   /**
@@ -402,15 +383,11 @@ export class SaveCustomTeamTemplateUseCase {
    * request; anything that may have reached the database is reconciled by the
    * stable template id instead of being retried blind, and anything that cannot
    * be verified is reported as unresolved rather than as success or absence.
-   *
-   * If a previous attempt had execution: 'unknown', we must preserve that
-   * uncertainty and never downgrade to storageUnavailable.
    */
   private async classifyFailure(
     gateway: CustomTeamTemplateStorageGateway,
     request: CreateCustomTeamTemplateRecordRequest,
-    error: unknown,
-    hadUnknownExecution: boolean
+    error: unknown
   ): Promise<WriteDecision> {
     if (error instanceof CustomTeamTemplateStorageInterruptedError) {
       // The settlement promise is bounded: a worker whose termination was never
@@ -424,17 +401,9 @@ export class SaveCustomTeamTemplateUseCase {
         // outcome. No second write is issued merely because settlement timed
         // out.
         if (error.execution === 'not_started') {
-          // If we already had an unknown execution, preserve that uncertainty.
-          if (hadUnknownExecution) {
-            return {
-              retry: false,
-              result: { status: 'unresolvedWriteOutcome', templateId: request.template.templateId },
-            };
-          }
           return { retry: false, result: { status: 'storageUnavailable' } };
         }
-        // execution === 'unknown' - this attempt may have reached the database;
-        // the caller's loop state already remembers that uncertainty.
+        // execution === 'unknown' - this attempt may have reached the database.
         return {
           retry: false,
           result: {
@@ -446,13 +415,6 @@ export class SaveCustomTeamTemplateUseCase {
       if (error.execution === 'not_started') {
         // Nothing reached the database, and the failed writer has settled, so
         // the retry reaches a live writer; reuse the identical request.
-        // But if we already had an unknown execution, preserve that uncertainty.
-        if (hadUnknownExecution) {
-          return {
-            retry: false,
-            result: { status: 'unresolvedWriteOutcome', templateId: request.template.templateId },
-          };
-        }
         return { retry: true, result: { status: 'storageUnavailable' } };
       }
       // execution === 'unknown' and settlement completed - this attempt may have
@@ -469,10 +431,6 @@ export class SaveCustomTeamTemplateUseCase {
    * absence, or still-unreadable) is shared with the re-check use case so a
    * confirmed save and a later re-check can never disagree about the same
    * operation.
-   *
-   * Uncertainty carried by earlier attempts is the caller's loop state in
-   * `createWithRecovery`; reconciliation itself only reports what the
-   * authoritative lookup established.
    */
   private async reconcile(
     gateway: CustomTeamTemplateStorageGateway,
@@ -488,18 +446,15 @@ export class SaveCustomTeamTemplateUseCase {
           result: { status: 'templateIdConflict', templateId: check.templateId },
         };
       case 'absent':
-        // Definitive absence while the store is readable: the write did not
-        // persist, so one more identical attempt is allowed, and an attempt
-        // that runs out is honestly reported as refused storage rather than as
-        // an unknown outcome — absence was proven, not left uncertain.
+        // A write was attempted and its outcome was initially unknown. Leave
+        // the decision to the user even if this read did not find the record.
         return {
-          retry: true,
-          result: { status: 'storageUnavailable' },
+          retry: false,
+          result: { status: 'unresolvedWriteOutcome', templateId: check.templateId },
         };
       case 'unresolved':
         // Reconciliation could not establish a definitive result, so the
-        // outcome stays honestly unresolved either way — the caller's loop
-        // state decides whether an earlier unknown execution is remembered.
+        // outcome stays honestly unresolved.
         return {
           retry: false,
           result: { status: 'unresolvedWriteOutcome', templateId: check.templateId },
