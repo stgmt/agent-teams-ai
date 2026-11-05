@@ -55,7 +55,11 @@ import {
   createRegistryTeamTaskWriter,
   type RegistryTeamTaskWriterProvider,
 } from './registry/RegistryTeamTaskWriterFactory';
-import { resolveTeamSpecBinding } from './registry/TeamSpecBinding';
+import {
+  resolveTeamSpecBinding,
+  type TeamSpecBinding,
+  TeamSpecBindingError,
+} from './registry/TeamSpecBinding';
 import { atomicWriteAsync } from './atomicWrite';
 import { createDraftTeamConfig } from './createDraftTeamConfig';
 import { assertDraftRenameDestinationAvailable, renameDraftTeamDirectory } from './draftTeamRename';
@@ -156,7 +160,7 @@ const PROCESS_HEALTH_INTERVAL_MS = 2_000;
 const TASK_MAP_YIELD_EVERY = 250;
 const TASK_COMMENT_NOTIFICATION_SOURCE = 'system_notification';
 const MEMBER_RUNTIME_ADVISORY_SNAPSHOT_BUDGET_MS = 250;
-const GLOBAL_TASK_TEAM_CONFIG_CONCURRENCY = 12;
+const GLOBAL_TASK_TEAM_FANOUT_CONCURRENCY = 12;
 
 function createNonDurableTaskBoardCommandFacade(): TaskBoardCommandFacade {
   const hasher = new NodeApplicationCommandHasher();
@@ -319,6 +323,21 @@ interface GlobalTaskTeamInfo {
   displayName: string;
   projectPath?: string;
   deletedAt?: string;
+}
+
+/**
+ * One team kept off the global board because its registry-backed task state
+ * could not be read. The rest of the board is still served: the file-backed
+ * teams and the registry teams that answered stay visible.
+ */
+export interface GlobalBoardTeamFailure {
+  teamName: string;
+  /** Registry scope, when the team's binding was readable. */
+  project?: string;
+  spec?: string;
+  /** `RegistryTaskProviderErrorCode`, `TeamSpecBindingErrorCode`, or `UNKNOWN`. */
+  code: string;
+  message: string;
 }
 
 async function mapLimitLocal<T, R>(
@@ -555,7 +574,7 @@ export class TeamDataService {
     const teamNames = [...new Set(rawTasks.map((task) => task.teamName))];
     const entries = await mapLimitLocal(
       teamNames,
-      GLOBAL_TASK_TEAM_CONFIG_CONCURRENCY,
+      GLOBAL_TASK_TEAM_FANOUT_CONCURRENCY,
       async (teamName) => {
         const config = await readConfigForUiSnapshot(this.configReader, teamName).catch(() => null);
         const displayName = config?.name?.trim();
@@ -1276,14 +1295,52 @@ export class TeamDataService {
     return alive.sort((left, right) => left.localeCompare(right));
   }
 
+  /**
+   * Global board rows for every team. Registry-backed teams contribute their
+   * registry rows; a team whose registry read fails is reported through
+   * {@link getAllTasksWithDiagnostics} instead of blanking the whole board.
+   */
   async getAllTasks(): Promise<GlobalTask[]> {
+    const { tasks, failures } = await this.getAllTasksWithDiagnostics();
+    for (const failure of failures) {
+      logger.warn(
+        `[getAllTasks] registry board unavailable team=${failure.teamName} code=${failure.code}: ${failure.message}`
+      );
+    }
+    return tasks;
+  }
+
+  async getAllTasksWithDiagnostics(): Promise<{
+    tasks: GlobalTask[];
+    failures: GlobalBoardTeamFailure[];
+  }> {
     const taskReader = this.taskReader as TeamTaskReader & {
       getAllTasksProjectionSnapshot?: () => Promise<readonly (TeamTask & { teamName: string })[]>;
     };
-    const rawTasks =
+    const fileTasks =
       typeof taskReader.getAllTasksProjectionSnapshot === 'function'
         ? await taskReader.getAllTasksProjectionSnapshot()
         : await taskReader.getAllTasks();
+
+    // The cached team list is the only cheap census of teams whose rows never
+    // reach the file projection: a registry-backed team keeps no task files.
+    let teams: readonly TeamSummary[] = [];
+    try {
+      teams = await this.listTeams();
+    } catch (error) {
+      logger.warn(
+        `[getAllTasks] team list unreadable: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+    const registry = await this.readRegistryBackedGlobalTasks(teams);
+
+    const rawTasks = [
+      // A registry-backed team's canonical state is the registry: stale local
+      // files must not resurface as a second board, and neither may the files
+      // of a team whose registry read just failed look complete.
+      ...fileTasks.filter((task) => !registry.backedTeamNames.has(task.teamName)),
+      ...registry.tasks,
+    ];
     const teamInfoMap = await this.readGlobalTaskTeamInfo(rawTasks);
 
     const MAX_GLOBAL_TASKS_EXPORTED = 500;
@@ -1376,7 +1433,92 @@ export class TeamDataService {
       }
     }
 
-    return out;
+    return { tasks: out, failures: registry.failures };
+  }
+
+  /**
+   * Registry half of the global board.
+   *
+   * Only teams that carry `specProject` + `specSlug` participate; their rows
+   * are read through {@link RegistryTaskProvider}, whose TTL cache and in-flight
+   * dedupe absorb repeated board renders, so N teams cost at most N registry
+   * reads per TTL window rather than N per render. The read is bounded by the
+   * same concurrency limit the team-config fan-out uses.
+   *
+   * Failures are per team: an unreachable registry drops that team's rows and
+   * lands in `failures`, while every other team is still served.
+   */
+  private async readRegistryBackedGlobalTasks(teams: readonly TeamSummary[]): Promise<{
+    tasks: (TeamTask & { teamName: string })[];
+    backedTeamNames: Set<string>;
+    failures: GlobalBoardTeamFailure[];
+  }> {
+    const failures: GlobalBoardTeamFailure[] = [];
+    const backedTeamNames = new Set<string>();
+    const scopes: { teamName: string; binding: TeamSpecBinding }[] = [];
+
+    for (const team of teams) {
+      let binding: TeamSpecBinding | null;
+      try {
+        binding = resolveTeamSpecBinding(
+          { specProject: team.specProject, specSlug: team.specSlug },
+          team.teamName
+        );
+      } catch (error) {
+        if (!(error instanceof TeamSpecBindingError)) {
+          throw error;
+        }
+        // Half-configured binding: the team is registry-backed, but its scope
+        // cannot be addressed. Reporting it beats showing a file board the
+        // registry does not back.
+        backedTeamNames.add(team.teamName);
+        failures.push({
+          teamName: team.teamName,
+          ...(team.specProject ? { project: team.specProject } : {}),
+          ...(team.specSlug ? { spec: team.specSlug } : {}),
+          code: error.code,
+          message: error.message,
+        });
+        continue;
+      }
+      if (!binding) {
+        continue;
+      }
+      backedTeamNames.add(team.teamName);
+      scopes.push({ teamName: team.teamName, binding });
+    }
+
+    const perTeam = await mapLimitLocal(
+      scopes,
+      GLOBAL_TASK_TEAM_FANOUT_CONCURRENCY,
+      async ({ teamName, binding }) => {
+        try {
+          const result = await this.registryTaskProvider.getTasks(teamName, { binding });
+          return result.backed ? result.tasks.map((task) => ({ ...task, teamName })) : [];
+        } catch (error) {
+          failures.push(
+            error instanceof RegistryTaskProviderError
+              ? {
+                  teamName,
+                  project: error.project ?? binding.project,
+                  spec: error.spec ?? binding.spec,
+                  code: error.code,
+                  message: error.message,
+                }
+              : {
+                  teamName,
+                  project: binding.project,
+                  spec: binding.spec,
+                  code: 'UNKNOWN',
+                  message: error instanceof Error ? error.message : String(error),
+                }
+          );
+          return [];
+        }
+      }
+    );
+
+    return { tasks: perTeam.flat(), backedTeamNames, failures };
   }
 
   private configurationGate: (teamName: string, operation: () => Promise<void>) => Promise<void> = (
