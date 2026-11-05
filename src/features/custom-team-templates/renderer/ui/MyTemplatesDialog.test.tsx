@@ -642,6 +642,19 @@ describe('MyTemplatesDialog', () => {
     expect(host.querySelector('[data-testid="custom-template-library-error"]')).toBeNull();
   });
 
+  it('warns about recovered storage and disables template imports', async () => {
+    listTemplates.mockResolvedValue({
+      status: 'recoveryRequired',
+    } satisfies ListCustomTeamTemplatesResult);
+    await render();
+    expect(host.textContent).toContain('customTemplates.library.recoveryRequired');
+    expect(host.textContent).not.toContain('customTemplates.library.empty');
+    const importButton = host.querySelector<HTMLButtonElement>(
+      '[data-testid="import-template-button"]'
+    );
+    expect(importButton === null || importButton.disabled).toBe(true);
+  });
+
   it('keeps unreadable stored records visible as a warning next to the readable ones', async () => {
     listTemplates.mockResolvedValue({
       status: 'hasUnreadableRecords',

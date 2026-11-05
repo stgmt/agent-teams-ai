@@ -199,6 +199,7 @@ export interface CustomTeamTemplateUnreadableRecord {
  */
 export type ListCustomTeamTemplatesResult =
   | { status: 'empty' }
+  | { status: 'recoveryRequired' }
   | { status: 'ready'; templates: readonly CustomTeamTemplateV1[] }
   | {
       status: 'hasUnreadableRecords';

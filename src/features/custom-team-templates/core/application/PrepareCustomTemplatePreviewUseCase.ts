@@ -144,6 +144,7 @@ export class PrepareCustomTemplatePreviewUseCase {
     }
     try {
       const listed = await gateway.customTeamTemplateList();
+      if (listed.recoveryRequired) return 'unavailable';
       return findTemplateNameConflict(name, listed.templates);
     } catch {
       return 'unavailable';

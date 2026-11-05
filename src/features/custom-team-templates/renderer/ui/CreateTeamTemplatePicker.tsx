@@ -71,7 +71,10 @@ export const CreateTeamTemplatePicker = ({
 
   const customs = state.status === 'ready' || state.status === 'partial' ? state.templates : [];
   const libraryLoading = state.status === 'idle' || state.status === 'loading';
-  const libraryFailed = state.status === 'storageUnavailable' || state.status === 'requestFailed';
+  const libraryFailed =
+    state.status === 'storageUnavailable' ||
+    state.status === 'recoveryRequired' ||
+    state.status === 'requestFailed';
   const libraryEmpty = state.status === 'empty';
 
   const parsedSelection = parseTemplateSelectionValue(selection);
@@ -225,9 +228,11 @@ export const CreateTeamTemplatePicker = ({
           >
             <AlertTriangle className="mt-0.5 size-4 shrink-0" />
             <p>
-              {state.status === 'storageUnavailable'
-                ? t('customTemplates.library.storageUnavailable')
-                : t('customTemplates.library.loadFailed')}
+              {state.status === 'recoveryRequired'
+                ? t('customTemplates.library.recoveryRequired')
+                : state.status === 'storageUnavailable'
+                  ? t('customTemplates.library.storageUnavailable')
+                  : t('customTemplates.library.loadFailed')}
             </p>
           </div>
         ) : null}

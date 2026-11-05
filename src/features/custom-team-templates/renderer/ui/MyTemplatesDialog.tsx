@@ -56,7 +56,8 @@ export const MyTemplatesDialog = ({ open, onClose }: MyTemplatesDialogProps): Re
   const management = useTemplateManagement({ onSuccess: async () => void (await reload()) });
   const { operations: pendingMutations, storageAvailable } = usePendingTemplateMutations();
   const pendingMutation = pendingMutations.length > 0;
-  const mutationsDisabled = pendingMutation || !storageAvailable;
+  const mutationsDisabled =
+    pendingMutation || !storageAvailable || state.status === 'recoveryRequired';
   const [checkingMutation, setCheckingMutation] = useState(false);
   const [reviewed, setReviewed] = useState<{
     operations: readonly PendingTemplateMutation[];
@@ -72,7 +73,10 @@ export const MyTemplatesDialog = ({ open, onClose }: MyTemplatesDialogProps): Re
   const [copyBuiltinId, setCopyBuiltinId] = useState<BuiltinTeamTemplateId | null>(null);
   const [importOpen, setImportOpen] = useState(false);
 
-  const failed = state.status === 'storageUnavailable' || state.status === 'requestFailed';
+  const failed =
+    state.status === 'storageUnavailable' ||
+    state.status === 'recoveryRequired' ||
+    state.status === 'requestFailed';
 
   useEffect(() => {
     if (open) getPendingTemplateMutations();
@@ -360,9 +364,11 @@ export const MyTemplatesDialog = ({ open, onClose }: MyTemplatesDialogProps): Re
                 >
                   <AlertTriangle className="mt-0.5 size-4 shrink-0" />
                   <p>
-                    {state.status === 'storageUnavailable'
-                      ? t('customTemplates.library.storageUnavailable')
-                      : t('customTemplates.library.loadFailed')}
+                    {state.status === 'recoveryRequired'
+                      ? t('customTemplates.library.recoveryRequired')
+                      : state.status === 'storageUnavailable'
+                        ? t('customTemplates.library.storageUnavailable')
+                        : t('customTemplates.library.loadFailed')}
                   </p>
                 </div>
               ) : null}

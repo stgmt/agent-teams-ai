@@ -215,7 +215,8 @@ export const MemberDraftRow = ({
       : null;
   const workflowDraft = useDraftPersistence({
     key: draftKey ?? `workflow:${member.id}`,
-    initialValue: member.workflow?.trim() ? member.workflow : undefined,
+    // Preserve an explicit empty workflow, e.g. from a selected template.
+    initialValue: member.workflow,
     enabled: !!draftKey,
   });
   const chips = useMemo(() => member.workflowChips ?? [], [member.workflowChips]);

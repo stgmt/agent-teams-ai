@@ -83,6 +83,19 @@ describe('ListCustomTeamTemplatesUseCase', () => {
     await expect(absent.execute()).resolves.toEqual({ status: 'storageUnavailable' });
   });
 
+  it('reports a rebuilt database as requiring recovery rather than an empty library', async () => {
+    const useCase = new ListCustomTeamTemplatesUseCase({
+      gateway: gatewayWith(() =>
+        Promise.resolve({
+          templates: [],
+          unreadableRecords: [],
+          recoveryRequired: true,
+        })
+      ),
+    });
+    await expect(useCase.execute()).resolves.toEqual({ status: 'recoveryRequired' });
+  });
+
   it('reads the library without mutating it', async () => {
     const create = vi.fn();
     const getById = vi.fn();

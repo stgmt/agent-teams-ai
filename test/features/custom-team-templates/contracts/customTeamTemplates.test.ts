@@ -55,6 +55,8 @@ function describeListResult(result: ListCustomTeamTemplatesResult): string {
   switch (result.status) {
     case 'empty':
       return 'empty';
+    case 'recoveryRequired':
+      return 'recoveryRequired';
     case 'ready':
       return `ready:${result.templates.length}`;
     case 'hasUnreadableRecords':
@@ -87,28 +89,31 @@ describe('custom team template contracts', () => {
         issues: [{ code: 'templateNameRequired', field: 'name' }],
       })
     ).toBe('validationFailed:templateNameRequired');
-    expect(describePreviewResult({ status: 'nameConflict', existingTemplateId: 'template-1' })).toBe(
-      'nameConflict:template-1'
-    );
+    expect(
+      describePreviewResult({ status: 'nameConflict', existingTemplateId: 'template-1' })
+    ).toBe('nameConflict:template-1');
     expect(describePreviewResult({ status: 'storageUnavailable' })).toBe('storageUnavailable');
   });
 
   it('narrows confirm-save outcomes without conflating errors', () => {
     expect(describeSaveResult({ status: 'created', template })).toBe('created:template-1');
-    expect(describeSaveResult({ status: 'alreadySaved', template })).toBe('alreadySaved:template-1');
+    expect(describeSaveResult({ status: 'alreadySaved', template })).toBe(
+      'alreadySaved:template-1'
+    );
     expect(describeSaveResult({ status: 'stalePreview', sourceTeamName: 'demo' })).toBe(
       'stalePreview:demo'
     );
     expect(describeSaveResult({ status: 'templateIdConflict', templateId: 'template-1' })).toBe(
       'templateIdConflict:template-1'
     );
-    expect(
-      describeSaveResult({ status: 'unresolvedWriteOutcome', templateId: 'template-1' })
-    ).toBe('unresolvedWriteOutcome:template-1');
+    expect(describeSaveResult({ status: 'unresolvedWriteOutcome', templateId: 'template-1' })).toBe(
+      'unresolvedWriteOutcome:template-1'
+    );
   });
 
   it('keeps an empty library distinct from an unavailable store', () => {
     expect(describeListResult({ status: 'empty' })).toBe('empty');
+    expect(describeListResult({ status: 'recoveryRequired' })).toBe('recoveryRequired');
     expect(describeListResult({ status: 'storageUnavailable' })).toBe('storageUnavailable');
   });
 

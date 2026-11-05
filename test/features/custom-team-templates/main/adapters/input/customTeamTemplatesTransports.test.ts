@@ -143,6 +143,31 @@ function deterministicFeature(): CustomTeamTemplatesFeature {
 }
 
 describe('custom-team-templates transports', () => {
+  it('returns the recovery warning through both IPC and HTTP', async () => {
+    const storage = gateway();
+    storage.customTeamTemplateList = () =>
+      Promise.resolve({
+        templates: [],
+        unreadableRecords: [],
+        recoveryRequired: true,
+      });
+    const feature = createCustomTeamTemplatesFeature({ backend: { gateway: storage } });
+    const ipc = fakeIpcMain();
+    const http = fakeFastify();
+    registerCustomTeamTemplatesIpc(ipc as unknown as IpcMain, feature);
+    registerCustomTeamTemplatesHttp(http as unknown as FastifyInstance, feature);
+    try {
+      await expect(ipc.invoke(CUSTOM_TEAM_TEMPLATE_CHANNELS.listTemplates)).resolves.toEqual({
+        status: 'recoveryRequired',
+      });
+      await expect(http.call('GET', CUSTOM_TEAM_TEMPLATE_ROUTES.listTemplates)).resolves.toEqual({
+        status: 'recoveryRequired',
+      });
+    } finally {
+      feature.dispose();
+    }
+  });
+
   it('registers exactly the ten IPC channels and the ten HTTP routes', () => {
     const ipc = fakeIpcMain();
     const http = fakeFastify();

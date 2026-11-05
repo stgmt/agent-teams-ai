@@ -136,6 +136,15 @@ export class InternalStorageWorkerCore {
           return handleMemberWorkSyncOp(this.memberWorkSyncOps, op, payload);
         }
         if (typeof op === 'string' && op.startsWith('customTemplate.')) {
+          // Templates have no JSON replica. After corruption, an empty rebuilt
+          // database must not masquerade as the user's empty template library.
+          this.open();
+          if (this.templateRecoveryRequired()) {
+            if (op === 'customTemplate.list') {
+              return { templates: [], unreadableRecords: [], recoveryRequired: true };
+            }
+            throw new Error('Custom template storage requires manual recovery');
+          }
           return handleCustomTeamTemplateOp(this.customTeamTemplateOps, op, payload);
         }
         throw new Error(`Unknown internal-storage op: ${String(op)}`);
@@ -275,6 +284,7 @@ export class InternalStorageWorkerCore {
       if (!isLikelyCorruptionError(initialError)) {
         throw initialError;
       }
+      this.markTemplateRecoveryRequired();
       // A corrupt database is backed up (never deleted) and recreated; the
       // journals can be re-imported from *.pre-sqlite JSON archives.
       this.backupCorruptDatabaseFiles();
@@ -293,6 +303,28 @@ export class InternalStorageWorkerCore {
 
     this.state = { db, orm: drizzle(db), integrity };
     return this.state;
+  }
+
+  private templateRecoveryRequired(): boolean {
+    try {
+      fs.lstatSync(`${this.options.databasePath}.templates-recovery-required`);
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+      throw error;
+    }
+  }
+
+  private markTemplateRecoveryRequired(): void {
+    try {
+      fs.writeFileSync(
+        `${this.options.databasePath}.templates-recovery-required`,
+        'Template storage was recreated after database corruption. Restore or inspect the backup before removing this marker.\n',
+        { flag: 'wx', mode: 0o600 }
+      );
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+    }
   }
 
   private openOnce(): SqliteDatabase {

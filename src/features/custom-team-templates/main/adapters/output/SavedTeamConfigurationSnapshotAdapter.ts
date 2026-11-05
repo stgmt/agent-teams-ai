@@ -72,9 +72,8 @@ interface TeamDirectoryProbe {
  * because the existing one is private to that feature and throws its own
  * transport error types.
  *
- * A team whose `team.meta.json` carries `deletedAt` is reported as an
- * unavailable source: a trashed team's saved configuration is not a template
- * source under the conservative A1 default.
+ * A team whose `config.json` or `team.meta.json` carries `deletedAt` is reported
+ * as unavailable: a trashed team's saved configuration is not a template source.
  */
 export class SavedTeamConfigurationSnapshotAdapter implements CustomTeamTemplateSnapshotReader {
   private readonly metaStore = new TeamMetaStore();
@@ -117,6 +116,9 @@ export class SavedTeamConfigurationSnapshotAdapter implements CustomTeamTemplate
       return null;
     }
     if (probe.config.status === 'file' && !isReadableConfigPayload(probe.config.content)) {
+      return null;
+    }
+    if (probe.config.status === 'file' && isTrashedConfig(probe.config.content)) {
       return null;
     }
 
@@ -257,6 +259,14 @@ function isReadableConfigPayload(content: string): boolean {
     return false;
   }
   return isReadableTeamConfigPayload(parsed);
+}
+
+/** Existing teams store their trash marker in config.json rather than team.meta.json. */
+function isTrashedConfig(content: string): boolean {
+  const parsed: unknown = JSON.parse(content);
+  return Boolean(
+    parsed && typeof parsed === 'object' && (parsed as { deletedAt?: unknown }).deletedAt
+  );
 }
 
 /**

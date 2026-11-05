@@ -72,7 +72,9 @@ export function applyCustomTeamTemplate(template: CustomTeamTemplateV1): CreateT
     members: template.members.map((member) => ({
       name: member.name,
       role: member.role,
-      workflow: member.workflow,
+      // An absent workflow is an intentional empty value from this template,
+      // not a request to restore an unrelated member-name draft.
+      workflow: member.workflow ?? '',
     })),
     syncModelsWithLead: true,
   };

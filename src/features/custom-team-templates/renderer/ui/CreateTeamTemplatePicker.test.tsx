@@ -152,6 +152,15 @@ describe('CreateTeamTemplatePicker', () => {
     expect(optionNone()?.getAttribute('aria-pressed')).toBe('true');
   });
 
+  it('warns about recovered storage without presenting an empty library', async () => {
+    listTemplates.mockResolvedValueOnce({ status: 'recoveryRequired' });
+    renderPicker(true);
+    await flush();
+    expect(host.textContent).toContain('customTemplates.library.recoveryRequired');
+    expect(host.querySelector('[data-testid="create-template-custom-empty"]')).toBeNull();
+    expect(optionBuiltin('research')).not.toBeNull();
+  });
+
   it('shows library failures with a working retry', async () => {
     listTemplates.mockRejectedValueOnce(new Error('offline'));
     renderPicker(true);

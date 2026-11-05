@@ -138,6 +138,30 @@ describe('custom team templates end to end', () => {
     }
   });
 
+  it('refuses confirmation if the team was trashed in config.json after preview', async () => {
+    await writeTeam([{ name: 'alice', role: 'reviewer' }]);
+    const library = fakeLibrary();
+    const app = feature(library);
+    try {
+      const preview = await app.preparePreview.execute({ sourceTeamName: TEAM, name: 'Test' });
+      expect(preview.status).toBe('previewReady');
+      if (preview.status !== 'previewReady') throw new Error('preview was not ready');
+      await fs.writeFile(
+        path.join(hoisted.teamsBase, TEAM, 'config.json'),
+        JSON.stringify({
+          name: TEAM,
+          members: [],
+          deletedAt: '2026-11-05T00:00:00.000Z',
+        })
+      );
+      const saved = await app.saveTemplate.execute({ previewToken: preview.preview.previewToken });
+      expect(saved.status).toBe('sourceUnavailable');
+      expect(library.requests).toHaveLength(0);
+    } finally {
+      app.dispose();
+    }
+  });
+
   it('persists a preview to SQLite, reopens it and round-trips Unicode portable JSON', async () => {
     await writeTeam(
       [

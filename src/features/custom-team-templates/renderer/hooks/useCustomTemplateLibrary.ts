@@ -20,6 +20,7 @@ export type TemplateLibraryState =
   | { status: 'idle' }
   | { status: 'loading' }
   | { status: 'empty' }
+  | { status: 'recoveryRequired' }
   | { status: 'ready'; templates: readonly CustomTeamTemplateV1[] }
   | {
       status: 'partial';
@@ -54,6 +55,9 @@ export function useCustomTemplateLibrary(open: boolean): {
         case 'empty':
           setState({ status: 'empty' });
           return 'complete';
+        case 'recoveryRequired':
+          setState({ status: 'recoveryRequired' });
+          return 'failed';
         case 'ready':
           setState({ status: 'ready', templates: result.templates });
           return 'complete';

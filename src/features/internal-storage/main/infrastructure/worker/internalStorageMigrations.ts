@@ -210,17 +210,17 @@ export function readSchemaVersion(db: SqliteDatabase): number {
 }
 
 export function runInternalStorageMigrations(db: SqliteDatabase): void {
-  const current = readSchemaVersion(db);
-  for (const migration of MIGRATIONS) {
-    if (migration.version <= current) {
-      continue;
-    }
-    const apply = db.transaction(() => {
+  // Serialize the version read with the migrations themselves: another process
+  // may upgrade the database while this connection is waiting for the lock.
+  const apply = db.transaction(() => {
+    const current = readSchemaVersion(db);
+    for (const migration of MIGRATIONS) {
+      if (migration.version <= current) continue;
       for (const statement of migration.statements) {
         db.exec(statement);
       }
       db.pragma(`user_version = ${migration.version}`);
-    });
-    apply();
-  }
+    }
+  });
+  apply.immediate();
 }

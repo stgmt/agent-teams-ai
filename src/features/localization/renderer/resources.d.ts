@@ -4001,13 +4001,13 @@ export default interface Resources {
     "customTemplates": {
       "actions": {
         "addMember": "Add member",
+        "allowAfterExternalCheck": "I checked externally; allow new changes",
+        "allowNewChanges": "I understand; allow new changes",
         "copyToMyTemplates": "Copy to My Templates",
         "delete": "Delete",
         "duplicate": "Duplicate",
         "edit": "Edit",
         "export": "Export",
-        "allowNewChanges": "I understand; allow new changes",
-        "allowAfterExternalCheck": "I checked externally; allow new changes",
         "keepChangesBlocked": "Keep changes blocked",
         "myTemplates": "My Templates",
         "recheck": "Re-check outcome",
@@ -4125,10 +4125,10 @@ export default interface Resources {
         "description": "Export “{{name}}” as a portable JSON file.",
         "errors": {
           "downloadFailed": "The download could not be started. Try again.",
-          "transportFailed": "The export request could not be completed. Try again.",
           "filePickerFailed": "The file picker could not be opened.",
           "fileWriteFailed": "The file could not be written. Try again.",
-          "invalidRequest": "The export request was invalid."
+          "invalidRequest": "The export request was invalid.",
+          "transportFailed": "The export request could not be completed. Try again."
         },
         "exporting": "Exporting…",
         "success": "Export successful",
@@ -4176,6 +4176,7 @@ export default interface Resources {
         "memberNames": "Members: {{names}}",
         "noDescription": "No description",
         "noMembers": "Prompt-only template — no members recorded",
+        "recoveryRequired": "The database was damaged and rebuilt. Previous templates may be lost. Inspect the preserved database files before choosing whether to restore them or start a new library; template changes are blocked.",
         "storageUnavailable": "The template library is unavailable right now.",
         "tabs": {
           "builtIn": "Built-in",
@@ -4208,25 +4209,25 @@ export default interface Resources {
       },
       "states": {
         "loading": "Loading…",
+        "mutationStorageUnavailable": "New changes are blocked because this profile cannot store the recovery record. Enable local storage and reopen the library.",
         "notSaved": "Confirmed: this template was not saved. You can save it again.",
+        "partialSnapshotWarning": "The list is incomplete and the outcome is unknown. Confirm only after checking outside this list, or keep changes blocked.",
+        "pendingProfileBody": "These changes in this browser or app profile may still be running or have an unconfirmed outcome. Nothing was retried automatically. Other profiles have separate records.",
+        "pendingSaveHelp": "Close this dialog, open Templates, and select My Templates. Select Re-check outcome, then choose whether to allow new changes. If the list is incomplete, check outside the list first.",
         "preparing": "Preparing preview…",
         "previewExpired": "This preview is no longer valid. Review the refreshed preview before saving.",
         "rechecking": "Re-checking the save outcome…",
+        "resolvedElsewhere": "This uncertain change was already reviewed in another window. Close and reopen this dialog to start a new change.",
         "saved": "Template saved",
         "savedAlready": "This template was already saved.",
         "savedBody": "“{{name}}” is now in My Templates.",
         "saving": "Saving…",
+        "snapshotWarning": "This list is a snapshot. The previous change could still complete later. Continue only if you accept this uncertainty.",
         "stalePreview": "The saved team configuration changed since this preview. Review the refreshed preview, then save again.",
         "unresolvedBody": "The save could not be confirmed, so nothing was retried automatically. Re-check the original save before trying again.",
         "unresolvedDeleteBody": "The deletion could not be confirmed, so nothing was retried automatically. Check My Templates before trying again — the template may already be gone.",
         "unresolvedImportBody": "The import could not be confirmed, so nothing was retried automatically. Check My Templates before trying again — the template may already have been imported.",
         "unresolvedMutationBody": "The change could not be confirmed, so nothing was retried automatically. Check My Templates before trying again — the change may already have been applied.",
-        "pendingProfileBody": "These changes in this browser or app profile may still be running or have an unconfirmed outcome. Nothing was retried automatically. Other profiles have separate records.",
-        "pendingSaveHelp": "Close this dialog, open Templates, and select My Templates. Select Re-check outcome, then choose whether to allow new changes. If the list is incomplete, check outside the list first.",
-        "mutationStorageUnavailable": "New changes are blocked because this profile cannot store the recovery record. Enable local storage and reopen the library.",
-        "snapshotWarning": "This list is a snapshot. The previous change could still complete later. Continue only if you accept this uncertainty.",
-        "resolvedElsewhere": "This uncertain change was already reviewed in another window. Close and reopen this dialog to start a new change.",
-        "partialSnapshotWarning": "The list is incomplete and the outcome is unknown. Confirm only after checking outside this list, or keep changes blocked.",
         "unresolvedTitle": "Outcome not confirmed"
       },
       "warnings": {

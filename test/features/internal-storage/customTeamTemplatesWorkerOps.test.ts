@@ -211,6 +211,61 @@ describe('custom team templates worker ops', () => {
     }
   });
 
+  it('blocks template operations after corruption, including after restarting the worker', async () => {
+    const dbPath = await makeTmpDbPath();
+    const original = track(makeCore(dbPath));
+    expect(
+      (
+        original.handle(
+          'customTemplate.create',
+          createPayload()
+        ) as CreateCustomTeamTemplateRecordResult
+      ).status
+    ).toBe('created');
+    original.close();
+
+    // Corrupt a disposable copy of the database; do not assume the backup is readable.
+    await fs.writeFile(dbPath, 'not a SQLite database');
+    const first = track(makeCore(dbPath));
+    expect(first.handle('customTemplate.list', {})).toEqual({
+      templates: [],
+      unreadableRecords: [],
+      recoveryRequired: true,
+    });
+    expect(() => first.handle('customTemplate.create', createPayload())).toThrow(/manual recovery/);
+    expect(
+      (await fs.readdir(path.dirname(dbPath))).some((name) => name.includes('.corrupt-'))
+    ).toBe(true);
+    first.close();
+
+    const restarted = track(makeCore(dbPath));
+    expect(restarted.handle('customTemplate.list', {})).toEqual({
+      templates: [],
+      unreadableRecords: [],
+      recoveryRequired: true,
+    });
+    expect(() => restarted.handle('customTemplate.create', createPayload())).toThrow(
+      /manual recovery/
+    );
+    restarted.close();
+
+    // An operator may explicitly choose to start over after preserving the backup.
+    await fs.unlink(`${dbPath}.templates-recovery-required`);
+    const acknowledged = track(makeCore(dbPath));
+    expect(acknowledged.handle('customTemplate.list', {})).toEqual({
+      templates: [],
+      unreadableRecords: [],
+    });
+    expect(
+      (
+        acknowledged.handle(
+          'customTemplate.create',
+          createPayload()
+        ) as CreateCustomTeamTemplateRecordResult
+      ).status
+    ).toBe('created');
+  });
+
   it('adds the template table in append-only v5 to v7 migrations without losing earlier rows', async () => {
     const dbPath = await makeTmpDbPath();
     const seed = track(makeCore(dbPath));
