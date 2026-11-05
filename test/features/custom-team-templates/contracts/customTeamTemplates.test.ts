@@ -59,6 +59,10 @@ function describeListResult(result: ListCustomTeamTemplatesResult): string {
       return 'recoveryRequired';
     case 'recoveryInterrupted':
       return 'recoveryInterrupted';
+    case 'storageVerificationRequired':
+      return 'storageVerificationRequired';
+    case 'storageSafetyUnavailable':
+      return 'storageSafetyUnavailable';
     case 'ready':
       return `ready:${result.templates.length}`;
     case 'hasUnreadableRecords':

@@ -690,6 +690,24 @@ describe('MyTemplatesDialog', () => {
     expect(importButton === null || importButton.disabled).toBe(true);
   });
 
+  it('shows how to restore the worker when the existing database cannot be verified', async () => {
+    listTemplates.mockResolvedValue({
+      status: 'storageVerificationRequired',
+      storageDirectory: '/server/storage',
+      databasePath: '/server/storage/app.db',
+    } satisfies ListCustomTeamTemplatesResult);
+    await render();
+    expect(host.textContent).toContain('customTemplates.library.storageVerificationRequired');
+    expect(host.querySelector('[data-testid="template-unverified-database"]')?.textContent).toBe(
+      '/server/storage/app.db'
+    );
+    expect(host.textContent).not.toContain('customTemplates.library.recoveryRequired');
+    const importButton = host.querySelector<HTMLButtonElement>(
+      '[data-testid="import-template-button"]'
+    );
+    expect(importButton === null || importButton.disabled).toBe(true);
+  });
+
   it('shows interrupted recovery instructions without claiming a rebuilt database', async () => {
     listTemplates.mockResolvedValue({
       status: 'recoveryInterrupted',

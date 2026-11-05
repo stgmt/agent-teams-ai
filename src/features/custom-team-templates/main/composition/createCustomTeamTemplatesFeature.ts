@@ -26,9 +26,8 @@ import type { TeamTemplateV1 } from '@features/team-templates/contracts';
 
 export interface CustomTeamTemplatesFeatureDeps {
   /**
-   * SQLite backend for the template library, or null when the worker
-   * bundle is unavailable. A null backend is reported as unavailable storage:
-   * there is deliberately no fallback store to degrade to.
+   * SQLite backend and optional storage diagnostics. A null gateway never
+   * degrades to another template store.
    */
   backend: InternalStorageCustomTeamTemplatesBackend | null;
   /** Overridable for tests and for a future composition boundary. */
@@ -97,7 +96,7 @@ export interface CustomTeamTemplatesFeature {
 export function createCustomTeamTemplatesFeature(
   deps: CustomTeamTemplatesFeatureDeps
 ): CustomTeamTemplatesFeature {
-  const gateway = deps.backend
+  const gateway = deps.backend?.gateway
     ? new InterruptionClassifyingCustomTeamTemplateStorageGateway(deps.backend.gateway)
     : null;
   const reader = deps.snapshotReader ?? new SavedTeamConfigurationSnapshotAdapter();
@@ -118,7 +117,10 @@ export function createCustomTeamTemplatesFeature(
     }),
     saveTemplate: new SaveCustomTeamTemplateUseCase({ gateway, reader, hasher, previewStore }),
     recheckSave: new RecheckCustomTeamTemplateSaveUseCase({ gateway, hasher, previewStore }),
-    listTemplates: new ListCustomTeamTemplatesUseCase({ gateway }),
+    listTemplates: new ListCustomTeamTemplatesUseCase({
+      gateway,
+      diagnoseStorage: deps.backend?.diagnoseStorage,
+    }),
     updateTemplate: new UpdateCustomTeamTemplateUseCase({ gateway, hasher }),
     deleteTemplate: new DeleteCustomTeamTemplateUseCase({ gateway }),
     duplicateTemplate: new DuplicateCustomTeamTemplateUseCase({

@@ -52,19 +52,33 @@ describe('InternalStorageBackendSelector', () => {
     expect(selector.getBackendKind()).toBe('sqlite');
   });
 
-  it('falls back to the JSON backend for the whole session when ping fails', async () => {
-    // The fallback path logs an expected error; keep the global guard quiet.
+  it('allows JSON fallback only when the caller proves isolation', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
     let pings = 0;
-    const selector = new InternalStorageBackendSelector(() => {
-      pings += 1;
-      return Promise.reject(new Error('native module ABI mismatch'));
-    });
+    const selector = new InternalStorageBackendSelector(
+      () => {
+        pings += 1;
+        return Promise.reject(new Error('native module ABI mismatch'));
+      },
+      () => false,
+      () => false
+    );
 
     expect(await selector.select('sqlite-store', 'json-store')).toBe('json-store');
     expect(await selector.select('sqlite-store', 'json-store')).toBe('json-store');
     expect(pings).toBe(1);
     expect(selector.getBackendKind()).toBe('json-fallback');
+  });
+
+  it('blocks JSON by default when worker failure leaves backend ownership unproven', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const selector = new InternalStorageBackendSelector(() =>
+      Promise.reject(new Error('worker offline'))
+    );
+    expect(await selector.probe()).toBe('verification-required');
+    await expect(selector.select('sqlite-store', 'json-store')).rejects.toThrow(
+      /JSON fallback is disabled/
+    );
   });
 
   it('blocks storage when the recovery marker cannot be inspected', async () => {
@@ -124,7 +138,7 @@ describe('createInternalStorageFeature', () => {
     }
   });
 
-  it('keeps both journals working via JSON when sqlite is unavailable in this environment', async () => {
+  it('blocks both journals without a worker and preserves existing replicas', async () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'internal-storage-feature-'));
     setClaudeBasePathOverride(tmpDir);
     await fs.mkdir(path.join(tmpDir, 'teams', 'demo'), { recursive: true });
@@ -176,9 +190,8 @@ describe('createInternalStorageFeature', () => {
       entries: [replicatedComment],
     });
 
-    // Under vitest either the worker bundle is missing or the native module
-    // has the Electron ABI, so the feature must degrade to the JSON stores.
-    // Both degradation paths log expected warnings/errors.
+    // Under vitest the worker is unavailable or has the Electron ABI. No
+    // selector-backed write may fall back to JSON while SQLite can appear.
     vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const feature = createInternalStorageFeature({
@@ -196,37 +209,44 @@ describe('createInternalStorageFeature', () => {
       createdAt: '2026-07-07T10:00:00.000Z',
       updatedAt: '2026-07-07T10:00:00.000Z',
     };
-    await feature.taskStallJournalStore.update('demo', (entries) => {
-      entries.push(entry);
-      return { entries, result: undefined };
+    await expect(
+      feature.taskStallJournalStore.update('demo', (entries) => {
+        entries.push(entry);
+        return { entries, result: undefined };
+      })
+    ).rejects.toThrow(/JSON fallback is disabled/);
+    expect(feature.getBackendKind()).toBe('verification-required');
+    await expect(fs.readFile(getStallMonitorJournalPath('demo'), 'utf8')).rejects.toMatchObject({
+      code: 'ENOENT',
     });
-
-    expect(feature.getBackendKind()).toBe('json-fallback');
-    const persisted = JSON.parse(
-      await fs.readFile(getStallMonitorJournalPath('demo'), 'utf8')
-    ) as TaskStallJournalEntry[];
-    expect(persisted).toEqual([entry]);
-
-    // The comment journal degrades through the same session decision.
-    expect(await feature.taskCommentNotificationJournalStore.exists('demo')).toBe(false);
-    await feature.taskCommentNotificationJournalStore.ensureInitialized('demo');
-    expect(await feature.taskCommentNotificationJournalStore.exists('demo')).toBe(true);
-
-    const replicated = await feature.taskStallJournalStore.update('replica-team', (entries) => ({
-      entries,
-      result: entries[0],
-      changed: false,
-    }));
-    expect(replicated).toMatchObject({ state: 'alerted', epochKey: replicatedStall.epochKey });
-    await expect(feature.taskCommentNotificationJournalStore.read('replica-team')).resolves.toEqual(
-      [expect.objectContaining({ state: 'sent', key: replicatedComment.key })]
+    await expect(feature.taskCommentNotificationJournalStore.exists('demo')).rejects.toThrow(
+      /JSON fallback is disabled/
     );
+    await expect(
+      feature.taskCommentNotificationJournalStore.ensureInitialized('demo')
+    ).rejects.toThrow(/JSON fallback is disabled/);
+    await expect(
+      feature.taskStallJournalStore.update('replica-team', (entries) => ({
+        entries,
+        result: entries[0],
+        changed: false,
+      }))
+    ).rejects.toThrow(/JSON fallback is disabled/);
+    await expect(feature.taskCommentNotificationJournalStore.read('replica-team')).rejects.toThrow(
+      /JSON fallback is disabled/
+    );
+    await expect(stallReplica.readClean('replica-team', true)).resolves.toMatchObject({
+      entries: [replicatedStall],
+    });
+    await expect(commentReplica.readClean('replica-team', true)).resolves.toMatchObject({
+      initialized: true,
+      entries: [replicatedComment],
+    });
     expect(feature.memberWorkSyncBackend).not.toBeNull();
-
-    // Both worker-backed backends must agree on worker availability: custom
-    // team templates deliberately have no JSON fallback, so they are only
-    // exposed when the worker bundle exists at all.
-    expect(feature.customTeamTemplatesBackend === null).toBe(
+    await expect(feature.memberWorkSyncBackend!.selector.select('sqlite', 'json')).rejects.toThrow(
+      /JSON fallback is disabled/
+    );
+    expect(feature.customTeamTemplatesBackend.gateway === null).toBe(
       feature.applicationCommandLedgerBackend === null
     );
 

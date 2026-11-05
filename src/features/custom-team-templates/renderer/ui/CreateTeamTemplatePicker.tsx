@@ -15,6 +15,7 @@ import {
 } from '../templateDraft';
 
 import { TemplateRecoveryInstructions } from './TemplateRecoveryInstructions';
+import { TemplateStorageUnavailableInstructions } from './TemplateStorageUnavailableInstructions';
 
 import type { CreateTeamTemplateDraft } from '../templateDraft';
 import type { CustomTeamTemplateV1 } from '@features/custom-team-templates/contracts';
@@ -75,6 +76,8 @@ export const CreateTeamTemplatePicker = ({
   const libraryLoading = state.status === 'idle' || state.status === 'loading';
   const libraryFailed =
     state.status === 'storageUnavailable' ||
+    state.status === 'storageVerificationRequired' ||
+    state.status === 'storageSafetyUnavailable' ||
     state.status === 'recoveryRequired' ||
     state.status === 'recoveryInterrupted' ||
     state.status === 'requestFailed';
@@ -237,6 +240,13 @@ export const CreateTeamTemplatePicker = ({
                 interruptedMarkerPath={state.interruptedMarkerPath}
                 markerWriteFailed={state.markerWriteFailed}
                 interrupted={state.status === 'recoveryInterrupted'}
+              />
+            ) : state.status === 'storageVerificationRequired' ||
+              state.status === 'storageSafetyUnavailable' ? (
+              <TemplateStorageUnavailableInstructions
+                status={state.status}
+                storageDirectory={state.storageDirectory}
+                databasePath={state.databasePath}
               />
             ) : (
               <p>

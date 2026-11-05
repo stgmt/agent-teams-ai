@@ -36,7 +36,7 @@ async function cleanup(root: string): Promise<void> {
   await fs.rm(target, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
 }
 
-it('exposes interrupted recovery through real composition, IPC and HTTP after JSON fallback and restart', async () => {
+it('exposes interrupted recovery through real composition, IPC and HTTP after blocked fallback and restart', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'interrupted-storage-composition-'));
   const directory = path.join(root, 'storage');
   const databasePath = path.join(directory, 'app.db');
@@ -67,8 +67,8 @@ it('exposes interrupted recovery through real composition, IPC and HTTP after JS
     });
   const storage = createInternalStorageFeature({ userDataPath: root });
   try {
-    // The first ping failed before the recovery marker existed.
-    expect(await storage.probeBackend()).toBe('json-fallback');
+    // Worker failure is closed before a recovery marker exists.
+    expect(await storage.probeBackend()).toBe('verification-required');
     await fs.writeFile(markerPath, 'marker');
     await fs.writeFile(interruptedMarkerPath, 'interrupted');
     expect(await storage.probeBackend()).toBe('recovery-required');

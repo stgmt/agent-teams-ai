@@ -29,6 +29,7 @@ import { EditCustomTemplateDialog } from './EditCustomTemplateDialog';
 import { ExportCustomTeamTemplateDialog } from './ExportCustomTeamTemplateDialog';
 import { ImportCustomTeamTemplateDialog } from './ImportCustomTeamTemplateDialog';
 import { TemplateRecoveryInstructions } from './TemplateRecoveryInstructions';
+import { TemplateStorageUnavailableInstructions } from './TemplateStorageUnavailableInstructions';
 
 import type { PendingTemplateMutation } from '../hooks/pendingTemplateMutation';
 import type {
@@ -61,7 +62,9 @@ export const MyTemplatesDialog = ({ open, onClose }: MyTemplatesDialogProps): Re
     pendingMutation ||
     !storageAvailable ||
     state.status === 'recoveryRequired' ||
-    state.status === 'recoveryInterrupted';
+    state.status === 'recoveryInterrupted' ||
+    state.status === 'storageVerificationRequired' ||
+    state.status === 'storageSafetyUnavailable';
   const [checkingMutation, setCheckingMutation] = useState(false);
   const [reviewed, setReviewed] = useState<{
     operations: readonly PendingTemplateMutation[];
@@ -79,6 +82,8 @@ export const MyTemplatesDialog = ({ open, onClose }: MyTemplatesDialogProps): Re
 
   const failed =
     state.status === 'storageUnavailable' ||
+    state.status === 'storageVerificationRequired' ||
+    state.status === 'storageSafetyUnavailable' ||
     state.status === 'recoveryRequired' ||
     state.status === 'recoveryInterrupted' ||
     state.status === 'requestFailed';
@@ -375,6 +380,13 @@ export const MyTemplatesDialog = ({ open, onClose }: MyTemplatesDialogProps): Re
                       interruptedMarkerPath={state.interruptedMarkerPath}
                       markerWriteFailed={state.markerWriteFailed}
                       interrupted={state.status === 'recoveryInterrupted'}
+                    />
+                  ) : state.status === 'storageVerificationRequired' ||
+                    state.status === 'storageSafetyUnavailable' ? (
+                    <TemplateStorageUnavailableInstructions
+                      status={state.status}
+                      storageDirectory={state.storageDirectory}
+                      databasePath={state.databasePath}
                     />
                   ) : (
                     <p>

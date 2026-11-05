@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative, sep } from 'node:path';
 
 import { KeyedMutex } from '@features/internal-storage/main';
 import { InternalStorageBackendSelector } from '@features/internal-storage/main/composition/InternalStorageBackendSelector';
@@ -59,7 +59,14 @@ const cores: InternalStorageWorkerCore[] = [];
 afterEach(async () => {
   vi.restoreAllMocks();
   for (const core of cores.splice(0)) core.close();
-  for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
+  const parent = await realpath(tmpdir());
+  for (const root of roots.splice(0)) {
+    const target = await realpath(root);
+    const child = relative(parent, target);
+    if (!child.startsWith('mws-reporter-journal-') || child.includes(sep))
+      throw new Error('Refusing to remove a path outside the test scratch parent');
+    await rm(target, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
+  }
 });
 
 async function setup(kind: 'json' | 'sqlite') {
@@ -73,15 +80,18 @@ async function setup(kind: 'json' | 'sqlite') {
   });
   cores.push(core);
   const gateway = new InProcessGateway(core);
-  const selector = new InternalStorageBackendSelector(() =>
-    kind === 'sqlite'
-      ? Promise.resolve({
-          driver: 'better-sqlite3',
-          databasePath,
-          schemaVersion: 4,
-          integrity: 'ok',
-        })
-      : Promise.reject(new Error('test JSON backend'))
+  const selector = new InternalStorageBackendSelector(
+    () =>
+      kind === 'sqlite'
+        ? Promise.resolve({
+            driver: 'better-sqlite3',
+            databasePath,
+            schemaVersion: 4,
+            integrity: 'ok',
+          })
+        : Promise.reject(new Error('test JSON backend')),
+    () => false,
+    () => false // Isolated adapter test; production blocks fallback.
   );
   const json = new JsonMemberWorkSyncStore(paths);
   const sqlite = new SqliteMemberWorkSyncStore({

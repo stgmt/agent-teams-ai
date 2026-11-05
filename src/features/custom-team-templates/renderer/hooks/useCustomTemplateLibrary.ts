@@ -27,6 +27,11 @@ export type TemplateLibraryState =
       interruptedMarkerPath: string;
       markerWriteFailed?: true;
     }
+  | {
+      status: 'storageVerificationRequired' | 'storageSafetyUnavailable';
+      storageDirectory: string;
+      databasePath: string;
+    }
   | { status: 'ready'; templates: readonly CustomTeamTemplateV1[] }
   | {
       status: 'partial';
@@ -63,6 +68,8 @@ export function useCustomTemplateLibrary(open: boolean): {
           return 'complete';
         case 'recoveryRequired':
         case 'recoveryInterrupted':
+        case 'storageVerificationRequired':
+        case 'storageSafetyUnavailable':
           setState(result);
           return 'failed';
         case 'ready':

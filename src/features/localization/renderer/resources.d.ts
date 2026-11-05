@@ -4186,7 +4186,9 @@ export default interface Resources {
         "recoveryRequired": "Database damage was detected or an earlier recovery left a marker. Changes are blocked until the files are inspected.",
         "recoveryStopAndPreserve": "Stop all app and server instances using this database, then copy the entire storage directory. Include app.db, its -wal and -shm files, and any app.db.corrupt-* entries if present.",
         "recoveryStorageDirectory": "Storage directory:",
+        "storageSafetyUnavailable": "The storage worker is unavailable or its safety checks could not be completed. JSON fallback is disabled to prevent conflicting writes. Check storage permissions and restart the app; if the worker is unavailable, reinstall the app without deleting your data.",
         "storageUnavailable": "The template library is unavailable right now.",
+        "storageVerificationRequired": "The storage database or recovery markers could not be verified. JSON fallback is disabled to prevent conflicting writes. Stop all instances and preserve the files; check storage permissions and restart the app. If the storage worker is unavailable, reinstall the app without deleting your data.",
         "tabs": {
           "builtIn": "Built-in",
           "myTemplates": "My Templates"

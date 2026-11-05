@@ -14,8 +14,8 @@ const logger = createLogger('Feature:InternalStorage');
  * shares that decision across every store in the feature so state never
  * splits between backends.
  *
- * Ordinary startup failures can select legacy JSON stores. A persisted recovery
- * marker blocks both backends to avoid diverging from a live SQLite process.
+ * A recovery marker or unverifiable worker blocks both backends. JSON fallback
+ * is allowed only when the caller can prove that backend switching is isolated.
  * After a successful ping a later error never silently changes backends.
  */
 export class InternalStorageBackendSelector {
@@ -26,7 +26,7 @@ export class InternalStorageBackendSelector {
   constructor(
     private readonly ping: () => Promise<InternalStorageBackendInfo>,
     private readonly recoveryRequired: () => boolean = () => false,
-    private readonly fallbackMayDiverge: () => boolean = () => false
+    private readonly fallbackMayDiverge: () => boolean = () => true
   ) {}
 
   /**
@@ -61,7 +61,9 @@ export class InternalStorageBackendSelector {
     const kind = await this.probe();
     if (kind === 'recovery-required') throw new Error('Internal storage requires manual recovery');
     if (kind === 'verification-required')
-      throw new Error('Internal storage cannot be verified; JSON fallback is blocked');
+      throw new Error(
+        'Internal storage cannot be verified; JSON fallback is disabled while the worker is unavailable'
+      );
     return kind === 'sqlite' ? sqliteBackend : jsonBackend;
   }
 
@@ -101,7 +103,7 @@ export class InternalStorageBackendSelector {
           if (marker === 'unknown' || this.fallbackMayDiverge()) {
             this.backendKind = 'verification-required';
             logger.error(
-              'internal-storage could not verify an existing database; JSON fallback is blocked',
+              'internal-storage worker unavailable or database unverifiable; JSON fallback is disabled',
               error
             );
             return this.backendKind;

@@ -4,6 +4,7 @@ import type { ListCustomTeamTemplatesResult } from '@features/custom-team-templa
 export interface ListCustomTeamTemplatesUseCaseDeps {
   /** Null when the SQLite worker bundle is unavailable in this environment. */
   gateway: CustomTeamTemplateStorageGateway | null;
+  diagnoseStorage?: (storageReadFailed?: boolean) => Promise<ListCustomTeamTemplatesResult | null>;
 }
 
 /**
@@ -22,6 +23,14 @@ export class ListCustomTeamTemplatesUseCase {
   constructor(private readonly deps: ListCustomTeamTemplatesUseCaseDeps) {}
 
   async execute(): Promise<ListCustomTeamTemplatesResult> {
+    if (this.deps.diagnoseStorage) {
+      try {
+        const diagnostic = await this.deps.diagnoseStorage();
+        if (diagnostic) return diagnostic;
+      } catch {
+        return { status: 'storageUnavailable' };
+      }
+    }
     const gateway = this.deps.gateway;
     if (!gateway) {
       return { status: 'storageUnavailable' };
@@ -31,6 +40,14 @@ export class ListCustomTeamTemplatesUseCase {
     try {
       listed = await gateway.customTeamTemplateList();
     } catch {
+      // The worker may fail after an earlier successful backend selection.
+      // Diagnose the failure without repeating the library read.
+      try {
+        const diagnostic = await this.deps.diagnoseStorage?.(true);
+        if (diagnostic) return diagnostic;
+      } catch {
+        // A failed diagnosis cannot turn a failed read into an empty library.
+      }
       return { status: 'storageUnavailable' };
     }
 

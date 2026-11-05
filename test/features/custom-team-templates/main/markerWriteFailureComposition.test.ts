@@ -131,7 +131,7 @@ it('reports confirmed corruption even when the marker write fails and blocks unv
   }
 });
 
-it('keeps fallback for a new profile but blocks it when SQLite sidecars appear', async () => {
+it('blocks fallback for a new profile before and after SQLite sidecars appear', async () => {
   vi.spyOn(console, 'error').mockImplementation(() => undefined);
   vi.spyOn(console, 'warn').mockImplementation(() => undefined);
   const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'marker-failure-composition-'));
@@ -142,7 +142,7 @@ it('keeps fallback for a new profile but blocks it when SQLite sidecars appear',
   vi.spyOn(InternalStorageWorkerClient.prototype, 'close').mockResolvedValue(undefined);
   const feature = createInternalStorageFeature({ userDataPath: root });
   try {
-    expect(await feature.probeBackend()).toBe('json-fallback');
+    expect(await feature.probeBackend()).toBe('verification-required');
     const directory = path.join(root, 'storage');
     await fsp.mkdir(directory, { recursive: true });
     await fsp.writeFile(path.join(directory, 'app.db-wal'), 'unverified journal');

@@ -60,9 +60,12 @@ storage operations refuse both SQLite and JSON while either marker is present;
 already-running operations cannot be cancelled retroactively. If writing the marker
 fails, the worker remembers the confirmed damage and shows the paths with a separate
 warning. It does not retry the marker write. Stop every instance before inspecting
-files. If the worker cannot be reached and an existing SQLite database or journal
-cannot be verified, selector-backed stores refuse JSON fallback even without a
-marker. A new profile without database files retains the ordinary JSON fallback.
+files. If the worker cannot be reached, selector-backed stores refuse JSON fallback,
+even for a new profile: JSON and SQLite operations do not share an interprocess lock,
+so another client could create SQLite after the fallback decision. Stall/comment
+journals and member-work-sync are temporarily unavailable until the worker is
+restored. The library distinguishes an unverifiable existing database from a new
+profile with no worker and shows where to preserve the files.
 
 Stop all app and server instances before copying the entire storage directory,
 including `app.db`, its `-wal`/`-shm` files and any existing `app.db.corrupt-*`

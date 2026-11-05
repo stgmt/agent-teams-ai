@@ -19,13 +19,13 @@ import {
 } from '@features/task-board-commands';
 import { type AgentTeamsController, createController } from 'agent-teams-controller';
 import Database from 'better-sqlite3-node';
-import { TeamDataService } from '../../../src/main/services/team/TeamDataService';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { TeamDataService } from '../../../src/main/services/team/TeamDataService';
 import { InProcessGateway } from '../internal-storage/helpers/InProcessGateway';
 
-import type { TeamTask } from '@shared/types';
 import type { TeamGroupChatDTO } from '@features/team-group-chats/contracts';
+import type { TeamTask } from '@shared/types';
 
 const TEAM_NAME = 'task-command-e2e';
 const CREATE_TASK_OPERATION = 'task.create';
@@ -38,7 +38,12 @@ describe('task-board commands E2E', () => {
     core?.close();
     core = null;
     if (tmpDir) {
-      await fs.rm(tmpDir, { recursive: true, force: true });
+      const parent = await fs.realpath(os.tmpdir());
+      const target = await fs.realpath(tmpDir);
+      const relative = path.relative(parent, target);
+      if (!relative.startsWith('task-board-command-e2e-') || relative.includes(path.sep))
+        throw new Error('Refusing to remove a path outside the test scratch parent');
+      await fs.rm(target, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
       tmpDir = null;
     }
   });
@@ -151,12 +156,14 @@ describe('task-board commands E2E', () => {
     expect(harness.controller.taskBoard.listTasks()).toHaveLength(1);
   });
 
-  it('uses the legacy create path when the SQLite backend falls back after an ABI failure', async () => {
+  it('uses the legacy create path when an isolated selector explicitly allows fallback', async () => {
     const harness = await makeHarness();
     const destinationCreate = vi.spyOn(harness.destination, 'create');
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
-    const selector = new InternalStorageBackendSelector(() =>
-      Promise.reject(new Error('native module ABI mismatch'))
+    const selector = new InternalStorageBackendSelector(
+      () => Promise.reject(new Error('native module ABI mismatch')),
+      () => false,
+      () => false // Isolated legacy-path test; production blocks uncoordinated fallback.
     );
     const runner = { run: vi.fn() };
     const hasher = new NodeApplicationCommandHasher();
@@ -349,8 +356,10 @@ describe('task-board commands E2E', () => {
     const harness = await makeHarness();
     const destinationCreate = vi.spyOn(harness.destination, 'create');
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
-    const selector = new InternalStorageBackendSelector(() =>
-      Promise.reject(new Error('native module ABI mismatch'))
+    const selector = new InternalStorageBackendSelector(
+      () => Promise.reject(new Error('native module ABI mismatch')),
+      () => false,
+      () => false // Isolated legacy-path test; production blocks uncoordinated fallback.
     );
     const hasher = new NodeApplicationCommandHasher();
     const fallbackFacade = new TaskBoardCommandFacade({ run: vi.fn() } as never, {
@@ -422,8 +431,10 @@ describe('task-board commands E2E', () => {
     const harness = await makeHarness();
     const destinationCreate = vi.spyOn(harness.destination, 'create');
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
-    const selector = new InternalStorageBackendSelector(() =>
-      Promise.reject(new Error('native module ABI mismatch'))
+    const selector = new InternalStorageBackendSelector(
+      () => Promise.reject(new Error('native module ABI mismatch')),
+      () => false,
+      () => false // Isolated legacy-path test; production blocks uncoordinated fallback.
     );
     const hasher = new NodeApplicationCommandHasher();
     const facade = new TaskBoardCommandFacade({ run: vi.fn() } as never, {

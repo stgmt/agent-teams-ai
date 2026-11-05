@@ -189,6 +189,22 @@ describe('CreateTeamTemplatePicker', () => {
     expect(host.querySelector('[data-testid="create-template-custom-empty"]')).toBeNull();
   });
 
+  it('explains that the worker is unavailable on a new profile', async () => {
+    listTemplates.mockResolvedValueOnce({
+      status: 'storageSafetyUnavailable',
+      storageDirectory: '/server/storage',
+      databasePath: '/server/storage/app.db',
+    });
+    renderPicker(true);
+    await flush();
+    expect(host.textContent).toContain('customTemplates.library.storageSafetyUnavailable');
+    expect(host.querySelector('[data-testid="template-unavailable-directory"]')?.textContent).toBe(
+      '/server/storage'
+    );
+    expect(host.textContent).not.toContain('customTemplates.library.recoveryRequired');
+    expect(host.querySelector('[data-testid="create-template-custom-empty"]')).toBeNull();
+  });
+
   it('shows library failures with a working retry', async () => {
     listTemplates.mockRejectedValueOnce(new Error('offline'));
     renderPicker(true);

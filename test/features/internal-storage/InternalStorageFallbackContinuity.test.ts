@@ -1,5 +1,6 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import * as path from 'node:path';
 import { join } from 'node:path';
 
 import {
@@ -84,7 +85,17 @@ describe('internal storage SQLite -> JSON fallback -> SQLite continuity', () => 
         // already closed
       }
     }
-    if (root) await rm(root, { recursive: true, force: true });
+    if (root) {
+      const parent = await realpath(tmpdir());
+      const target = await realpath(root);
+      const relative = path.relative(parent, target);
+      if (
+        !relative.startsWith('internal-storage-fallback-continuity-') ||
+        relative.includes(path.sep)
+      )
+        throw new Error('Refusing to remove a path outside the test scratch parent');
+      await rm(target, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
+    }
     root = null;
   });
 
@@ -109,15 +120,18 @@ describe('internal storage SQLite -> JSON fallback -> SQLite continuity', () => 
     kind: 'sqlite' | 'json',
     integrity: 'ok' | 'recovered' = 'ok'
   ): InternalStorageBackendSelector {
-    return new InternalStorageBackendSelector(() =>
-      kind === 'sqlite'
-        ? Promise.resolve({
-            driver: 'better-sqlite3',
-            databasePath: 'test.db',
-            schemaVersion: 4,
-            integrity,
-          })
-        : Promise.reject(new Error('native module ABI mismatch'))
+    return new InternalStorageBackendSelector(
+      () =>
+        kind === 'sqlite'
+          ? Promise.resolve({
+              driver: 'better-sqlite3',
+              databasePath: 'test.db',
+              schemaVersion: 4,
+              integrity,
+            })
+          : Promise.reject(new Error('native module ABI mismatch')),
+      () => false,
+      () => false // Isolated adapter test; production does not allow this fallback.
     );
   }
 

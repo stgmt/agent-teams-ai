@@ -206,6 +206,11 @@ export type ListCustomTeamTemplatesResult =
       interruptedMarkerPath: string;
       markerWriteFailed?: true;
     }
+  | {
+      status: 'storageVerificationRequired' | 'storageSafetyUnavailable';
+      storageDirectory: string;
+      databasePath: string;
+    }
   | { status: 'ready'; templates: readonly CustomTeamTemplateV1[] }
   | {
       status: 'hasUnreadableRecords';

@@ -83,6 +83,56 @@ describe('ListCustomTeamTemplatesUseCase', () => {
     await expect(absent.execute()).resolves.toEqual({ status: 'storageUnavailable' });
   });
 
+  it('does not query the gateway when storage diagnosis is unavailable or inconclusive', async () => {
+    const list = vi.fn().mockResolvedValue({ templates: [], unreadableRecords: [] });
+    const diagnostic = {
+      status: 'storageVerificationRequired' as const,
+      storageDirectory: '/server/storage',
+      databasePath: '/server/storage/app.db',
+    };
+    const blocked = new ListCustomTeamTemplatesUseCase({
+      gateway: gatewayWith(list),
+      diagnoseStorage: () => Promise.resolve(diagnostic),
+    });
+    await expect(blocked.execute()).resolves.toEqual(diagnostic);
+    expect(list).not.toHaveBeenCalled();
+
+    const inconclusive = new ListCustomTeamTemplatesUseCase({
+      gateway: gatewayWith(list),
+      diagnoseStorage: () => Promise.reject(new Error('cannot diagnose storage')),
+    });
+    await expect(inconclusive.execute()).resolves.toEqual({ status: 'storageUnavailable' });
+    expect(list).not.toHaveBeenCalled();
+
+    const healthy = new ListCustomTeamTemplatesUseCase({
+      gateway: gatewayWith(list),
+      diagnoseStorage: () => Promise.resolve(null),
+    });
+    await expect(healthy.execute()).resolves.toEqual({ status: 'empty' });
+    expect(list).toHaveBeenCalledTimes(1);
+  });
+
+  it('diagnoses a failed library read without repeating it', async () => {
+    const list = vi.fn().mockRejectedValue(new Error('worker stopped'));
+    const diagnostic = {
+      status: 'storageVerificationRequired' as const,
+      storageDirectory: '/server/storage',
+      databasePath: '/server/storage/app.db',
+    };
+    const diagnoseStorage = vi.fn((readFailed?: boolean) =>
+      Promise.resolve(readFailed ? diagnostic : null)
+    );
+    const useCase = new ListCustomTeamTemplatesUseCase({
+      gateway: gatewayWith(list),
+      diagnoseStorage,
+    });
+
+    await expect(useCase.execute()).resolves.toEqual(diagnostic);
+    expect(list).toHaveBeenCalledTimes(1);
+    expect(diagnoseStorage).toHaveBeenNthCalledWith(1);
+    expect(diagnoseStorage).toHaveBeenNthCalledWith(2, true);
+  });
+
   it('reports database damage as requiring recovery rather than an empty library', async () => {
     const useCase = new ListCustomTeamTemplatesUseCase({
       gateway: gatewayWith(() =>
