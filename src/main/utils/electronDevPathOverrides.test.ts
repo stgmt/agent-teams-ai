@@ -157,6 +157,18 @@ describe('applyElectronDevPathOverrides', () => {
     ).toThrow(/must be an absolute path/);
   });
 
+  it('rejects an uncreatable Claude root inside worker startup', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-teams-worker-blocked-'));
+    tempDirs.push(tempRoot);
+    const claudeRoot = path.join(tempRoot, 'blocked');
+    fs.writeFileSync(claudeRoot, 'file');
+    expect(() =>
+      applyElectronDevClaudeRootOverrideForWorker({
+        [AGENT_TEAMS_ELECTRON_CLAUDE_ROOT_ENV]: claudeRoot,
+      })
+    ).toThrow(/could not be created/);
+  });
+
   it.each([
     ['userData', null],
     ['logs', 'logs'],
