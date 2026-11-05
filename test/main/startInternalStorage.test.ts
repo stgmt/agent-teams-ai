@@ -17,6 +17,8 @@ const hoisted = vi.hoisted(() => {
       (_options: {
         userDataPath: string;
         onCommentJournalFailure: (teamName: string, error: unknown) => void;
+        onCommentJournalMutationSuccess: (teamName: string) => void;
+        onInternalStorageUnavailable: (kind: 'recovery-required' | 'verification-required') => void;
       }) => feature
     ),
   };
@@ -63,6 +65,8 @@ describe('startInternalStorage', () => {
       expect.objectContaining({
         userDataPath: '/tmp/app-profile',
         onCommentJournalFailure: expect.any(Function),
+        onCommentJournalMutationSuccess: expect.any(Function),
+        onInternalStorageUnavailable: expect.any(Function),
       })
     );
     expect(feature).toBe(hoisted.feature);
@@ -82,6 +86,9 @@ describe('startInternalStorage', () => {
     expect((hoisted.addError.mock.calls[0][0] as { message: string }).message).toContain(
       'результат неизвестен'
     );
+    options.onCommentJournalMutationSuccess('fixture-team');
+    options.onCommentJournalFailure('fixture-team', new Error('new failure'));
+    expect(hoisted.addError).toHaveBeenCalledTimes(2);
   });
 
   it('probes the backend only for a packaged smoke run', () => {

@@ -26,7 +26,8 @@ export class InternalStorageBackendSelector {
   constructor(
     private readonly ping: () => Promise<InternalStorageBackendInfo>,
     private readonly recoveryRequired: () => boolean = () => false,
-    private readonly fallbackMayDiverge: () => boolean = () => true
+    private readonly fallbackMayDiverge: () => boolean = () => true,
+    private readonly onUnavailable?: (kind: 'recovery-required' | 'verification-required') => void
   ) {}
 
   /**
@@ -70,10 +71,25 @@ export class InternalStorageBackendSelector {
   /** Refuses both backends once recovery is observed, including after fallback. */
   async probe(): Promise<InternalStorageBackendKind> {
     const safety = this.getBackendKind();
-    if (safety === 'recovery-required' || safety === 'verification-required') return safety;
+    if (safety === 'recovery-required' || safety === 'verification-required') {
+      return this.reportUnavailable(safety);
+    }
     const kind = await this.resolve();
     const current = this.getBackendKind();
-    if (current === 'recovery-required' || current === 'verification-required') return current;
+    if (current === 'recovery-required' || current === 'verification-required') {
+      return this.reportUnavailable(current);
+    }
+    return kind;
+  }
+
+  private reportUnavailable(
+    kind: 'recovery-required' | 'verification-required'
+  ): 'recovery-required' | 'verification-required' {
+    try {
+      this.onUnavailable?.(kind);
+    } catch {
+      // Reporting must not change the storage decision.
+    }
     return kind;
   }
 

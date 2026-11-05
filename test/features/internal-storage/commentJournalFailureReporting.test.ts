@@ -3,7 +3,9 @@ import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
+import { BackendSelectingTaskCommentNotificationJournalStore } from '@features/internal-storage/main/composition/BackendSelectingTaskCommentNotificationJournalStore';
 import { createInternalStorageFeature } from '@features/internal-storage/main/composition/createInternalStorageFeature';
+import { InternalStorageJsonReplica } from '@features/internal-storage/main/infrastructure/InternalStorageJsonReplica';
 import { InternalStorageWorkerClient } from '@features/internal-storage/main/infrastructure/InternalStorageWorkerClient';
 import { createInternalStorageCommentWarning } from '@main/internalStorageCommentWarning';
 import { TeamDataService } from '@main/services/team/TeamDataService';
@@ -37,7 +39,7 @@ describe('comment forwarding storage diagnostics', () => {
     const publish = vi.fn(async (_warning: unknown) => undefined);
     const storage = createInternalStorageFeature({
       userDataPath: path.join(root, 'userdata'),
-      onCommentJournalFailure: createInternalStorageCommentWarning(publish, () => 'ru'),
+      onCommentJournalFailure: createInternalStorageCommentWarning(publish, () => 'ru').onFailure,
     });
     const getConfig = vi.fn(async () => ({
       name: 'fixture',
@@ -118,5 +120,39 @@ describe('comment forwarding storage diagnostics', () => {
     } finally {
       await storage.dispose();
     }
+  });
+
+  it('reports a new journal outage after a successful mutation, without retrying either write', async () => {
+    vi.spyOn(InternalStorageJsonReplica.prototype, 'readForPrimary').mockResolvedValue(null);
+    vi.spyOn(InternalStorageJsonReplica.prototype, 'markDirty').mockResolvedValue(undefined);
+    vi.spyOn(InternalStorageJsonReplica.prototype, 'writeClean').mockResolvedValue(undefined);
+    const publish = vi.fn(async (_warning: unknown) => undefined);
+    const warning = createInternalStorageCommentWarning(publish, () => 'ru');
+    const ensureInitialized = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('first failure'))
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error('second failure'));
+    const sqlite = {
+      ensureInitialized,
+      exists: vi.fn(async () => true),
+      read: vi.fn(async () => []),
+    };
+    const selector = { select: vi.fn(async () => 'sqlite'), getBackendInfo: vi.fn(() => null) };
+    const store = new BackendSelectingTaskCommentNotificationJournalStore(
+      selector as never,
+      sqlite as never,
+      {} as never,
+      {
+        fallbackRequiresReplica: false,
+        onFailure: warning.onFailure,
+        onMutationSuccess: warning.onMutationSuccess,
+      }
+    );
+    await expect(store.ensureInitialized('fixture-team')).rejects.toThrow('first failure');
+    await store.ensureInitialized('fixture-team');
+    await expect(store.ensureInitialized('fixture-team')).rejects.toThrow('second failure');
+    expect(ensureInitialized).toHaveBeenCalledTimes(3);
+    expect(publish).toHaveBeenCalledTimes(2);
   });
 });

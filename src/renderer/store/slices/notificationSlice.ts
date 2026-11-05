@@ -316,6 +316,9 @@ export const createNotificationSlice: StateCreator<AppState, [], [], Notificatio
     // Mark the notification as read
     void state.markNotificationRead(error.id);
 
+    // Global storage warnings have no session or team to navigate to.
+    if (error.source === 'internal-storage' && !error.target) return;
+
     // Team notifications use structured targets when available.
     if (error.sessionId.startsWith('team:')) {
       navigateToTeamNotification(state, error);

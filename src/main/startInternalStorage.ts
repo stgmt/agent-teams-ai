@@ -18,16 +18,19 @@ import { NotificationManager } from './services/infrastructure/NotificationManag
 import { createInternalStorageCommentWarning } from './internalStorageCommentWarning';
 
 export function startInternalStorage(): InternalStorageFeature {
+  const commentWarning = createInternalStorageCommentWarning(
+    (warning) => NotificationManager.getInstance().addError(warning),
+    () =>
+      resolveAppLocale({
+        preference: ConfigManager.getInstance().getConfig().general.appLocale,
+        systemLocale: app.getLocale(),
+      })
+  );
   const feature = createInternalStorageFeature({
     userDataPath: app.getPath('userData'),
-    onCommentJournalFailure: createInternalStorageCommentWarning(
-      (warning) => NotificationManager.getInstance().addError(warning),
-      () =>
-        resolveAppLocale({
-          preference: ConfigManager.getInstance().getConfig().general.appLocale,
-          systemLocale: app.getLocale(),
-        })
-    ),
+    onCommentJournalFailure: commentWarning.onFailure,
+    onCommentJournalMutationSuccess: commentWarning.onMutationSuccess,
+    onInternalStorageUnavailable: commentWarning.onStorageUnavailable,
   });
   if (process.env.AGENT_TEAMS_PACKAGED_SMOKE?.trim() === '1') {
     void feature.probeBackend();

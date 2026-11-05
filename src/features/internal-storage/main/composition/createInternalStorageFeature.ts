@@ -52,6 +52,10 @@ export interface InternalStorageFeatureDeps {
   userDataPath: string;
   /** Report comment journal failures without changing their result or retrying delivery. */
   onCommentJournalFailure?: (teamName: string, error: unknown) => void;
+  /** A successful mutation allows a later storage outage to be reported separately. */
+  onCommentJournalMutationSuccess?: (teamName: string) => void;
+  /** Report a backend decision that blocks all internal-storage features. */
+  onInternalStorageUnavailable?: (kind: 'recovery-required' | 'verification-required') => void;
 }
 
 export interface InternalStorageMemberWorkSyncBackend {
@@ -131,7 +135,8 @@ export function createInternalStorageFeature(
     () => getInternalStorageRecoveryDetails(databasePath) !== null,
     // JSON writers and SQLite clients do not share a lock spanning their
     // entire operations. Even an absent database can appear after selection.
-    () => true
+    () => true,
+    deps.onInternalStorageUnavailable
   );
 
   const stallImporter = new ImportLegacyJsonStoreUseCase({
@@ -181,7 +186,12 @@ export function createInternalStorageFeature(
       selector,
       sqliteCommentStore,
       jsonCommentStore,
-      { fallbackRequiresReplica, logger, onFailure: deps.onCommentJournalFailure }
+      {
+        fallbackRequiresReplica,
+        logger,
+        onFailure: deps.onCommentJournalFailure,
+        onMutationSuccess: deps.onCommentJournalMutationSuccess,
+      }
     ),
     memberWorkSyncBackend: { gateway: client, selector, fallbackRequiresReplica },
     applicationCommandLedgerBackend: workerAvailable ? { gateway: client, selector } : null,

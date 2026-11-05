@@ -385,6 +385,17 @@ describe('notificationSlice', () => {
       ...overrides,
     });
 
+    it('marks a global storage warning read without opening a nonexistent session', () => {
+      const error = createMockError({
+        source: 'internal-storage',
+        sessionId: 'internal-storage',
+        projectId: 'internal-storage',
+      });
+      store.getState().navigateToError(error);
+      expect(mockAPI.notifications.markRead).toHaveBeenCalledWith(error.id);
+      expect(store.getState().openTabs).toHaveLength(0);
+    });
+
     describe('flat mode (viewMode !== grouped)', () => {
       beforeEach(() => {
         store.setState({
