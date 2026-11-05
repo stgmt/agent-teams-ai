@@ -1,5 +1,6 @@
 import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useState } from 'react';
 
+import { MyTemplatesAction, SaveAsTemplateAction } from '@features/custom-team-templates/renderer';
 import { ExternalAgentPromptAction } from '@features/external-agent-connection/renderer';
 import { useAppTranslation } from '@features/localization/renderer';
 import { recordRecentProjectOpenPaths } from '@features/recent-projects/renderer';
@@ -123,7 +124,6 @@ const CreateTeamDialogLoadingFallback = ({
 }: CreateTeamDialogLoadingFallbackProps): React.JSX.Element => {
   const { t } = useAppTranslation('team');
   const { t: tCommon } = useAppTranslation('common');
-
   return (
     <Dialog
       open
@@ -321,7 +321,6 @@ const ActiveTeamCard = ({
   const stopIconClass = isStopping ? 'animate-pulse' : '';
   const copyTitle = t('list.actions.copyTeam');
   const deleteTitle = t('list.actions.deleteTeam');
-
   return (
     <div
       role="button"
@@ -408,6 +407,7 @@ const ActiveTeamCard = ({
                   <Copy size={14} />
                 </button>
               ) : null}
+              <SaveAsTemplateAction team={team} />
               <button
                 type="button"
                 className="shrink-0 rounded p-1 text-[var(--color-text-muted)] opacity-0 transition-opacity hover:bg-red-500/10 hover:text-red-300 group-hover:opacity-100"
@@ -1208,6 +1208,7 @@ export const TeamListView = memo(function TeamListView(): React.JSX.Element {
             <Import size={13} />
             {t('list.actions.importTeam')}
           </Button>
+          <MyTemplatesAction />
           <Button className="gap-2" disabled={!canCreate} onClick={() => setShowCreateDialog(true)}>
             <Plus size={15} />
             {t('list.actions.createTeam')}
