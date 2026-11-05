@@ -14,6 +14,7 @@ type TaskGuard = Pick<
   | 'beginGuardedTaskWrite'
   | 'beginGuardedTaskDecision'
   | 'markGuardedDecisionFenceSent'
+  | 'releaseUnadmittedDecisionFence'
   | 'readGuardedTaskDecisionIds'
   | 'settleGuardedTaskWrite'
   | 'checkGuardedTaskWriteOutcome'
@@ -245,11 +246,16 @@ export const VerifiedActionPanel = ({
           target.decisionReceipt.decision === decision.decision &&
           (target.status === 'manual' || target.status === 'completed');
         if (!matches() && target?.status === 'question' && decision.stage === 'decision') {
-          if (await guard.markGuardedDecisionFenceSent(guardState.markerId)) {
+          const claimId = await guard.markGuardedDecisionFenceSent(
+            guardState.markerId,
+            binding.expectedRootFingerprint,
+            decision
+          );
+          if (claimId) {
             // The claim is durable and permits one fence dispatch. A changed
             // view must not strand it before dispatch; IPC still checks the
             // captured context and physical root before touching the action.
-            target = await withDeadline(
+            const result = await withDeadline(
               bridge.fenceDecision(
                 contextId,
                 binding.expectedContext,
@@ -259,6 +265,24 @@ export const VerifiedActionPanel = ({
                 decision.decisionId
               )
             );
+            if (result.outcome === 'not_admitted') {
+              // Even after switching views, release only the original claim.
+              // The next fence requires another explicit check by the user.
+              await guard.releaseUnadmittedDecisionFence(
+                guardState.markerId,
+                binding.expectedRootFingerprint,
+                decision,
+                claimId
+              );
+              if (isCurrent()) {
+                setUncertain(true);
+                setError(t('verifiedAction.refreshFailed'));
+              }
+              return;
+            }
+            if (result.outcome !== 'applied' || !result.action)
+              throw new Error('Unrecognized fence result');
+            target = result.action;
             nextActions = [...actions.filter((item) => item.id !== target!.id), target];
           }
         }

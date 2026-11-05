@@ -71,7 +71,10 @@ const guard = {
       expectedRootFingerprint,
     })
   ),
-  markGuardedDecisionFenceSent: vi.fn(async () => true),
+  markGuardedDecisionFenceSent: vi.fn(
+    async (): Promise<string | null> => '22222222-2222-4222-8222-222222222222'
+  ),
+  releaseUnadmittedDecisionFence: vi.fn(async () => true),
   readGuardedTaskDecisionIds: vi.fn(async (): Promise<string[]> => []),
   settleGuardedTaskWrite: vi.fn(async () => true),
   checkGuardedTaskWriteOutcome: vi.fn(async () => ({
@@ -158,9 +161,12 @@ describe('VerifiedActionPanel', () => {
       bound.assertExpected(context);
       expect(root).toBe(expectedRootFingerprint);
       return {
-        ...question,
-        status: 'manual',
-        decisionReceipt: { id: decisionId, decision: 'retry_once' },
+        outcome: 'applied',
+        action: {
+          ...question,
+          status: 'manual',
+          decisionReceipt: { id: decisionId, decision: 'retry_once' },
+        },
       };
     });
     const host = document.createElement('div');
@@ -242,7 +248,7 @@ describe('VerifiedActionPanel', () => {
         },
       },
     };
-    let finishClaim!: (claimed: boolean) => void;
+    let finishClaim!: (claimed: string | null) => void;
     guard.markGuardedDecisionFenceSent.mockImplementationOnce(
       () =>
         new Promise((resolve) => {
@@ -250,13 +256,14 @@ describe('VerifiedActionPanel', () => {
         })
     );
     mocks.list.mockReset().mockResolvedValue([question]);
-    mocks.fenceDecision
-      .mockReset()
-      .mockResolvedValue({
+    mocks.fenceDecision.mockReset().mockResolvedValue({
+      outcome: 'applied',
+      action: {
         ...question,
         status: 'manual',
         decisionReceipt: { id: decisionId, decision: 'retry_once' },
-      });
+      },
+    });
     const host = document.createElement('div');
     document.body.append(host);
     const root = createRoot(host);
@@ -276,7 +283,7 @@ describe('VerifiedActionPanel', () => {
     await act(async () => button(host, 'verifiedAction.guardCheck').click());
     expect(guard.markGuardedDecisionFenceSent).toHaveBeenCalledOnce();
     await act(async () => render('replacement'));
-    await act(async () => finishClaim(true));
+    await act(async () => finishClaim('22222222-2222-4222-8222-222222222222'));
     expect(mocks.fenceDecision).toHaveBeenCalledExactlyOnceWith(
       'local',
       expected,
@@ -477,6 +484,71 @@ describe('VerifiedActionPanel', () => {
     await act(async () => root.unmount());
   });
 
+  it('does not release or resend a fence after timeout, even if an unadmitted response arrives late', async () => {
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+    const pending = {
+      ...guard,
+      taskWriteGuard: {
+        ...guard.taskWriteGuard,
+        markerId: 'decision-token',
+        operation: 'manifest' as const,
+        unknown: true,
+        decision: {
+          actionId: action.id,
+          decisionId: '11111111-1111-4111-8111-111111111111',
+          decision: 'retry_once' as const,
+          stage: 'decision' as const,
+        },
+      },
+    };
+    const restored = {
+      ...pending,
+      taskWriteGuard: {
+        ...pending.taskWriteGuard,
+        decision: { ...pending.taskWriteGuard.decision, stage: 'fenceSent' as const },
+      },
+    };
+    let finishFence!: (result: { outcome: 'not_admitted' }) => void;
+    mocks.list.mockReset().mockResolvedValue([{ ...action, status: 'question', attempts: 1 }]);
+    mocks.fenceDecision.mockReset().mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishFence = resolve;
+        })
+    );
+    const host = document.createElement('div');
+    document.body.append(host);
+    const root = createRoot(host);
+    const render = (value: typeof pending | typeof restored) =>
+      root.render(
+        <VerifiedActionPanel
+          contextId="local"
+          teamName="team"
+          taskId="task"
+          enabled
+          canMutate={() => true}
+          guard={value}
+        />
+      );
+    await act(async () => render(pending));
+    vi.useFakeTimers();
+    await act(async () => button(host, 'verifiedAction.guardCheck').click());
+    expect(mocks.fenceDecision).toHaveBeenCalledOnce();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+    expect(host.textContent).toContain('verifiedAction.refreshFailed');
+    expect(guard.releaseUnadmittedDecisionFence).not.toHaveBeenCalled();
+    await act(async () => render(restored));
+    await act(async () => button(host, 'verifiedAction.guardCheck').click());
+    await act(async () => finishFence({ outcome: 'not_admitted' }));
+    expect(mocks.fenceDecision).toHaveBeenCalledOnce();
+    expect(guard.releaseUnadmittedDecisionFence).not.toHaveBeenCalled();
+    expect(guard.confirmGuardedTaskWriteOutcome).not.toHaveBeenCalled();
+    expect(mocks.decide).not.toHaveBeenCalled();
+    await act(async () => root.unmount());
+  });
+
   it('fences a saved answer once and does not resend an ambiguous fence after restart', async () => {
     vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
     const decisionId = '11111111-1111-4111-8111-111111111111';
@@ -523,6 +595,7 @@ describe('VerifiedActionPanel', () => {
     await act(async () => button(host, 'verifiedAction.guardCheck').click());
     expect(mocks.fenceDecision).toHaveBeenCalledTimes(1);
     expect(guard.markGuardedDecisionFenceSent).toHaveBeenCalledTimes(1);
+    expect(guard.releaseUnadmittedDecisionFence).not.toHaveBeenCalled();
     await act(async () => root.unmount());
     const newRoot = createRoot(host);
     await act(async () =>

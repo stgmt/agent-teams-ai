@@ -13,6 +13,8 @@ import {
   taskWriteGuardStorage,
 } from '../adapters/taskWriteGuardStorage';
 
+import { useTaskWriteFence } from './useTaskWriteFence';
+
 import type {
   TaskDetailIdentity,
   TaskDetailSession,
@@ -410,40 +412,12 @@ export function useTaskWriteGuard({
     [identity, identityKey, readGuardContext, requireOwner]
   );
 
-  const markGuardedDecisionFenceSent = useCallback(
-    async (token: string): Promise<boolean> => {
-      const state = useStore.getState();
-      const session = state.taskDetailSessionById[identityKey];
-      if (
-        !isOriginCurrent() ||
-        !session?.taskWriteRootFingerprint ||
-        session.taskWriteMarkerId !== token ||
-        session.taskWriteOperation !== 'manifest' ||
-        !session.taskWriteDecision ||
-        session.taskWriteDecision.stage !== 'decision'
-      )
-        return false;
-      const marker = {
-        version: 1 as const,
-        attemptId: token,
-        operation: 'manifest' as const,
-        decision: session.taskWriteDecision,
-      };
-      const claimed = await withArtifactOutcomeDeadline(
-        taskWriteGuardStorage.markFenceSent(
-          { ...identity, dataRootFingerprint: session.taskWriteRootFingerprint },
-          marker
-        )
-      );
-      const latest = useStore.getState();
-      if (claimed && latest.taskDetailSessionById[identityKey]?.taskWriteMarkerId === token)
-        latest.updateTaskDetailSession(identity, {
-          taskWriteDecision: { ...session.taskWriteDecision, stage: 'fenceSent' },
-        });
-      return claimed;
-    },
-    [identity, identityKey, isOriginCurrent]
-  );
+  const { markGuardedDecisionFenceSent, releaseUnadmittedDecisionFence } = useTaskWriteFence({
+    identity,
+    identityKey,
+    isOriginCurrent,
+    withDeadline: withArtifactOutcomeDeadline,
+  });
 
   const readGuardedTaskDecisionIds = useCallback(async (): Promise<string[]> => {
     const current = useStore.getState().taskDetailSessionById[identityKey];
@@ -766,6 +740,7 @@ export function useTaskWriteGuard({
     beginGuardedTaskWrite,
     beginGuardedTaskDecision,
     markGuardedDecisionFenceSent,
+    releaseUnadmittedDecisionFence,
     readGuardedTaskDecisionIds,
     settleGuardedTaskWrite,
     checkGuardedTaskWriteOutcome,

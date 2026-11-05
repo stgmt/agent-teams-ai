@@ -193,15 +193,27 @@ export function registerVerifiedActionIpc(
       id: unknown,
       decision: unknown,
       decisionId: unknown
-    ) =>
-      run(contextId, expected, root, (scope) =>
-        service.fenceDecision(
-          scope,
-          requireId(id),
-          requireDecision(decision),
-          requireDecisionId(decisionId)
-        )
-      )
+    ) => {
+      let serviceEntered = false;
+      return (async () => {
+        try {
+          const action = await run(contextId, expected, root, (scope) => {
+            // From this point even an error is ambiguous to the renderer.
+            serviceEntered = true;
+            return service.fenceDecision(
+              scope,
+              requireId(id),
+              requireDecision(decision),
+              requireDecisionId(decisionId)
+            );
+          });
+          return { outcome: 'applied' as const, action };
+        } catch (error) {
+          if (!serviceEntered) return { outcome: 'not_admitted' as const };
+          throw error;
+        }
+      })();
+    }
   );
 }
 

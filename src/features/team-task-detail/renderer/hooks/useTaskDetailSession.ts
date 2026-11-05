@@ -77,7 +77,17 @@ export interface TaskDetailSessionController {
     expectedContext: AppConnectionContext;
     expectedRootFingerprint: string;
   }>;
-  markGuardedDecisionFenceSent: (token: string) => Promise<boolean>;
+  markGuardedDecisionFenceSent: (
+    token: string,
+    rootFingerprint: string,
+    decision: TaskWriteDecision
+  ) => Promise<string | null>;
+  releaseUnadmittedDecisionFence: (
+    token: string,
+    rootFingerprint: string,
+    decision: TaskWriteDecision,
+    claimId: string
+  ) => Promise<boolean>;
   readGuardedTaskDecisionIds: () => Promise<string[]>;
   settleGuardedTaskWrite: (
     token: string,

@@ -29,6 +29,11 @@ export interface VerifiedAction {
   updatedAt: string;
 }
 
+/** A fence rejected before the service was called may be claimed again explicitly. */
+export type VerifiedActionFenceResult =
+  | { outcome: 'not_admitted' }
+  | { outcome: 'applied'; action: VerifiedAction };
+
 export const VERIFIED_ACTION_LIST = 'verified-action:list';
 export const VERIFIED_ACTION_PREPARE = 'verified-action:prepare';
 export const VERIFIED_ACTION_APPROVE = 'verified-action:approve';

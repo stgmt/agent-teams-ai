@@ -6,7 +6,11 @@ import {
   VERIFIED_ACTION_PREPARE,
 } from '../contracts';
 
-import type { VerifiedAction, VerifiedActionDecision } from '../contracts';
+import type {
+  VerifiedAction,
+  VerifiedActionDecision,
+  VerifiedActionFenceResult,
+} from '../contracts';
 import type { AppConnectionContext } from '@features/external-agent-connection/contracts';
 import type { IpcRenderer } from 'electron';
 
@@ -46,7 +50,7 @@ export interface VerifiedActionElectronApi {
     id: string,
     decision: VerifiedActionDecision,
     decisionId: string
-  ): Promise<VerifiedAction>;
+  ): Promise<VerifiedActionFenceResult>;
 }
 
 export function createVerifiedActionBridge(ipc: IpcRenderer): VerifiedActionElectronApi {

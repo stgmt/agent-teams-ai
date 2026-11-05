@@ -107,6 +107,56 @@ describe('durable task write guard', () => {
     });
   });
 
+  it('releases only the exact unadmitted claim and cannot undo a newer window claim', async () => {
+    const first = createTaskWriteGuardStorage();
+    const second = createTaskWriteGuardStorage();
+    const marker = {
+      ...manifest,
+      attemptId: 'chosen-attempt',
+      decision: {
+        actionId: 'c'.repeat(64),
+        decisionId: '11111111-1111-4111-8111-111111111111',
+        decision: 'retry_once' as const,
+        stage: 'decision' as const,
+      },
+    };
+    const firstClaim = '11111111-1111-4111-8111-111111111111';
+    const secondClaim = '22222222-2222-4222-8222-222222222222';
+    await first.beginDecision(identity, null, marker);
+    expect(await first.markFenceSent(identity, marker, firstClaim)).toBe(true);
+    expect(await second.releaseUnadmittedFence(otherRoot, marker, firstClaim)).toBe(false);
+    expect(
+      await second.releaseUnadmittedFence(identity, { ...marker, attemptId: 'other' }, firstClaim)
+    ).toBe(false);
+    expect(
+      await second.releaseUnadmittedFence(
+        identity,
+        { ...marker, decision: { ...marker.decision, decision: 'completed' } },
+        firstClaim
+      )
+    ).toBe(false);
+    expect(await second.releaseUnadmittedFence(identity, marker, secondClaim)).toBe(false);
+    expect(await first.releaseUnadmittedFence(identity, marker, firstClaim)).toBe(true);
+    expect(await second.read(identity)).toEqual(marker);
+    expect(await second.markFenceSent(identity, marker, secondClaim)).toBe(true);
+    expect(await first.releaseUnadmittedFence(identity, marker, firstClaim)).toBe(false);
+    expect(await second.read(identity)).toMatchObject({
+      fenceClaimId: secondClaim,
+      decision: { stage: 'fenceSent' },
+    });
+    const releases = await Promise.all([
+      first.releaseUnadmittedFence(identity, marker, secondClaim),
+      second.releaseUnadmittedFence(identity, marker, secondClaim),
+    ]);
+    expect(releases.filter(Boolean)).toHaveLength(1);
+    expect(await first.read(identity)).toEqual(marker);
+    expect(await first.readChosenActionIds(identity)).toEqual([marker.decision.actionId]);
+    await first.release(identity, marker);
+    await expect(second.beginDecision(identity, null, marker)).rejects.toThrow(
+      /already has a recorded decision/
+    );
+  });
+
   it('atomically replaces an uncertain marker with only one chosen answer across windows', async () => {
     const first = createTaskWriteGuardStorage();
     const second = createTaskWriteGuardStorage();
@@ -138,13 +188,15 @@ describe('durable task write guard', () => {
       marker: stored,
     });
     const claims = await Promise.all([
-      first.markFenceSent(identity, stored!),
-      second.markFenceSent(identity, stored!),
+      first.markFenceSent(identity, stored!, '11111111-1111-4111-8111-111111111111'),
+      second.markFenceSent(identity, stored!, '22222222-2222-4222-8222-222222222222'),
     ]);
     expect(claims.filter(Boolean)).toHaveLength(1);
     const recovered = await createTaskWriteGuardStorage().read(identity);
     expect(recovered?.decision).toEqual({ ...stored!.decision, stage: 'fenceSent' });
-    expect(await first.markFenceSent(identity, stored!)).toBe(false);
+    expect(
+      await first.markFenceSent(identity, stored!, '33333333-3333-4333-8333-333333333333')
+    ).toBe(false);
     await first.release(identity, recovered!);
     expect(await second.readChosenActionIds(identity)).toEqual(['c'.repeat(64)]);
     await expect(second.beginDecision(identity, null, competitor)).rejects.toThrow(

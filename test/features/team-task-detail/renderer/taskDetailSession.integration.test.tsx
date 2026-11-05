@@ -194,6 +194,62 @@ describe('task session surface and origin integration', () => {
     return token;
   }
 
+  it('releases the original unadmitted fence after a view switch without touching another root', async () => {
+    const guardIdentity = { ...identity, dataRootFingerprint: guardContext.dataRootFingerprint };
+    const otherIdentity = { ...identity, dataRootFingerprint: 'b'.repeat(64) };
+    const marker = {
+      version: 1 as const,
+      attemptId: 'chosen-attempt',
+      operation: 'manifest' as const,
+      decision: {
+        actionId: 'c'.repeat(64),
+        decisionId: '11111111-1111-4111-8111-111111111111',
+        decision: 'retry_once' as const,
+        stage: 'decision' as const,
+      },
+    };
+    await taskWriteGuardStorage.beginDecision(guardIdentity, null, marker);
+    await taskWriteGuardStorage.beginDecision(otherIdentity, null, marker);
+    let controller!: TaskDetailSessionController;
+    await act(async () => {
+      mount('dialog', (value) => {
+        controller = value;
+      });
+    });
+    await waitForGuard();
+    let claimId: string | null = null;
+    await act(async () => {
+      claimId = await controller.markGuardedDecisionFenceSent(
+        marker.attemptId,
+        guardIdentity.dataRootFingerprint,
+        marker.decision
+      );
+    });
+    expect(claimId).toBeTruthy();
+    expect(controller.taskWriteGuard.decision?.stage).toBe('fenceSent');
+    const release = controller.releaseUnadmittedDecisionFence;
+    await act(async () => {
+      useStore.setState({ activeContextId: 'ssh:other' });
+    });
+    await act(async () => {
+      expect(
+        await release(
+          marker.attemptId,
+          guardIdentity.dataRootFingerprint,
+          marker.decision,
+          claimId!
+        )
+      ).toBe(true);
+    });
+    expect(await taskWriteGuardStorage.read(guardIdentity)).toEqual(marker);
+    expect(await taskWriteGuardStorage.read(otherIdentity)).toEqual(marker);
+    expect(await taskWriteGuardStorage.readChosenActionIds(guardIdentity)).toEqual([
+      marker.decision.actionId,
+    ]);
+    expect(useStore.getState().taskDetailSessionById[key]?.artifactOutcomeUnknown).toBe(true);
+    await del(taskWriteGuardKey(otherIdentity));
+  });
+
   it('keeps the guard ready when another window already recorded the answer', async () => {
     let controller!: TaskDetailSessionController;
     await act(async () => {

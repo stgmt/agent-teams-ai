@@ -52,7 +52,8 @@ export function createTaskDetailSessionFixture(taskId: string): TaskDetailSessio
         expectedRootFingerprint: 'a'.repeat(64),
       })
     ),
-    markGuardedDecisionFenceSent: vi.fn(async () => true),
+    markGuardedDecisionFenceSent: vi.fn(async () => '11111111-1111-4111-8111-111111111111'),
+    releaseUnadmittedDecisionFence: vi.fn(async () => true),
     readGuardedTaskDecisionIds: vi.fn(async () => []),
     settleGuardedTaskWrite: vi.fn(async () => true),
     checkGuardedTaskWriteOutcome: vi.fn(async () => ({

@@ -145,15 +145,20 @@ describe('verified-action IPC context boundary', () => {
     await bound.closeAdmission();
     bound.rebind(path.join(root, 'other'));
     activeRoot = 'd'.repeat(64);
-    expect(() =>
+    await expect(
       fence({}, 'local', expected, previousRoot, actionId, 'retry_once', decisionId)
-    ).toThrow(/root identity changed/);
+    ).resolves.toEqual({ outcome: 'not_admitted' });
     await bound.closeAdmission();
     bound.rebind(paths.claude);
     activeRoot = previousRoot;
     await expect(
       fence({}, 'local', expected, previousRoot, actionId, 'retry_once', decisionId)
-    ).rejects.toThrow(/APP_CONTEXT_MISMATCH/);
+    ).resolves.toEqual({ outcome: 'not_admitted' });
+    // Once the service callback is entered, failures remain ambiguous and
+    // must not be downgraded to a proven pre-admission rejection.
+    await expect(
+      fence({}, 'local', bound.snapshot(), previousRoot, 'e'.repeat(64), 'retry_once', decisionId)
+    ).rejects.toThrow();
     const stored = await store.transaction(async (tx) => tx.read());
     expect(stored).toHaveLength(1);
     expect(stored[0]).toMatchObject({ id: actionId, status: 'question' });

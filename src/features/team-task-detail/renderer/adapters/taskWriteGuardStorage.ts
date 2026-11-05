@@ -7,6 +7,7 @@ export interface TaskWriteGuardMarker {
   attemptId: string;
   operation: TaskWriteOperation;
   decision?: TaskWriteDecision;
+  fenceClaimId?: string;
 }
 
 export interface TaskWriteGuardIdentity extends TaskDetailIdentity {
@@ -60,6 +61,15 @@ function parseMarker(value: unknown): TaskWriteGuardMarker | null {
     )
       throw new Error('Task write safety decision is unreadable');
   }
+  if (
+    marker.fenceClaimId !== undefined &&
+    (typeof marker.fenceClaimId !== 'string' ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+        marker.fenceClaimId
+      ) ||
+      (marker.decision as TaskWriteDecision | undefined)?.stage !== 'fenceSent')
+  )
+    throw new Error('Task write fence claim is unreadable');
   return marker as unknown as TaskWriteGuardMarker;
 }
 
@@ -214,8 +224,11 @@ export function createTaskWriteGuardStorage(
     /** Only one window may dispatch the recovery fence for this answer. */
     async markFenceSent(
       identity: TaskWriteGuardIdentity,
-      marker: TaskWriteGuardMarker
+      marker: TaskWriteGuardMarker,
+      claimId: string
     ): Promise<boolean> {
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(claimId))
+        throw new Error('Invalid task write fence claim');
       let claimed = false;
       await backend.update(taskWriteGuardKey(identity), (value: unknown) => {
         const state = parseState(value);
@@ -224,17 +237,52 @@ export function createTaskWriteGuardStorage(
           current?.attemptId !== marker.attemptId ||
           current.operation !== 'manifest' ||
           !current.decision ||
+          current.decision.actionId !== marker.decision?.actionId ||
           current.decision.decisionId !== marker.decision?.decisionId ||
+          current.decision.decision !== marker.decision?.decision ||
           current.decision.stage !== 'decision'
         )
           return state;
         claimed = true;
         return {
           ...state,
-          marker: { ...current, decision: { ...current.decision, stage: 'fenceSent' } },
+          marker: {
+            ...current,
+            fenceClaimId: claimId,
+            decision: { ...current.decision, stage: 'fenceSent' },
+          },
         };
       });
       return claimed;
+    },
+    /** Undo only this exact claim after main confirms the service was never entered. */
+    async releaseUnadmittedFence(
+      identity: TaskWriteGuardIdentity,
+      marker: TaskWriteGuardMarker,
+      claimId: string
+    ): Promise<boolean> {
+      let released = false;
+      await backend.update(taskWriteGuardKey(identity), (value: unknown) => {
+        const state = parseState(value);
+        const current = state.marker;
+        if (
+          current?.attemptId !== marker.attemptId ||
+          current.operation !== 'manifest' ||
+          current.fenceClaimId !== claimId ||
+          current.decision?.stage !== 'fenceSent' ||
+          current.decision.actionId !== marker.decision?.actionId ||
+          current.decision.decisionId !== marker.decision?.decisionId ||
+          current.decision.decision !== marker.decision?.decision
+        )
+          return state;
+        const { fenceClaimId: _fenceClaimId, ...unclaimed } = current;
+        released = true;
+        return {
+          ...state,
+          marker: { ...unclaimed, decision: { ...current.decision, stage: 'decision' } },
+        };
+      });
+      return released;
     },
     async release(
       identity: TaskWriteGuardIdentity,
