@@ -10,6 +10,24 @@
     "tooLarge": "The selected file exceeds 20 MiB.",
     "failed": "Could not update the task artifact."
   },
+  "verifiedAction": {
+    "title": "Verified artifact queue",
+    "description": "Prepare a local queue entry for the verified artifact. This does not publish or send it externally.",
+    "prepare": "Prepare for approval",
+    "approval": "Check the artifact above, then approve adding this exact item to the local queue.",
+    "approve": "Approve and queue",
+    "question": "The result is unknown. After checking, what should happen?",
+    "completed": "I checked: it was done",
+    "retry": "I checked: not done; retry once",
+    "unresolved": "Leave unresolved",
+    "manual": "Unresolved; handle manually. No automatic retry will occur.",
+    "attested": "Marked complete based on your confirmation.",
+    "queued": "Added to the local queue.",
+    "running": "Checking action status…",
+    "refresh": "Refresh status",
+    "refreshFailed": "Status could not be read. Refresh before taking another action.",
+    "resultUnknown": "The result could not be confirmed. Refresh status before taking another action; it will not be retried automatically."
+  },
   "activity": {
     "chatVisualization": {
       "description": "Full visualization view",

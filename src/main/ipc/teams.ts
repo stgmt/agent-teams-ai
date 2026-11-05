@@ -15,6 +15,7 @@ import {
   classifyTeamReadWorkerFailure,
   teamReadFailureResult,
 } from '@features/team-read-recovery/main';
+import { registerVerifiedActionIpc, removeVerifiedActionIpc } from '@features/verified-action/main';
 import { addMainBreadcrumb } from '@main/sentry';
 import { setCurrentMainOp } from '@main/services/infrastructure/EventLoopLagMonitor';
 import { markTeamEngaged } from '@main/services/infrastructure/teamWatchScope';
@@ -690,6 +691,7 @@ export function initializeTeamHandlers(
 }
 
 export function registerTeamHandlers(ipcMain: IpcMain): void {
+  registerVerifiedActionIpc(ipcMain);
   ipcMain.handle(TEAM_LIST, handleListTeams);
   ipcMain.handle(TEAM_GET_DATA, handleGetData);
   ipcMain.handle(TEAM_GET_TASK_CHANGE_PRESENCE, handleGetTaskChangePresence);
@@ -782,6 +784,7 @@ export function registerTeamHandlers(ipcMain: IpcMain): void {
 }
 
 export function removeTeamHandlers(ipcMain: IpcMain): void {
+  removeVerifiedActionIpc(ipcMain);
   ipcMain.removeHandler(TEAM_LIST);
   ipcMain.removeHandler(TEAM_GET_DATA);
   ipcMain.removeHandler(TEAM_GET_TASK_CHANGE_PRESENCE);

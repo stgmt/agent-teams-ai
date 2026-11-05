@@ -6988,6 +6988,24 @@ export default interface Resources {
         "wait": "Wait forever"
       }
     },
+    "verifiedAction": {
+      "approval": "Check the artifact above, then approve adding this exact item to the local queue.",
+      "approve": "Approve and queue",
+      "attested": "Marked complete based on your confirmation.",
+      "completed": "I checked: it was done",
+      "description": "Prepare a local queue entry for the verified artifact. This does not publish or send it externally.",
+      "manual": "Unresolved; handle manually. No automatic retry will occur.",
+      "prepare": "Prepare for approval",
+      "question": "The result is unknown. After checking, what should happen?",
+      "queued": "Added to the local queue.",
+      "refresh": "Refresh status",
+      "refreshFailed": "Status could not be read. Refresh before taking another action.",
+      "resultUnknown": "The result could not be confirmed. Refresh status before taking another action; it will not be retried automatically.",
+      "retry": "I checked: not done; retry once",
+      "running": "Checking action status…",
+      "title": "Verified artifact queue",
+      "unresolved": "Leave unresolved"
+    },
     "worktreeGitReadiness": {
       "checking": "Checking Git repository status for teammate worktrees...",
       "createInitialCommit": "Create initial commit",

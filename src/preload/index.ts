@@ -18,6 +18,7 @@ import { createTeamReadRecoveryBridge } from '@features/team-read-recovery/prelo
 import { createTerminalWorkspaceBridge } from '@features/terminal-workspace/preload';
 import { createTmuxInstallerBridge } from '@features/tmux-installer/preload';
 import { createTokenUsageBridge } from '@features/token-usage/preload';
+import { createVerifiedActionBridge } from '@features/verified-action/preload';
 import { createWorkspaceTrustBridge } from '@features/workspace-trust/preload';
 import { WINDOW_ZOOM_FACTOR_CHANGED_CHANNEL } from '@shared/constants';
 import { parseTeamMemberRestartResult } from '@shared/types/teamMemberRestart';
@@ -525,6 +526,7 @@ const electronAPI: ElectronAPI = {
   teamImport: createTeamImportBridge(ipcRenderer),
   runtimeProviderManagement: createRuntimeProviderManagementBridge(ipcRenderer),
   memberWorkSync: createMemberWorkSyncBridge(ipcRenderer),
+  verifiedAction: createVerifiedActionBridge(ipcRenderer),
   memberLogStream: createMemberLogStreamBridge(),
   organizations: createOrganizationsBridge(ipcRenderer),
   terminalWorkspace: createTerminalWorkspaceBridge(ipcRenderer),

@@ -153,6 +153,7 @@ import type {
 } from '@features/team-read-recovery/contracts';
 import type { TerminalWorkspaceElectronApi } from '@features/terminal-workspace/contracts';
 import type { TokenUsageElectronApi } from '@features/token-usage/contracts';
+import type { VerifiedActionElectronApi } from '@features/verified-action/preload';
 import type { WorkspaceTrustElectronApi } from '@features/workspace-trust/contracts';
 import type {
   ConversationGroup,
@@ -860,6 +861,7 @@ export interface ElectronAPI
     TokenUsageElectronApi,
     ProjectFolderElectronApi {
   teamGroupChats: TeamGroupChatsAPI;
+  verifiedAction?: VerifiedActionElectronApi;
   announcements: AnnouncementsApi;
   gatewayProvider: GatewayProviderApi;
   externalAgentConnection: ExternalAgentConnectionApi;

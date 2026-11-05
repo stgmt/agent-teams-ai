@@ -1,6 +1,7 @@
 import { useState } from 'react';
 
 import { useAppTranslation } from '@features/localization/renderer';
+import { VerifiedActionPanel } from '@features/verified-action/renderer';
 import { MarkdownViewer } from '@renderer/components/chat/viewers/MarkdownViewer';
 import { OngoingIndicator } from '@renderer/components/common/OngoingIndicator';
 import { SourceMessageAttachments } from '@renderer/components/team/attachments/SourceMessageAttachments';
@@ -229,6 +230,15 @@ export const TaskDetailBody = ({
           taskId={currentTask.id}
           attachments={(currentTask.attachments ?? []).filter(
             (item) => item.id !== currentTask.artifactRequirement?.proof?.attachmentId
+          )}
+          canMutate={sessionController.canEditNow}
+        />
+        <VerifiedActionPanel
+          teamName={teamName}
+          taskId={currentTask.id}
+          enabled={Boolean(
+            (currentTask as typeof currentTask & { artifactRequirement?: { required?: boolean } })
+              .artifactRequirement?.required
           )}
           canMutate={sessionController.canEditNow}
         />
