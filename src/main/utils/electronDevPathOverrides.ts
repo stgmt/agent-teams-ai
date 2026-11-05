@@ -75,6 +75,14 @@ export function resolveElectronDevClaudeRootOverride(
   return normalizeAbsolutePath(env[AGENT_TEAMS_ELECTRON_CLAUDE_ROOT_ENV]);
 }
 
+function requireValidClaudeRoot(env: NodeJS.ProcessEnv): string | null {
+  const root = resolveElectronDevClaudeRootOverride(env);
+  if (env[AGENT_TEAMS_ELECTRON_CLAUDE_ROOT_ENV] !== undefined && !root) {
+    throw new Error(`${AGENT_TEAMS_ELECTRON_CLAUDE_ROOT_ENV} must be an absolute path.`);
+  }
+  return root;
+}
+
 export function getAppliedElectronDevClaudeRootOverride(): string | null {
   return appliedElectronDevClaudeRootOverride;
 }
@@ -86,8 +94,12 @@ export function getAppliedElectronDevClaudeRootOverride(): string | null {
 export function applyElectronDevClaudeRootOverrideForWorker(
   env: NodeJS.ProcessEnv = process.env
 ): string | null {
-  const claudeRoot = resolveElectronDevClaudeRootOverride(env);
+  const claudeRoot = requireValidClaudeRoot(env);
   if (claudeRoot) {
+    const warnings: string[] = [];
+    if (!ensureDirectory(claudeRoot, warnings, AGENT_TEAMS_ELECTRON_CLAUDE_ROOT_ENV)) {
+      throw new Error(warnings[warnings.length - 1]);
+    }
     setClaudeBasePathOverride(claudeRoot);
   }
   return claudeRoot;
@@ -98,6 +110,10 @@ export function applyElectronDevPathOverrides(
   env: NodeJS.ProcessEnv = process.env
 ): ElectronDevPathOverrideResult {
   const warnings: string[] = [];
+  const claudeRoot = requireValidClaudeRoot(env);
+  if (claudeRoot && !ensureDirectory(claudeRoot, warnings, AGENT_TEAMS_ELECTRON_CLAUDE_ROOT_ENV)) {
+    throw new Error(warnings[warnings.length - 1]);
+  }
   const userDataDir = normalizeAbsolutePath(env[AGENT_TEAMS_ELECTRON_USER_DATA_DIR_ENV]);
   const rawUserDataDir = env[AGENT_TEAMS_ELECTRON_USER_DATA_DIR_ENV];
   if (rawUserDataDir !== undefined && !userDataDir) {
@@ -165,16 +181,7 @@ export function applyElectronDevPathOverrides(
     setAppDataBasePath(userDataDir);
   }
 
-  const claudeRoot = resolveElectronDevClaudeRootOverride(env);
-  const rawClaudeRoot = env[AGENT_TEAMS_ELECTRON_CLAUDE_ROOT_ENV]?.trim();
-  if (rawClaudeRoot && !claudeRoot) {
-    warnings.push(`${AGENT_TEAMS_ELECTRON_CLAUDE_ROOT_ENV} must be an absolute path.`);
-  }
-
-  const appliedClaudeRoot =
-    claudeRoot && ensureDirectory(claudeRoot, warnings, AGENT_TEAMS_ELECTRON_CLAUDE_ROOT_ENV)
-      ? claudeRoot
-      : null;
+  const appliedClaudeRoot = claudeRoot;
   if (appliedClaudeRoot) {
     setClaudeBasePathOverride(appliedClaudeRoot);
   }

@@ -119,18 +119,42 @@ describe('applyElectronDevPathOverrides', () => {
     expect(fs.readdirSync(target)).toEqual([]);
   });
 
-  it('keeps the warning for a relative Claude root without changing Electron paths', () => {
-    const setPathCalls: Array<{ name: string; value: string }> = [];
-    const result = applyElectronDevPathOverrides(
-      { setPath: (name, value) => setPathCalls.push({ name, value }) },
-      { [AGENT_TEAMS_ELECTRON_CLAUDE_ROOT_ENV]: 'relative-claude-root' }
-    );
-    expect(result.userDataDir).toBeNull();
-    expect(result.claudeRoot).toBeNull();
-    expect(result.warnings).toEqual([
-      `${AGENT_TEAMS_ELECTRON_CLAUDE_ROOT_ENV} must be an absolute path.`,
-    ]);
-    expect(setPathCalls).toEqual([]);
+  it.each(['relative-claude-root', '', '  '])(
+    'fails closed for an invalid Claude root without changing Electron paths',
+    (invalidRoot) => {
+      const setPathCalls: Array<{ name: string; value: string }> = [];
+      expect(() =>
+        applyElectronDevPathOverrides(
+          { setPath: (name, value) => setPathCalls.push({ name, value }) },
+          { [AGENT_TEAMS_ELECTRON_CLAUDE_ROOT_ENV]: invalidRoot }
+        )
+      ).toThrow(`${AGENT_TEAMS_ELECTRON_CLAUDE_ROOT_ENV} must be an absolute path.`);
+      expect(setPathCalls).toEqual([]);
+    }
+  );
+
+  it('rejects an uncreatable explicit Claude root before changing Electron paths', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-teams-claude-blocked-'));
+    tempDirs.push(tempRoot);
+    const claudeRoot = path.join(tempRoot, 'blocked');
+    fs.writeFileSync(claudeRoot, 'file');
+    const setPath = vi.fn();
+    expect(() =>
+      applyElectronDevPathOverrides(
+        { setPath },
+        {
+          [AGENT_TEAMS_ELECTRON_CLAUDE_ROOT_ENV]: claudeRoot,
+          [AGENT_TEAMS_ELECTRON_USER_DATA_DIR_ENV]: path.join(tempRoot, 'profile'),
+        }
+      )
+    ).toThrow(/could not be created/);
+    expect(setPath).not.toHaveBeenCalled();
+  });
+
+  it('rejects an invalid explicit Claude root inside worker startup too', () => {
+    expect(() =>
+      applyElectronDevClaudeRootOverrideForWorker({ [AGENT_TEAMS_ELECTRON_CLAUDE_ROOT_ENV]: '' })
+    ).toThrow(/must be an absolute path/);
   });
 
   it.each([
