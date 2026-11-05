@@ -11,6 +11,7 @@ import { MAX_TEXT_LENGTH } from '@shared/constants/teamLimits';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { createRequire } from 'node:module';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ElectronAPI } from '@shared/types/api';
@@ -1051,6 +1052,35 @@ describe('ipc teams handlers', () => {
     const result = await handlers.get(TEAM_GET_TASK_ATTACHMENT)!({}, 'my-team', taskId, attachmentId, 'application/octet-stream');
     expect(result).toMatchObject({ success: false, error: 'Required task artifact has changed' });
     expect(vi.mocked(console.error).mock.calls[0]?.join(' ')).toContain('Required task artifact has changed');
+    vi.mocked(console.error).mockClear();
+  });
+
+  it('round-trips a real controller artifact through the user IPC handlers', async () => {
+    const teamDir = path.join(attachmentTestRoot, 'teams', 'my-team');
+    fs.mkdirSync(teamDir, { recursive: true });
+    fs.writeFileSync(path.join(teamDir, 'config.json'), JSON.stringify({
+      name: 'my-team', members: [{ name: 'worker', role: 'developer' }],
+    }));
+    const { createController } = createRequire(import.meta.url)('../../../agent-teams-controller/src/index.js');
+    const board = createController({ teamName: 'my-team', claudeDir: attachmentTestRoot }).taskBoard;
+    const task = board.createTask({ subject: 'Fixture artifact', owner: 'worker' });
+    const fields = { artifactRequired: true, artifactFile: { filename: 'result.txt', base64Data: 'YWJj' } };
+    service.updateTaskFields.mockImplementationOnce(() => {
+      board.updateTaskFields(task.id, fields);
+      return Promise.resolve();
+    });
+    const updated = await handlers.get(TEAM_UPDATE_TASK_FIELDS)!({}, 'my-team', task.id, fields);
+    expect(updated).toEqual({ success: true, data: undefined });
+    expect(service.updateTaskFields).toHaveBeenCalledWith('my-team', task.id, fields);
+    const proof = board.verifyTaskArtifact(task.id);
+    service.readTaskArtifactData.mockImplementationOnce(() => Promise.resolve(board.readTaskArtifactData(task.id, proof.attachmentId)));
+    const read = handlers.get(TEAM_GET_TASK_ATTACHMENT)!;
+    expect(await read({}, 'my-team', task.id, proof.attachmentId, 'application/octet-stream')).toEqual({ success: true, data: 'YWJj' });
+    const stored = board.getTask(task.id).attachments.find((item: { id: string }) => item.id === proof.attachmentId);
+    fs.writeFileSync(stored.filePath, 'bad');
+    service.readTaskArtifactData.mockImplementationOnce(() => Promise.resolve(board.readTaskArtifactData(task.id, proof.attachmentId)));
+    expect(await read({}, 'my-team', task.id, proof.attachmentId, 'application/octet-stream')).toMatchObject({ success: false });
+    expect(vi.mocked(console.error).mock.calls[0]?.join(' ')).toContain('Artifact has changed');
     vi.mocked(console.error).mockClear();
   });
 
