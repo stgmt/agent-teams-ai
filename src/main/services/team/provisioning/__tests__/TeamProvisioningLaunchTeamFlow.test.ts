@@ -561,6 +561,7 @@ describe('TeamProvisioningLaunchTeamFlow', () => {
                 },
               ],
             ]),
+            briefings: new Map([['Builder', 'briefing']]),
             diagnostics: {
               nativeMemberCount: 1,
               totalContextChars: 2048,
@@ -669,6 +670,7 @@ describe('TeamProvisioningLaunchTeamFlow', () => {
         getPromptSizeSummary: vi.fn(() => ({ chars: 6, lines: 1 })),
         buildNativeAppManagedBootstrapSpecsWithDiagnostics: vi.fn(async () => ({
           specs: new Map(),
+          briefings: new Map(),
           diagnostics: {
             nativeMemberCount: 0,
             totalContextChars: 0,

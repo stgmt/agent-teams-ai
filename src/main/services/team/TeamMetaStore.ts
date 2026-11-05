@@ -264,11 +264,12 @@ export class TeamMetaStore {
     teamName: string,
     update: (
       current: TeamMetaFile | null
-    ) => Omit<TeamMetaFile, 'version'> | Promise<Omit<TeamMetaFile, 'version'>>
+    ) => Omit<TeamMetaFile, 'version'> | Promise<Omit<TeamMetaFile, 'version'>>,
+    teamsBasePath = getTeamsBasePath()
   ): Promise<void> {
-    const metaPath = this.getMetaPath(teamName);
+    const metaPath = this.getMetaPath(teamName, teamsBasePath);
     await withMetaMutationLock(metaPath, async () => {
-      const data = await update(await this.getMeta(teamName));
+      const data = await update(await this.getMeta(teamName, teamsBasePath));
       await this.writeMetaUnlocked(metaPath, data);
     });
   }

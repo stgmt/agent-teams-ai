@@ -113,16 +113,16 @@ function buildActiveNameGuard(membersByName: Map<string, TeamMember>): (name: st
 }
 
 export class TeamMembersMetaStore {
-  private getMetaPath(teamName: string): string {
-    return path.join(getTeamsBasePath(), teamName, 'members.meta.json');
+  private getMetaPath(teamName: string, teamsBasePath?: string): string {
+    return path.join(teamsBasePath ?? getTeamsBasePath(), teamName, 'members.meta.json');
   }
 
   /** Management replacement requires every recognized member value to survive canonical read. */
   async getMeta(
     teamName: string,
-    options?: { requireCompleteMembers?: boolean }
+    options?: { requireCompleteMembers?: boolean; teamsBasePath?: string }
   ): Promise<TeamMembersMetaFile | null> {
-    const metaPath = this.getMetaPath(teamName);
+    const metaPath = this.getMetaPath(teamName, options?.teamsBasePath);
     try {
       const stat = await fs.promises.stat(metaPath);
       if (!stat.isFile()) {
@@ -217,7 +217,7 @@ export class TeamMembersMetaStore {
     options?: { providerBackendId?: string; teamsBasePath?: string }
   ): Promise<void> {
     await atomicWriteAsync(
-      path.join(options?.teamsBasePath ?? getTeamsBasePath(), teamName, 'members.meta.json'),
+      this.getMetaPath(teamName, options?.teamsBasePath),
       this.serializeMembers(members, options)
     );
   }

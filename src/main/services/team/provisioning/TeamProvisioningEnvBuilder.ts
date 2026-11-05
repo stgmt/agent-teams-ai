@@ -3,15 +3,19 @@ import { mkdir } from 'node:fs/promises';
 import { getDesktopMcpChildEnvironment } from '@features/external-agent-connection/main';
 import { prepareAgentChildProcessWritableEnv } from '@main/services/runtime/agentChildProcessPreflight';
 import { applyAgentTeamsMcpAppContext } from '@main/services/runtime/agentTeamsMcpLaunchEnv';
+import { applyClaudeOauthTokenIfMissing } from '@main/services/runtime/claudeOauthToken';
 import { buildProviderAwareCliEnv } from '@main/services/runtime/providerAwareCliEnv';
-import { resolveTeamProviderId } from '@main/services/runtime/providerRuntimeEnv';
+import {
+  resolveTeamProviderId,
+  shouldResolveAnthropicShellEnv,
+} from '@main/services/runtime/providerRuntimeEnv';
 import {
   getAppDataPath,
   getAutoDetectedClaudeBasePath,
   getClaudeBasePath,
   getHomeDir,
 } from '@main/utils/pathDecoder';
-import { resolveInteractiveShellEnvBestEffort } from '@main/utils/shellEnv';
+import { resolveInteractiveShellEnvBestEffort, waitForPendingShellEnv } from '@main/utils/shellEnv';
 import {
   AGENT_TEAMS_ANTHROPIC_CONNECTION_MODE_ENV,
   ANTHROPIC_DIRECT_ROUTE_ENV_KEYS,
@@ -34,6 +38,11 @@ import {
   resolveGeminiRuntimeAuth,
 } from '../../runtime/geminiRuntimeAuth';
 
+import {
+  applyLocalModelRouterCredential,
+  applyLocalModelRouterEnv,
+  detectLocalModelRouter,
+} from './localModelRouter';
 import {
   AnthropicApiKeyHelperLeaseConflictError,
   type AnthropicApiKeyHelperSetupLease,
@@ -119,7 +128,9 @@ export interface TeamProvisioningEnvBuilderPorts {
   processEnv?: NodeJS.ProcessEnv;
   platform?: NodeJS.Platform;
   resolveInteractiveShellEnvBestEffort?: typeof resolveInteractiveShellEnvBestEffort;
+  waitForPendingShellEnv?: typeof waitForPendingShellEnv;
   getHomeDir?: typeof getHomeDir;
+  getAttachmentRoot?: () => string;
   getClaudeBasePath?: typeof getClaudeBasePath;
   getAutoDetectedClaudeBasePath?: typeof getAutoDetectedClaudeBasePath;
   getOsUsername?: () => string;
@@ -130,6 +141,7 @@ export interface TeamProvisioningEnvBuilderPorts {
   materializeAnthropicTeamApiKeyHelper?: typeof materializeAnthropicTeamApiKeyHelper;
   verifyAnthropicTeamApiKeyHelperMaterial?: typeof verifyAnthropicTeamApiKeyHelperMaterial;
   cleanupAnthropicTeamApiKeyHelperMaterial?: typeof cleanupAnthropicTeamApiKeyHelperMaterial;
+  detectLocalModelRouter?: typeof detectLocalModelRouter;
 }
 
 export interface BuildProvisioningEnvOptions {
@@ -310,14 +322,23 @@ export async function buildProvisioningEnv({
 }: BuildProvisioningEnvInput): Promise<ProvisioningEnvResolution> {
   const processEnv = ports.processEnv ?? process.env;
   const platform = ports.platform ?? process.platform;
-  const shellEnv = await (
+  const discoverShellEnv = !options?.gatewayMember && shouldResolveAnthropicShellEnv(providerId);
+  let shellEnv = await (
     ports.resolveInteractiveShellEnvBestEffort ?? resolveInteractiveShellEnvBestEffort
   )({
     source: 'team-provisioning',
     timeoutMs: 1_500,
     fallbackEnv: processEnv,
-    background: false,
+    background: discoverShellEnv,
   });
+  if (discoverShellEnv) {
+    // Active launches must wait for already-running auth discovery. Injected
+    // resolvers own their pending work instead of reading the global cache.
+    const waitForShellEnv =
+      ports.waitForPendingShellEnv ??
+      (ports.resolveInteractiveShellEnvBestEffort ? undefined : waitForPendingShellEnv);
+    shellEnv = (await waitForShellEnv?.()) ?? shellEnv;
+  }
   // getHomeDir() uses Electron's app.getPath('home') which handles Unicode
   // correctly on Windows. Prefer it over process.env which may be garbled.
   const electronHome = (ports.getHomeDir ?? getHomeDir)();
@@ -368,7 +389,7 @@ export async function buildProvisioningEnv({
   });
   const providerConnectionIssue = providerEnvResult.connectionIssues[resolvedProviderId];
   const providerEnv = providerEnvResult.env;
-  const attachmentRoot = path.join(getAppDataPath(), 'attachments');
+  const attachmentRoot = ports.getAttachmentRoot?.() ?? path.join(getAppDataPath(), 'attachments');
   await mkdir(attachmentRoot, { recursive: true, mode: 0o700 });
   providerEnv.CLAUDE_AGENT_TEAMS_ATTACHMENT_ROOT = attachmentRoot;
   const writableEnvResult = await (
@@ -395,6 +416,13 @@ export async function buildProvisioningEnv({
   }
   Object.assign(providerEnv, getDesktopMcpChildEnvironment());
 
+  // A teammate runs as its own process and does not inherit the desktop's Claude session.
+  // Without a credential the orchestrator refuses the first turn, so the subscription
+  // token the user already has on disk is handed to the member — an explicit key wins.
+  if (resolvedProviderId === 'anthropic') {
+    await applyClaudeOauthTokenIfMissing(providerEnv, resolvedClaudeBasePath);
+  }
+
   // SHELL is a Unix concept - only set it on non-Windows platforms.
   if (!isWindows) {
     providerEnv.SHELL = shell;
@@ -417,7 +445,26 @@ export async function buildProvisioningEnv({
     return { env: providerEnv, authSource: 'none', geminiRuntimeAuth: null, providerArgs: [] };
   }
 
-  if (providerConnectionIssue) {
+  // The lead only publishes its team through the deterministic bootstrap; without this
+  // flag the runtime exits right after startup and the launch reports a bare failure.
+  if (!providerEnv.CLAUDE_ENABLE_DETERMINISTIC_TEAM_BOOTSTRAP?.trim())
+    providerEnv.CLAUDE_ENABLE_DETERMINISTIC_TEAM_BOOTSTRAP = '1';
+
+  // A loopback router replaces the Anthropic subscription: members reach the model
+  // through it, so it decides both egress and whether a credential must be present.
+  const localRouter =
+    resolvedProviderId === 'anthropic'
+      ? await (ports.detectLocalModelRouter ?? detectLocalModelRouter)({
+          homeDir: home,
+          env: processEnv,
+        })
+      : null;
+  if (localRouter) {
+    applyLocalModelRouterEnv(providerEnv, localRouter);
+    applyLocalModelRouterCredential(providerEnv, localRouter);
+  }
+
+  if (providerConnectionIssue && !localRouter) {
     return {
       env: providerEnv,
       authSource: 'configured_api_key_missing',

@@ -171,6 +171,35 @@ describe('validateRuntimeLaunchSelection typed validation errors', () => {
     expect(run).toThrow('not present in the live Codex model catalog');
   });
 
+  it('accepts an effort for a model the loopback router serves', () => {
+    const run = (): void =>
+      validateRuntimeLaunchSelection({
+        actorLabel: 'Team lead',
+        providerId: 'anthropic',
+        model: 'gpt-6.1-sol',
+        effort: 'high',
+        // The router serves a model the Anthropic catalog cannot describe.
+        facts: { ...emptyFacts, localRouterModelIds: ['gpt-6.1-sol', 'gpt-6.1-terra'] },
+        anthropicFastModeDefault: false,
+        getProviderLabel: () => 'Claude',
+      });
+    expect(run).not.toThrow();
+  });
+
+  it('still rejects that effort when the router does not serve the model', () => {
+    const run = (): void =>
+      validateRuntimeLaunchSelection({
+        actorLabel: 'Team lead',
+        providerId: 'anthropic',
+        model: 'gpt-6.1-sol',
+        effort: 'high',
+        facts: { ...emptyFacts, localRouterModelIds: ['gpt-6-luna'] },
+        anthropicFastModeDefault: false,
+        getProviderLabel: () => 'Claude',
+      });
+    expect(run).toThrow('uses Anthropic effort "high"');
+  });
+
   it('rejects an unverifiable Anthropic effort with a typed validation error', () => {
     const run = () =>
       validateRuntimeLaunchSelection({

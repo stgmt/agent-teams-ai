@@ -4,7 +4,7 @@ import { Button } from '@renderer/components/ui/button';
 import type { OpenCodeRuntimeInstallOptions } from '../contracts';
 import type { OpenCodeRuntimeStatus } from '@shared/types';
 
-/** Separate upgrade choice keeps normal updates in the selected generation. */
+/** Do not promote a major-version migration for an existing supported runtime. */
 export const OpenCodeV2InstallAction = ({
   status,
   busy,
@@ -15,7 +15,33 @@ export const OpenCodeV2InstallAction = ({
   onInstall: (options?: OpenCodeRuntimeInstallOptions) => void;
 }): React.JSX.Element | null => {
   const { t } = useAppTranslation('dashboard');
-  if (!status || (status.installed && status.version?.startsWith('2.'))) return null;
+  if (
+    status?.installed &&
+    status.version?.startsWith('2.') &&
+    status.v2Support &&
+    status.compatibleV2Version
+  ) {
+    return (
+      <Button
+        variant="outline"
+        size="sm"
+        disabled={busy}
+        onClick={() => onInstall({ generation: 'v2', supportOnly: true })}
+        className="h-6 px-2 text-[10px]"
+      >
+        {t(
+          status.v2Support === 'required'
+            ? 'cliStatus.runtimeInstall.v2SupportInstall'
+            : 'cliStatus.runtimeInstall.v2SupportRepair'
+        )}
+      </Button>
+    );
+  }
+  if (
+    !status ||
+    (status.installed && (status.version?.startsWith('1.') || status.version?.startsWith('2.')))
+  )
+    return null;
   if (!status.installed && status.compatibleV2Version) return null;
   if (status.source === 'override') {
     return (

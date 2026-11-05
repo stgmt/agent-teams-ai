@@ -110,16 +110,7 @@ export const TextMessageComposer = ({
         onQueue={queue?.onEnqueue}
         sendLabel={textInput.sendLabel}
         cornerActionPrefix={cornerActionPrefix}
-        footerRight={
-          <>
-            {notice}
-            {queue?.unavailableReason ? (
-              <p role="status" className="text-xs text-[var(--color-text-muted)]">
-                {queue.unavailableReason}
-              </p>
-            ) : null}
-          </>
-        }
+        footerRight={notice}
       />
     </ComposerSurface>
   );

@@ -31,16 +31,16 @@ import {
   createStartupStage,
   StartupCancelledError,
 } from './utils/startupCancellation';
-import type {
-  AppCloseReadinessResult,
-  AppCloseReason,
-} from '@features/app-close-coordination/contracts';
+import type { AppCloseReason } from '@features/app-close-coordination/contracts';
 import {
   prepareNativeRendererCdp,
   registerExternalAgentConnectionIpc,
   removeExternalAgentConnectionIpc,
 } from '@features/external-agent-connection/main';
-import { RendererCloseReadinessCoordinator } from '@features/app-close-coordination/main';
+import {
+  RendererCloseReadinessCoordinator,
+  requestCloseReadiness,
+} from '@features/app-close-coordination/main';
 import {
   type CodexAccountFeatureFacade,
   createCodexAccountFeature,
@@ -113,6 +113,45 @@ import {
 } from '@features/team-import/main';
 import * as teamMemberSettings from '@features/team-provisioning/main';
 import {
+  createNativeDefinitionStore,
+  createNativeDesktopTeamRuntime,
+  createNativeLanguageChangeDeps,
+  createNativeOpenCodeDeliveryStack,
+  createNativeProvisioningSupport,
+  createNativeRuntimeToolApproval,
+  createNativeTaskActivityRepair,
+  createNativeTeamBriefing,
+  createNativeTeamProvisioningGraph,
+  createNativeSecondaryRuntimeRunStore,
+  createNativeOpenCodeRuntimeControlPort,
+  createNativeTeamHttpApis,
+  type NativeTeamProvisioningRoot,
+} from '@features/team-provisioning';
+import { createOpenCodeRuntimeControlApi } from '@main/services/team/runtime-control';
+import { createOpenCodeRuntimeControlRouter } from '@main/services/team/runtime-control/application/OpenCodeRuntimeControlProvider';
+import { TeamProvisioningAppShellBoundary } from '@main/services/team/provisioning/TeamProvisioningAppShellBoundary';
+import { createTeamProvisioningEnvRuntimePorts } from '@main/services/team/provisioning/TeamProvisioningEnvRuntimePorts';
+import { readPersistedTeamProjectPath } from '@main/services/team/provisioning/TeamProvisioningPersistedTeamConfigAccess';
+import { resolveOpenCodeInboxAttachmentPayloads } from '@main/services/team/provisioning/TeamProvisioningOpenCodeAttachmentPayloads';
+import { buildProviderAwareCliEnv } from '@main/services/runtime/providerAwareCliEnv';
+import {
+  cleanupAnthropicTeamApiKeyHelperMaterial,
+  materializeAnthropicTeamApiKeyHelper,
+  verifyAnthropicTeamApiKeyHelperMaterial,
+} from '@main/services/runtime/anthropicTeamApiKeyHelper';
+import { execCli } from '@main/utils/childProcess';
+import {
+  getAnthropicFastModeDefault,
+  getTeamProviderLabel,
+} from '@main/services/team/provisioning/TeamProvisioningRuntimeDiagnostics';
+import { resolveLanguageName } from '@shared/utils/agentLanguage';
+import { DEFAULT_TOOL_APPROVAL_SETTINGS } from '@shared/types/team';
+import { TeamMetaStore } from '@main/services/team/TeamMetaStore';
+import { TeamLaunchStateStore } from '@main/services/team/TeamLaunchStateStore';
+import { TeamAttachmentStore } from '@main/services/team/TeamAttachmentStore';
+import { TeamTaskActivityIntervalService } from '@main/services/team/TeamTaskActivityIntervalService';
+import { NativeTeamOperationQueue as TeamOperationQueue } from '@features/team-provisioning';
+import {
   createTeamRuntimeRecoveryFeature,
   type TeamRuntimeRecoveryFeatureFacade,
 } from '@features/team-runtime-recovery/main';
@@ -175,10 +214,7 @@ import {
   snapshotOpenCodeLocalMcpLaunchEnv,
 } from '@main/services/team/opencode/bridge/OpenCodeMcpBridgeEnv';
 import {
-  bindTeamCrossTeamMessagingApi,
   bindTeamHttpDataApi,
-  bindTeamHttpHandlerApis,
-  bindTeamIpcHandlerApis,
   type TeamDiagnosticsApi,
   type TeamHttpHandlerApis,
   type TeamIpcHandlerApis,
@@ -226,6 +262,7 @@ import { shouldSuppressDesktopNotificationForInboxText } from '@shared/utils/idl
 import { createLogger } from '@shared/utils/logger';
 import { isReviewPickupEscalationMessage } from '@shared/utils/teamAutomationMessages';
 import { isTeamInternalControlMessageEnvelope } from '@shared/utils/teamInternalControlMessages';
+import { mkdirSync } from 'node:fs';
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
 import { AnnouncementsLifecycle } from './announcementsLifecycle';
 import {
@@ -311,6 +348,7 @@ import {
   getClaudeBasePath,
   getHomeDir,
   getProjectsBasePath,
+  getTasksBasePath,
   getTeamsBasePath,
   getTodosBasePath,
 } from './utils/pathDecoder';
@@ -363,7 +401,6 @@ import {
   TeammateToolTracker,
   TeamMemberLogsFinder,
   TeamMembersMetaStore,
-  createDefaultTeamProvisioningService,
   TeamRuntimeAdapterRegistry,
   TeamTaskReader,
   TeamTaskStallJournal,
@@ -676,7 +713,13 @@ async function createOpenCodeRuntimeAdapterRegistry(
       buildId: process.env.VITE_BUILD_ID ?? process.env.BUILD_ID ?? null,
     },
     readOpenCodeRuntimeStatus,
-    runtimeSnapshots: teamProvisioningService,
+    // Late-bound: the provisioning root is composed after this bridge.
+    runtimeSnapshots: {
+      getMemberSpawnStatusesReadOnly: (teamName: string) =>
+        teamProvisioningService.getMemberSpawnStatuses(teamName),
+      getTeamAgentRuntimeSnapshotReadOnly: (teamName: string) =>
+        teamProvisioningService.getTeamAgentRuntimeSnapshot(teamName),
+    },
   });
   const readinessBridge = desktopBridge.readiness;
   readOpenCodeGroupRun = desktopBridge.groupRun;
@@ -963,7 +1006,25 @@ let tokenUsageFeature: TokenUsageFeatureFacade | null = null;
 let memberWorkSyncFeature: MemberWorkSyncFeatureFacade | null = null;
 let teamRuntimeRecoveryFeature: TeamRuntimeRecoveryFeatureFacade | null = null;
 let teamDataService: TeamDataService;
-let teamProvisioningService: ReturnType<typeof createDefaultTeamProvisioningService>;
+let teamProvisioningService: NativeTeamProvisioningRoot;
+/**
+ * Collaborators the provisioning root can only reach after it exists: the recovery
+ * feature that consumes lead failures, and the group chats that answer whether an
+ * inbound message was acknowledged. Late binding is a shell concern; the root receives
+ * them as arrows and never holds state of its own for them.
+ */
+const provisioningLateBindings = {
+  acknowledgedInbound: null as
+    | ((input: {
+        teamName: string;
+        groupChatId?: string;
+        memberName: string;
+        inboxMessageId: string;
+        runId?: string;
+      }) => Promise<boolean>)
+    | null,
+  observeLeadFailure: null as ((failure: never) => void) | null,
+};
 let teamHttpHandlerApis: TeamHttpHandlerApis | null = null;
 let launchIoGovernor: LaunchIoGovernor | null = null;
 let cliInstallerService: CliInstallerService;
@@ -1135,44 +1196,19 @@ function hasActiveTeamRuntimesForWindowClose(): boolean {
   }
 }
 
-function formatCloseReadinessBlockers(results: readonly AppCloseReadinessResult[]): string[] {
-  return results.flatMap((result) => result.blockers).slice(0, 10);
-}
-
-async function confirmUnsafeAppClose(
-  window: BrowserWindow,
-  blockers: readonly string[],
-  unsafeActionLabel: string
-): Promise<boolean> {
-  if (window.isDestroyed()) return false;
-  window.show();
-  window.focus();
-  const detail =
-    blockers.length > 0
-      ? blockers.map((blocker) => `- ${blocker}`).join('\n')
-      : 'Changes did not confirm that its latest state was saved.';
-  const choice = await dialog.showMessageBox(window, {
-    type: 'warning',
-    title: 'Changes is not ready to close',
-    message: 'Some Changes state may not be saved yet.',
-    detail,
-    buttons: ['Keep Open', unsafeActionLabel],
-    defaultId: 0,
-    cancelId: 0,
-    noLink: true,
-  });
-  return choice.response === 1;
-}
-
 async function requestWindowCloseReadiness(
   window: BrowserWindow,
   reason: AppCloseReason,
   unsafeActionLabel: string
 ): Promise<boolean> {
   if (!rendererDidFinishLoad) return true;
-  const result = await rendererCloseReadinessCoordinator.request(window, reason);
-  if (result.ok) return true;
-  return confirmUnsafeAppClose(window, result.blockers, unsafeActionLabel);
+  return requestCloseReadiness(
+    rendererCloseReadinessCoordinator,
+    [window],
+    reason,
+    unsafeActionLabel,
+    dialog
+  );
 }
 
 async function requestAllWindowsCloseReadiness(
@@ -1180,17 +1216,12 @@ async function requestAllWindowsCloseReadiness(
   unsafeActionLabel: string
 ): Promise<boolean> {
   if (!rendererDidFinishLoad) return true;
-  const windows = BrowserWindow.getAllWindows().filter((window) => !window.isDestroyed());
-  if (windows.length === 0) return true;
-  const results = await Promise.all(
-    windows.map((window) => rendererCloseReadinessCoordinator.request(window, reason))
-  );
-  const failedResults = results.filter((result) => !result.ok);
-  if (failedResults.length === 0) return true;
-  return confirmUnsafeAppClose(
-    windows[0],
-    formatCloseReadinessBlockers(failedResults),
-    unsafeActionLabel
+  return requestCloseReadiness(
+    rendererCloseReadinessCoordinator,
+    BrowserWindow.getAllWindows().filter((window) => !window.isDestroyed()),
+    reason,
+    unsafeActionLabel,
+    dialog
   );
 }
 
@@ -1959,6 +1990,7 @@ async function initializeServices(): Promise<void> {
       appDataPath: getAppDataPath(),
     });
   runtimeProviderManagementFeature = createRuntimeProviderManagementFeature({
+    readOpenCodeDiagnosticStatus: () => openCodeRuntimeInstallerService.getStatus(),
     localProviderConnector: gatewayProviderConnector,
     getOpenCodeRuntimeGeneration: getOpenCodeRuntimeResolverCacheGeneration,
     openExternal: async (url) => {
@@ -1977,11 +2009,366 @@ async function initializeServices(): Promise<void> {
   await cleanupOrphanedDeterministicBootstrapSpecs().catch(() =>
     console.warn('Could not clean retired bootstrap files')
   );
-  teamProvisioningService = createDefaultTeamProvisioningService(
-    () => teamGroupChatsFeature,
-    resolveOpenCodeInputDeclaration,
-    gatewayLaunchRuntime.seams
+  externalAgentConnection = composeExternalAgentConnection({
+    appInstanceId: openCodeManagedHostInstanceId,
+    nativeRun: [
+      cliInstallerService,
+      () => codexAccountFeature?.refreshSnapshot({ bypassCache: true }),
+    ],
+    teamManagement: [
+      teamDataService,
+      // Late-bound: the service is composed after this connection and needs its context fence.
+      () => ({
+        ...teamProvisioningService.apis.memberLifecycle,
+        getRuntimeState: (teamName: string) => teamProvisioningService.getRuntimeState(teamName),
+      }),
+      forwardTeamChangeToRendererAndHttp,
+    ],
+    hasLiveRuntimeConsumers: () => teamProvisioningService?.hasLiveOpenCodeMcpConsumers() ?? false,
+    cdp: nativeRendererCdp,
+    getMainContents: () => mainWindow?.webContents ?? null,
+    isLocalContext: () =>
+      contextRegistry.getActiveContextId() === 'local' &&
+      !['connecting', 'connected'].includes(sshConnectionManager.getStatus().state),
+    getControlUrl: getTeamControlApiBaseUrl,
+    startControl: () => startHttpServer(handleModeSwitch),
+    reconfigureRoot: async () => {
+      reconfigureLocalContextForClaudeRoot();
+      await schedulerService?.reloadForClaudeRootChange();
+      if (httpServer?.isRunning()) await syncTeamControlApiState();
+    },
+  });
+  publishStartupStatus({
+    phase: 'runtime',
+    message: 'Resolving local runtime...',
+  });
+  const runtimeAdapterRegistry = await startupStage(() =>
+    createOpenCodeRuntimeAdapterRegistry(
+      (phase, message) => publishStartupStatus({ phase, message }),
+      gatewayLaunchRuntime
+    )
   );
+  assertStartupActive(isShutdownStarted);
+  // --- native team provisioning ------------------------------------------------
+  // Stores the whole provisioning path shares: built once here, read by the runtime,
+  // the delivery stack and the root, so none of them can end up with a second copy.
+  const provisioningMetaStore = new TeamMetaStore();
+  const provisioningMembersStore = new TeamMembersMetaStore();
+  const provisioningMcpBuilder = new TeamMcpConfigBuilder();
+  const provisioningLaunchState = new TeamLaunchStateStore();
+  const provisioningRuns = createNativeSecondaryRuntimeRunStore();
+  const provisioningQueue = new TeamOperationQueue();
+  const provisioningConfigReader = new TeamConfigReader();
+  const provisioningStoppingTeams = new Set<string>();
+  const provisioningProjectPathCache = new Map<string, never>();
+  const provisioningAttachmentStore = new TeamAttachmentStore();
+  const provisioningTaskReader = new TeamTaskReader();
+  let provisioningRootRef: NativeTeamProvisioningRoot | null = null;
+  const _unusedProvisioningLate = {
+    acknowledgedInbound: null as
+      | ((input: {
+          teamName: string;
+          groupChatId?: string;
+          memberName: string;
+          inboxMessageId: string;
+          runId?: string;
+        }) => Promise<boolean>)
+      | null,
+    observeLeadFailure: null as ((failure: never) => void) | null,
+  };
+  const provisioningShell = new TeamProvisioningAppShellBoundary(gatewayLaunchRuntime.seams);
+  provisioningShell.setRuntimeAdapterRegistry(runtimeAdapterRegistry);
+  const provisioningEnvPorts = createTeamProvisioningEnvRuntimePorts({
+    providerConnectionService,
+    getControlApiBaseUrlResolver: () => provisioningShell.getControlApiBaseUrlResolver(),
+    getRuntimeTurnSettledEnvironmentProvider: () =>
+      provisioningShell.getRuntimeTurnSettledEnvironmentProvider(),
+    getRuntimeTurnSettledHookSettingsProvider: () =>
+      provisioningShell.getRuntimeTurnSettledHookSettingsProvider(),
+    getMemberGatewayRuntimeSeams: () => provisioningShell.getMemberGatewayRuntimeSeams(),
+    logger,
+  });
+  const provisioningSupport = createNativeProvisioningSupport({
+    provider: {
+      profile: {
+        homeDirectory: getHomeDir(),
+        claudeConfigDirectory: getClaudeBasePath(),
+        autoDetectedClaudeConfigDirectory: getAutoDetectedClaudeBasePath(),
+        attachmentRoot: join(getAppDataPath(), 'attachments'),
+      },
+      executable: async () => {
+        // Members are started by the Agent Teams runtime: it is the binary that understands
+        // the launch flags this path passes. Falling back to the plain Claude CLI would start
+        // a binary that rejects them, and the launch would fail on the first member.
+        const binary = await ClaudeBinaryResolver.resolve();
+        if (!binary) {
+          throw new Error('Agent Teams runtime is not available for team provisioning');
+        }
+        return binary;
+      },
+      controlUrl: async () => {
+        const url = getTeamControlApiBaseUrl();
+        if (!url) throw new Error('Team control API is not ready');
+        return url;
+      },
+      environment: {
+        ...provisioningEnvPorts.getProvisioningEnvBuilderPorts(),
+        // The builder's own fallback is unreachable through a spread, so the step is named.
+        buildProviderAwareCliEnv,
+        // Anthropic auth for members: without these the runtime refuses to start a turn
+        // ("ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN is required") and every member
+        // stays disconnected.
+        materializeAnthropicTeamApiKeyHelper,
+        verifyAnthropicTeamApiKeyHelperMaterial,
+        cleanupAnthropicTeamApiKeyHelperMaterial,
+      },
+      identity: {
+        execCli,
+        providerConnectionService: {
+          getCodexModelCatalog: (params) => providerConnectionService.getCodexModelCatalog(params),
+        },
+        getAnthropicFastModeDefault,
+        getProviderLabel: (providerId) => getTeamProviderLabel(providerId),
+        logger: { warn: (message) => logger.warn(message) },
+      },
+      workSync: {
+        buildRuntimeTurnSettledHookSettings: async (input) => {
+          const provider = provisioningShell.getRuntimeTurnSettledHookSettingsProvider();
+          return provider ? provider(input) : null;
+        },
+        buildRuntimeTurnSettledEnvironment: async (input) => {
+          const provider = provisioningShell.getRuntimeTurnSettledEnvironmentProvider();
+          return provider ? provider(input) : null;
+        },
+      },
+    },
+    runtimeAdapterRegistry,
+    logger: { info: (message) => logger.info(message), warn: (message) => logger.warn(message) },
+  });
+  const provisioningConnectionContext = (await externalAgentConnection.getConnectionInfo()).context;
+  const provisioningBriefing = createNativeTeamBriefing({
+    readMembersMeta: async (teamName) =>
+      (await provisioningMembersStore.getMeta(teamName))?.members ?? [],
+  });
+  const provisioningDefinitions = createNativeDefinitionStore({
+    teamsRoot: getTeamsBasePath(),
+    tasksRoot: getTasksBasePath(),
+    metadata: provisioningMetaStore,
+    members: provisioningMembersStore,
+    invalidate: () => TeamConfigReader.invalidateListTeamsCache(),
+  });
+  const provisioningLanguageDeps = createNativeLanguageChangeDeps({
+    config: {
+      getConfig: (teamName) => provisioningConfigReader.getConfig(teamName),
+      updateConfig: async (teamName, update) => {
+        await provisioningConfigReader.updateConfig(teamName, update);
+      },
+    },
+    getSystemLocale: () => app.getLocale(),
+    resolveLanguageName: (code, systemLocale) => resolveLanguageName(code, systemLocale),
+    logger: { info: (message) => logger.info(message), warn: (message) => logger.warn(message) },
+  });
+  const provisioningApprovals = createNativeRuntimeToolApproval({
+    getSettings: (teamName) =>
+      provisioningRootRef?.runtime.lifecycle.toolApprovalSettings.get(teamName) ??
+      DEFAULT_TOOL_APPROVAL_SETTINGS,
+    answerOpenCodePermission: async (input) => {
+      const adapter = provisioningShell.getOpenCodeRuntimeAdapter();
+      if (!adapter?.answerRuntimePermission) {
+        throw new Error('OpenCode runtime bridge cannot answer tool approvals');
+      }
+      await adapter.answerRuntimePermission({
+        ...input,
+        providerId: 'opencode',
+        cwd: process.cwd(),
+        expectedMembers: [],
+        previousLaunchState: await provisioningLaunchState.read(input.teamName).catch(() => null),
+      });
+    },
+    emitApprovalEvent: (event) => safeSendToRenderer(mainWindow, TEAM_TOOL_APPROVAL_EVENT, event),
+  });
+  const provisioningRepair = createNativeTaskActivityRepair({
+    intervals: new TeamTaskActivityIntervalService(),
+    readLaunchState: (teamName) => provisioningLaunchState.read(teamName),
+    readBootstrapLaunchSnapshot: (teamName) => provisioningLaunchState.read(teamName),
+    getTrackedRunId: (teamName) =>
+      provisioningRootRef?.runtime.registry.aliveRunId(teamName) ?? null,
+    hasRun: (runId) => Boolean(provisioningRootRef?.runtime.registry.findByRunId(runId)),
+  });
+  // A launch writes its owned attempt under the runtime root and gives isolated members
+  // a workspace; both directories must exist before the first launch, not after it fails.
+  const provisioningRuntimeRoot = join(getAppDataPath(), 'team-runtime');
+  const provisioningWorkspaceRoot = join(getAppDataPath(), 'team-workspaces');
+  mkdirSync(provisioningRuntimeRoot, { recursive: true });
+  mkdirSync(provisioningWorkspaceRoot, { recursive: true });
+  const provisioningRuntimeDeps = {
+    owner: provisioningConnectionContext,
+    currentContext: () => provisioningConnectionContext,
+    teamsRoot: getTeamsBasePath(),
+    provider: provisioningSupport.providerPorts,
+    runtimeRoot: provisioningRuntimeRoot,
+    workspaceRoot: provisioningWorkspaceRoot,
+    controlUrl: async () => {
+      const url = getTeamControlApiBaseUrl();
+      if (!url) throw new Error('Team control API is not ready');
+      return url;
+    },
+    briefing: provisioningBriefing,
+    invalidate: (teamName: string) => TeamConfigReader.invalidateTeam(teamName),
+    contextInvalidationSignal: () => new AbortController().signal,
+    withExpectedContext: <T>(
+      expected: typeof provisioningConnectionContext,
+      operation: () => Promise<T>
+    ) => {
+      if (!externalAgentConnection) throw new Error('App connection is not available yet');
+      return externalAgentConnection.withExpectedContext(expected, operation);
+    },
+    definitions: provisioningDefinitions,
+    listTeamNames: async () =>
+      (await provisioningConfigReader.listTeams()).map((team) => team.teamName),
+    runtimeAdapterRegistry,
+    onRuntimeFailure: (input: {
+      teamName: string;
+      memberName: string;
+      runId: string;
+      detail: string;
+    }) => provisioningLateBindings.observeLeadFailure?.(input as never),
+    log: (message: string) => logger.error(message),
+    requireProviderAuth: true,
+    launchAdmission: {
+      assertAdmitted: () => {
+        if (!externalAgentConnection) throw new Error('App connection is not available yet');
+        externalAgentConnection.assertLaunchAdmission();
+      },
+    },
+  };
+  const provisioningRuntime = createNativeDesktopTeamRuntime({
+    ...provisioningRuntimeDeps,
+    settings: { metadata: provisioningMetaStore, members: provisioningMembersStore },
+    mcp: {
+      writeConfigFile: (cwd, options) => provisioningMcpBuilder.writeConfigFile(cwd, options),
+      removeConfigFile: (path) => provisioningMcpBuilder.removeConfigFile(path),
+    },
+    inbox: {
+      sendMessage: (teamName, message, options) =>
+        teamInboxWriter.sendMessage(teamName, message, options),
+    },
+  });
+  // A claim left by an earlier app instance is not a live owner: without this sweep the
+  // team keeps the dead run as owner and every later launch fails with "another run owner".
+  void provisioningRuntime
+    .recoverStartup()
+    .then((recovery) => {
+      for (const teamName of recovery.recovered)
+        logger.info(`[team] released an orphaned run claim for ${teamName}`);
+      for (const failure of recovery.failed)
+        logger.warn(`[team] could not release ${failure.teamName}: ${failure.error}`);
+    })
+    .catch((error: unknown) =>
+      logger.warn(`[team] orphaned run recovery failed: ${String(error)}`)
+    );
+  const provisioningDelivery = createNativeOpenCodeDeliveryStack({
+    teamsBasePath: getTeamsBasePath(),
+    launchState: provisioningLaunchState,
+    isTeamAlive: (teamName) => provisioningRuntime.registry.aliveRunId(teamName) !== null,
+    runs: provisioningRuns,
+    openCodeAdapter: () => provisioningShell.getOpenCodeRuntimeAdapter(),
+    messageAdapter: () => provisioningShell.getOpenCodeRuntimeMessageAdapter(),
+    config: { read: (teamName) => provisioningConfigReader.getConfig(teamName) },
+    teamMeta: provisioningMetaStore,
+    membersMeta: provisioningMembersStore,
+    inbox: teamInboxReader,
+    readInbox: (teamName, inboxName) => teamInboxReader.getMessagesFor(teamName, inboxName),
+    readTasks: (teamName) => provisioningTaskReader.getTasks(teamName),
+    queue: provisioningQueue,
+    controlUrlResolver: () => provisioningShell.getControlApiBaseUrlResolver(),
+    stoppingTeams: provisioningStoppingTeams,
+    isMemberLifecycleOperationActive: (teamName, memberName) => {
+      const member = provisioningRuntime.registry.find(teamName)?.members[memberName];
+      return member ? member.phase !== 'ready' && member.phase !== 'stopped' : false;
+    },
+    readPersistedTeamProjectPath: (teamName) =>
+      readPersistedTeamProjectPath(teamName, {
+        teamsBasePath: getTeamsBasePath(),
+        cache: provisioningProjectPathCache as never,
+      }),
+    readRun: (runId) => {
+      const snapshot = provisioningRuntime.registry.findByRunId(runId);
+      if (!snapshot) return undefined;
+      return {
+        allEffectiveMembers: Object.values(snapshot.members).map((member) => ({
+          name: member.memberName,
+        })),
+        mixedSecondaryLanes: [],
+      };
+    },
+    resolveOpenCodeInboxAttachmentPayloads: (input) =>
+      resolveOpenCodeInboxAttachmentPayloads(input, {
+        attachmentStore: provisioningAttachmentStore,
+      }),
+    hasAcceptedMemberWorkSyncReport: async (input) => {
+      const checker = provisioningShell.getMemberWorkSyncAcceptedReportChecker();
+      return checker ? checker(input) : false;
+    },
+    hasAcknowledgedInbound: async (input) =>
+      provisioningLateBindings.acknowledgedInbound
+        ? provisioningLateBindings.acknowledgedInbound(input)
+        : false,
+    permissionListingAdapter: () => provisioningShell.getOpenCodeRuntimePermissionListingAdapter(),
+    syncToolApprovals: (input) =>
+      provisioningApprovals.syncOpenCodeRuntimeToolApprovals(input as never),
+    emitRuntimeDeliveryReplyAdvisoryRefresh: (teamName) => {
+      teamDataService.invalidateTeamRuntimeAdvisories(teamName);
+    },
+    emitTeamChange: (event) => forwardTeamChangeToRendererAndHttp(event),
+    emitMemberSpawnChange: (input) =>
+      forwardTeamChangeToRendererAndHttp({
+        type: 'member-spawn',
+        teamName: input.teamName,
+        ...(input.runId ? { runId: input.runId } : {}),
+        detail: input.memberName,
+      } as TeamChangeEvent),
+    emitPromptDeliveryTaskLogChange: (record, detail) =>
+      forwardTeamChangeToRendererAndHttp({
+        type: 'task-log-change',
+        teamName: String(record.teamName ?? ''),
+        detail,
+      }),
+    invalidateRuntimeSnapshotCaches: () => undefined,
+    logPromptDeliveryEvent: (event, record, extra) =>
+      logger.debug(
+        `[OpenCode delivery] ${event} ${record.laneId ?? ''} ${JSON.stringify(extra ?? {})}`
+      ),
+    logger: {
+      info: (message, context) => logger.info(context ? `${message} ${context}` : message),
+      warn: (message) => logger.warn(message),
+      debug: (message) => logger.debug(message),
+    },
+  });
+  provisioningRootRef = createNativeTeamProvisioningGraph({
+    stores: {
+      teamsRoot: getTeamsBasePath(),
+      metadata: provisioningMetaStore,
+      members: provisioningMembersStore,
+      mcp: provisioningMcpBuilder,
+      inbox: teamInboxWriter,
+      invalidate: (teamName) => TeamConfigReader.invalidateTeam(teamName),
+    },
+    nativeRuntime: provisioningRuntime,
+    runtimeDeps: provisioningRuntimeDeps,
+    mcpConfig: { removeConfigFile: (path) => provisioningMcpBuilder.removeConfigFile(path) },
+    apisDeps: {
+      taskActivity: provisioningRepair,
+      openCodeMemberDelivery: provisioningDelivery.deliveryPort,
+      now: () => new Date().toISOString(),
+    },
+    watchdogDeps: provisioningDelivery.watchdogDeps,
+    prepDeps: provisioningSupport.preparation,
+    languageDeps: provisioningLanguageDeps,
+    busyStatus: provisioningDelivery.busyStatus,
+    inboxRelay: provisioningDelivery.deliveryPort,
+  });
+  teamProvisioningService = provisioningRootRef;
   teamGroupChatsFeature = createDesktopTeamGroupChats({
     snapshot: (teamName) => teamProvisioningService.getTeamAgentRuntimeSnapshot(teamName),
     openCodeRun: (...args) => readOpenCodeGroupRun?.(...args) ?? Promise.resolve(null),
@@ -1997,7 +2384,7 @@ async function initializeServices(): Promise<void> {
     },
   });
   teamDataService.setTaskGroupChatCatalog((teamName) => teamGroupChatsFeature.list({ teamName }));
-  const teamIpcHandlerApis: TeamIpcHandlerApis = bindTeamIpcHandlerApis(teamProvisioningService);
+  const teamIpcHandlerApis: TeamIpcHandlerApis = teamProvisioningService.apis;
   const teamDiagnosticsApi = teamIpcHandlerApis.diagnostics;
   const teamMessagingApi = teamIpcHandlerApis.messaging;
   const teamMemberSettingsFeature = teamMemberSettings.createNodeTeamMemberSettingsFeature({
@@ -2014,31 +2401,10 @@ async function initializeServices(): Promise<void> {
       contextRegistry.getActive().type === 'local' && !sshConnectionManager.isRemote(),
   });
   workspaceTrustStatus = workspaceTrust.status;
-  teamProvisioningService.setWorkspaceTrustCoordinator(workspaceTrust.coordinator);
+  provisioningShell.setWorkspaceTrustCoordinator(workspaceTrust.coordinator);
   workspaceTrustFeature.registerWorkspaceTrustIpc(ipcMain, workspaceTrust.status);
   projectFolderFeature.registerProjectFolderFeature(ipcMain);
-  externalAgentConnection = composeExternalAgentConnection({
-    appInstanceId: openCodeManagedHostInstanceId,
-    nativeRun: [
-      cliInstallerService,
-      () => codexAccountFeature?.refreshSnapshot({ bypassCache: true }),
-    ],
-    teamManagement: [teamDataService, teamProvisioningService, forwardTeamChangeToRendererAndHttp],
-    hasLiveRuntimeConsumers: () => teamProvisioningService.hasLiveOpenCodeMcpConsumers(),
-    cdp: nativeRendererCdp,
-    getMainContents: () => mainWindow?.webContents ?? null,
-    isLocalContext: () =>
-      contextRegistry.getActiveContextId() === 'local' &&
-      !['connecting', 'connected'].includes(sshConnectionManager.getStatus().state),
-    getControlUrl: getTeamControlApiBaseUrl,
-    startControl: () => startHttpServer(handleModeSwitch),
-    reconfigureRoot: async () => {
-      reconfigureLocalContextForClaudeRoot();
-      await schedulerService?.reloadForClaudeRootChange();
-      if (httpServer?.isRunning()) await syncTeamControlApiState();
-    },
-  });
-  teamProvisioningService.setLaunchAdmissionGuard(externalAgentConnection.assertLaunchAdmission);
+
   teamRuntimeRecoveryFeature = createTeamRuntimeRecoveryFeature({
     teamsBasePath: getTeamsBasePath(),
     configManager,
@@ -2052,8 +2418,18 @@ async function initializeServices(): Promise<void> {
     getInboxMessages: (teamName, memberName) =>
       teamInboxReader.getMessagesFor(teamName, memberName),
     inboxWriter: teamInboxWriter,
-    relay: (teamName, memberName, options) =>
-      teamProvisioningService.relayInboxFileToLiveRecipient(teamName, memberName, options),
+    relay: async (teamName, memberName) => {
+      const result = await teamProvisioningService.relayInboxFileToLiveRecipient(
+        teamName,
+        memberName
+      );
+      return {
+        kind: result.relayed > 0 ? ('opencode_member' as const) : ('ignored' as const),
+        relayed: result.relayed,
+        ...(result.diagnostics ? { diagnostics: result.diagnostics } : {}),
+        ...(result.lastDelivery ? { lastDelivery: result.lastDelivery } : {}),
+      };
+    },
     getTask: (teamName, taskId) => teamDataService.getTask(teamName, taskId),
     getMemberAdvisory: (teamName, memberName, options) =>
       teamMemberRuntimeAdvisoryService.getMemberAdvisory(teamName, memberName, options),
@@ -2062,10 +2438,9 @@ async function initializeServices(): Promise<void> {
     addNotification: (payload) => notificationManager.addTeamNotification(payload),
     logger: createLogger('Feature:TeamRuntimeRecovery'),
   });
-  teamProvisioningService.setRuntimeRecoveryFailureObserver((failure) =>
-    teamRuntimeRecoveryFeature?.observeLeadFailure(failure)
-  );
-  teamProvisioningService.setMemberRuntimeAdvisoryInvalidator(
+  provisioningLateBindings.observeLeadFailure = (failure) =>
+    teamRuntimeRecoveryFeature?.observeLeadFailure(failure as never);
+  provisioningShell.setMemberRuntimeAdvisoryInvalidator(
     createMemberRuntimeAdvisoryInvalidator(teamMemberRuntimeAdvisoryService)
   );
   // Reap older, profile-owned orphans before adapter initialization so the
@@ -2106,18 +2481,7 @@ async function initializeServices(): Promise<void> {
         logError: (message) => logger.error(message),
       })
     );
-  publishStartupStatus({
-    phase: 'runtime',
-    message: 'Resolving local runtime...',
-  });
-  const runtimeAdapterRegistry = await startupStage(() =>
-    createOpenCodeRuntimeAdapterRegistry(
-      (phase, message) => publishStartupStatus({ phase, message }),
-      gatewayLaunchRuntime
-    )
-  );
-  assertStartupActive(isShutdownStarted);
-  teamProvisioningService.setRuntimeAdapterRegistry(runtimeAdapterRegistry);
+
   // Fence launches before the control listener opens; run cleanup after bounded startup.
   const settleStartupRuntimeSweep = windowsStartupCleanup
     ? undefined
@@ -2140,9 +2504,9 @@ async function initializeServices(): Promise<void> {
     crossTeamConfigReader,
     teamDataService,
     crossTeamInboxWriter,
-    bindTeamCrossTeamMessagingApi(teamProvisioningService)
+    teamProvisioningService.crossTeam
   );
-  teamProvisioningService.setCrossTeamSender((request) => crossTeamService.send(request));
+  provisioningShell.setCrossTeamSender((request) => crossTeamService.send(request));
 
   const taskChangePresenceRepository = new JsonTaskChangePresenceRepository();
   const memberWorkSyncStallObservation = createDeferredWorkSyncStallObservation();
@@ -2239,7 +2603,7 @@ async function initializeServices(): Promise<void> {
   // warmup() and ensureInstalled() are deferred to after window creation
   // (did-finish-load handler) to avoid thread pool contention at startup.
   httpServer = new HttpServer();
-  teamProvisioningService.setControlApiBaseUrlResolver(async () => {
+  provisioningShell.setControlApiBaseUrlResolver(async () => {
     // Listening alone does not prove that Host publication has committed.
     await startHttpServer(handleModeSwitch);
 
@@ -2312,7 +2676,7 @@ async function initializeServices(): Promise<void> {
       logger
     );
   };
-  teamProvisioningService.setTeamChangeEmitter(teamChangeEmitter);
+
   teamLogSourceTracker.setEmitter(teamChangeEmitter);
   teamLogSourceTracker.onLogSourceChange((teamName) => {
     teammateToolTracker?.handleLogSourceChange(teamName);
@@ -2327,11 +2691,6 @@ async function initializeServices(): Promise<void> {
     safeSendToRenderer(mainWindow, SKILLS_CHANGED, event);
   });
 
-  teamProvisioningService.setToolApprovalEventEmitter((event) => {
-    safeSendToRenderer(mainWindow, TEAM_TOOL_APPROVAL_EVENT, event);
-  });
-
-  teamProvisioningService.setMainWindow(mainWindow);
   recentProjectsFeature = createRecentProjectsFeature({
     getActiveContext: () => contextRegistry.getActive(),
     getLocalContext: () => contextRegistry.get('local'),
@@ -2615,14 +2974,24 @@ async function initializeServices(): Promise<void> {
     isMemberActive: isMemberActiveForMemberWorkSync,
     canDispatchNudges: canDispatchMemberWorkSyncNudges,
     listLifecycleActiveTeamNames: listMemberWorkSyncLifecycleActiveTeamNames,
-    ...createTeamProvisioningMemberWorkSyncBusySignals(teamProvisioningService),
+    ...createTeamProvisioningMemberWorkSyncBusySignals({
+      getMemberToolApprovalBusyStatus: async (input: { teamName: string; memberName: string }) =>
+        provisioningApprovals.coordinator.hasPendingApprovalForMember(
+          input.teamName,
+          input.memberName
+        )
+          ? { busy: true, reason: 'tool approval pending' }
+          : { busy: false },
+      getOpenCodeMemberDeliveryBusyStatus: (input: never) =>
+        teamProvisioningService.getOpenCodeMemberDeliveryBusyStatus(input as never),
+    }),
     resolveControlUrl: async () => {
       await startHttpServer(handleModeSwitch);
       return getTeamControlApiBaseUrl();
     },
     proofMissingRecoveryGuard: {
       shouldDispatch: async (input) => {
-        const isOpenCodeRecipient = await teamProvisioningService
+        const isOpenCodeRecipient = await provisioningDelivery
           .isOpenCodeRuntimeRecipient(input.teamName, input.memberName)
           .catch(() => false);
         if (!isOpenCodeRecipient) {
@@ -2826,7 +3195,7 @@ async function initializeServices(): Promise<void> {
   void teamDataService
     .getAllTasks()
     .catch((error: unknown) => logger.warn(`[Init] task list prefetch failed: ${String(error)}`));
-  bindMemberWorkSyncProvisioningRuntime(teamProvisioningService, () => memberWorkSyncFeature);
+  bindMemberWorkSyncProvisioningRuntime(provisioningShell, () => memberWorkSyncFeature);
   scheduleStartupTask(() => {
     void listMemberWorkSyncLifecycleActiveTeamNames()
       .then(async (lifecycleActiveTeamNames) => {
@@ -2856,7 +3225,44 @@ async function initializeServices(): Promise<void> {
     message: 'Wiring app actions...',
   });
 
-  teamHttpHandlerApis = bindTeamHttpHandlerApis(teamProvisioningService);
+  teamHttpHandlerApis = createNativeTeamHttpApis({
+    runtime: provisioningRuntime,
+    taskActivity: provisioningRepair,
+    runtimeControl: createOpenCodeRuntimeControlApi({
+      runtimeControl: createOpenCodeRuntimeControlRouter(
+        createNativeOpenCodeRuntimeControlPort({
+          resolveLaneId: (input) => provisioningDelivery.resolveRuntimeLaneId(input),
+          bootstrap: provisioningDelivery.bootstrap,
+          sendInboxMessage: async ({ teamName, recipient, from, text, messageId, observedAt }) => {
+            const result = await teamInboxWriter.sendMessage(teamName, {
+              member: recipient,
+              text,
+              from,
+              timestamp: observedAt,
+              ...(messageId ? { messageId } : {}),
+            });
+            return { messageId: result.messageId ?? messageId ?? '' };
+          },
+          answerPermission: (input) => provisioningApprovals.respond(input),
+          emitMemberSpawnChange: (input) =>
+            forwardTeamChangeToRendererAndHttp({
+              type: 'member-spawn',
+              teamName: input.teamName,
+              runId: input.runId,
+              detail: input.memberName,
+            } as TeamChangeEvent),
+          emitTaskLogChange: (input) =>
+            forwardTeamChangeToRendererAndHttp({
+              type: 'task-log-change',
+              teamName: input.teamName,
+              detail: input.taskId,
+            }),
+        })
+      ),
+      resolveOpenCodeRuntimeLaneId: (input) => provisioningDelivery.resolveRuntimeLaneId(input),
+    }),
+    now: () => new Date().toISOString(),
+  });
   configureWindowLifecycleActions({
     quit: async () => {
       await requestGuardedAppQuit('app-quit');
@@ -3044,11 +3450,6 @@ async function shutdownServices(): Promise<void> {
     logger.info('Shutting down services...');
     removeExternalAgentConnectionIpc(ipcMain);
     openCodeLifecycleBridge?.prepareShutdownCleanup();
-    await runShutdownStep('external connection admission drain', () =>
-      externalAgentConnection?.closeAdmission()
-    );
-    await runShutdownStep('announcements cleanup', () => announcementsLifecycle.dispose());
-
     clearStartupTimers();
     clearInboxNotifyTimers();
     // Ahead of the first awaited step: runShutdownStep stops waiting on a step
@@ -3056,9 +3457,19 @@ async function shutdownServices(): Promise<void> {
     // the background lock purge is still running.
     stopPeriodicOpenCodeHostStartupLockPurge?.();
     stopPeriodicOpenCodeHostStartupLockPurge = null;
+    // Fence and abort catalog requests before any tracked CLI or host cleanup snapshot.
+    await runShutdownStep(
+      'provider model catalog drain',
+      () => runtimeProviderManagementFeature?.shutdown(),
+      10_000
+    );
+    await runShutdownStep('external connection admission drain', () =>
+      externalAgentConnection?.closeAdmission()
+    );
+    await runShutdownStep('announcements cleanup', () => announcementsLifecycle.dispose());
 
     await runShutdownStep('team runtime recovery scheduler cleanup', async () => {
-      teamProvisioningService?.setRuntimeRecoveryFailureObserver(null);
+      provisioningLateBindings.observeLeadFailure = null;
       await teamRuntimeRecoveryFeature?.dispose();
       teamRuntimeRecoveryFeature = null;
     });
@@ -3067,7 +3478,13 @@ async function shutdownServices(): Promise<void> {
     // This must happen before the OS closes stdin pipes on app exit, because
     // stdin EOF triggers CLI cleanup that can delete team files.
     if (teamProvisioningService) {
-      await runShutdownStep('stop all teams', () => teamProvisioningService.stopAllTeams(), 10_000);
+      await runShutdownStep(
+        'stop all teams',
+        async () => {
+          await teamProvisioningService.stopAllTeams();
+        },
+        10_000
+      );
     }
     await runShutdownStep(
       'OpenCode host registry cleanup',
@@ -3221,7 +3638,6 @@ function attachMainWindowToServices(): void {
   setCodexRuntimeMainWindow(win);
   setTmuxMainWindow(win);
   ptyTerminalService?.setMainWindow(win);
-  teamProvisioningService?.setMainWindow(win);
   codexAccountFeature?.setMainWindow(win);
   setEditorMainWindow(win);
   setReviewMainWindow(win);
@@ -3523,9 +3939,6 @@ function createWindow(): void {
     setTmuxMainWindow(null);
     if (ptyTerminalService) {
       ptyTerminalService.setMainWindow(null);
-    }
-    if (teamProvisioningService) {
-      teamProvisioningService.setMainWindow(null);
     }
     codexAccountFeature?.setMainWindow(null);
     setEditorMainWindow(null);

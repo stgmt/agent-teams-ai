@@ -202,12 +202,23 @@ class MaterializedOpenCodeRuntimeDeliveryProofIndex implements OpenCodeRuntimeDe
   }
 }
 
+/** The three reads proof depends on; each is swappable so an owner can supply its own store. */
+export interface OpenCodeRuntimeDeliveryProofPorts {
+  inboxReader: Pick<TeamInboxReader, 'getMessagesFor'>;
+  taskReader: Pick<TeamTaskReader, 'getTasks'>;
+  configReader: ConfigReaderPort;
+}
+
 export class OpenCodeRuntimeDeliveryProofReader {
-  constructor(
-    private readonly inboxReader = new TeamInboxReader(),
-    private readonly taskReader = new TeamTaskReader(),
-    private readonly configReader: ConfigReaderPort = new TeamConfigReader()
-  ) {}
+  private readonly inboxReader: Pick<TeamInboxReader, 'getMessagesFor'>;
+  private readonly taskReader: Pick<TeamTaskReader, 'getTasks'>;
+  private readonly configReader: ConfigReaderPort;
+
+  constructor(ports: Partial<OpenCodeRuntimeDeliveryProofPorts> = {}) {
+    this.inboxReader = ports.inboxReader ?? new TeamInboxReader();
+    this.taskReader = ports.taskReader ?? new TeamTaskReader();
+    this.configReader = ports.configReader ?? new TeamConfigReader();
+  }
 
   async readProofIndex(
     input: OpenCodeRuntimeDeliveryProofReaderInput

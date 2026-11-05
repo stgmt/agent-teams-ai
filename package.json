@@ -1,7 +1,7 @@
 {
   "name": "agent-teams-ai",
   "type": "module",
-  "version": "2.18.2-tokenplan.3",
+  "version": "2.18.2-tokenplan.4",
   "dynamicFlags": {
     "showSponsorFluxion": true
   },
@@ -366,7 +366,12 @@
       },
       {
         "from": "resources/runtime",
-        "to": "runtime"
+        "to": "runtime",
+        "filter": [
+          "**/*",
+          "!**/agent-teams-opencode-v2-support-*.zip",
+          "!**/opencode-v2-engine-manifest.json"
+        ]
       },
       {
         "from": "resources/terminal-platform",
@@ -381,7 +386,7 @@
         "to": "mcp-server/index.js"
       },
       {
-        "from": "mcp-server/package.json",
+        "from": "mcp-server/dist/package.json",
         "to": "mcp-server/package.json"
       }
     ],

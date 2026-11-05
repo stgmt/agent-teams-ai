@@ -16,6 +16,9 @@ interface MessageComposerStatusNoticeProps {
   readonly sendWarning: string | null;
   readonly sendDebugDetails: OpenCodeRuntimeDeliveryDebugDetails | null;
   readonly deduplicated: boolean;
+  readonly onRetryStorage?: () => Promise<void>;
+  readonly retryingStorage?: boolean;
+  readonly storageRetryFailed?: boolean;
 }
 
 export const MessageComposerStatusNotice = ({
@@ -27,6 +30,9 @@ export const MessageComposerStatusNotice = ({
   sendWarning,
   sendDebugDetails,
   deduplicated,
+  onRetryStorage,
+  retryingStorage,
+  storageRetryFailed,
 }: MessageComposerStatusNoticeProps): React.JSX.Element | null => {
   const { t } = useAppTranslation('team');
   const alert = (text: string, warning = false): React.JSX.Element => (
@@ -38,15 +44,38 @@ export const MessageComposerStatusNotice = ({
     </span>
   );
 
-  if (readError) return alert(readError);
   if (sendWarning && isOpenCodeRuntimeDeliveryHardUxFailureFromDebugDetails(sendDebugDetails)) {
     return <OpenCodeDeliveryWarning warning={sendWarning} debugDetails={sendDebugDetails} />;
   }
   if (submissionError) return alert(submissionError);
   if (restrictionReason) return alert(restrictionReason, true);
   if (persistenceStatus === 'memory-only') {
-    return alert(t('messageComposer.status.memoryOnly'), true);
+    return (
+      <span role="status" className="inline-flex flex-wrap items-center gap-2">
+        {alert(
+          t(
+            storageRetryFailed
+              ? 'messageComposer.status.retryFailed'
+              : 'messageComposer.status.memoryOnly'
+          ),
+          true
+        )}
+        {onRetryStorage ? (
+          <button
+            type="button"
+            disabled={retryingStorage}
+            onClick={() => {
+              void onRetryStorage();
+            }}
+            className="text-xs underline"
+          >
+            {t('messageComposer.status.retryStorage')}
+          </button>
+        ) : null}
+      </span>
+    );
   }
+  if (readError) return alert(t('messageComposer.status.storageReadFailed'), true);
   if (restoredDeliveryUnknown) {
     return alert(t('messageComposer.status.previousDeliveryUnknown'), true);
   }

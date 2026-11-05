@@ -1,0 +1,193 @@
+// @vitest-environment node
+import { describe, expect, it, vi } from 'vitest';
+
+import { NativeTeamDiagnostics } from '../../../../src/features/team-provisioning/main/adapters/output/NativeTeamDiagnostics';
+
+import type {
+  TeamLifecycleSnapshot,
+  TeamRunIdentity,
+} from '../../../../src/features/team-provisioning/contracts';
+
+const run: TeamRunIdentity = {
+  appInstanceId: 'TEST-app',
+  dataRootFingerprint: 'TEST-root',
+  connectionGeneration: 1,
+  teamName: 'test-team',
+  runId: 'TEST-run',
+};
+
+function member(memberName: string, role: 'lead' | 'member', phase: 'ready' | 'failed' = 'ready') {
+  return {
+    memberName,
+    role,
+    membership: 'configured' as const,
+    desired: 'running' as const,
+    phase,
+    resources: 'held' as const,
+    generation: 1,
+    operationId: `TEST-op-${memberName}`,
+    process: { pid: role === 'lead' ? 100 : 101, birthId: `TEST-birth-${memberName}` },
+    lane: null,
+    everConnected: true,
+    skippedForLaunch: false,
+    error: null,
+    exit: null,
+  };
+}
+
+function snapshot(overrides: Partial<TeamLifecycleSnapshot> = {}): TeamLifecycleSnapshot {
+  return {
+    identity: run,
+    desired: 'running',
+    resources: 'held',
+    state: 'ready',
+    error: null,
+    version: 1,
+    startedAt: '2026-10-31T00:00:00.000Z',
+    members: {
+      'team-lead': member('team-lead', 'lead'),
+      builder: member('builder', 'member'),
+    },
+    ...overrides,
+  };
+}
+
+function setup(
+  options: {
+    lines?: string[];
+    live?: boolean;
+    current?: TeamLifecycleSnapshot;
+  } = {}
+) {
+  const runtimeSnapshot = vi.fn(async () => ({
+    teamName: run.teamName,
+    updatedAt: '2026-10-31T00:00:00.000Z',
+    runId: run.runId,
+    members: {},
+  }));
+  const api = new NativeTeamDiagnostics({
+    statuses: { runtimeSnapshot },
+    runs: {
+      find: (teamName) => (teamName === run.teamName ? (options.current ?? snapshot()) : null),
+      isLive: () => options.live ?? true,
+    },
+    logs: {
+      read: () => ({
+        lines: options.lines ?? [],
+        total: (options.lines ?? []).length,
+        hasMore: false,
+      }),
+    },
+  });
+  return { api, runtimeSnapshot };
+}
+
+describe('native lead activity diagnostics', () => {
+  it('reports active while the newest stream event is a lead turn event', () => {
+    const { api } = setup({ lines: [JSON.stringify({ type: 'assistant' })] });
+    expect(api.getLeadActivityState(run.teamName)).toEqual({
+      state: 'active',
+      runId: run.runId,
+    });
+  });
+
+  it('reports idle after a terminal result or system event', () => {
+    const { api } = setup({
+      lines: [JSON.stringify({ type: 'result' }), JSON.stringify({ type: 'assistant' })],
+    });
+    expect(api.getLeadActivityState(run.teamName)).toEqual({
+      state: 'idle',
+      runId: run.runId,
+    });
+  });
+
+  it('understands Codex turn and item events', () => {
+    expect(
+      setup({ lines: [JSON.stringify({ type: 'item.completed' })] }).api.getLeadActivityState(
+        run.teamName
+      )
+    ).toEqual({ state: 'active', runId: run.runId });
+    expect(
+      setup({ lines: [JSON.stringify({ type: 'turn.completed' })] }).api.getLeadActivityState(
+        run.teamName
+      )
+    ).toEqual({ state: 'idle', runId: run.runId });
+  });
+
+  it('uses normalized assistant/result events for Gemini-style streams', () => {
+    expect(
+      setup({
+        lines: [JSON.stringify({ type: 'assistant', model: 'gemini' })],
+      }).api.getLeadActivityState(run.teamName)
+    ).toEqual({ state: 'active', runId: run.runId });
+    expect(
+      setup({
+        lines: [JSON.stringify({ type: 'result', model: 'gemini' })],
+      }).api.getLeadActivityState(run.teamName)
+    ).toEqual({ state: 'idle', runId: run.runId });
+  });
+
+  it('ignores plain-text diagnostics and returns idle when no stream event exists', () => {
+    expect(
+      setup({ lines: ['[stderr] plain diagnostic', 'not json', '   '] }).api.getLeadActivityState(
+        run.teamName
+      )
+    ).toEqual({ state: 'idle', runId: run.runId });
+  });
+
+  it('reports offline for a stopped run, missing lead or failed lead', () => {
+    expect(setup({ live: false }).api.getLeadActivityState(run.teamName)).toEqual({
+      state: 'offline',
+      runId: null,
+    });
+    const noLead = snapshot({ members: { builder: member('builder', 'member') } });
+    expect(setup({ current: noLead }).api.getLeadActivityState(run.teamName)).toEqual({
+      state: 'offline',
+      runId: null,
+    });
+    const failedLead = snapshot({
+      members: { 'team-lead': member('team-lead', 'lead', 'failed') },
+    });
+    expect(setup({ current: failedLead }).api.getLeadActivityState(run.teamName)).toEqual({
+      state: 'offline',
+      runId: null,
+    });
+  });
+
+  it('derives context usage from the newest usage event', () => {
+    const line = JSON.stringify({
+      type: 'assistant',
+      message: {
+        model: 'claude-sonnet-4-20250514',
+        usage: {
+          input_tokens: 1_000,
+          output_tokens: 200,
+          cache_read_input_tokens: 0,
+          cache_creation_input_tokens: 0,
+        },
+      },
+    });
+    const { api } = setup({ lines: [line] });
+    const usage = api.getLeadContextUsage(run.teamName).usage;
+    expect(usage).toMatchObject({
+      promptInputTokens: 1_000,
+      outputTokens: 200,
+      contextUsedTokens: 1_200,
+      promptInputSource: 'anthropic_usage',
+    });
+    expect(usage?.contextWindowTokens).toBeGreaterThan(0);
+  });
+
+  it('returns null usage when the log tail has no usage event', () => {
+    const { api } = setup();
+    expect(api.getLeadContextUsage(run.teamName)).toEqual({
+      usage: null,
+      runId: run.runId,
+    });
+  });
+
+  it('returns null usage for an offline lead', () => {
+    const { api } = setup({ live: false });
+    expect(api.getLeadContextUsage(run.teamName)).toEqual({ usage: null, runId: null });
+  });
+});

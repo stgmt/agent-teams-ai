@@ -18,12 +18,15 @@ export function hasUnresolvedMemberSpawnStatus(
     ...Object.values(memberSpawnStatuses ?? {}),
     ...Object.values(memberSpawnSnapshot?.statuses ?? {}),
   ];
-  return entries.some(
-    (entry) =>
+  return entries.some((entry) => {
+    if (entry.status === 'offline' || entry.status === 'skipped' || entry.status === 'error')
+      return false;
+    return (
       entry.status === 'waiting' ||
       entry.status === 'spawning' ||
       entry.launchState === 'starting' ||
       entry.launchState === 'runtime_pending_bootstrap' ||
       entry.launchState === 'runtime_pending_permission'
-  );
+    );
+  });
 }

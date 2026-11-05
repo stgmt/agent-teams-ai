@@ -187,8 +187,10 @@ export function useComposerDraft(
           contentIsEmpty(pending.content) ? null : pending.content,
           pending.editorContext
         );
-        setPersistenceStatus(result.status);
+        if (pending.addressKey === addressKeyRef.current) setPersistenceStatus(result.status);
         if (result.kind === 'saved') {
+          if (pending.addressKey === addressKeyRef.current && result.status === 'durable')
+            setReadError(null);
           revisionByAddressRef.current.set(pending.addressKey, result.workingRevision);
           if (latestEditByAddressRef.current.get(pending.addressKey) === pending.editCounter)
             savedEditByAddressRef.current.set(pending.addressKey, pending.editCounter);
@@ -738,7 +740,7 @@ export function useComposerDraft(
       revisionContext: editorContext.kind === 'revision' ? editorContext : null,
       setRevision,
       clearRevision,
-      isSaved,
+      isSaved: isSaved && persistenceStatus === 'durable' && !readError,
       isLoaded,
       isRestoring,
       persistenceStatus,

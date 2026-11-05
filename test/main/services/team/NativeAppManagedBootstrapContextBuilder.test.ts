@@ -1,3 +1,4 @@
+import { protocols } from 'agent-teams-controller';
 import { mkdir, mkdtemp, rm, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -103,6 +104,8 @@ describe('NativeAppManagedBootstrapContextBuilder', () => {
     expect(bob?.contextText).toContain('Codex Native visible messaging rule');
     expect(bob?.contextText).toContain('mcp__agent-teams__task_get');
     expect(bob?.contextText).not.toContain('notify your team lead via SendMessage');
+    expect(bob?.contextText).toContain(protocols.buildChatVisualizationRefreshInstruction());
+    expect(bob?.contextText).not.toContain('AVAILABLE DISPLAY LIBRARY SPEC');
     expect(alice?.contextHash).toBe(hashNativeBootstrapText(alice?.contextText ?? ''));
   });
 
@@ -203,6 +206,11 @@ describe('NativeAppManagedBootstrapContextBuilder', () => {
     expect(firstContext).toContain('Startup rules:');
     expect(firstContext).toContain('Current task briefing:');
     expect(firstContext).toContain('[truncated native bootstrap context]');
+    // The published briefing is what a launch hashes and a caller bounds; a truncated
+    // value must stay inside the documented limit, marker included.
+    for (const briefing of result.briefings.values()) {
+      expect(briefing.length).toBeLessThanOrEqual(18_000);
+    }
   });
 
   it('keeps Codex MCP rules in compact native startup context', async () => {
@@ -291,5 +299,7 @@ describe('NativeAppManagedBootstrapContextBuilder', () => {
     expect(context).toContain('- developer (role: Backend engineer) [you]');
     expect(context).toContain('- reviewer (role: Security reviewer)');
     expect(context).not.toContain('removed-reviewer');
+    expect(context).toContain(protocols.buildChatVisualizationProtocolText());
+    expect(context).not.toContain('CHAT VISUALIZATION REFRESH REQUIRED');
   });
 });

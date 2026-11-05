@@ -14,6 +14,7 @@ import { useTeamStartupCopy } from '@renderer/components/team/useTeamStartupCopy
 import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/components/ui/tooltip';
 import { getTeamColorSet } from '@renderer/constants/teamColors';
 import { useAttachmentValidation } from '@renderer/hooks/useAttachmentValidation';
+import { useComposerStorageRetry } from '@renderer/hooks/useComposerStorageRetry';
 import { useRecipientAttachmentDeclarations } from '@renderer/hooks/useRecipientAttachmentDeclarations';
 import {
   getTaskSuggestionsForTeamNow,
@@ -885,6 +886,7 @@ const MemberMessageComposer = ({
         onStash={draft.stashWorking}
       />
     ) : null;
+  const storageRetry = useComposerStorageRetry(draft.address, draft.flush);
   const hasStatusNotice = Boolean(
     draft.readError ||
     draft.persistenceStatus === 'memory-only' ||
@@ -904,6 +906,9 @@ const MemberMessageComposer = ({
       sendWarning={submissionFeedback.sendWarning}
       sendDebugDetails={submissionFeedback.sendDebugDetails}
       deduplicated={submissionFeedback.deduplicated}
+      onRetryStorage={storageRetry.retry}
+      retryingStorage={storageRetry.retrying}
+      storageRetryFailed={storageRetry.retryError}
     />
   ) : null;
   const shouldShowSavedIndicator = isTextareaFocused && draft.isSaved;
@@ -1154,16 +1159,7 @@ const MemberMessageComposer = ({
             slashCommandRestrictionReason ||
             (isLaunchBlocking && !sending ? startupCopy.sendingUnavailable : undefined)
           }
-          footerRight={
-            <>
-              {composerFooterRight}
-              {manualQueue.unavailableReason ? (
-                <p role="status" className="text-xs text-[var(--color-text-muted)]">
-                  {manualQueue.unavailableReason}
-                </p>
-              ) : null}
-            </>
-          }
+          footerRight={composerFooterRight}
         />
       </div>
     </ComposerSurface>

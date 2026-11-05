@@ -31,7 +31,9 @@ export function canManagedInstallChangeOpenCodeRuntime(
 
 export function isOpenCodeRuntimeUsable(runtimeStatus: OpenCodeRuntimeStatus | null): boolean {
   return (
-    runtimeStatus?.installed === true && isOpenCodeVersionServedByRuntime(runtimeStatus.version)
+    runtimeStatus?.installed === true &&
+    runtimeStatus.v2Support !== 'required' &&
+    isOpenCodeVersionServedByRuntime(runtimeStatus.version)
   );
 }
 
@@ -93,14 +95,7 @@ export function resolveOpenCodeQuickConnectGate(input: {
   if (isOpenCodeRuntimeUsable(runtimeStatus)) {
     return 'ready';
   }
-  if (
-    runtimeStatus === null &&
-    input.provider?.supported === true &&
-    input.provider.authenticated &&
-    input.provider.capabilities.teamLaunch
-  ) {
-    return 'ready';
-  }
+  // Credentials/provider availability cannot prove that a supported local binary exists.
   return 'missing';
 }
 

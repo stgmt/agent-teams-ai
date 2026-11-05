@@ -228,6 +228,13 @@ export interface TeamOpenCodeMemberInboxRelayOptions {
   onlyMessageId?: string;
   source?: TeamMessagingDeliverySource;
   deliveryMetadata?: TeamMessagingDeliveryMetadata;
+  /**
+   * Generation guard for a relay the app scheduled itself. A watchdog retry
+   * carries it so a walk that outlives the generation that armed it stops
+   * writing ledger records and consuming rows on its behalf. It is in-process
+   * only: requesters over IPC never supply it.
+   */
+  isCurrent?: () => boolean;
 }
 
 export interface TeamOpenCodeMemberInboxDelivery {

@@ -1231,6 +1231,8 @@ export default interface Resources {
         "overrideSelection": "An explicit OpenCode binary override is active. Remove it to use an app-managed installation.",
         "retryInstall": "Retry install",
         "update": "Update",
+        "v2SupportInstall": "Install V2 support",
+        "v2SupportRepair": "Repair V2 support",
         "v2Unavailable": "Compatible V2 is not available for this platform. V1 remains available."
       },
       "sponsorship": {
@@ -5091,9 +5093,12 @@ export default interface Resources {
         }
       },
       "status": {
-        "memoryOnly": "Saved only until the app closes",
+        "memoryOnly": "Not saved to disk. Keep this window open and copy important text before closing.",
         "previousDeliveryUnknown": "Previous delivery is unknown; sending again may create a duplicate",
+        "retryFailed": "Local saving is still unavailable or saved data changed. Your current text remains in this window. Storage retry does not send messages.",
+        "retryStorage": "Retry local storage",
         "reusedCrossTeamRequest": "Reused recent cross-team request",
+        "storageReadFailed": "Saved drafts could not be read. Existing data was left untouched.",
         "teamOffline": "offline"
       },
       "teamSelector": {
@@ -5256,14 +5261,23 @@ export default interface Resources {
         "queueDisabled": "Add to queue (Cmd/Ctrl+Enter)",
         "recipientUnavailable": "This recipient is no longer available.",
         "removeRecord": "Remove record; delivery is not cancelled",
-        "richUnsupported": "Only plain text in Do or Ask mode can be queued. Remove attachments, file chips, commands or review actions first.",
         "rootUnavailable": "The message destination is still loading.",
         "save": "Save",
         "schemaError": "Saved queue uses unsupported data; left untouched.",
         "send": "Send",
         "sending": "Sending",
+        "storageUnavailable": "The saved queue is unavailable. Retry local storage; this does not send messages.",
         "title": "Queued messages",
-        "unknownWarning": "Delivery is unknown. Removing this record will not cancel the message; sending the text again may create a duplicate."
+        "unknownWarning": "Delivery is unknown. Removing this record will not cancel the message; sending the text again may create a duplicate.",
+        "unsupported": {
+          "attachments": "Messages with attachments cannot be added to the queue.",
+          "command": "Slash commands cannot be added to the queue. Use Send instead.",
+          "crossTeam": "Cross-team messages cannot be added to this queue.",
+          "delegate": "Delegate cannot be added to the queue. Use Send for immediate delivery.",
+          "files": "Messages with file chips cannot be added to the queue.",
+          "revision": "Message corrections cannot be added to the queue.",
+          "unknownDelivery": "Check the previous delivery before adding this message to the queue."
+        }
       },
       "outbox": {
         "actions": {

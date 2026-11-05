@@ -15,14 +15,133 @@ import type {
   ComposerDraftContent,
 } from '../../../src/renderer/types/composerDraft';
 
-const ports = vi.hoisted(() => ({ send: vi.fn(), load: vi.fn(), save: vi.fn() }));
+const ports = vi.hoisted(() => ({ send: vi.fn(), load: vi.fn(), save: vi.fn(), retry: vi.fn() }));
 vi.mock('@renderer/api', () => ({ api: { teamGroupChats: { send: ports.send } } }));
 vi.mock('@renderer/services/composerDraftRepository', () => ({
-  composerDraftRepository: { loadWorking: ports.load, saveWorking: ports.save },
+  composerDraftRepository: {
+    loadWorking: ports.load,
+    saveWorking: ports.save,
+    retryPersistence: ports.retry,
+  },
 }));
 
 describe('group composer canonical send outcome', () => {
+  it('reports memory-only drafts and retries saving without sending or replacing concurrent typing', async () => {
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+    ports.send.mockReset();
+    ports.retry.mockReset();
+    ports.load.mockImplementation(async (address) => ({
+      working: {
+        version: 2,
+        address,
+        workingRevision: 'loaded',
+        content: null,
+        editorContext: { kind: 'plain' },
+        updatedAt: 0,
+      },
+      status: 'memory-only',
+      readError: 'Internal error.',
+    }));
+    ports.save.mockImplementation(async (_address, _expected, workingRevision) => ({
+      kind: 'saved',
+      workingRevision,
+      status: 'memory-only',
+    }));
+    let release!: (recovered: boolean) => void;
+    ports.retry.mockReturnValue(
+      new Promise<boolean>((resolve) => {
+        release = resolve;
+      })
+    );
+    let composer!: ReturnType<typeof useGroupChatComposer>;
+    function Probe() {
+      composer = useGroupChatComposer('TEST-team', 'local', 'TEST-group', async () => {});
+      return null;
+    }
+    const root = createRoot(document.createElement('div'));
+    try {
+      await act(async () => root.render(<Probe />));
+      expect(composer.persistenceStatus).toBe('memory-only');
+      expect(composer.error).toBeNull();
+      await act(async () => composer.change('TEST-first'));
+      let pending!: Promise<boolean>;
+      act(() => {
+        pending = composer.retryPersistence();
+      });
+      await act(async () => composer.change('TEST-newer'));
+      ports.load.mockImplementationOnce(async (address) => ({
+        working: {
+          version: 2,
+          address,
+          workingRevision: 'recovered',
+          content: null,
+          editorContext: { kind: 'plain' },
+          updatedAt: 0,
+        },
+        status: 'durable',
+      }));
+      await act(async () => {
+        release(true);
+        await pending;
+      });
+      expect(composer.persistenceStatus).toBe('durable');
+      expect(composer.text).toBe('TEST-newer');
+      await act(async () => {
+        composer.change('TEST-after-recovery');
+        await composer.flush();
+      });
+      expect(ports.save.mock.lastCall?.[1]).toBe('recovered');
+      expect(composer.text).toBe('TEST-after-recovery');
+      expect(composer.persistenceStatus).toBe('memory-only');
+      expect(ports.send).not.toHaveBeenCalled();
+    } finally {
+      act(() => root.unmount());
+      vi.unstubAllGlobals();
+    }
+  });
+  it('adopts an externally updated unchanged draft after reconnect instead of overwriting it', async () => {
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+    ports.save.mockReset();
+    ports.send.mockReset();
+    const loaded = (address: ComposerDraftAddress, revision: string, text: string) => ({
+      working: {
+        version: 2,
+        address,
+        workingRevision: revision,
+        content: { text, chips: [], attachments: [], actionMode: 'do' },
+        editorContext: { kind: 'plain' },
+        updatedAt: 0,
+      },
+      status: revision === 'cached' ? 'memory-only' : 'durable',
+    });
+    ports.load.mockImplementationOnce(async (address) => loaded(address, 'cached', 'TEST-cached'));
+    ports.retry.mockResolvedValue(true);
+    let composer!: ReturnType<typeof useGroupChatComposer>;
+    function Probe() {
+      composer = useGroupChatComposer('TEST-team', 'local', 'TEST-group', async () => {});
+      return null;
+    }
+    const root = createRoot(document.createElement('div'));
+    try {
+      await act(async () => root.render(<Probe />));
+      ports.load.mockImplementationOnce(async (address) =>
+        loaded(address, 'external', 'TEST-external')
+      );
+      await act(async () => {
+        await composer.retryPersistence();
+      });
+      expect(composer.text).toBe('TEST-external');
+      expect(composer.persistenceStatus).toBe('durable');
+      expect(ports.save).not.toHaveBeenCalled();
+      expect(ports.send).not.toHaveBeenCalled();
+    } finally {
+      act(() => root.unmount());
+      vi.unstubAllGlobals();
+    }
+  });
   it('keeps a successful send and clears local text when durable draft cleanup conflicts', async () => {
+    ports.save.mockReset();
+    ports.send.mockReset();
     vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
     ports.load.mockImplementation(async (address) => ({
       working: {

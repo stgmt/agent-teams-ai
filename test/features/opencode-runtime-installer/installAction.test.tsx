@@ -16,32 +16,62 @@ function render(status: OpenCodeRuntimeStatus): string {
 }
 
 describe('V2 installation choice', () => {
-  it('offers the pinned V2 to a V1 user but preserves every existing V2', () => {
-    expect(
-      render({
+  it.each(['required', 'ready'] as const)(
+    'exposes support-only install/repair for native V2 with %s availability',
+    (v2Support) => {
+      const markup = render({
         installed: true,
-        source: 'path',
-        state: 'ready',
-        version: '1.18.3',
-        compatibleV2Version: '2.1.4',
-      })
-    ).toContain('V2 2.1.4');
-    expect(
-      render({
-        installed: true,
-        source: 'path',
+        source: 'override',
         state: 'ready',
         version: '2.9.0',
+        v2Support,
         compatibleV2Version: '2.1.4',
+      });
+      expect(markup).toContain(v2Support === 'required' ? 'v2SupportInstall' : 'v2SupportRepair');
+      expect(markup).toContain('<button');
+    }
+  );
+
+  it('offers no V2 support action when the native platform has no qualified engine', () => {
+    expect(
+      render({
+        installed: true,
+        source: 'path',
+        state: 'idle',
+        version: '2.9.0',
+        v2Support: 'required',
+        compatibleV2Version: null,
       })
     ).toBe('');
   });
+
+  it('offers the pinned V2 only for an unsupported installed runtime', () => {
+    expect(
+      render({
+        installed: true,
+        source: 'path',
+        state: 'ready',
+        version: '0.9.0',
+        compatibleV2Version: '2.1.4',
+      })
+    ).toContain('V2 2.1.4');
+  });
+  it.each(['1.18.3', '2.9.0'])(
+    'preserves supported version %s without a migration offer',
+    (version) => {
+      for (const source of ['path', 'override'] as const) {
+        expect(
+          render({ installed: true, source, state: 'ready', version, compatibleV2Version: '2.1.4' })
+        ).toBe('');
+      }
+    }
+  );
   it('explains override selection and an unqualified platform without a misleading V2 action', () => {
     const override = render({
       installed: true,
       source: 'override',
       state: 'ready',
-      version: '1.18.3',
+      version: '0.9.0',
       compatibleV2Version: '2.1.4',
     });
     expect(override).toContain('overrideSelection');

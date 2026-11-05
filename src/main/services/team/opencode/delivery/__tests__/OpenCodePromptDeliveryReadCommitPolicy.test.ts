@@ -76,6 +76,52 @@ function record(
   };
 }
 
+describe('runtime-confirmed unsubmitted group retry', () => {
+  const unsubmitted = (overrides: Partial<OpenCodePromptDeliveryLedgerRecord> = {}) =>
+    record({
+      groupChatId: 'owned-test-group',
+      status: 'retry_scheduled',
+      acceptedAt: null,
+      responseState: 'not_observed',
+      promptNotSubmitted: true,
+      ...overrides,
+    });
+
+  it('keeps a confirmed unsubmitted prompt retryable after a read-only observation', () => {
+    expect(
+      isOpenCodeDeliveryRetryablePendingResponse({
+        ledgerRecord: unsubmitted(),
+        readAllowed: false,
+      })
+    ).toBe(true);
+  });
+
+  it.each([
+    { promptNotSubmitted: undefined },
+    { promptNotSubmitted: false },
+    { acceptanceUnknown: true },
+    { groupRepairHandoffPending: true },
+    { attempts: 3 },
+    { attempts: 4 },
+    { status: 'failed_terminal' as const },
+    { status: 'accepted' as const },
+    { cancelledAt: ISO },
+  ])('preserves the retry fence for %j', (overrides) => {
+    expect(
+      isOpenCodeDeliveryRetryablePendingResponse({
+        ledgerRecord: unsubmitted(overrides),
+        readAllowed: false,
+      })
+    ).toBe(false);
+  });
+
+  it('does not retry a delivery whose visible response is already readable', () => {
+    expect(
+      isOpenCodeDeliveryRetryablePendingResponse({ ledgerRecord: unsubmitted(), readAllowed: true })
+    ).toBe(false);
+  });
+});
+
 function visibleReply(taskRefs: TaskRef[] = []): OpenCodeVisibleReplyProof {
   return {
     inboxName: 'user',
@@ -272,6 +318,47 @@ describe('OpenCode prompt delivery read commit policy', () => {
         taskRefsIncludeAll,
       })
     ).toBe('non_visible_tool_without_task_progress');
+  });
+
+  it('consumes certified peer non-responses only for the exact accepted group prompt', async () => {
+    const peer = record({
+      groupChatId: 'group',
+      replyRecipient: 'bob',
+      runtimePromptMessageId: 'prompt',
+      lastRuntimePromptMessageId: 'prompt',
+      deliveredUserMessageId: 'prompt',
+      observedAssistantMessageId: 'child',
+      observedAssistantPreview: '[[AGENT_TEAMS_NO_REPLY]]',
+      responseState: 'responded_plain_text',
+      lastReason: 'assistant_child_completed_with_non_response_text',
+    });
+    const allowed = (ledgerRecord = peer) =>
+      isOpenCodeDeliveryResponseReadCommitAllowed({
+        teamName: 'team',
+        memberName: 'alice',
+        ledgerRecord,
+        responseState: ledgerRecord.responseState,
+        hasAcceptedMemberWorkSyncReport: async () => false,
+        taskRefsIncludeAll,
+      });
+    await expect(allowed()).resolves.toBe(true);
+    await expect(
+      allowed({ ...peer, observedToolCallNames: ['agent-teams_group_chat_list'] })
+    ).resolves.toBe(true);
+    for (const overrides of [
+      { replyRecipient: 'user' },
+      { replyRecipient: 'system' },
+      { acceptedAt: null },
+      { acceptanceUnknown: true },
+      { deliveredUserMessageId: 'other' },
+      { lastRuntimePromptMessageId: 'newer' },
+      { observedAssistantMessageId: null },
+      { observedToolCallNames: ['group_chat_send'] },
+      { lastReason: 'assistant_replied_with_plain_text' },
+      { responseState: 'pending' as const },
+      { cancelledAt: ISO },
+    ])
+      await expect(allowed({ ...peer, ...overrides })).resolves.toBe(false);
   });
 
   it('consumes a completed silent direct peer turn only with exact accepted delivery proof', async () => {

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { useAppTranslation } from '@features/localization/renderer';
 import { api } from '@renderer/api';
+import { composerDatabase, ComposerStorageError } from '@renderer/services/composerDatabase';
 import { useStore } from '@renderer/store';
 import {
   captureContextScopedRequestEpoch,
@@ -27,6 +28,7 @@ export interface ManualQueueOptions {
   route: QueueRoute;
   text: string;
   unavailableReason?: string | null;
+  storageNoticeVisible?: boolean;
   consume: (
     commit: (working: ComposerWorkingRecord) => Promise<ComposerWorkingRecord>
   ) => Promise<void>;
@@ -63,11 +65,18 @@ export function useManualMessageQueue(options: ManualQueueOptions): ManualQueueB
     scope: QueueScope;
     items: readonly QueueItem[];
   } | null>(null);
-  const [error, setError] = useState<{ identity: string; message: string } | null>(null);
+  const [error, setError] = useState<{
+    identity: string;
+    message: string;
+    storage?: boolean;
+    eligibility?: string;
+  } | null>(null);
   const [busy, setBusy] = useState(false);
   const operationActive = useRef(false);
   const message = useCallback(
     (cause: unknown): string => {
+      if (cause instanceof ComposerStorageError)
+        return String(t('messages.manualQueue.storageUnavailable'));
       const key = cause instanceof Error ? cause.message : '';
       if (key === 'rootUnavailable') return String(t('messages.manualQueue.rootUnavailable'));
       if (key === 'persistenceRequired')
@@ -101,7 +110,11 @@ export function useManualMessageQueue(options: ManualQueueOptions): ManualQueueB
       } catch (cause) {
         if (active && capturedVersion === version && identityRef.current === identity) {
           setLoaded(null);
-          setError({ identity, message: message(cause) });
+          setError({
+            identity,
+            message: message(cause),
+            storage: cause instanceof ComposerStorageError,
+          });
         }
       }
     };
@@ -109,9 +122,13 @@ export function useManualMessageQueue(options: ManualQueueOptions): ManualQueueB
     const unsubscribe = queueRepository.subscribe(() => {
       void load();
     });
+    const unsubscribeStorage = composerDatabase.subscribe(() => {
+      void load();
+    });
     return () => {
       active = false;
       unsubscribe();
+      unsubscribeStorage();
     };
     // Recipient changes intentionally share a group queue.
   }, [identity, switching, message]);
@@ -123,9 +140,15 @@ export function useManualMessageQueue(options: ManualQueueOptions): ManualQueueB
     setBusy(true);
     try {
       await operation();
-      if (identityRef.current === identity) setError(null);
+      if (identityRef.current === identity)
+        setError((currentError) => (currentError?.storage ? currentError : null));
     } catch (cause) {
-      if (identityRef.current === identity) setError({ identity, message: message(cause) });
+      if (identityRef.current === identity)
+        setError({
+          identity,
+          message: message(cause),
+          storage: cause instanceof ComposerStorageError,
+        });
       throw new Error(message(cause));
     } finally {
       operationActive.current = false;
@@ -171,7 +194,20 @@ export function useManualMessageQueue(options: ManualQueueOptions): ManualQueueB
     return queueRepository.enqueue(scope, options.route, working, () => snapshotIsCurrent(epoch));
   };
   const enqueue = (): void => {
-    if (!options.text.trim() || options.unavailableReason || !scope) return;
+    if (!options.text.trim()) return;
+    if (options.unavailableReason || !scope) {
+      setError((previous) =>
+        previous?.identity === identity && previous.storage
+          ? previous
+          : {
+              identity,
+              message:
+                options.unavailableReason || String(t('messages.manualQueue.rootUnavailable')),
+              eligibility: options.unavailableReason || undefined,
+            }
+      );
+      return;
+    }
     const epoch = captureContextScopedRequestEpoch();
     void run(() => options.consume((working) => commitEnqueue(working, epoch))).catch(
       () => undefined
@@ -200,7 +236,7 @@ export function useManualMessageQueue(options: ManualQueueOptions): ManualQueueB
       if (!queueTextValid(text, MAX_TEXT_LENGTH)) throw new Error('queue-invalid-text');
       await isBound();
       if (parseStandaloneSlashCommand(stripEncodedTaskReferenceMetadata(text).trim()) !== null)
-        throw new Error(String(t('messages.manualQueue.richUnsupported')));
+        throw new Error(String(t('messages.manualQueue.unsupported.command')));
       await queueRepository.edit(item, text);
     });
   const remove = (item: QueueItem): Promise<void> =>
@@ -267,7 +303,18 @@ export function useManualMessageQueue(options: ManualQueueOptions): ManualQueueB
         key={identity}
         items={items}
         busy={busy}
-        error={error?.identity === identity ? error.message : null}
+        onRetryStorage={
+          error?.storage && !options.storageNoticeVisible
+            ? () => run(() => composerDatabase.reopen())
+            : undefined
+        }
+        error={
+          error?.identity === identity &&
+          !(error.storage && options.storageNoticeVisible) &&
+          (!error.eligibility || error.eligibility === options.unavailableReason)
+            ? error.message
+            : null
+        }
         blockedReason={blockedReason}
         onSend={send}
         onEdit={edit}

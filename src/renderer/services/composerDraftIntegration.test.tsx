@@ -22,14 +22,11 @@ const database = vi.hoisted(() => ({
   pauseNextWriteStarted: null as (() => void) | null,
 }));
 
-vi.mock('idb-keyval', () => ({
-  get: vi.fn(async (key: string) => {
+vi.mock('@renderer/services/composerDraftIndexedDb', () => ({
+  composerDraftGet: vi.fn(async (key: string) => {
     if (database.unavailable) throw new Error('audit storage unavailable');
     return database.values.get(key);
   }),
-}));
-
-vi.mock('@renderer/services/composerDraftIndexedDb', () => ({
   requestValue: async (request: { result: unknown }) => request.result,
   composerDraftEntriesByPrefix: async (_store: IDBObjectStore, prefix: string) => {
     return [...database.values.entries()].filter(([key]) => key.startsWith(prefix));

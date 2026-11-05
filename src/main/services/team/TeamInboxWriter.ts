@@ -85,6 +85,11 @@ export interface SendInboxMessageOptions {
    * the state that holds at the moment this writer is allowed to append.
    */
   shouldStillWrite?: () => boolean | Promise<boolean>;
+  /**
+   * Team directory root for this write. Launches that own a private teams root
+   * pass it here so their inbox never resolves against the shared default.
+   */
+  teamsBasePath?: string;
 }
 
 type TeamInboxWriteRequest = Omit<SendMessageRequest, 'attachments'> & {
@@ -155,7 +160,7 @@ export class TeamInboxWriter {
     request: TeamInboxWriteRequest,
     options?: SendInboxMessageOptions
   ): Promise<SendMessageResult> {
-    const inboxPath = resolveInboxPath(teamName, request.member);
+    const inboxPath = resolveInboxPath(teamName, request.member, options?.teamsBasePath);
     const explicitMessageId = request.messageId?.trim();
     const messageId = explicitMessageId || randomUUID();
 

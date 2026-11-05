@@ -128,11 +128,11 @@ function createProofReader(leadInboxMessages: InboxMessage[]): OpenCodeRuntimeDe
     ),
   };
 
-  return new OpenCodeRuntimeDeliveryProofReader(
-    inboxReader as never,
-    taskReader as never,
-    configReader as never
-  );
+  return new OpenCodeRuntimeDeliveryProofReader({
+    inboxReader: inboxReader as never,
+    taskReader: taskReader as never,
+    configReader: configReader as never,
+  });
 }
 
 describe('OpenCodeRuntimeDeliveryProofReader', () => {
@@ -185,11 +185,11 @@ describe('OpenCodeRuntimeDeliveryProofReader', () => {
       ),
     };
 
-    const proofIndex = await new OpenCodeRuntimeDeliveryProofReader(
-      inboxReader as never,
-      taskReader as never,
-      configReader as never
-    ).readProofIndex({
+    const proofIndex = await new OpenCodeRuntimeDeliveryProofReader({
+      inboxReader: inboxReader as never,
+      taskReader: taskReader as never,
+      configReader: configReader as never,
+    }).readProofIndex({
       teamName: TEAM_NAME,
       activeMemberKeys: new Set(['tom']),
       recordsByMember: new Map([['tom', [record]]]),

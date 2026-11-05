@@ -1,5 +1,6 @@
 import {
   composerDraftEntriesByPrefix,
+  composerDraftGet as get,
   composerDraftReadwrite as readwrite,
   requestValue,
 } from '@renderer/services/composerDraftIndexedDb';
@@ -33,8 +34,9 @@ import {
   composerWorkingKeyPrefix,
   sameComposerDraftAddress,
 } from '@renderer/utils/composerDraftIdentity';
-import { get } from 'idb-keyval';
 
+import { clone } from './composerDraftClone';
+import { createComposerDurabilityRecovery } from './createComposerDurabilityRecovery';
 import { repairDurableComposerWorkingIndex } from './repairDurableComposerWorkingIndex';
 
 import type {
@@ -51,11 +53,6 @@ import type {
   SaveWorkingResult,
 } from '@renderer/types/composerDraft';
 
-export function clone<T>(value: T): T {
-  return typeof structuredClone === 'function'
-    ? structuredClone(value)
-    : (JSON.parse(JSON.stringify(value)) as T);
-}
 class UnsupportedWorkingIndexError extends Error {}
 export class ComposerDraftWorkingRepository {
   protected readonly listeners = new Set<(event: ComposerDraftRepositoryEvent) => void>();
@@ -75,6 +72,22 @@ export class ComposerDraftWorkingRepository {
   private readonly workingMigrations = new Map<string, Promise<void>>();
   private readonly migratedWorkingNamespaces = new Set<string>();
   private queue: Promise<unknown> = Promise.resolve();
+  private readonly durability = createComposerDurabilityRecovery(
+    this.memoryWorking,
+    this.memoryRecoveries,
+    (contextId, teamName) => {
+      const namespace = this.namespace(contextId, teamName);
+      this.memoryNamespaces.delete(namespace);
+      this.memoryReadErrors.delete(namespace);
+      for (const kind of ['working', 'working-index', 'recoveries'] as const)
+        this.emit({ kind, contextId, teamName });
+    }
+  );
+  retryPersistence(contextId: string, teamName: string): Promise<boolean> {
+    return this.enqueue(() =>
+      this.activeAttempts.size ? Promise.resolve(false) : this.durability.retry(contextId, teamName)
+    );
+  }
   protected status(address: ComposerDraftAddress): ComposerPersistenceStatus {
     return this.memoryNamespaces.has(composerDraftNamespace(address)) ? 'memory-only' : 'durable';
   }
@@ -118,6 +131,7 @@ export class ComposerDraftWorkingRepository {
   }
   protected markMemoryOnly(contextId: string, teamName: string, error: unknown): void {
     const namespace = this.namespace(contextId, teamName);
+    this.durability.capture(contextId, teamName);
     this.memoryNamespaces.add(namespace);
     const message = error instanceof Error ? error.message : 'IndexedDB is unavailable.';
     this.memoryReadErrors.set(namespace, message);
@@ -760,6 +774,7 @@ export class ComposerDraftWorkingRepository {
         this.appliedWorkingPrimeOrders.delete(namespace);
         this.memoryNamespaces.delete(namespace);
         this.memoryReadErrors.delete(namespace);
+        this.durability.clear(contextId, teamName);
         this.migratedWorkingNamespaces.delete(namespace);
         this.emit({ kind: 'working-index', contextId, teamName });
         this.recoveriesEvent(contextId, teamName);

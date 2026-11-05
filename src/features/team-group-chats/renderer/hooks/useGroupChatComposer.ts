@@ -15,8 +15,30 @@ import type { GroupChatSendResult } from '../../contracts';
 import type {
   ComposerDraftAddress,
   ComposerDraftContent,
+  ComposerPersistenceStatus,
   ComposerWorkingRecord,
 } from '@renderer/types/composerDraft';
+
+export interface GroupChatComposer {
+  address: ComposerDraftAddress;
+  flush: () => Promise<void>;
+  retryPersistence: () => Promise<boolean>;
+  persistenceStatus: ComposerPersistenceStatus;
+  text: string;
+  change: (value: string) => void;
+  send: () => Promise<void>;
+  ready: boolean;
+  hasCurrentSnapshot: boolean;
+  pending: boolean;
+  error: string | null;
+  result: GroupChatSendResult | null;
+  attemptId: string | null;
+  recipientName: string | null;
+  selectRecipient: (name: string | null) => void;
+  consumeForQueue: (
+    operation: (working: ComposerWorkingRecord) => Promise<ComposerWorkingRecord>
+  ) => Promise<void>;
+}
 
 export function useGroupChatComposer(
   teamName: string,
@@ -25,7 +47,7 @@ export function useGroupChatComposer(
   refresh: () => Promise<void>,
   groupChatName?: string,
   defaultRecipientName?: string | null
-) {
+): GroupChatComposer {
   const address = useMemo<ComposerDraftAddress>(
     () => ({ teamName, contextId, target: { kind: 'group', groupChatId } }),
     [contextId, groupChatId, teamName]
@@ -40,6 +62,7 @@ export function useGroupChatComposer(
   const hasCurrentSnapshot = loadedAddress === address;
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [persistenceStatus, setPersistenceStatus] = useState<ComposerPersistenceStatus>('durable');
   const [result, setResult] = useState<GroupChatSendResult | null>(null);
   const session = useMemo(
     () => ({ address, revision: '', queue: Promise.resolve(), sending: false, consuming: false }),
@@ -71,6 +94,7 @@ export function useGroupChatComposer(
               : 'The draft changed in another window. Reopen the chat before sending.'
           );
         session.revision = saved.workingRevision;
+        if (current.current === address) setPersistenceStatus(saved.status);
       });
       session.queue = operation.catch((cause: unknown) => {
         if (current.current === address)
@@ -106,7 +130,8 @@ export function useGroupChatComposer(
       );
       setLoadedAddress(address);
       setReadyAddress(loaded.writeBlocked ? null : address);
-      setError(loaded.readError ?? null);
+      setPersistenceStatus(loaded.status);
+      setError(loaded.status === 'memory-only' ? null : (loaded.readError ?? null));
     });
     return () => {
       active = false;
@@ -123,14 +148,14 @@ export function useGroupChatComposer(
       ? { restoredOrigin: { kind: 'unconfirmed-send', attemptId: id, messageId: id } as const }
       : {}),
   });
-  const change = (value: string) => {
+  const change = (value: string): void => {
     if (!ready || session.sending || pending || attemptId) return;
     setSelection(recipientName);
     textRef.current = value;
     setText(value);
     void persist(content(value, null)).catch(() => undefined);
   };
-  const selectRecipient = (name: string | null) => {
+  const selectRecipient = (name: string | null): void => {
     if (!ready || session.sending || pending || attemptId) return;
     recipientRef.current = name;
     setSelection(name);
@@ -139,7 +164,7 @@ export function useGroupChatComposer(
       groupRecipient: name === null ? { kind: 'all' } : { kind: 'member', memberName: name },
     }).catch(() => undefined);
   };
-  const send = async () => {
+  const send = async (): Promise<void> => {
     if (!ready || session.sending || session.consuming || pending || !text.trim()) return;
     const capturedContextEpoch = captureContextScopedRequestEpoch();
     const id = attemptId ?? crypto.randomUUID();
@@ -250,7 +275,49 @@ export function useGroupChatComposer(
     session.queue = completed.catch(() => undefined);
     return completed;
   };
+  const flush = useCallback(async () => {
+    await session.queue;
+  }, [session]);
+  const retryPersistence = useCallback(async () => {
+    if (session.sending || session.consuming) return false;
+    const capturedText = textRef.current;
+    const capturedRecipient = recipientRef.current;
+    if (!(await composerDraftRepository.retryPersistence?.(contextId, teamName))) return false;
+    const refreshed = session.queue.then(async () => {
+      const loaded = await composerDraftRepository.loadWorking(address);
+      if (
+        loaded.working.workingRevision !== session.revision &&
+        current.current === address &&
+        textRef.current === capturedText &&
+        recipientRef.current === capturedRecipient
+      ) {
+        const saved = loaded.working.content;
+        const recipient = saved?.groupRecipient;
+        const name = recipient?.kind === 'member' ? recipient.memberName : null;
+        textRef.current = saved?.text ?? '';
+        recipientRef.current = name;
+        setText(textRef.current);
+        setSelection(name);
+        setAttemptId(saved?.restoredOrigin?.attemptId ?? null);
+      }
+      session.revision = loaded.working.workingRevision;
+      if (current.current === address) {
+        setPersistenceStatus(loaded.status);
+        setError(loaded.status === 'memory-only' ? null : (loaded.readError ?? null));
+      }
+      return loaded.status === 'durable' && !loaded.readError && !loaded.writeBlocked;
+    });
+    session.queue = refreshed.then(
+      () => undefined,
+      () => undefined
+    );
+    return refreshed;
+  }, [address, contextId, session, teamName]);
   return {
+    address,
+    flush,
+    retryPersistence,
+    persistenceStatus,
     text,
     change,
     send,

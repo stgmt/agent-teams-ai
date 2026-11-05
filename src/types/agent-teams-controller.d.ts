@@ -184,7 +184,13 @@ declare module 'agent-teams-controller' {
   }
 
   export interface ControllerTaskBoardApi
-    extends ControllerTaskBoardTaskApi, ControllerTaskBoardKanbanApi, ControllerReviewWriteApi {}
+    extends ControllerTaskBoardTaskApi, ControllerTaskBoardKanbanApi, ControllerReviewWriteApi {
+    /**
+     * Board facts for lead reports, read under the board lock so an unreadable
+     * or ambiguous row surfaces as an error instead of an empty board.
+     */
+    readLeadReportFacts(): unknown[];
+  }
 
   export interface ControllerMessageApi {
     appendSentMessage(flags: Record<string, unknown>): unknown;
@@ -332,4 +338,5 @@ declare module 'agent-teams-controller' {
   export const AGENT_TEAMS_NAMESPACED_TEAMMATE_OPERATIONAL_TOOL_NAMES: readonly string[];
   export const AGENT_TEAMS_LEAD_BOOTSTRAP_TOOL_NAMES: readonly string[];
   export const AGENT_TEAMS_NAMESPACED_LEAD_BOOTSTRAP_TOOL_NAMES: readonly string[];
+  export const AGENT_TEAMS_OPERATIONAL_LEAD_TOOL_NAMES: readonly string[];
 }

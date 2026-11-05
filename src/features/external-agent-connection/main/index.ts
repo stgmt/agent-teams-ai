@@ -1,3 +1,4 @@
+export { sameExternalAgentRunContext } from '../core/domain/runReadiness';
 export { AppContextMismatchError, BoundControlContext } from './BoundControlContext';
 export {
   createDesktopExternalAgentConnection,

@@ -22,6 +22,24 @@ vi.mock('./OpenCodeDeliveryWarning', () => ({
 import { MessageComposerStatusNotice } from './MessageComposerStatusNotice';
 
 describe('MessageComposerStatusNotice', () => {
+  it('explains failed local saving instead of exposing a raw engine error', () => {
+    const html = renderToStaticMarkup(
+      <MessageComposerStatusNotice
+        readError="Internal error."
+        persistenceStatus="memory-only"
+        restoredDeliveryUnknown={false}
+        restrictionReason={null}
+        submissionError={null}
+        sendWarning={null}
+        sendDebugDetails={null}
+        deduplicated={false}
+        onRetryStorage={async () => {}}
+      />
+    );
+    expect(html).toContain('messageComposer.status.memoryOnly');
+    expect(html).toContain('messageComposer.status.retryStorage');
+    expect(html).not.toContain('Internal error.');
+  });
   it('shows a failed send over sticky draft storage notices', () => {
     const html = renderToStaticMarkup(
       <MessageComposerStatusNotice

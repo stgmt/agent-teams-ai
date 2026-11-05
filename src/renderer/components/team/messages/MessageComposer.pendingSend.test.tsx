@@ -588,6 +588,28 @@ describe('MessageComposer pending send lifecycle', () => {
     vi.unstubAllGlobals();
   });
 
+  it('sends ordinary table text in Delegate without displaying queue-only restrictions', async () => {
+    const text =
+      'Остаток\tЧто именно не завершено\tОтветственный\nДовести балансер\tВстроить подготовленные исправления\tБалансер';
+    draftHarness.state.text = text;
+    draftHarness.state.actionMode = 'delegate';
+    const { host, onSend, root } = renderComposer({
+      lockedRecipient: 'alice',
+      members: [{ ...members[0], agentType: 'team-lead' }, members[1]],
+    });
+    try {
+      expect(host.textContent).not.toContain('unsupported.delegate');
+      expect(host.textContent).not.toContain('unsupported.command');
+      expect(getSendButton(host).disabled).toBe(false);
+      await act(async () => getSendButton(host).click());
+      expect(onSend).toHaveBeenCalledOnce();
+      expect(onSend.mock.calls[0]?.[1]).toBe(text);
+      expect(onSend.mock.calls[0]?.[4]).toBe('delegate');
+    } finally {
+      act(() => root.unmount());
+    }
+  });
+
   it('uses the shared controlled editor without member hooks and fences keyboard submission', () => {
     const host = document.createElement('div');
     document.body.appendChild(host);

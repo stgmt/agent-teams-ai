@@ -27,6 +27,12 @@ export interface NativeAppManagedBootstrapBuildDiagnostics {
 
 export interface NativeAppManagedBootstrapBuildResult {
   specs: Map<string, NativeAppManagedBootstrapSpec>;
+  /**
+   * The bounded, redacted briefing text each spec's `briefingHash` was taken from.
+   * Kept beside the specs so a caller that must launch the same member can reuse
+   * the exact text instead of rebuilding it from team metadata.
+   */
+  briefings: Map<string, string>;
   diagnostics: NativeAppManagedBootstrapBuildDiagnostics;
 }
 
@@ -84,12 +90,18 @@ function redactNativeBootstrapContextText(input: string): string {
     .replace(/Bearer\s+[A-Z0-9._-]+/gi, 'Bearer [REDACTED]');
 }
 
+const TRUNCATION_MARKER = '\n[truncated native bootstrap context]';
+
 function boundText(input: string, maxChars: number): string {
   const canonical = canonicalizeNativeBootstrapContextText(input);
   if (canonical.length <= maxChars) {
     return canonical;
   }
-  return `${canonical.slice(0, maxChars)}\n[truncated native bootstrap context]`;
+  // The marker is part of the text this function promises to bound: appending it after a
+  // full-length slice made every truncated value exceed the limit by the marker's length,
+  // and a caller enforcing the limit then rejected the whole briefing.
+  const room = Math.max(0, maxChars - TRUNCATION_MARKER.length);
+  return `${canonical.slice(0, room)}${TRUNCATION_MARKER}`;
 }
 
 function buildContextText(params: {
@@ -303,6 +315,7 @@ export async function buildNativeAppManagedBootstrapSpecsWithDiagnostics(params:
     allowUserMessageSender: false,
   });
   const result = new Map<string, NativeAppManagedBootstrapSpec>();
+  const briefings = new Map<string, string>();
   let totalContextChars = 0;
   const nativeMembers = params.members
     .map((member) => ({
@@ -375,6 +388,7 @@ export async function buildNativeAppManagedBootstrapSpecsWithDiagnostics(params:
       throw new Error('Native app-managed bootstrap context exceeds aggregate size budget');
     }
 
+    briefings.set(member.name, boundedBriefing);
     result.set(member.name, {
       schemaVersion: 1,
       mode: 'startup_context_file',
@@ -396,5 +410,5 @@ export async function buildNativeAppManagedBootstrapSpecsWithDiagnostics(params:
     }),
   };
 
-  return { specs: result, diagnostics };
+  return { specs: result, briefings, diagnostics };
 }

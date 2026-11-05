@@ -69,9 +69,9 @@ describe('composer queue adapters', () => {
       });
       act(() => draft.setActionMode('delegate'));
       expect(queue.unavailableReason).toBeUndefined();
-      expect(ports.options!.unavailableReason).toContain('richUnsupported');
+      expect(ports.options!.unavailableReason).toContain('unsupported.delegate');
       act(() => draft.setText('Unsupported delegate request'));
-      expect(queue.unavailableReason).toContain('richUnsupported');
+      expect(queue.unavailableReason).toContain('unsupported.delegate');
       act(() => {
         draft.setText('Captured request');
         draft.setActionMode('ask');
@@ -120,7 +120,7 @@ describe('composer queue adapters', () => {
       act(() => view.render(<Probe />));
       expect(queue.list).toBeNull();
       expect(host.textContent).toBe('');
-      expect(ports.options!.unavailableReason).toContain('richUnsupported');
+      expect(ports.options!.unavailableReason).toContain('unsupported.crossTeam');
       expect(ports.options!.blockedReason(row)).toContain('queueDisabled');
       expect(await repository.list(scope, () => false)).toEqual([row]);
       expect(draft.text).toBe('Next working message');

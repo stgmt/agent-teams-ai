@@ -23,17 +23,20 @@ export interface TeamPromptManagementLifecycle {
 /** Bind storage writers and external mutations to one existing lifecycle gate. */
 export function composeTeamPromptManagement(
   data: TeamPromptManagementData,
-  lifecycle: TeamPromptManagementLifecycle,
+  /** Late-bound: the lifecycle is composed after the connection that holds it. */
+  lifecycle: () => TeamPromptManagementLifecycle,
   connection: DesktopExternalAgentConnection,
   emit: (event: TeamChangeEvent) => void
 ): TeamPromptManagement {
-  data.setConfigurationGate((name, operation) => lifecycle.runLiveRosterMutation(name, operation));
+  data.setConfigurationGate((name, operation) =>
+    lifecycle().runLiveRosterMutation(name, operation)
+  );
   return new TeamPromptManagement({
     run: (name, operation) => data.runConfigurationOperation(name, operation),
     withExpectedContext: (expected, operation) =>
       connection.withExpectedContext(expected, operation),
     getContext: async () => (await connection.getConnectionInfo()).context,
-    getRuntimeState: (name) => lifecycle.getRuntimeState(name),
+    getRuntimeState: (name) => lifecycle().getRuntimeState(name),
     getSavedRequest: (name) => data.getSavedRequest(name),
     getTeamData: (name) => data.getTeamData(name),
     createTeamConfig: (request) => data.createTeamConfig(request),
