@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   prepare: vi.fn(),
   approve: vi.fn(),
   decide: vi.fn(),
+  fenceDecision: vi.fn(),
   translate: (key: string) => key,
 }));
 
@@ -49,12 +50,28 @@ const guard = {
     checked: false,
     expectedContext: expected,
     expectedRootFingerprint,
+    decision: null,
   },
   beginGuardedTaskWrite: vi.fn(async () => ({
     token: 'guard-token',
     expectedContext: expected,
     expectedRootFingerprint,
   })),
+  beginGuardedTaskDecision: vi.fn(
+    async (actionId: string, decision: 'completed' | 'retry_once' | 'leave_unresolved') => ({
+      token: 'guard-token',
+      decision: {
+        actionId,
+        decisionId: '11111111-1111-4111-8111-111111111111',
+        decision,
+        stage: 'decision' as const,
+      },
+      expectedContext: expected,
+      expectedRootFingerprint,
+    })
+  ),
+  markGuardedDecisionFenceSent: vi.fn(async () => true),
+  readGuardedTaskDecisionIds: vi.fn(async (): Promise<string[]> => []),
   settleGuardedTaskWrite: vi.fn(async () => true),
   checkGuardedTaskWriteOutcome: vi.fn(async () => undefined),
   confirmGuardedTaskWriteOutcome: vi.fn(async () => undefined),
@@ -73,6 +90,152 @@ function button(host: HTMLElement, label: string): HTMLButtonElement {
 }
 
 describe('VerifiedActionPanel', () => {
+  it('recovers the exact saved answer after the decide response was lost without another question', async () => {
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+    const decisionId = '11111111-1111-4111-8111-111111111111';
+    const pending = {
+      ...guard,
+      taskWriteGuard: {
+        ...guard.taskWriteGuard,
+        markerId: 'decision-token',
+        operation: 'manifest' as const,
+        unknown: true,
+        decision: {
+          actionId: action.id,
+          decisionId,
+          decision: 'retry_once' as const,
+          stage: 'decision' as const,
+        },
+      },
+    };
+    mocks.list.mockResolvedValue([
+      {
+        ...action,
+        status: 'manual',
+        attempts: 2,
+        decisionReceipt: { id: decisionId, decision: 'retry_once' },
+      },
+    ]);
+    const host = document.createElement('div');
+    document.body.append(host);
+    const root = createRoot(host);
+    await act(async () => {
+      root.render(
+        <VerifiedActionPanel
+          contextId="local"
+          teamName="team"
+          taskId="task"
+          enabled
+          canMutate={() => true}
+          guard={pending}
+        />
+      );
+    });
+    expect(host.textContent).not.toContain('verifiedAction.question');
+    await act(async () => {
+      button(host, 'verifiedAction.guardCheck').click();
+    });
+    expect(guard.confirmGuardedTaskWriteOutcome).toHaveBeenCalledWith('decision-token', 'manifest');
+    expect(mocks.decide).not.toHaveBeenCalled();
+    expect(mocks.fenceDecision).not.toHaveBeenCalled();
+    expect(host.textContent).not.toContain('verifiedAction.guardAllow');
+    await act(async () => root.unmount());
+  });
+
+  it('fences a saved answer once and does not resend an ambiguous fence after restart', async () => {
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+    const decisionId = '11111111-1111-4111-8111-111111111111';
+    const pending = {
+      ...guard,
+      taskWriteGuard: {
+        ...guard.taskWriteGuard,
+        markerId: 'decision-token',
+        operation: 'manifest' as const,
+        unknown: true,
+        decision: {
+          actionId: action.id,
+          decisionId,
+          decision: 'retry_once' as const,
+          stage: 'decision' as const,
+        },
+      },
+    };
+    const restored = {
+      ...pending,
+      taskWriteGuard: {
+        ...pending.taskWriteGuard,
+        decision: { ...pending.taskWriteGuard.decision, stage: 'fenceSent' as const },
+      },
+    };
+    mocks.list.mockResolvedValue([{ ...action, status: 'question', attempts: 1 }]);
+    mocks.fenceDecision.mockRejectedValueOnce(new Error('response lost'));
+    const host = document.createElement('div');
+    document.body.append(host);
+    const root = createRoot(host);
+    const render = (value: typeof pending | typeof restored) =>
+      root.render(
+        <VerifiedActionPanel
+          contextId="local"
+          teamName="team"
+          taskId="task"
+          enabled
+          canMutate={() => true}
+          guard={value}
+        />
+      );
+    await act(async () => render(pending));
+    expect(host.textContent).not.toContain('verifiedAction.question');
+    await act(async () => button(host, 'verifiedAction.guardCheck').click());
+    expect(mocks.fenceDecision).toHaveBeenCalledTimes(1);
+    expect(guard.markGuardedDecisionFenceSent).toHaveBeenCalledTimes(1);
+    await act(async () => root.unmount());
+    const newRoot = createRoot(host);
+    await act(async () =>
+      newRoot.render(
+        <VerifiedActionPanel
+          contextId="local"
+          teamName="team"
+          taskId="task"
+          enabled
+          canMutate={() => true}
+          guard={restored}
+        />
+      )
+    );
+    await act(async () => button(host, 'verifiedAction.guardCheck').click());
+    expect(mocks.fenceDecision).toHaveBeenCalledTimes(1);
+    expect(mocks.decide).not.toHaveBeenCalled();
+    expect(guard.confirmGuardedTaskWriteOutcome).not.toHaveBeenCalled();
+    expect(host.textContent).not.toContain('verifiedAction.question');
+    expect(host.textContent).not.toContain('verifiedAction.guardAllow');
+    await act(async () => newRoot.unmount());
+  });
+
+  it('hides a question answered in another window when this window regains focus', async () => {
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+    mocks.list.mockResolvedValue([{ ...action, status: 'question', attempts: 1 }]);
+    guard.readGuardedTaskDecisionIds.mockResolvedValueOnce([]).mockResolvedValueOnce([action.id]);
+    const host = document.createElement('div');
+    document.body.append(host);
+    const root = createRoot(host);
+    await act(async () =>
+      root.render(
+        <VerifiedActionPanel
+          contextId="local"
+          teamName="team"
+          taskId="task"
+          enabled
+          canMutate={() => true}
+          guard={guard}
+        />
+      )
+    );
+    expect(host.textContent).toContain('verifiedAction.question');
+    await act(async () => window.dispatchEvent(new Event('focus')));
+    expect(host.textContent).not.toContain('verifiedAction.question');
+    expect(mocks.decide).not.toHaveBeenCalled();
+    await act(async () => root.unmount());
+  });
   it('does not repeat a write when its response is lost and offers the saved question after a status read', async () => {
     vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
     mocks.list
@@ -114,7 +277,12 @@ describe('VerifiedActionPanel', () => {
   it('only sends a retry decision after the user selects it', async () => {
     vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
     mocks.list.mockResolvedValueOnce([{ ...action, status: 'question', attempts: 1 }]);
-    mocks.decide.mockResolvedValueOnce({ ...action, status: 'manual', attempts: 2 });
+    mocks.decide.mockResolvedValueOnce({
+      ...action,
+      status: 'manual',
+      attempts: 2,
+      decisionReceipt: { id: '11111111-1111-4111-8111-111111111111', decision: 'retry_once' },
+    });
     const host = document.createElement('div');
     document.body.append(host);
     const root = createRoot(host);
@@ -140,11 +308,16 @@ describe('VerifiedActionPanel', () => {
       expected,
       expectedRootFingerprint,
       action.id,
-      'retry_once'
+      'retry_once',
+      '11111111-1111-4111-8111-111111111111'
     );
     expect(host.textContent).toContain('verifiedAction.manual');
     expect(host.textContent).not.toContain('verifiedAction.question');
-    expect(guard.settleGuardedTaskWrite).toHaveBeenCalledWith('guard-token', 'manifest', 'confirmed');
+    expect(guard.settleGuardedTaskWrite).toHaveBeenCalledWith(
+      'guard-token',
+      'manifest',
+      'confirmed'
+    );
     await act(async () => {
       root.unmount();
     });
@@ -335,6 +508,7 @@ describe('VerifiedActionPanel', () => {
       status: 'completed',
       completion: 'queued',
       attempts: 2,
+      decisionReceipt: { id: '11111111-1111-4111-8111-111111111111', decision: 'retry_once' },
     });
     const host = document.createElement('div');
     document.body.append(host);
@@ -366,15 +540,16 @@ describe('VerifiedActionPanel', () => {
     await act(async () => {
       button(host, 'verifiedAction.retry').click();
     });
-    expect(guard.confirmGuardedTaskWriteOutcome).toHaveBeenCalledWith('old-token', 'manifest');
-    expect(guard.beginGuardedTaskWrite).toHaveBeenCalledWith('manifest');
+    expect(guard.confirmGuardedTaskWriteOutcome).not.toHaveBeenCalled();
+    expect(guard.beginGuardedTaskDecision).toHaveBeenCalledWith(action.id, 'retry_once');
     expect(mocks.decide).toHaveBeenCalledOnce();
     expect(mocks.decide).toHaveBeenCalledWith(
       'local',
       expected,
       expectedRootFingerprint,
       action.id,
-      'retry_once'
+      'retry_once',
+      '11111111-1111-4111-8111-111111111111'
     );
     await act(async () => {
       root.unmount();

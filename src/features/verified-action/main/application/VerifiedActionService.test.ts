@@ -248,4 +248,89 @@ describe('verified artifact action', () => {
     );
     expect(enqueue).toHaveBeenCalledTimes(1);
   });
+
+  it('fences a decision lost before delivery and rejects the late retry without enqueueing', async () => {
+    const { store, verify, service } = await fixture();
+    const enqueue = vi.fn(async () => {
+      throw new Error('outcome lost');
+    });
+    const uncertain = new VerifiedActionService({ store, verify, enqueue });
+    const action = await service.prepare('scope', 'team', 'task');
+    await uncertain.approve('scope', action.id);
+    const decisionId = '11111111-1111-4111-8111-111111111111';
+    const fenced = await uncertain.fenceDecision('scope', action.id, 'retry_once', decisionId);
+    expect(fenced).toMatchObject({
+      status: 'manual',
+      attempts: 1,
+      decisionReceipt: { id: decisionId, decision: 'retry_once' },
+    });
+    const restarted = new VerifiedActionService({ store, verify, enqueue });
+    expect((await restarted.list('scope', 'team', 'task'))[0]).toMatchObject(fenced);
+    expect(await restarted.decide('scope', action.id, 'retry_once', decisionId)).toMatchObject(
+      fenced
+    );
+    await expect(restarted.decide('scope', action.id, 'retry_once', 'other')).rejects.toThrow(
+      /no pending/
+    );
+    expect(enqueue).toHaveBeenCalledTimes(1);
+  });
+
+  it('recovers a retry that crashed while running without asking again or enqueueing', async () => {
+    const { store, service, enqueue } = await fixture();
+    const action = await service.prepare('scope', 'team', 'task');
+    const decisionId = '11111111-1111-4111-8111-111111111111';
+    await store.transaction(async (tx) => {
+      const items = await tx.read();
+      Object.assign(items[0], {
+        status: 'running',
+        attempts: 2,
+        decisionReceipt: { id: decisionId, decision: 'retry_once' },
+      });
+      await tx.write(items);
+    });
+    expect((await service.list('scope', 'team', 'task'))[0]).toMatchObject({
+      status: 'manual',
+      decisionReceipt: { id: decisionId, decision: 'retry_once' },
+    });
+    expect((await service.fenceDecision('scope', action.id, 'retry_once', decisionId)).status).toBe(
+      'manual'
+    );
+    expect(enqueue).not.toHaveBeenCalled();
+  });
+
+  it('serializes an in-flight retry and a fence and persists the single ambiguous result', async () => {
+    const { store, verify, service } = await fixture();
+    let release!: () => void;
+    let retryStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      retryStarted = resolve;
+    });
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let calls = 0;
+    const enqueue = vi.fn(async () => {
+      calls += 1;
+      if (calls === 2) {
+        retryStarted();
+        await blocked;
+      }
+      throw new Error('response lost');
+    });
+    const uncertain = new VerifiedActionService({ store, verify, enqueue });
+    const action = await service.prepare('scope', 'team', 'task');
+    await uncertain.approve('scope', action.id);
+    const decisionId = '11111111-1111-4111-8111-111111111111';
+    const decide = uncertain.decide('scope', action.id, 'retry_once', decisionId);
+    await started;
+    const fence = uncertain.fenceDecision('scope', action.id, 'retry_once', decisionId);
+    release();
+    const results = await Promise.all([decide, fence]);
+    expect(results).toMatchObject([
+      { status: 'manual', attempts: 2, decisionReceipt: { id: decisionId } },
+      { status: 'manual', attempts: 2, decisionReceipt: { id: decisionId } },
+    ]);
+    expect(enqueue).toHaveBeenCalledTimes(2);
+    expect((await uncertain.list('scope', 'team', 'task'))[0].status).toBe('manual');
+  });
 });

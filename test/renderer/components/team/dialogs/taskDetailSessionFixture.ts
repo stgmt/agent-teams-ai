@@ -24,6 +24,7 @@ export function createTaskDetailSessionFixture(taskId: string): TaskDetailSessio
       checked: false,
       expectedContext: null,
       expectedRootFingerprint: null,
+      decision: null,
     },
     beginGuardedTaskWrite: vi.fn(async () => ({
       token: 'test',
@@ -34,6 +35,25 @@ export function createTaskDetailSessionFixture(taskId: string): TaskDetailSessio
       },
       expectedRootFingerprint: 'a'.repeat(64),
     })),
+    beginGuardedTaskDecision: vi.fn(
+      async (actionId: string, decision: 'completed' | 'retry_once' | 'leave_unresolved') => ({
+        token: 'test-decision',
+        decision: {
+          actionId,
+          decisionId: '11111111-1111-4111-8111-111111111111',
+          decision,
+          stage: 'decision' as const,
+        },
+        expectedContext: {
+          appInstanceId: 'test',
+          dataRootFingerprint: 'a'.repeat(64),
+          connectionGeneration: 1,
+        },
+        expectedRootFingerprint: 'a'.repeat(64),
+      })
+    ),
+    markGuardedDecisionFenceSent: vi.fn(async () => true),
+    readGuardedTaskDecisionIds: vi.fn(async () => []),
     settleGuardedTaskWrite: vi.fn(async () => true),
     checkGuardedTaskWriteOutcome: vi.fn(async () => {}),
     confirmGuardedTaskWriteOutcome: vi.fn(async () => {}),

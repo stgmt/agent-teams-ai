@@ -76,6 +76,7 @@ function isStoredAction(value: unknown): value is VerifiedAction {
   if (!value || typeof value !== 'object') return false;
   const item = value as Record<string, unknown>;
   const proof = item.proof as Record<string, unknown> | null;
+  const decision = item.decisionReceipt as Record<string, unknown> | undefined;
   return (
     typeof item.id === 'string' &&
     /^[a-f0-9]{64}$/.test(item.id) &&
@@ -91,6 +92,12 @@ function isStoredAction(value: unknown): value is VerifiedAction {
     (item.completion === undefined ||
       item.completion === 'queued' ||
       item.completion === 'user_attested') &&
+    (decision === undefined ||
+      (!!decision &&
+        typeof decision === 'object' &&
+        typeof decision.id === 'string' &&
+        decision.id.length > 0 &&
+        ['completed', 'retry_once', 'leave_unresolved'].includes(String(decision.decision)))) &&
     !!proof &&
     typeof proof === 'object' &&
     typeof proof.attachmentId === 'string' &&

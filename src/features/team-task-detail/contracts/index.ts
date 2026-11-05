@@ -9,6 +9,14 @@ export interface TaskDetailIdentity {
 
 export type TaskWriteOperation = 'artifact' | 'manifest';
 
+/** A user answer recorded before its manifest decision is dispatched. */
+export interface TaskWriteDecision {
+  actionId: string;
+  decisionId: string;
+  decision: 'completed' | 'retry_once' | 'leave_unresolved';
+  stage: 'decision' | 'fenceSent';
+}
+
 export type TaskDetailReadPhase =
   | 'hydrating'
   | 'ready'
@@ -60,6 +68,7 @@ export interface TaskDetailSession {
   taskWriteGuardReason?: 'unsupported' | 'unavailable' | null;
   taskWriteMarkerId?: string | null;
   taskWriteOperation?: TaskWriteOperation | null;
+  taskWriteDecision?: TaskWriteDecision | null;
   taskWriteHydrationId?: string | null;
   taskWriteRootFingerprint?: string | null;
   taskWriteExpectedContext?: AppConnectionContext | null;

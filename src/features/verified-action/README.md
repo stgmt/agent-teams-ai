@@ -14,6 +14,16 @@ The user's answer may attest completion, leave it unresolved, or authorize one
 retry. A second uncertain result requires manual handling and no new question
 or automatic retry. A user attestation is not independent evidence of delivery.
 
+The chosen answer and its action identity are stored before it is sent. After an
+interruption, recovery reads the server state and can record a one-time fence
+without repeating the action. If the fence response is unknown, it is not sent
+again automatically; an unresolved case remains blocked for manual handling.
+The task write guard is shared only by windows in the same Electron profile;
+other clients can write independently. A physical task root can also be replaced
+externally between filesystem calls. An already-open window may show an old
+question until it regains focus or refreshes, although the stored decision
+prevents another submission for that action within the profile.
+
 The general application-command runner can automatically retry after
 reconciliation reports `not_applied`. This workflow therefore does not use that
 runner: its approval decision and attempt counter need to be recorded together,
