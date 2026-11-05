@@ -125,6 +125,23 @@ describe('native lifecycle projection', () => {
     expect(toMemberSpawnStatuses(source, now).statuses).toEqual({});
   });
 
+  it.each(['stopped', 'exited'] as const)(
+    'projects %s without a live process as stopped evidence',
+    (phase) => {
+      const entry = toTeamAgentRuntimeSnapshot(snapshot([member('worker', phase)]), now).members
+        .worker;
+      expect(entry).toMatchObject({ alive: false, livenessKind: 'not_found' });
+    }
+  );
+
+  it('does not mark a terminal member stopped while its process is still owned', () => {
+    const entry = toTeamAgentRuntimeSnapshot(
+      snapshot([member('worker', 'stopped', { process: { pid: 123, birthId: 'birth' } })]),
+      now
+    ).members.worker;
+    expect(entry).toMatchObject({ alive: true, livenessKind: 'runtime_process' });
+  });
+
   it('reports a connecting teammate as a live process', () => {
     const source = snapshot([member('worker', 'connecting')]);
     expect(toTeamAgentRuntimeSnapshot(source, now).members.worker).toMatchObject({
@@ -164,6 +181,14 @@ describe('native lifecycle projection', () => {
       runtimeAlive: true,
       error: 'TEST failure',
       hardFailure: true,
+    });
+  });
+
+  it('marks a failed phase as an error even when no diagnostic text is available', () => {
+    const source = snapshot([member('worker', 'failed')]);
+    expect(toTeamAgentRuntimeSnapshot(source, now).members.worker).toMatchObject({
+      alive: true,
+      runtimeDiagnosticSeverity: 'error',
     });
   });
 
@@ -284,6 +309,10 @@ describe('native lifecycle projection', () => {
       }),
     ]);
     expect(toTeamRuntimeState(source).isAlive).toBe(false);
+    expect(toTeamAgentRuntimeSnapshot(source, now).members.worker).toMatchObject({
+      alive: false,
+      livenessKind: 'permission_blocked',
+    });
     expect(toMemberSpawnStatuses(source, now).statuses.worker).toMatchObject({
       status: 'spawning',
       launchState: 'runtime_pending_permission',

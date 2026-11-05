@@ -8,6 +8,7 @@ const CLOCK_SKEW_MS = 5_000;
 
 /** `alive: false` can mean permission pending or an unverified process, not stopped. */
 export function plannerRuntimeState(entry: TeamAgentRuntimeEntry): RoleRuntimeState {
+  if (entry.runtimeDiagnosticSeverity === 'error') return 'unknown';
   // The regular lead projection uses its live child PID as evidence and does
   // not populate livenessKind; other unclassified processes remain unknown.
   const liveLeadProcess =
@@ -42,6 +43,8 @@ function snapshotSignature(snapshot: TeamAgentRuntimeSnapshot): string {
         normalizeMemberName(entry.memberName),
         entry.alive,
         entry.livenessKind,
+        entry.runtimeDiagnostic,
+        entry.runtimeDiagnosticSeverity,
         entry.backendType,
         entry.pid,
         entry.pidSource,
