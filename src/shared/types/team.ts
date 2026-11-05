@@ -1138,7 +1138,7 @@ export interface TeamAgentRuntimeResourceSample {
 
 export type TeamAgentRuntimeLoadScope = 'single-process' | 'process-tree' | 'shared-host';
 
-export interface TeamAgentRuntimeEntry {
+export interface TeamAgentRuntimeEntry extends TeamProvisioningTypes.RuntimeLifecycleEvidence {
   memberName: string;
   alive: boolean;
   restartable: boolean;

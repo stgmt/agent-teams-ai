@@ -43,6 +43,7 @@ function snapshotSignature(snapshot: TeamAgentRuntimeSnapshot): string {
         normalizeMemberName(entry.memberName),
         entry.alive,
         entry.livenessKind,
+        entry.authoritativeStopped,
         entry.runtimeDiagnostic,
         entry.runtimeDiagnosticSeverity,
         entry.backendType,

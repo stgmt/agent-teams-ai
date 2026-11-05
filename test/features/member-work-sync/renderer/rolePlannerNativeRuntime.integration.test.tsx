@@ -13,6 +13,7 @@ import {
 } from '@features/member-work-sync/renderer/rolePlannerRuntime';
 
 import { toTeamAgentRuntimeSnapshot } from '../../../../src/main/team-runtime/nativeTeamRuntimeProjection';
+import { stabilizeTeamAgentRuntimeSnapshot } from '../../../../src/renderer/store/team/teamAgentRuntimeSnapshotStabilizer';
 
 import type {
   MemberLifecycleSnapshot,
@@ -133,6 +134,35 @@ describe('isolated native/planner boundary', () => {
       tasks: [{ id: '1', status: 'pending', owner: 'worker' }],
     });
     expect(plan.rows[0]).toMatchObject({ decision: 'recommend', usesExistingSlot: false });
+  });
+  it('withdraws a recommendation when an authoritative native stop passes through the store stabilizer', async () => {
+    const before = nativeSnapshot('ready');
+    const stopped = nativeSnapshot('stopped');
+    const visible = stabilizeTeamAgentRuntimeSnapshot(before, stopped, Date.now() + 5_000);
+    getTeamAgentRuntime.mockResolvedValue(before);
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    await act(async () =>
+      root.render(<RoleActivationPlanner {...props()} currentRuntime={before} />)
+    );
+    await act(async () => {
+      host.querySelector<HTMLButtonElement>('[aria-label="rolePlanner.title"]')?.click();
+    });
+    await act(async () => {
+      host.querySelectorAll<HTMLButtonElement>('[role="checkbox"]')[1].click();
+    });
+    expect(host.textContent).toContain('rolePlanner.recommended');
+    expect(visible.members.worker.alive).toBe(false);
+    await act(async () =>
+      root.render(<RoleActivationPlanner {...props()} currentRuntime={visible} />)
+    );
+    expect(host.textContent).not.toContain('rolePlanner.recommended');
+    expect(host.textContent).toContain('rolePlanner.stale');
+    expect(
+      host.querySelectorAll<HTMLButtonElement>('[role="checkbox"]')[1].getAttribute('aria-checked')
+    ).toBe('false');
+    await act(async () => root.unmount());
   });
   it('withdraws confirmation when the same live native process fails and cannot reconfirm it after refresh', async () => {
     const before = nativeSnapshot('connecting');
