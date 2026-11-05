@@ -1,7 +1,8 @@
 import * as fs from 'fs';
+import { createRequire } from 'module';
 import * as os from 'os';
 import * as path from 'path';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { FileVerifiedActionStore } from '../infrastructure/FileVerifiedActionStore';
 
@@ -10,9 +11,29 @@ import { VerifiedActionService } from './VerifiedActionService';
 import type { VerifiedActionProof } from '../../contracts';
 
 const proof: VerifiedActionProof = { attachmentId: 'report', sha256: 'a'.repeat(64), size: 23 };
+const scratchRoots: string[] = [];
+const requireFromTest = createRequire(import.meta.url);
+
+afterEach(async () => {
+  const scratchParent = await fs.promises.realpath(os.tmpdir());
+  for (const root of scratchRoots.splice(0)) {
+    const resolved = await fs.promises.realpath(root);
+    const relative = path.relative(scratchParent, resolved);
+    if (!relative.startsWith('verified-action-test-') || relative.includes(path.sep)) {
+      throw new Error('Refusing to remove a test fixture outside its scratch parent');
+    }
+    await fs.promises.rm(resolved, {
+      recursive: true,
+      force: true,
+      maxRetries: 20,
+      retryDelay: 250,
+    });
+  }
+});
 
 async function fixture() {
   const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'verified-action-test-'));
+  scratchRoots.push(root);
   const store = new FileVerifiedActionStore(root);
   const verify = vi.fn(async () => ({ ...proof }));
   const enqueue = vi.fn((action) => store.enqueue(action));
@@ -21,6 +42,46 @@ async function fixture() {
 }
 
 describe('verified artifact action', () => {
+  it('uses the real controller proof again immediately before adding a manifest', async () => {
+    const { root, store } = await fixture();
+    const project = path.join(root, 'project');
+    const teamDir = path.join(root, 'teams', 'fixture');
+    await fs.promises.mkdir(project);
+    await fs.promises.mkdir(teamDir, { recursive: true });
+    await fs.promises.writeFile(
+      path.join(teamDir, 'config.json'),
+      JSON.stringify({
+        name: 'fixture',
+        projectPath: project,
+        members: [{ name: 'worker', role: 'developer' }],
+      })
+    );
+    const controller = requireFromTest(
+      path.resolve('agent-teams-controller/src/index.js')
+    ) as typeof import('agent-teams-controller');
+    const board = controller.createController({ teamName: 'fixture', claudeDir: root }).taskBoard;
+    const task = board.createTask({ subject: 'result', owner: 'worker' }) as { id: string };
+    board.updateTaskFields(task.id, { artifactRequired: true });
+    const file = path.join(project, 'result.txt');
+    await fs.promises.writeFile(file, 'verified');
+    board.updateTaskFields(task.id, { artifactProjectPath: 'result.txt' });
+    const service = new VerifiedActionService({
+      store,
+      verify: async () => board.verifyTaskArtifact(task.id),
+      enqueue: (action) => store.enqueue(action),
+    });
+    const prepared = await service.prepare('scope', 'fixture', task.id);
+    await fs.promises.writeFile(file, 'changed!');
+    await expect(service.approve('scope', prepared.id)).rejects.toThrow(/changed/);
+    await expect(
+      fs.promises.stat(path.join(root, 'queue', `${prepared.id}.json`))
+    ).rejects.toMatchObject({ code: 'ENOENT' });
+    await fs.promises.writeFile(file, 'verified');
+    expect(await service.approve('scope', prepared.id)).toMatchObject({
+      status: 'completed',
+      completion: 'queued',
+    });
+  });
   it('requires explicit approval and writes one manifest even for concurrent duplicate approvals', async () => {
     const { root, service, enqueue } = await fixture();
     const [first, duplicate] = await Promise.all([
@@ -40,6 +101,32 @@ describe('verified artifact action', () => {
     );
     expect(manifest).toMatchObject({ id: first.id, teamName: 'team', taskId: 'task', proof });
     expect((await service.prepare('scope', 'team', 'task')).status).toBe('completed');
+  });
+
+  it('does not enqueue when the proof changes while the running state is being persisted', async () => {
+    const { store, verify } = await fixture();
+    const hookedStore = {
+      transaction: <T>(fn: Parameters<typeof store.transaction<T>>[0]) =>
+        store.transaction((tx) =>
+          fn({
+            ...tx,
+            write: async (actions) => {
+              await tx.write(actions);
+              if (actions.some((action) => action.status === 'running')) {
+                verify.mockResolvedValue({ ...proof, sha256: 'b'.repeat(64) });
+              }
+            },
+          })
+        ),
+    };
+    const enqueue = vi.fn();
+    const service = new VerifiedActionService({ store: hookedStore, verify, enqueue });
+    const action = await service.prepare('scope', 'team', 'task');
+    expect(await service.approve('scope', action.id)).toMatchObject({
+      status: 'manual',
+      attempts: 1,
+    });
+    expect(enqueue).not.toHaveBeenCalled();
   });
 
   it('persists one question after a lost response and allows only one explicitly approved retry', async () => {

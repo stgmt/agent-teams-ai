@@ -1,0 +1,111 @@
+import { BoundControlContext } from '@features/external-agent-connection/main/BoundControlContext';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+import {
+  VERIFIED_ACTION_APPROVE,
+  VERIFIED_ACTION_LIST,
+  VERIFIED_ACTION_PREPARE,
+} from '../../contracts';
+import { FileVerifiedActionStore } from '../infrastructure/FileVerifiedActionStore';
+
+import { registerVerifiedActionIpc } from './registerVerifiedActionIpc';
+
+import type { IpcMain } from 'electron';
+
+const paths = vi.hoisted(() => ({ appData: '', claude: '' }));
+vi.mock('@main/utils/pathDecoder', () => ({
+  getAppDataPath: () => paths.appData,
+  getClaudeBasePath: () => paths.claude,
+}));
+
+const roots: string[] = [];
+afterEach(async () => {
+  const parent = await fs.promises.realpath(os.tmpdir());
+  for (const root of roots.splice(0)) {
+    const resolved = await fs.promises.realpath(root);
+    const relative = path.relative(parent, resolved);
+    if (!relative.startsWith('verified-action-ipc-') || relative.includes(path.sep)) {
+      throw new Error('Refusing to remove a test fixture outside its scratch parent');
+    }
+    await fs.promises.rm(resolved, {
+      recursive: true,
+      force: true,
+      maxRetries: 20,
+      retryDelay: 250,
+    });
+  }
+});
+
+describe('verified-action IPC context boundary', () => {
+  it('rejects remote and stale contexts before reading or changing local actions', async () => {
+    const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'verified-action-ipc-'));
+    roots.push(root);
+    paths.appData = root;
+    paths.claude = path.join(root, 'claude');
+    let active = 'local';
+    let local = true;
+    const handlers = new Map<string, (...args: unknown[]) => unknown>();
+    const ipc = {
+      handle: (channel: string, handler: (...args: unknown[]) => unknown) =>
+        handlers.set(channel, handler),
+    } as unknown as IpcMain;
+    registerVerifiedActionIpc(ipc, {
+      getActiveContextId: () => active,
+      isLocal: () => local,
+      withAdmission: (operation) => operation(),
+    });
+    const list = handlers.get(VERIFIED_ACTION_LIST)!;
+    const prepare = handlers.get(VERIFIED_ACTION_PREPARE)!;
+    const approve = handlers.get(VERIFIED_ACTION_APPROVE)!;
+    expect(await list({}, 'local', 'team', 'task')).toEqual([]);
+    active = 'ssh:host';
+    local = false;
+    expect(() => list({}, 'ssh:host', 'team', 'task')).toThrow(/active local context/);
+    expect(() => prepare({}, 'local', 'team', 'task')).toThrow(/active local context/);
+    expect(() => approve({}, 'local', 'a'.repeat(64))).toThrow(/active local context/);
+    active = 'local';
+    expect(() => list({}, 'local', 'team', 'task')).toThrow(/active local context/);
+    local = true;
+    expect(() => list({}, 'ssh:host', 'team', 'task')).toThrow(/active local context/);
+  });
+
+  it('holds context admission while waiting for the file lock and until the read finishes', async () => {
+    const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'verified-action-ipc-'));
+    roots.push(root);
+    paths.appData = root;
+    paths.claude = path.join(root, 'claude');
+    const store = new FileVerifiedActionStore(path.join(root, 'verified-actions'));
+    const bound = new BoundControlContext('test-app', paths.claude);
+    let releaseLock!: () => void;
+    let locked!: () => void;
+    const lockedSignal = new Promise<void>((resolve) => { locked = resolve; });
+    const lockGate = new Promise<void>((resolve) => { releaseLock = resolve; });
+    const holder = store.transaction(async () => { locked(); await lockGate; });
+    await lockedSignal;
+    const handlers = new Map<string, (...args: unknown[]) => unknown>();
+    const ipc = {
+      handle: (channel: string, handler: (...args: unknown[]) => unknown) => handlers.set(channel, handler),
+    } as unknown as IpcMain;
+    registerVerifiedActionIpc(ipc, {
+      getActiveContextId: () => 'local',
+      isLocal: () => true,
+      withAdmission: async (operation) => {
+        const release = bound.admit(bound.snapshot());
+        try { return await operation(); } finally { release(); }
+      },
+    });
+    const request = handlers.get(VERIFIED_ACTION_LIST)!({}, 'local', 'team', 'task') as Promise<unknown>;
+    let closed = false;
+    const close = bound.closeAdmission().then(() => { closed = true; });
+    await Promise.resolve();
+    expect(closed).toBe(false);
+    releaseLock();
+    await holder;
+    expect(await request).toEqual([]);
+    await close;
+    expect(closed).toBe(true);
+  });
+});

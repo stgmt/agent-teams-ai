@@ -26,6 +26,7 @@ import {
   composeExternalAgentConnection,
   refreshDesktopBridgeEnvironment,
 } from './startExternalAgentConnection';
+import { createIpcContextCallbacks } from './createIpcContextCallbacks';
 import {
   assertStartupActive,
   createStartupStage,
@@ -3290,15 +3291,12 @@ async function initializeServices(): Promise<void> {
     teammateToolTracker ?? undefined,
     teamLogSourceTracker,
     branchStatusService ?? undefined,
-    {
+    createIpcContextCallbacks({
       rewire: rewireContextEvents,
       full: onContextSwitched,
-      updateClaudeRoot: (applyConfig) => externalAgentConnection!.updateRoot(applyConfig),
-      changeContext: (operation) => externalAgentConnection!.changeContext(operation),
-      onAgentLanguageUpdated: (newLangCode: string) => {
-        void teamProvisioningService.notifyLanguageChange(newLangCode);
-      },
-    },
+      connection: () => externalAgentConnection,
+      notifyLanguageChange: (language) => teamProvisioningService.notifyLanguageChange(language),
+    }),
     {
       httpServer,
       startHttpServer: () => startHttpServer(handleModeSwitch),

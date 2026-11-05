@@ -23,10 +23,6 @@ const channels = [
   VERIFIED_ACTION_DECIDE,
 ];
 
-function currentScope(): string {
-  return createHash('sha256').update(path.resolve(getClaudeBasePath())).digest('hex');
-}
-
 function requireTask(teamName: unknown, taskId: unknown): [string, string] {
   const team = validateTeamName(teamName);
   const task = validateTaskId(taskId);
@@ -42,38 +38,80 @@ function requireId(value: unknown): string {
   return value;
 }
 
-export function registerVerifiedActionIpc(ipc: IpcMain): void {
+export function registerVerifiedActionIpc(
+  ipc: IpcMain,
+  context: {
+    getActiveContextId(): string;
+    isLocal(): boolean;
+    withAdmission<T>(operation: () => Promise<T>): Promise<T>;
+  }
+): void {
+  const currentScope = (expectedContext: unknown): string => {
+    if (
+      expectedContext !== 'local' ||
+      context.getActiveContextId() !== 'local' ||
+      !context.isLocal()
+    ) {
+      throw new Error('Verified actions are available only in the active local context');
+    }
+    return createHash('sha256').update(path.resolve(getClaudeBasePath())).digest('hex');
+  };
   const store = new FileVerifiedActionStore(path.join(getAppDataPath(), 'verified-actions'));
+  const run = <T>(contextId: unknown, operation: (scope: string) => Promise<T>): Promise<T> => {
+    const expectedScope = currentScope(contextId);
+    return context.withAdmission(async () => {
+      if (currentScope(contextId) !== expectedScope) throw new Error('The active context changed');
+      return operation(expectedScope);
+    });
+  };
   const service = new VerifiedActionService({
     store,
     verify: async (scope, teamName, taskId) => {
-      if (scope !== currentScope()) throw new Error('The active context changed');
+      if (scope !== currentScope('local')) throw new Error('The active context changed');
       const controller = controllerModule.createController({
         teamName,
         claudeDir: getClaudeBasePath(),
       });
       return controller.taskBoard.verifyTaskArtifact(taskId);
     },
-    enqueue: (action) => store.enqueue(action),
+    enqueue: (action) => {
+      if (action.scope !== currentScope('local')) throw new Error('The active context changed');
+      return store.enqueue(action);
+    },
   });
 
-  ipc.handle(VERIFIED_ACTION_LIST, (_event, teamName: unknown, taskId: unknown) => {
-    const [team, task] = requireTask(teamName, taskId);
-    return service.list(currentScope(), team, task);
-  });
-  ipc.handle(VERIFIED_ACTION_PREPARE, (_event, teamName: unknown, taskId: unknown) => {
-    const [team, task] = requireTask(teamName, taskId);
-    return service.prepare(currentScope(), team, task);
-  });
-  ipc.handle(VERIFIED_ACTION_APPROVE, (_event, id: unknown) =>
-    service.approve(currentScope(), requireId(id))
-  );
-  ipc.handle(VERIFIED_ACTION_DECIDE, (_event, id: unknown, decision: unknown) => {
-    if (decision !== 'completed' && decision !== 'retry_once' && decision !== 'leave_unresolved') {
-      throw new Error('Invalid action decision');
+  ipc.handle(
+    VERIFIED_ACTION_LIST,
+    (_event, contextId: unknown, teamName: unknown, taskId: unknown) => {
+      const [team, task] = requireTask(teamName, taskId);
+      return run(contextId, (scope) => service.list(scope, team, task));
     }
-    return service.decide(currentScope(), requireId(id), decision as VerifiedActionDecision);
-  });
+  );
+  ipc.handle(
+    VERIFIED_ACTION_PREPARE,
+    (_event, contextId: unknown, teamName: unknown, taskId: unknown) => {
+      const [team, task] = requireTask(teamName, taskId);
+      return run(contextId, (scope) => service.prepare(scope, team, task));
+    }
+  );
+  ipc.handle(VERIFIED_ACTION_APPROVE, (_event, contextId: unknown, id: unknown) =>
+    run(contextId, (scope) => service.approve(scope, requireId(id)))
+  );
+  ipc.handle(
+    VERIFIED_ACTION_DECIDE,
+    (_event, contextId: unknown, id: unknown, decision: unknown) => {
+      if (
+        decision !== 'completed' &&
+        decision !== 'retry_once' &&
+        decision !== 'leave_unresolved'
+      ) {
+        throw new Error('Invalid action decision');
+      }
+      return run(contextId, (scope) =>
+        service.decide(scope, requireId(id), decision as VerifiedActionDecision)
+      );
+    }
+  );
 }
 
 export function removeVerifiedActionIpc(ipc: IpcMain): void {

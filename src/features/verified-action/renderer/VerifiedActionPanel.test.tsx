@@ -55,7 +55,13 @@ describe('VerifiedActionPanel', () => {
     const root = createRoot(host);
     await act(async () => {
       root.render(
-        <VerifiedActionPanel teamName="team" taskId="task" enabled canMutate={() => true} />
+        <VerifiedActionPanel
+          contextId="local"
+          teamName="team"
+          taskId="task"
+          enabled
+          canMutate={() => true}
+        />
       );
     });
     await act(async () => {
@@ -84,7 +90,13 @@ describe('VerifiedActionPanel', () => {
     const root = createRoot(host);
     await act(async () => {
       root.render(
-        <VerifiedActionPanel teamName="team" taskId="task" enabled canMutate={() => true} />
+        <VerifiedActionPanel
+          contextId="local"
+          teamName="team"
+          taskId="task"
+          enabled
+          canMutate={() => true}
+        />
       );
     });
     expect(mocks.decide).not.toHaveBeenCalled();
@@ -92,7 +104,7 @@ describe('VerifiedActionPanel', () => {
       button(host, 'verifiedAction.retry').click();
     });
     expect(mocks.decide).toHaveBeenCalledOnce();
-    expect(mocks.decide).toHaveBeenCalledWith(action.id, 'retry_once');
+    expect(mocks.decide).toHaveBeenCalledWith('local', action.id, 'retry_once');
     expect(host.textContent).toContain('verifiedAction.manual');
     expect(host.textContent).not.toContain('verifiedAction.question');
     await act(async () => {
@@ -117,12 +129,24 @@ describe('VerifiedActionPanel', () => {
     const root = createRoot(host);
     await act(async () => {
       root.render(
-        <VerifiedActionPanel teamName="team" taskId="task" enabled canMutate={() => true} />
+        <VerifiedActionPanel
+          contextId="local"
+          teamName="team"
+          taskId="task"
+          enabled
+          canMutate={() => true}
+        />
       );
     });
     await act(async () => {
       root.render(
-        <VerifiedActionPanel teamName="team" taskId="next" enabled canMutate={() => true} />
+        <VerifiedActionPanel
+          contextId="local"
+          teamName="team"
+          taskId="next"
+          enabled
+          canMutate={() => true}
+        />
       );
     });
     await act(async () => {
@@ -130,6 +154,53 @@ describe('VerifiedActionPanel', () => {
     });
     expect(host.textContent).toContain('new-report');
     expect(host.textContent).not.toContain('old-report');
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it('keeps a saved question reachable after the artifact requirement is disabled', async () => {
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+    mocks.list.mockResolvedValueOnce([{ ...action, status: 'question', attempts: 1 }]);
+    const host = document.createElement('div');
+    document.body.append(host);
+    const root = createRoot(host);
+    await act(async () => {
+      root.render(
+        <VerifiedActionPanel
+          contextId="local"
+          teamName="team"
+          taskId="task"
+          enabled={false}
+          canMutate={() => true}
+        />
+      );
+    });
+    expect(host.textContent).toContain('verifiedAction.question');
+    expect(host.textContent).not.toContain('verifiedAction.prepare');
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it('hides the local queue and never reads it from a remote context', async () => {
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+    const host = document.createElement('div');
+    document.body.append(host);
+    const root = createRoot(host);
+    await act(async () => {
+      root.render(
+        <VerifiedActionPanel
+          contextId="ssh:host"
+          teamName="team"
+          taskId="task"
+          enabled
+          canMutate={() => true}
+        />
+      );
+    });
+    expect(host.textContent).toBe('');
+    expect(mocks.list).not.toHaveBeenCalled();
     await act(async () => {
       root.unmount();
     });

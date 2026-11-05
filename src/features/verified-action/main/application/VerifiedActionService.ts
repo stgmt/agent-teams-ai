@@ -35,7 +35,12 @@ export class VerifiedActionService {
       const actions = await tx.read();
       let changed = false;
       for (const action of actions) {
-        if (action.status === 'running') {
+        if (
+          action.scope === scope &&
+          action.teamName === teamName &&
+          action.taskId === taskId &&
+          action.status === 'running'
+        ) {
           action.status = action.attempts === 1 ? 'question' : 'manual';
           action.updatedAt = this.now();
           changed = true;
@@ -133,6 +138,16 @@ export class VerifiedActionService {
     action.attempts = attempt;
     action.updatedAt = this.now();
     await tx.write(actions);
+    try {
+      // The status write can take time. Recheck after it, immediately before
+      // publishing the manifest; later consumers still need to verify again.
+      await this.assertProof(action);
+    } catch {
+      action.status = 'manual';
+      action.updatedAt = this.now();
+      await tx.write(actions);
+      return action;
+    }
     try {
       await this.options.enqueue(action);
       action.status = 'completed';

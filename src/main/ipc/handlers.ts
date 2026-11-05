@@ -14,6 +14,7 @@
  * - httpServer.ts: HTTP sidecar server control
  */
 
+import { registerVerifiedActionIpc, removeVerifiedActionIpc } from '@features/verified-action/main';
 import { createLogger } from '@shared/utils/logger';
 import { ipcMain } from 'electron';
 
@@ -160,6 +161,7 @@ export function initializeIpcHandlers(
     full: (context: ServiceContext) => void;
     updateClaudeRoot: (applyConfig: () => void) => Promise<void>;
     changeContext?: (operation: () => Promise<void> | void) => Promise<void>;
+    withLocalAdmission?<T>(operation: () => Promise<T>): Promise<T>;
     onAgentLanguageUpdated: (newLangCode: string) => Promise<void> | void;
   },
   httpServerDeps?: {
@@ -299,6 +301,14 @@ export function initializeIpcHandlers(
   registerSshHandlers(ipcMain);
   registerContextHandlers(ipcMain);
   registerTeamHandlers(ipcMain);
+  registerVerifiedActionIpc(ipcMain, {
+    getActiveContextId: () => registry.getActiveContextId(),
+    isLocal: () => registry.getActive().type === 'local' && !sshManager.isRemote(),
+    withAdmission: (operation) => {
+      if (!contextCallbacks.withLocalAdmission) throw new Error('Local context admission is unavailable');
+      return contextCallbacks.withLocalAdmission(operation);
+    },
+  });
   registerReviewHandlers(ipcMain);
   registerEditorHandlers(ipcMain);
   registerWindowHandlers(ipcMain);
@@ -347,6 +357,7 @@ export function removeIpcHandlers(): void {
   removeSshHandlers(ipcMain);
   removeContextHandlers(ipcMain);
   removeTeamHandlers(ipcMain);
+  removeVerifiedActionIpc(ipcMain);
   removeReviewHandlers(ipcMain);
   removeEditorHandlers(ipcMain);
   removeWindowHandlers(ipcMain);

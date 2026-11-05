@@ -3,6 +3,8 @@
 This Electron-only slice prepares a local queue manifest for a task's required,
 verified artifact. The manifest contains task identity, attachment id, size and
 SHA-256; it neither copies the file nor publishes to an external system.
+The check and the manifest write are not atomic with later reads of the file.
+Any consumer must verify the artifact again against the manifest before use.
 
 The main process owns verification, approval state, and the queue. An immutable
 payload identity prevents duplicate preparation for the same artifact. A lock

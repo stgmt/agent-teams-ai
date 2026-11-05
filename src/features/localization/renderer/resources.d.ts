@@ -6989,15 +6989,15 @@ export default interface Resources {
       }
     },
     "verifiedAction": {
-      "approval": "Check the artifact above, then approve adding this exact item to the local queue.",
+      "approval": "Check the artifact above, then approve adding a manifest for it to the local queue.",
       "approve": "Approve and queue",
       "attested": "Marked complete based on your confirmation.",
       "completed": "I checked: it was done",
-      "description": "Prepare a local queue entry for the verified artifact. This does not publish or send it externally.",
+      "description": "Prepare a local manifest for the verified artifact. The file is not copied, published, or sent externally; verify it again before use.",
       "manual": "Unresolved; handle manually. No automatic retry will occur.",
       "prepare": "Prepare for approval",
       "question": "The result is unknown. After checking, what should happen?",
-      "queued": "Added to the local queue.",
+      "queued": "Artifact manifest added to the local queue.",
       "refresh": "Refresh status",
       "refreshFailed": "Status could not be read. Refresh before taking another action.",
       "resultUnknown": "The result could not be confirmed. Refresh status before taking another action; it will not be retried automatically.",

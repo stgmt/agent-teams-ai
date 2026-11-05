@@ -7,11 +7,13 @@ import { Button } from '@renderer/components/ui/button';
 import type { VerifiedAction, VerifiedActionDecision } from '../contracts';
 
 export const VerifiedActionPanel = ({
+  contextId,
   teamName,
   taskId,
   enabled,
   canMutate,
 }: {
+  contextId: string;
   teamName: string;
   taskId: string;
   enabled: boolean;
@@ -30,7 +32,7 @@ export const VerifiedActionPanel = ({
     const requestGeneration = generation.current;
     setBusy(true);
     try {
-      const result = await bridge.list(teamName, taskId);
+      const result = await bridge.list(contextId, teamName, taskId);
       if (generation.current !== requestGeneration) return;
       setActions(result);
       setUncertain(false);
@@ -42,7 +44,7 @@ export const VerifiedActionPanel = ({
     } finally {
       if (generation.current === requestGeneration) setBusy(false);
     }
-  }, [bridge, t, taskId, teamName]);
+  }, [bridge, contextId, t, taskId, teamName]);
 
   useEffect(() => {
     generation.current += 1;
@@ -50,11 +52,11 @@ export const VerifiedActionPanel = ({
     setBusy(false);
     setError(null);
     setUncertain(false);
-    if (enabled && bridge) void refresh();
+    if (bridge && contextId === 'local') void refresh();
     return () => {
       generation.current += 1;
     };
-  }, [enabled, bridge, refresh]);
+  }, [enabled, bridge, contextId, refresh]);
 
   const mutate = async (operation: () => Promise<VerifiedAction>) => {
     if (!canMutate() || busy || uncertain) return;
@@ -79,12 +81,14 @@ export const VerifiedActionPanel = ({
     }
   };
 
-  if (!enabled || !bridge) return null;
+  // Keep an existing decision reachable if the requirement was later disabled.
+  if (contextId !== 'local' || !bridge || (!enabled && (!actions || actions.length === 0)))
+    return null;
   const pending = actions?.some((item) =>
     ['awaiting_approval', 'running', 'question'].includes(item.status)
   );
   const decide = (action: VerifiedAction, decision: VerifiedActionDecision) =>
-    void mutate(() => bridge.decide(action.id, decision));
+    void mutate(() => bridge.decide(contextId, action.id, decision));
 
   return (
     <section
@@ -115,7 +119,7 @@ export const VerifiedActionPanel = ({
                 size="sm"
                 className="mt-2"
                 disabled={busy || uncertain || !canMutate()}
-                onClick={() => void mutate(() => bridge.approve(action.id))}
+                onClick={() => void mutate(() => bridge.approve(contextId, action.id))}
               >
                 {t('verifiedAction.approve')}
               </Button>
@@ -166,13 +170,13 @@ export const VerifiedActionPanel = ({
           ) : null}
         </div>
       ))}
-      {actions && !pending ? (
+      {enabled && actions && !pending ? (
         <Button
           size="sm"
           variant="outline"
           className="mt-3"
           disabled={busy || uncertain || !canMutate()}
-          onClick={() => void mutate(() => bridge.prepare(teamName, taskId))}
+          onClick={() => void mutate(() => bridge.prepare(contextId, teamName, taskId))}
         >
           {t('verifiedAction.prepare')}
         </Button>
