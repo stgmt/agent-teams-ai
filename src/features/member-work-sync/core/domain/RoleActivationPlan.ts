@@ -20,6 +20,7 @@ export type RolePlanReason =
   | 'capacity_limit'
   | 'owner_missing'
   | 'reviewer_missing'
+  | 'reviewer_conflict'
   | 'self_review'
   | 'member_missing'
   | 'member_ambiguous'
@@ -156,6 +157,17 @@ export function planRoleActivation(input: RoleActivationPlanInput): RoleActivati
     const defer = (reason: RolePlanReason): void => {
       rows.push({ ...base, reason });
     };
+    const reviewerConflict = cycle?.diagnostics.some((diagnostic) =>
+      [
+        'review_started_actor_differs_from_requested_reviewer',
+        'kanban_reviewer_differs_from_review_request',
+        'kanban_reviewer_differs_from_review_started_actor',
+      ].includes(diagnostic)
+    );
+    if (reviewerConflict) {
+      rows.push({ ...base, memberName: null, reason: 'reviewer_conflict' });
+      continue;
+    }
     if (kind === 'review' && !task.owner?.trim()) {
       defer('owner_missing');
       continue;

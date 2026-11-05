@@ -40,6 +40,23 @@ describe('role planner runtime evidence', () => {
     );
   });
 
+  it('recognizes the live lead-process projection while keeping weak or contradictory lead evidence unknown', () => {
+    const lead = entry({
+      memberName: 'team-lead',
+      backendType: 'lead',
+      alive: true,
+      restartable: false,
+      pid: 1234,
+      pidSource: 'lead_process',
+    });
+    expect(plannerRuntimeState(lead)).toBe('running');
+    expect(plannerRuntimeState({ ...lead, pid: undefined })).toBe('unknown');
+    expect(plannerRuntimeState({ ...lead, pidSource: 'persisted_metadata' })).toBe('unknown');
+    expect(plannerRuntimeState({ ...lead, livenessKind: 'permission_blocked' })).toBe('unknown');
+    expect(plannerRuntimeState({ ...lead, backendType: 'process' })).toBe('unknown');
+    expect(plannerRuntimeState({ ...lead, alive: false })).toBe('unknown');
+  });
+
   it('rejects stale, mismatched, missing-run or changed snapshots', () => {
     const fresh = snapshot();
     expect(isPlannerSnapshotTrusted(fresh, fresh, 'team', NOW)).toBe(true);
@@ -47,9 +64,54 @@ describe('role planner runtime evidence', () => {
     expect(isPlannerSnapshotTrusted(snapshot({ runId: null }), undefined, 'team', NOW)).toBe(false);
     expect(isPlannerSnapshotTrusted(fresh, fresh, 'other-team', NOW)).toBe(false);
     expect(isPlannerSnapshotTrusted(fresh, snapshot({ runId: 'run-2' }), 'team', NOW)).toBe(false);
+    expect(isPlannerSnapshotTrusted(fresh, snapshot({ teamName: 'another' }), 'team', NOW)).toBe(
+      false
+    );
     expect(
       isPlannerSnapshotTrusted(fresh, snapshot({ members: { member: entry() } }), 'team', NOW)
     ).toBe(false);
+    const lead = entry({
+      memberName: 'lead',
+      backendType: 'lead',
+      alive: true,
+      pid: 42,
+      pidSource: 'lead_process',
+    });
+    const leadSnapshot = snapshot({ members: { lead } });
+    const changedSource = snapshot({
+      members: { lead: { ...lead, pidSource: 'persisted_metadata' } },
+    });
+    expect(isPlannerSnapshotTrusted(leadSnapshot, changedSource, 'team', NOW)).toBe(false);
+  });
+
+  it.each([
+    ['providerId', 'codex'],
+    ['providerBackendId', 'codex-native'],
+    ['runtimeModel', 'new-model'],
+    ['runtimeSessionId', 'new-session'],
+    ['runtimePid', 4321],
+    ['laneId', 'new-lane'],
+    ['laneKind', 'secondary'],
+  ] as const)('invalidates the snapshot when runtime identity %s changes', (field, value) => {
+    const live = entry({ alive: true, livenessKind: 'runtime_process', pid: 1234 });
+    const before = snapshot({ members: { member: live } });
+    const after = snapshot({ members: { member: { ...live, [field]: value } } });
+    expect(isPlannerSnapshotTrusted(before, after, 'team', NOW)).toBe(false);
+  });
+
+  it('invalidates the snapshot when team runtime settings change', () => {
+    const before = snapshot();
+    expect(
+      isPlannerSnapshotTrusted(
+        before,
+        { ...before, providerBackendId: 'codex-native' },
+        'team',
+        NOW
+      )
+    ).toBe(false);
+    expect(isPlannerSnapshotTrusted(before, { ...before, fastMode: 'on' }, 'team', NOW)).toBe(
+      false
+    );
   });
 
   it('counts alive entries conservatively and blocks uncertain or duplicated occupancy', () => {

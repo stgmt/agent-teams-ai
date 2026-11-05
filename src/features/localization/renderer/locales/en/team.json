@@ -29,6 +29,7 @@
       "capacity_limit": "The role limit has been reached.",
       "owner_missing": "The task owner is missing.",
       "reviewer_missing": "No reviewer is assigned.",
+      "reviewer_conflict": "The assigned reviewers conflict. Resolve the review assignment first.",
       "self_review": "The assigned reviewer is also the task owner.",
       "member_missing": "The assigned member is not in the active roster.",
       "member_ambiguous": "The member name is ambiguous.",

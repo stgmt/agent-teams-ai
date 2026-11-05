@@ -6372,6 +6372,7 @@ export default interface Resources {
         "member_busy": "The member already has an active task.",
         "member_missing": "The assigned member is not in the active roster.",
         "owner_missing": "The task owner is missing.",
+        "reviewer_conflict": "The assigned reviewers conflict. Resolve the review assignment first.",
         "reviewer_missing": "No reviewer is assigned.",
         "runtime_unknown": "Runtime state has not been verified.",
         "self_review": "The assigned reviewer is also the task owner.",

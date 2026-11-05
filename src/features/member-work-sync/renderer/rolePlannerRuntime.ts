@@ -8,9 +8,20 @@ const CLOCK_SKEW_MS = 5_000;
 
 /** `alive: false` can mean permission pending or an unverified process, not stopped. */
 export function plannerRuntimeState(entry: TeamAgentRuntimeEntry): RoleRuntimeState {
+  // The regular lead projection uses its live child PID as evidence and does
+  // not populate livenessKind; other unclassified processes remain unknown.
+  const liveLeadProcess =
+    entry.backendType === 'lead' &&
+    entry.livenessKind == null &&
+    entry.pidSource === 'lead_process' &&
+    typeof entry.pid === 'number' &&
+    Number.isSafeInteger(entry.pid) &&
+    entry.pid > 0;
   if (
     entry.alive &&
-    (entry.livenessKind === 'runtime_process' || entry.livenessKind === 'confirmed_bootstrap')
+    (liveLeadProcess ||
+      entry.livenessKind === 'runtime_process' ||
+      entry.livenessKind === 'confirmed_bootstrap')
   )
     return 'running';
   if (
@@ -23,17 +34,27 @@ export function plannerRuntimeState(entry: TeamAgentRuntimeEntry): RoleRuntimeSt
 }
 
 function snapshotSignature(snapshot: TeamAgentRuntimeSnapshot): string {
-  return JSON.stringify(
-    Object.values(snapshot.members)
+  return JSON.stringify({
+    providerBackendId: snapshot.providerBackendId,
+    fastMode: snapshot.fastMode,
+    members: Object.values(snapshot.members)
       .map((entry) => [
         normalizeMemberName(entry.memberName),
         entry.alive,
         entry.livenessKind,
         entry.backendType,
         entry.pid,
+        entry.pidSource,
+        entry.providerId,
+        entry.providerBackendId,
+        entry.runtimeModel,
+        entry.runtimeSessionId,
+        entry.runtimePid,
+        entry.laneId,
+        entry.laneKind,
       ])
-      .sort((left, right) => String(left[0]).localeCompare(String(right[0])))
-  );
+      .sort((left, right) => String(left[0]).localeCompare(String(right[0]))),
+  });
 }
 
 export function isPlannerSnapshotTrusted(
@@ -47,7 +68,9 @@ export function isPlannerSnapshotTrusted(
   if (!Number.isFinite(age) || age < -CLOCK_SKEW_MS || age > SNAPSHOT_MAX_AGE_MS) return false;
   if (
     current &&
-    (current.runId !== snapshot.runId || snapshotSignature(current) !== snapshotSignature(snapshot))
+    (current.teamName !== snapshot.teamName ||
+      current.runId !== snapshot.runId ||
+      snapshotSignature(current) !== snapshotSignature(snapshot))
   )
     return false;
   return true;

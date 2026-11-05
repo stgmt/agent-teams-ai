@@ -35,7 +35,8 @@ const snapshot = (): TeamAgentRuntimeSnapshot => ({
       alive: true,
       restartable: false,
       backendType: 'lead',
-      livenessKind: 'runtime_process',
+      pid: 1234,
+      pidSource: 'lead_process',
       updatedAt: new Date().toISOString(),
     },
     worker: {
@@ -132,7 +133,13 @@ describe('role planner', () => {
       host.querySelectorAll<HTMLButtonElement>('[role="checkbox"]')[1].click();
     });
     expect(host.textContent).toContain('rolePlanner.recommended');
-    const changed = { ...initial, runId: 'run-2' };
+    const changed = {
+      ...initial,
+      members: {
+        ...initial.members,
+        worker: { ...initial.members.worker, runtimeModel: 'new-model' },
+      },
+    };
     await act(async () => {
       root.render(<RoleActivationPlanner {...props()} currentRuntime={changed} />);
     });

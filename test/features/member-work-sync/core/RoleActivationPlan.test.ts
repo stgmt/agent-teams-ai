@@ -176,6 +176,28 @@ describe('role activation recommendations', () => {
     });
   });
 
+  it('defers review when its requested reviewer conflicts with the Kanban reviewer', () => {
+    const plan = planRoleActivation(
+      base({
+        tasks: [
+          {
+            id: '1',
+            status: 'completed',
+            reviewState: 'review',
+            owner: 'active',
+            historyEvents: [{ id: 'request', type: 'review_requested', reviewer: 'first' }],
+          },
+        ],
+        kanbanReviewersByTaskId: { '1': 'second' },
+      })
+    );
+    expect(plan.rows[0]).toMatchObject({
+      decision: 'defer',
+      reason: 'reviewer_conflict',
+      memberName: null,
+    });
+  });
+
   it('does not suggest starting an existing or unconfirmed review again', () => {
     const task = { id: '1', status: 'completed', reviewState: 'review', owner: 'active' };
     const started = {
