@@ -6,6 +6,18 @@ import { taskWriteGuardStorage } from '../adapters/taskWriteGuardStorage';
 
 import type { TaskDetailIdentity, TaskWriteDecision } from '../../contracts';
 
+function sameDecision(
+  left: TaskWriteDecision | null | undefined,
+  right: TaskWriteDecision | null | undefined
+): boolean {
+  if (!left || !right) return !left && !right;
+  return (
+    left.actionId === right.actionId &&
+    left.decisionId === right.decisionId &&
+    left.decision === right.decision
+  );
+}
+
 /** Owns the durable claim on an uncertainty-recovery fence, without dispatching it. */
 export function useTaskWriteFence({
   identity,
@@ -105,5 +117,42 @@ export function useTaskWriteFence({
     [identity, identityKey, withDeadline]
   );
 
-  return { markGuardedDecisionFenceSent, releaseUnadmittedDecisionFence };
+  const syncManifestDecision = useCallback(
+    async (
+      token: string,
+      rootFingerprint: string,
+      decision: TaskWriteDecision | null,
+      revision: number
+    ) => {
+      const stored = await withDeadline(
+        taskWriteGuardStorage.read({ ...identity, dataRootFingerprint: rootFingerprint })
+      );
+      if (
+        !stored ||
+        stored.attemptId !== token ||
+        stored.operation !== 'manifest' ||
+        !sameDecision(stored.decision, decision)
+      )
+        throw new Error('Task outcome changed during the check');
+      const state = useStore.getState();
+      const session = state.taskDetailSessionById[identityKey];
+      if (
+        !isOriginCurrent() ||
+        !session?.artifactOutcomeUnknown ||
+        session.artifactWriteId ||
+        session.taskWriteMarkerId !== token ||
+        session.taskWriteOperation !== 'manifest' ||
+        session.taskWriteRootFingerprint !== rootFingerprint ||
+        (session.artifactOutcomeRevision ?? 0) !== revision ||
+        !sameDecision(session.taskWriteDecision, decision)
+      )
+        throw new Error('Task outcome changed during the check');
+      const currentDecision = stored.decision ?? null;
+      state.updateTaskDetailSession(identity, { taskWriteDecision: currentDecision });
+      return { markerId: token, decision: currentDecision };
+    },
+    [identity, identityKey, isOriginCurrent, withDeadline]
+  );
+
+  return { markGuardedDecisionFenceSent, releaseUnadmittedDecisionFence, syncManifestDecision };
 }

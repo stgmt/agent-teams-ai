@@ -182,10 +182,15 @@ it('releases a proven unadmitted claim and fences only after a new explicit chec
     ),
     readGuardedTaskDecisionIds: vi.fn(() => storage.readChosenActionIds(identity)),
     settleGuardedTaskWrite: vi.fn(),
-    checkGuardedTaskWriteOutcome: vi.fn(async () => ({
-      expectedContext: liveContext,
-      expectedRootFingerprint: identity.dataRootFingerprint,
-    })),
+    checkGuardedTaskWriteOutcome: vi.fn(async () => {
+      const stored = await storage.read(identity);
+      if (!stored) throw new Error('Task outcome changed');
+      return {
+        expectedContext: liveContext,
+        expectedRootFingerprint: identity.dataRootFingerprint,
+        manifest: { markerId: stored.attemptId, decision: stored.decision ?? null },
+      };
+    }),
     confirmGuardedTaskWriteOutcome: vi.fn(async () => storage.release(identity, marker)),
   };
   const host = document.createElement('div');

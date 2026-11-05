@@ -194,6 +194,107 @@ describe('task session surface and origin integration', () => {
     return token;
   }
 
+  it.each([false, true])(
+    'adopts only the same durable decision after another window releases a fence (generation changes: %s)',
+    async (newGeneration) => {
+      const guardIdentity = { ...identity, dataRootFingerprint: guardContext.dataRootFingerprint };
+      const decision = {
+        actionId: 'c'.repeat(64),
+        decisionId: '11111111-1111-4111-8111-111111111111',
+        decision: 'retry_once' as const,
+        stage: 'decision' as const,
+      };
+      const marker = {
+        version: 1 as const,
+        attemptId: 'cross-window-attempt',
+        operation: 'manifest' as const,
+        decision,
+      };
+      const claimId = '22222222-2222-4222-8222-222222222222';
+      await taskWriteGuardStorage.beginDecision(guardIdentity, null, marker);
+      expect(await taskWriteGuardStorage.markFenceSent(guardIdentity, marker, claimId)).toBe(true);
+      let controller!: TaskDetailSessionController;
+      await act(async () => {
+        mount('other-window', (value) => {
+          controller = value;
+        });
+      });
+      await waitForGuard();
+      expect(controller.taskWriteGuard.decision?.stage).toBe('fenceSent');
+      expect(
+        await taskWriteGuardStorage.releaseUnadmittedFence(guardIdentity, marker, claimId)
+      ).toBe(true);
+      const context = { ...guardContext, connectionGeneration: newGeneration ? 2 : 1 };
+      apiMock.externalAgentConnection.getConnectionInfo.mockResolvedValue({
+        context,
+        taskWriteRootFingerprint: guardContext.dataRootFingerprint,
+      });
+      apiMock.teams.getTask.mockResolvedValue({ ...task });
+      let binding!: Awaited<
+        ReturnType<TaskDetailSessionController['checkGuardedTaskWriteOutcome']>
+      >;
+      await act(async () => {
+        binding = await controller.checkGuardedTaskWriteOutcome('manifest');
+      });
+      expect(binding.manifest?.decision).toEqual(decision);
+      expect(binding.manifest?.markerId).toBe(marker.attemptId);
+      expect(binding.expectedContext.connectionGeneration).toBe(context.connectionGeneration);
+      expect(controller.taskWriteGuard.decision).toEqual(decision);
+      expect(controller.taskWriteGuard.unknown).toBe(true);
+      expect(await taskWriteGuardStorage.read(guardIdentity)).toEqual(marker);
+      expect(await taskWriteGuardStorage.readChosenActionIds(guardIdentity)).toEqual([
+        decision.actionId,
+      ]);
+    }
+  );
+
+  it.each(['token', 'decision', 'missing'] as const)(
+    'does not adopt a changed durable manifest %s during the same generation',
+    async (changed) => {
+      const guardIdentity = { ...identity, dataRootFingerprint: guardContext.dataRootFingerprint };
+      const decision = {
+        actionId: 'c'.repeat(64),
+        decisionId: '11111111-1111-4111-8111-111111111111',
+        decision: 'retry_once' as const,
+        stage: 'decision' as const,
+      };
+      const marker = {
+        version: 1 as const,
+        attemptId: 'original-attempt',
+        operation: 'manifest' as const,
+        decision,
+      };
+      await taskWriteGuardStorage.beginDecision(guardIdentity, null, marker);
+      let controller!: TaskDetailSessionController;
+      await act(async () => {
+        mount('other-window', (value) => {
+          controller = value;
+        });
+      });
+      await waitForGuard();
+      await taskWriteGuardStorage.release(guardIdentity, marker);
+      const replacement = {
+        ...marker,
+        ...(changed === 'token' ? { attemptId: 'different-attempt' } : {}),
+        ...(changed === 'decision'
+          ? { decision: { ...decision, decision: 'completed' as const } }
+          : {}),
+      };
+      if (changed !== 'missing') await taskWriteGuardStorage.acquire(guardIdentity, replacement);
+      apiMock.teams.getTask.mockResolvedValue({ ...task });
+      await act(async () => {
+        await expect(controller.checkGuardedTaskWriteOutcome('manifest')).rejects.toThrow(
+          /outcome changed/
+        );
+      });
+      expect(controller.taskWriteGuard.markerId).toBe(marker.attemptId);
+      expect(controller.taskWriteGuard.unknown).toBe(true);
+      expect(await taskWriteGuardStorage.read(guardIdentity)).toEqual(
+        changed === 'missing' ? null : replacement
+      );
+    }
+  );
+
   it('releases the original unadmitted fence after a view switch without touching another root', async () => {
     const guardIdentity = { ...identity, dataRootFingerprint: guardContext.dataRootFingerprint };
     const otherIdentity = { ...identity, dataRootFingerprint: 'b'.repeat(64) };

@@ -412,12 +412,13 @@ export function useTaskWriteGuard({
     [identity, identityKey, readGuardContext, requireOwner]
   );
 
-  const { markGuardedDecisionFenceSent, releaseUnadmittedDecisionFence } = useTaskWriteFence({
-    identity,
-    identityKey,
-    isOriginCurrent,
-    withDeadline: withArtifactOutcomeDeadline,
-  });
+  const { markGuardedDecisionFenceSent, releaseUnadmittedDecisionFence, syncManifestDecision } =
+    useTaskWriteFence({
+      identity,
+      identityKey,
+      isOriginCurrent,
+      withDeadline: withArtifactOutcomeDeadline,
+    });
 
   const readGuardedTaskDecisionIds = useCallback(async (): Promise<string[]> => {
     const current = useStore.getState().taskDetailSessionById[identityKey];
@@ -546,7 +547,11 @@ export function useTaskWriteGuard({
   const checkGuardedTaskWriteOutcome = useCallback(
     async (
       operation: TaskWriteOperation
-    ): Promise<{ expectedContext: AppConnectionContext; expectedRootFingerprint: string }> => {
+    ): Promise<{
+      expectedContext: AppConnectionContext;
+      expectedRootFingerprint: string;
+      manifest?: { markerId: string; decision: TaskWriteDecision | null };
+    }> => {
       if (!isOriginCurrent()) throw new Error('Task context changed');
       const before = useStore.getState();
       const priorSession = before.taskDetailSessionById[identityKey];
@@ -625,11 +630,38 @@ export function useTaskWriteGuard({
         (session?.taskWriteOperation && session.taskWriteOperation !== operation)
       )
         throw new Error('Task outcome changed during the check');
-      if (session?.artifactOutcomeUnknown)
-        state.updateTaskDetailSession(identity, { artifactOutcomeChecked: true });
-      return { expectedContext, expectedRootFingerprint: expectedRoot };
+      let manifest: { markerId: string; decision: TaskWriteDecision | null } | undefined;
+      if (operation === 'manifest' && priorSession?.artifactOutcomeUnknown) {
+        if (!priorSession.taskWriteMarkerId)
+          throw new Error('Task write safety marker is unavailable');
+        manifest = await syncManifestDecision(
+          priorSession.taskWriteMarkerId,
+          expectedRoot,
+          priorSession.taskWriteDecision ?? null,
+          revision
+        );
+        if (!sameGuardContext(expectedContext, expectedRoot, await readGuardContext()))
+          throw new Error('Task data root changed');
+      }
+      const latest = useStore.getState();
+      const current = latest.taskDetailSessionById[identityKey];
+      if (
+        (current?.artifactOutcomeRevision ?? 0) !== revision ||
+        (manifest &&
+          (current?.taskWriteMarkerId !== manifest.markerId ||
+            current.taskWriteRootFingerprint !== expectedRoot ||
+            current.taskWriteOperation !== 'manifest'))
+      )
+        throw new Error('Task outcome changed during the check');
+      if (current?.artifactOutcomeUnknown)
+        latest.updateTaskDetailSession(identity, { artifactOutcomeChecked: true });
+      return {
+        expectedContext,
+        expectedRootFingerprint: expectedRoot,
+        ...(manifest ? { manifest } : {}),
+      };
     },
-    [identity, identityKey, isOriginCurrent, readGuardContext]
+    [identity, identityKey, isOriginCurrent, readGuardContext, syncManifestDecision]
   );
 
   const confirmGuardedTaskWriteOutcome = useCallback(

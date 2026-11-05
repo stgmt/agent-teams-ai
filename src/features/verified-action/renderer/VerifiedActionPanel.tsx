@@ -224,6 +224,8 @@ export const VerifiedActionPanel = ({
       // cannot safely be used to read or fence the saved manifest decision.
       const binding = await guard.checkGuardedTaskWriteOutcome('manifest');
       if (!isCurrent()) return;
+      if (!binding.manifest || binding.manifest.markerId !== guardState.markerId)
+        throw new Error('Task outcome changed during the check');
       const [actions, decided] = await Promise.all([
         withDeadline(
           bridge.list(
@@ -238,7 +240,7 @@ export const VerifiedActionPanel = ({
       ]);
       if (!isCurrent()) return;
       let nextActions = actions;
-      const decision = guardState.decision;
+      const decision = binding.manifest.decision;
       if (decision) {
         let target = actions.find((item) => item.id === decision.actionId);
         const matches = () =>
