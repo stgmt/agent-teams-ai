@@ -150,8 +150,10 @@ describe('custom-team-templates transports', () => {
         templates: [],
         unreadableRecords: [],
         recoveryRequired: {
+          kind: 'damaged',
           storageDirectory: '/server/storage',
           markerPath: '/server/storage/app.db.templates-recovery-required',
+          interruptedMarkerPath: '/server/storage/app.db.recovery-in-progress',
         },
       });
     const feature = createCustomTeamTemplatesFeature({ backend: { gateway: storage } });
@@ -164,11 +166,13 @@ describe('custom-team-templates transports', () => {
         status: 'recoveryRequired',
         storageDirectory: '/server/storage',
         markerPath: '/server/storage/app.db.templates-recovery-required',
+        interruptedMarkerPath: '/server/storage/app.db.recovery-in-progress',
       });
       await expect(http.call('GET', CUSTOM_TEAM_TEMPLATE_ROUTES.listTemplates)).resolves.toEqual({
         status: 'recoveryRequired',
         storageDirectory: '/server/storage',
         markerPath: '/server/storage/app.db.templates-recovery-required',
+        interruptedMarkerPath: '/server/storage/app.db.recovery-in-progress',
       });
     } finally {
       feature.dispose();

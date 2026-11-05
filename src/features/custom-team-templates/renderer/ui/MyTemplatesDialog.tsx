@@ -58,7 +58,10 @@ export const MyTemplatesDialog = ({ open, onClose }: MyTemplatesDialogProps): Re
   const { operations: pendingMutations, storageAvailable } = usePendingTemplateMutations();
   const pendingMutation = pendingMutations.length > 0;
   const mutationsDisabled =
-    pendingMutation || !storageAvailable || state.status === 'recoveryRequired';
+    pendingMutation ||
+    !storageAvailable ||
+    state.status === 'recoveryRequired' ||
+    state.status === 'recoveryInterrupted';
   const [checkingMutation, setCheckingMutation] = useState(false);
   const [reviewed, setReviewed] = useState<{
     operations: readonly PendingTemplateMutation[];
@@ -77,6 +80,7 @@ export const MyTemplatesDialog = ({ open, onClose }: MyTemplatesDialogProps): Re
   const failed =
     state.status === 'storageUnavailable' ||
     state.status === 'recoveryRequired' ||
+    state.status === 'recoveryInterrupted' ||
     state.status === 'requestFailed';
 
   useEffect(() => {
@@ -364,10 +368,12 @@ export const MyTemplatesDialog = ({ open, onClose }: MyTemplatesDialogProps): Re
                   className="flex items-start gap-2 rounded-md border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-200"
                 >
                   <AlertTriangle className="mt-0.5 size-4 shrink-0" />
-                  {state.status === 'recoveryRequired' ? (
+                  {state.status === 'recoveryRequired' || state.status === 'recoveryInterrupted' ? (
                     <TemplateRecoveryInstructions
                       storageDirectory={state.storageDirectory}
                       markerPath={state.markerPath}
+                      interruptedMarkerPath={state.interruptedMarkerPath}
+                      interrupted={state.status === 'recoveryInterrupted'}
                     />
                   ) : (
                     <p>

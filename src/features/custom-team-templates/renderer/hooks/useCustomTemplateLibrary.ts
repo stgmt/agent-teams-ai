@@ -20,7 +20,12 @@ export type TemplateLibraryState =
   | { status: 'idle' }
   | { status: 'loading' }
   | { status: 'empty' }
-  | { status: 'recoveryRequired'; storageDirectory: string; markerPath: string }
+  | {
+      status: 'recoveryRequired' | 'recoveryInterrupted';
+      storageDirectory: string;
+      markerPath: string;
+      interruptedMarkerPath: string;
+    }
   | { status: 'ready'; templates: readonly CustomTeamTemplateV1[] }
   | {
       status: 'partial';
@@ -56,6 +61,7 @@ export function useCustomTemplateLibrary(open: boolean): {
           setState({ status: 'empty' });
           return 'complete';
         case 'recoveryRequired':
+        case 'recoveryInterrupted':
           setState(result);
           return 'failed';
         case 'ready':

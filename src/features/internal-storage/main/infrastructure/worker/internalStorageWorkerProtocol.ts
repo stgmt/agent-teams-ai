@@ -87,4 +87,4 @@ export function parseJournalReplacePayload<TOp extends keyof JournalReplacePaylo
 
 export type InternalStorageWorkerResponse =
   | { id: string; ok: true; result: unknown }
-  | { id: string; ok: false; error: string };
+  | { id: string; ok: false; error: string; errorCode?: string };

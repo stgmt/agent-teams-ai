@@ -1,3 +1,5 @@
+import * as syncFs from 'node:fs';
+
 import { INTERNAL_STORAGE_SCHEMA_VERSION } from '@features/internal-storage/main/infrastructure/worker/internalStorageMigrations';
 import * as schema from '@features/internal-storage/main/infrastructure/worker/internalStorageSchema';
 import { InternalStorageWorkerCore } from '@features/internal-storage/main/infrastructure/worker/InternalStorageWorkerCore';
@@ -273,20 +275,21 @@ describe('InternalStorageWorkerCore', () => {
     expect(reopened.handle('stallJournal.load', { teamName: 'demo' })).toHaveLength(1);
   });
 
-  it('backs up a corrupt database file and recreates a working one', async () => {
+  it('leaves a corrupt database untouched and blocks storage until manual recovery', async () => {
     const dbPath = await makeTmpDbPath();
     await fs.mkdir(path.dirname(dbPath), { recursive: true });
     await fs.writeFile(dbPath, 'this is definitely not a sqlite file', 'utf8');
 
     const core = track(makeCore(dbPath));
-    const info = core.handle('ping', {}) as InternalStorageBackendInfo;
-
-    expect(info.integrity).toBe('recovered');
-    core.handle('stallJournal.replace', { teamName: 'demo', entries: [makeRecord()] });
-    expect(core.handle('stallJournal.load', { teamName: 'demo' })).toHaveLength(1);
+    expect(() => core.handle('ping', {})).toThrow(/manual recovery/);
+    expect(() =>
+      core.handle('stallJournal.replace', { teamName: 'demo', entries: [makeRecord()] })
+    ).toThrow(/manual recovery/);
+    expect(await fs.readFile(dbPath, 'utf8')).toBe('this is definitely not a sqlite file');
 
     const siblings = await fs.readdir(path.dirname(dbPath));
-    expect(siblings.some((name) => name.includes('.corrupt-'))).toBe(true);
+    expect(siblings.some((name) => name.includes('.corrupt-'))).toBe(false);
+    expect(siblings).toContain('app.db.templates-recovery-required');
   });
 
   it('fails closed if an earlier recovery was interrupted before the database was recreated', async () => {
@@ -294,9 +297,39 @@ describe('InternalStorageWorkerCore', () => {
     await fs.mkdir(path.dirname(dbPath), { recursive: true });
     await fs.writeFile(`${dbPath}.recovery-in-progress`, 'interrupted');
     const core = track(makeCore(dbPath));
-    expect(() => core.handle('ping', {})).toThrow(/recovery was interrupted/);
+    expect(() => core.handle('ping', {})).toThrow(/manual recovery/);
     await expect(fs.stat(dbPath)).rejects.toMatchObject({ code: 'ENOENT' });
     expect(await fs.readFile(`${dbPath}.recovery-in-progress`, 'utf8')).toBe('interrupted');
+  });
+
+  it('classifies confirmed corruption even if its recovery marker cannot be created', async () => {
+    const dbPath = await makeTmpDbPath();
+    const storageDir = path.dirname(dbPath);
+    const displacedDir = `${storageDir}-displaced`;
+    const core = track(
+      new InternalStorageWorkerCore({
+        databasePath: dbPath,
+        createDatabase: () => {
+          // Move only this test's empty scratch directory to make marker creation fail.
+          syncFs.renameSync(storageDir, displacedDir);
+          const error = new Error('corrupt');
+          (error as Error & { code: string }).code = 'SQLITE_CORRUPT';
+          throw error;
+        },
+      })
+    );
+    try {
+      core.handle('ping', {});
+      throw new Error('expected failure');
+    } catch (error) {
+      expect(error).toMatchObject({
+        code: 'INTERNAL_STORAGE_RECOVERY_REQUIRED',
+        message: expect.stringContaining('marker could not be created'),
+      });
+    }
+    await expect(fs.stat(`${dbPath}.templates-recovery-required`)).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
   });
 
   it('records store imports idempotently (upsert by store + team)', async () => {

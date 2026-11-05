@@ -199,7 +199,12 @@ export interface CustomTeamTemplateUnreadableRecord {
  */
 export type ListCustomTeamTemplatesResult =
   | { status: 'empty' }
-  | { status: 'recoveryRequired'; storageDirectory: string; markerPath: string }
+  | {
+      status: 'recoveryRequired' | 'recoveryInterrupted';
+      storageDirectory: string;
+      markerPath: string;
+      interruptedMarkerPath: string;
+    }
   | { status: 'ready'; templates: readonly CustomTeamTemplateV1[] }
   | {
       status: 'hasUnreadableRecords';

@@ -66,6 +66,20 @@ describe('InternalStorageBackendSelector', () => {
     expect(pings).toBe(1);
     expect(selector.getBackendKind()).toBe('json-fallback');
   });
+
+  it('refuses JSON fallback when corruption is known but the marker could not be written', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const error = Object.assign(new Error('recovery marker could not be created'), {
+      code: 'INTERNAL_STORAGE_RECOVERY_REQUIRED',
+    });
+    const selector = new InternalStorageBackendSelector(
+      () => Promise.reject(error),
+      () => false
+    );
+    expect(await selector.probe()).toBe('recovery-required');
+    await expect(selector.select('sqlite-store', 'json-store')).rejects.toThrow(/manual recovery/);
+    expect(selector.getBackendKind()).toBe('recovery-required');
+  });
 });
 
 describe('BackendSelectingTaskStallJournalStore', () => {

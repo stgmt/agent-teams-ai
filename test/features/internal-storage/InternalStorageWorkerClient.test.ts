@@ -79,6 +79,22 @@ describe('InternalStorageWorkerClient physical retirement', () => {
     vi.useRealTimers();
   });
 
+  it('preserves the recovery error code received from the worker', async () => {
+    const client = new InternalStorageWorkerClient({ databasePath: '/test-only/storage.db' });
+    const ping = client.ping();
+    const worker = fixture.workers[0];
+    worker.emit('message', {
+      id: worker.messages[0].id,
+      ok: false,
+      error: 'manual recovery required',
+      errorCode: 'INTERNAL_STORAGE_RECOVERY_REQUIRED',
+    });
+    await expect(ping).rejects.toMatchObject({
+      message: 'manual recovery required',
+      code: 'INTERNAL_STORAGE_RECOVERY_REQUIRED',
+    });
+  });
+
   // Missing or late pinning allows a terminated worker to be the native addon's
   // last owner; merely requiring the JS constructor does not prevent that.
   it('loads and closes the memory probe before the first worker, once across replacements', async () => {

@@ -35,6 +35,11 @@ port.on('message', (message: InternalStorageWorkerRequest) => {
       id: message.id,
       ok: false,
       error: error instanceof Error ? error.message : String(error),
+      ...(error &&
+      typeof error === 'object' &&
+      typeof (error as { code?: unknown }).code === 'string'
+        ? { errorCode: (error as { code: string }).code }
+        : {}),
     };
   }
   port.postMessage(response);

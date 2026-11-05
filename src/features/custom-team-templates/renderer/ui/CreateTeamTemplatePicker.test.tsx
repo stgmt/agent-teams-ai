@@ -157,6 +157,7 @@ describe('CreateTeamTemplatePicker', () => {
       status: 'recoveryRequired',
       storageDirectory: '/server/storage',
       markerPath: '/server/storage/app.db.templates-recovery-required',
+      interruptedMarkerPath: '/server/storage/app.db.recovery-in-progress',
     });
     renderPicker(true);
     await flush();

@@ -224,21 +224,24 @@ describe('custom team templates worker ops', () => {
     ).toBe('created');
     original.close();
 
-    // Corrupt a disposable copy of the database; do not assume the backup is readable.
+    // Corrupt only this disposable fixture.
     await fs.writeFile(dbPath, 'not a SQLite database');
     const first = track(makeCore(dbPath));
     expect(first.handle('customTemplate.list', {})).toEqual({
       templates: [],
       unreadableRecords: [],
       recoveryRequired: {
+        kind: 'damaged',
         storageDirectory: path.dirname(dbPath),
         markerPath: `${dbPath}.templates-recovery-required`,
+        interruptedMarkerPath: `${dbPath}.recovery-in-progress`,
       },
     });
     expect(() => first.handle('customTemplate.create', createPayload())).toThrow(/manual recovery/);
     expect(
       (await fs.readdir(path.dirname(dbPath))).some((name) => name.includes('.corrupt-'))
-    ).toBe(true);
+    ).toBe(false);
+    expect(await fs.readFile(dbPath, 'utf8')).toBe('not a SQLite database');
     first.close();
 
     const restarted = track(makeCore(dbPath));
@@ -246,8 +249,10 @@ describe('custom team templates worker ops', () => {
       templates: [],
       unreadableRecords: [],
       recoveryRequired: {
+        kind: 'damaged',
         storageDirectory: path.dirname(dbPath),
         markerPath: `${dbPath}.templates-recovery-required`,
+        interruptedMarkerPath: `${dbPath}.recovery-in-progress`,
       },
     });
     expect(() => restarted.handle('customTemplate.create', createPayload())).toThrow(
@@ -255,7 +260,9 @@ describe('custom team templates worker ops', () => {
     );
     restarted.close();
 
-    // An operator may explicitly choose to start over after preserving the backup.
+    // Simulate an operator explicitly preserving the files and choosing a fresh database.
+    await fs.copyFile(dbPath, `${dbPath}.operator-copy`);
+    await fs.unlink(dbPath);
     await fs.unlink(`${dbPath}.templates-recovery-required`);
     const acknowledged = track(makeCore(dbPath));
     expect(acknowledged.handle('customTemplate.list', {})).toEqual({

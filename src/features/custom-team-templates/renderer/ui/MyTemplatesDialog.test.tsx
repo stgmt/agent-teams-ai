@@ -647,6 +647,7 @@ describe('MyTemplatesDialog', () => {
       status: 'recoveryRequired',
       storageDirectory: '/server/storage with spaces',
       markerPath: '/server/storage with spaces/app.db.templates-recovery-required',
+      interruptedMarkerPath: '/server/storage with spaces/app.db.recovery-in-progress',
     } satisfies ListCustomTeamTemplatesResult);
     await render();
     expect(host.textContent).toContain('customTemplates.library.recoveryRequired');
@@ -656,6 +657,9 @@ describe('MyTemplatesDialog', () => {
     expect(host.querySelector('[data-testid="template-recovery-marker"]')?.textContent).toBe(
       '/server/storage with spaces/app.db.templates-recovery-required'
     );
+    expect(
+      host.querySelector('[data-testid="template-recovery-interrupted-marker"]')?.textContent
+    ).toBe('/server/storage with spaces/app.db.recovery-in-progress');
     expect(host.textContent).toContain('customTemplates.library.recoveryStopAndPreserve');
     expect(host.textContent).toContain('customTemplates.library.recoveryBackupWarning');
     expect(host.textContent).toContain('customTemplates.library.recoveryMarkerInstructions');
@@ -664,6 +668,24 @@ describe('MyTemplatesDialog', () => {
       '[data-testid="import-template-button"]'
     );
     expect(importButton === null || importButton.disabled).toBe(true);
+  });
+
+  it('shows interrupted recovery instructions without claiming a rebuilt database', async () => {
+    listTemplates.mockResolvedValue({
+      status: 'recoveryInterrupted',
+      storageDirectory: '/server/storage',
+      markerPath: '/server/storage/app.db.templates-recovery-required',
+      interruptedMarkerPath: '/server/storage/app.db.recovery-in-progress',
+    } satisfies ListCustomTeamTemplatesResult);
+    await render();
+    expect(host.textContent).toContain('customTemplates.library.recoveryInterrupted');
+    expect(host.textContent).not.toContain('customTemplates.library.recoveryRequired');
+    expect(
+      host.querySelector('[data-testid="template-recovery-interrupted-marker"]')?.textContent
+    ).toBe('/server/storage/app.db.recovery-in-progress');
+    expect(host.querySelector('[data-testid="template-recovery-marker"]')?.textContent).toBe(
+      '/server/storage/app.db.templates-recovery-required'
+    );
   });
 
   it('keeps unreadable stored records visible as a warning next to the readable ones', async () => {

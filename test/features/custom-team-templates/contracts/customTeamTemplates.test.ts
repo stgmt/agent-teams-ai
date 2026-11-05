@@ -57,6 +57,8 @@ function describeListResult(result: ListCustomTeamTemplatesResult): string {
       return 'empty';
     case 'recoveryRequired':
       return 'recoveryRequired';
+    case 'recoveryInterrupted':
+      return 'recoveryInterrupted';
     case 'ready':
       return `ready:${result.templates.length}`;
     case 'hasUnreadableRecords':
@@ -118,6 +120,7 @@ describe('custom team template contracts', () => {
         status: 'recoveryRequired',
         storageDirectory: '/server/storage',
         markerPath: '/server/storage/app.db.templates-recovery-required',
+        interruptedMarkerPath: '/server/storage/app.db.recovery-in-progress',
       })
     ).toBe('recoveryRequired');
     expect(describeListResult({ status: 'storageUnavailable' })).toBe('storageUnavailable');

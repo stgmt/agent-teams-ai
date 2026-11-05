@@ -83,15 +83,17 @@ describe('ListCustomTeamTemplatesUseCase', () => {
     await expect(absent.execute()).resolves.toEqual({ status: 'storageUnavailable' });
   });
 
-  it('reports a rebuilt database as requiring recovery rather than an empty library', async () => {
+  it('reports database damage as requiring recovery rather than an empty library', async () => {
     const useCase = new ListCustomTeamTemplatesUseCase({
       gateway: gatewayWith(() =>
         Promise.resolve({
           templates: [],
           unreadableRecords: [],
           recoveryRequired: {
+            kind: 'damaged',
             storageDirectory: '/server/storage',
             markerPath: '/server/storage/app.db.templates-recovery-required',
+            interruptedMarkerPath: '/server/storage/app.db.recovery-in-progress',
           },
         })
       ),
@@ -100,6 +102,7 @@ describe('ListCustomTeamTemplatesUseCase', () => {
       status: 'recoveryRequired',
       storageDirectory: '/server/storage',
       markerPath: '/server/storage/app.db.templates-recovery-required',
+      interruptedMarkerPath: '/server/storage/app.db.recovery-in-progress',
     });
   });
 

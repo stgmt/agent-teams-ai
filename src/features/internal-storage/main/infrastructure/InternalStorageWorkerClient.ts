@@ -604,7 +604,9 @@ export class InternalStorageWorkerClient
       if (msg.ok) {
         entry.resolve(msg.result);
       } else {
-        entry.reject(new Error(msg.error));
+        const error = new Error(msg.error);
+        if (msg.errorCode) Object.assign(error, { code: msg.errorCode });
+        entry.reject(error);
       }
       this.processQueue();
     });

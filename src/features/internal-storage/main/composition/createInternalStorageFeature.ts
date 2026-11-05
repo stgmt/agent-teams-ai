@@ -24,6 +24,7 @@ import {
   resolveStallJournalRecordConflict,
 } from '../adapters/output/stallJournalEntryRecordMapper';
 import { StallJournalLegacyJsonSource } from '../adapters/output/StallJournalLegacyJsonSource';
+import { getInternalStorageRecoveryDetails } from '../infrastructure/internalStorageRecoveryState';
 import { InternalStorageWorkerClient } from '../infrastructure/InternalStorageWorkerClient';
 
 import { BackendSelectingTaskCommentNotificationJournalStore } from './BackendSelectingTaskCommentNotificationJournalStore';
@@ -119,10 +120,12 @@ export function createInternalStorageFeature(
     );
   }
 
-  const selector = new InternalStorageBackendSelector(() =>
-    workerAvailable
-      ? client.ping()
-      : Promise.reject(new Error('internal-storage worker bundle is unavailable'))
+  const selector = new InternalStorageBackendSelector(
+    () =>
+      workerAvailable
+        ? client.ping()
+        : Promise.reject(new Error('internal-storage worker bundle is unavailable')),
+    () => getInternalStorageRecoveryDetails(databasePath) !== null
   );
 
   const stallImporter = new ImportLegacyJsonStoreUseCase({
@@ -177,7 +180,7 @@ export function createInternalStorageFeature(
     memberWorkSyncBackend: { gateway: client, selector, fallbackRequiresReplica },
     applicationCommandLedgerBackend: workerAvailable ? { gateway: client, selector } : null,
     customTeamTemplatesBackend: workerAvailable ? { gateway: client } : null,
-    probeBackend: () => selector.select('sqlite', 'json-fallback'),
+    probeBackend: () => selector.probe(),
     getBackendKind: () => selector.getBackendKind(),
     dispose: () => client.close(),
   };
