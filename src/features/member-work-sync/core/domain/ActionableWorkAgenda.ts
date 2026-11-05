@@ -133,9 +133,17 @@ function findUniqueReferencedTask(
   return matches?.size === 1 ? [...matches][0] : null;
 }
 
-export function buildActionableWorkAgenda(
-  input: BuildActionableWorkAgendaInput
-): MemberWorkSyncAgenda {
+/** Reuse the same task/review eligibility without creating a synthetic agenda fingerprint. */
+export function collectActionableWorkItems(
+  input: Pick<
+    BuildActionableWorkAgendaInput,
+    'memberName' | 'tasks' | 'members' | 'kanbanReviewersByTaskId'
+  >
+): {
+  memberName: string;
+  items: MemberWorkSyncActionableWorkItem[];
+  diagnostics: string[];
+} {
   const memberName = normalizeMemberName(input.memberName);
   const diagnostics: string[] = [];
   const activeMemberNames = getActiveMemberNames(input.members);
@@ -335,6 +343,13 @@ export function buildActionableWorkAgenda(
     }
   }
 
+  return { memberName, items, diagnostics };
+}
+
+export function buildActionableWorkAgenda(
+  input: BuildActionableWorkAgendaInput
+): MemberWorkSyncAgenda {
+  const { memberName, items, diagnostics } = collectActionableWorkItems(input);
   const payload = buildAgendaFingerprintPayload({
     teamName: input.teamName,
     memberName,
