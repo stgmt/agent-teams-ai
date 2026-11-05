@@ -144,7 +144,11 @@ describe('VerifiedActionPanel', () => {
     );
     expect(host.textContent).toContain('verifiedAction.manual');
     expect(host.textContent).not.toContain('verifiedAction.question');
-    expect(guard.settleGuardedTaskWrite).toHaveBeenCalledWith('guard-token', 'manifest', 'confirmed');
+    expect(guard.settleGuardedTaskWrite).toHaveBeenCalledWith(
+      'guard-token',
+      'manifest',
+      'confirmed'
+    );
     await act(async () => {
       root.unmount();
     });
