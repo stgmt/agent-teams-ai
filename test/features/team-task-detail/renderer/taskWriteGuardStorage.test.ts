@@ -118,6 +118,53 @@ describe('durable task write guard', () => {
     expect(await store.read(identity)).toEqual(fresh);
   });
 
+  it.each(['artifact', 'manifest'] as const)(
+    'records only a matching confirmed %s outcome atomically and survives restart',
+    async (operation) => {
+      const first = createTaskWriteGuardStorage();
+      const marker = { version: 1 as const, attemptId: `confirmed-${operation}`, operation };
+      await first.acquire(identity, marker);
+      await expect(first.confirm(otherRoot, marker)).rejects.toThrow(/changed/);
+      await expect(first.confirm(identity, { ...marker, attemptId: 'other' })).rejects.toThrow(
+        /changed/
+      );
+      await expect(
+        first.confirm(identity, {
+          ...marker,
+          operation: operation === 'artifact' ? 'manifest' : 'artifact',
+        })
+      ).rejects.toThrow(/changed/);
+      expect(await first.read(identity)).toEqual(marker);
+      await first.confirm(identity, marker);
+      expect(await createTaskWriteGuardStorage().readDecision(identity, marker)).toEqual({
+        explicitlyResolved: false,
+        confirmed: true,
+        marker: null,
+      });
+      await expect(first.acquire(identity, marker)).rejects.toThrow(/already been resolved/);
+      const newer = { ...marker, attemptId: `new-${operation}` };
+      await first.acquire(identity, newer);
+      await expect(first.confirm(identity, marker)).rejects.toThrow(/changed/);
+      expect(await first.read(identity)).toEqual(newer);
+    }
+  );
+
+  it('does not treat a pre-dispatch release or an absent marker as confirmed success', async () => {
+    const store = createTaskWriteGuardStorage();
+    await store.acquire(identity, artifact);
+    await store.release(identity, artifact);
+    expect(await store.readDecision(identity, artifact)).toEqual({
+      explicitlyResolved: false,
+      marker: null,
+    });
+    await expect(store.confirm(identity, artifact)).rejects.toThrow(/changed/);
+    await expect(store.acquire(identity, artifact)).rejects.toThrow(/already been resolved/);
+    expect(await store.readDecision(identity, manifest)).toEqual({
+      explicitlyResolved: false,
+      marker: null,
+    });
+  });
+
   it('retains and upgrades a marker written by the earlier schema', async () => {
     await set(taskWriteGuardKey(identity), artifact);
     const store = createTaskWriteGuardStorage();
@@ -174,9 +221,9 @@ describe('durable task write guard', () => {
     expect(await first.read(identity)).toEqual(marker);
     expect(await first.readChosenActionIds(identity)).toEqual([marker.decision.actionId]);
     await first.release(identity, marker);
-    await expect(second.beginDecision(identity, null, marker)).rejects.toThrow(
-      /already has a recorded decision/
-    );
+    await expect(
+      second.beginDecision(identity, null, { ...marker, attemptId: 'new-decision-attempt' })
+    ).rejects.toThrow(/already has a recorded decision/);
   });
 
   it('atomically replaces an uncertain marker with only one chosen answer across windows', async () => {

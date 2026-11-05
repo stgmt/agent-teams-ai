@@ -98,6 +98,7 @@ export interface TaskDetailSessionController {
     expectedContext: AppConnectionContext;
     expectedRootFingerprint: string;
     manifest?: { markerId: string; decision: TaskWriteDecision | null; resolved?: true };
+    resolution?: 'confirmed' | 'explicit';
   }>;
   confirmGuardedTaskWriteOutcome: (token: string, operation: TaskWriteOperation) => Promise<void>;
   isOriginCurrent: () => boolean;

@@ -77,6 +77,7 @@ interface GuardState {
   version: 2;
   marker: TaskWriteGuardMarker | null;
   decisions: { attemptId: string; operation: TaskWriteOperation }[];
+  outcomes: { attemptId: string; operation: TaskWriteOperation; kind: 'confirmed' | 'cancelled' }[];
   chosenActions: {
     actionId: string;
     decisionId: string;
@@ -86,12 +87,18 @@ interface GuardState {
 
 function parseState(value: unknown): GuardState {
   if (value === null || value === undefined)
-    return { version: 2, marker: null, decisions: [], chosenActions: [] };
+    return { version: 2, marker: null, decisions: [], outcomes: [], chosenActions: [] };
   if (!value || typeof value !== 'object')
     throw new Error('Task write safety marker is unreadable');
   const raw = value as Record<string, unknown>;
   if (raw.version === 1)
-    return { version: 2, marker: parseMarker(value), decisions: [], chosenActions: [] };
+    return {
+      version: 2,
+      marker: parseMarker(value),
+      decisions: [],
+      outcomes: [],
+      chosenActions: [],
+    };
   if (raw.version !== 2 || !Object.hasOwn(raw, 'marker') || !Array.isArray(raw.decisions))
     throw new Error('Task write safety marker is unreadable');
   const decisions: GuardState['decisions'] = raw.decisions.map((entry: unknown) => {
@@ -105,6 +112,20 @@ function parseState(value: unknown): GuardState {
     )
       throw new Error('Task write safety decision is unreadable');
     return { attemptId: item.attemptId, operation: item.operation };
+  });
+  if (raw.outcomes !== undefined && !Array.isArray(raw.outcomes))
+    throw new Error('Task write outcomes are unreadable');
+  const outcomes: GuardState['outcomes'] = (raw.outcomes ?? []).map((entry: unknown) => {
+    if (!entry || typeof entry !== 'object') throw new Error('Task write outcome is unreadable');
+    const item = entry as Record<string, unknown>;
+    if (
+      typeof item.attemptId !== 'string' ||
+      !item.attemptId ||
+      (item.operation !== 'artifact' && item.operation !== 'manifest') ||
+      (item.kind !== 'confirmed' && item.kind !== 'cancelled')
+    )
+      throw new Error('Task write outcome is unreadable');
+    return { attemptId: item.attemptId, operation: item.operation, kind: item.kind };
   });
   if (raw.chosenActions !== undefined && !Array.isArray(raw.chosenActions))
     throw new Error('Task action decisions are unreadable');
@@ -126,7 +147,7 @@ function parseState(value: unknown): GuardState {
       };
     }
   );
-  return { version: 2, marker: parseMarker(raw.marker), decisions, chosenActions };
+  return { version: 2, marker: parseMarker(raw.marker), decisions, outcomes, chosenActions };
 }
 
 interface GuardBackend {
@@ -151,12 +172,24 @@ export function createTaskWriteGuardStorage(
     async readDecision(
       identity: TaskWriteGuardIdentity,
       marker: TaskWriteGuardMarker
-    ): Promise<{ explicitlyResolved: boolean; marker: TaskWriteGuardMarker | null }> {
+    ): Promise<{
+      explicitlyResolved: boolean;
+      confirmed?: true;
+      marker: TaskWriteGuardMarker | null;
+    }> {
       const state = parseState(await backend.get(taskWriteGuardKey(identity)));
       return {
         explicitlyResolved: state.decisions.some(
           (entry) => entry.attemptId === marker.attemptId && entry.operation === marker.operation
         ),
+        ...(state.outcomes.some(
+          (entry) =>
+            entry.attemptId === marker.attemptId &&
+            entry.operation === marker.operation &&
+            entry.kind === 'confirmed'
+        )
+          ? { confirmed: true as const }
+          : {}),
         marker: state.marker,
       };
     },
@@ -166,7 +199,7 @@ export function createTaskWriteGuardStorage(
       await backend.update(taskWriteGuardKey(identity), (value: unknown) => {
         const state = parseState(value);
         occupied = state.marker;
-        resolvedAttempt = state.decisions.some(
+        resolvedAttempt = [...state.decisions, ...state.outcomes].some(
           (item) => item.attemptId === marker.attemptId && item.operation === marker.operation
         );
         return occupied || resolvedAttempt ? state : { ...state, marker };
@@ -199,7 +232,7 @@ export function createTaskWriteGuardStorage(
           return state;
         }
         if (
-          state.decisions.some(
+          [...state.decisions, ...state.outcomes].some(
             (item) => item.attemptId === marker.attemptId && item.operation === marker.operation
           ) ||
           (previous?.attemptId === marker.attemptId && previous.operation === marker.operation)
@@ -300,6 +333,32 @@ export function createTaskWriteGuardStorage(
       });
       return released;
     },
+    /** Record success and clear only the matching attempt in the same transaction. */
+    async confirm(identity: TaskWriteGuardIdentity, marker: TaskWriteGuardMarker): Promise<void> {
+      let confirmed = false;
+      await backend.update(taskWriteGuardKey(identity), (value: unknown) => {
+        const state = parseState(value);
+        const current = state.marker;
+        if (
+          current?.attemptId !== marker.attemptId ||
+          current.operation !== marker.operation ||
+          [...state.decisions, ...state.outcomes].some(
+            (item) => item.attemptId === marker.attemptId && item.operation === marker.operation
+          )
+        )
+          return state;
+        confirmed = true;
+        return {
+          ...state,
+          marker: null,
+          outcomes: [
+            ...state.outcomes,
+            { attemptId: marker.attemptId, operation: marker.operation, kind: 'confirmed' },
+          ],
+        };
+      });
+      if (!confirmed) throw new Error('Task write safety marker changed');
+    },
     async release(
       identity: TaskWriteGuardIdentity,
       marker: TaskWriteGuardMarker,
@@ -321,7 +380,24 @@ export function createTaskWriteGuardStorage(
             options.explicitDecision && !alreadyRecorded
               ? [...state.decisions, { attemptId: marker.attemptId, operation: marker.operation }]
               : state.decisions;
-          return { ...state, marker: null, decisions };
+          const wasCurrent =
+            current?.attemptId === marker.attemptId && current.operation === marker.operation;
+          const outcomes =
+            wasCurrent &&
+            !options.explicitDecision &&
+            !state.outcomes.some(
+              (item) => item.attemptId === marker.attemptId && item.operation === marker.operation
+            )
+              ? [
+                  ...state.outcomes,
+                  {
+                    attemptId: marker.attemptId,
+                    operation: marker.operation,
+                    kind: 'cancelled' as const,
+                  },
+                ]
+              : state.outcomes;
+          return { ...state, marker: null, decisions, outcomes };
         }
         return state;
       });

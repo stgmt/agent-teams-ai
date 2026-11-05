@@ -15,6 +15,7 @@ import {
 } from '@features/team-task-detail/renderer/adapters/taskWriteGuardStorage';
 import { useTaskDetailSession } from '@features/team-task-detail/renderer/hooks/useTaskDetailSession';
 import {
+  VERIFIED_ACTION_DECIDE,
   VERIFIED_ACTION_FENCE_DECISION,
   VERIFIED_ACTION_LIST,
 } from '@features/verified-action/contracts';
@@ -115,13 +116,15 @@ afterEach(async () => {
 });
 
 it.each([
-  { newGeneration: false, explicitlyResolved: false },
-  { newGeneration: true, explicitlyResolved: false },
-  { newGeneration: false, explicitlyResolved: true },
-  { newGeneration: true, explicitlyResolved: true },
+  { newGeneration: false, explicitlyResolved: false, confirmed: false },
+  { newGeneration: true, explicitlyResolved: false, confirmed: false },
+  { newGeneration: false, explicitlyResolved: true, confirmed: false },
+  { newGeneration: true, explicitlyResolved: true, confirmed: false },
+  { newGeneration: false, explicitlyResolved: false, confirmed: true },
+  { newGeneration: true, explicitlyResolved: false, confirmed: true },
 ])(
-  'checks another window with real IPC (new generation: $newGeneration, explicit resolution: $explicitlyResolved)',
-  async ({ newGeneration, explicitlyResolved }) => {
+  'checks another window with real IPC (new generation: $newGeneration, explicit: $explicitlyResolved, confirmed: $confirmed)',
+  async ({ newGeneration, explicitlyResolved, confirmed }) => {
     vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
     const temp = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'verified-cross-window-'));
     tempRoots.push(temp);
@@ -217,7 +220,7 @@ it.each([
     const decision = {
       actionId,
       decisionId,
-      decision: 'retry_once' as const,
+      decision: confirmed ? ('completed' as const) : ('retry_once' as const),
       stage: 'decision' as const,
     };
     const marker = {
@@ -263,7 +266,30 @@ it.each([
         )?.disabled
       ).toBe(false)
     );
-    if (explicitlyResolved) {
+    const decide = vi.fn((...args: unknown[]) =>
+      handlers.get(VERIFIED_ACTION_DECIDE)!({}, ...args)
+    );
+    if (confirmed) {
+      const completed = await decide(
+        'local',
+        oldContext,
+        rootFingerprint,
+        actionId,
+        'completed',
+        decisionId
+      );
+      expect(completed).toMatchObject({
+        status: 'completed',
+        completion: 'user_attested',
+        decisionReceipt: { id: decisionId, decision: 'completed' },
+      });
+      await firstWindow.confirm(guardIdentity, marker);
+      expect(await secondWindow.readDecision(guardIdentity, marker)).toEqual({
+        explicitlyResolved: false,
+        confirmed: true,
+        marker: null,
+      });
+    } else if (explicitlyResolved) {
       await firstWindow.release(guardIdentity, marker, { explicitDecision: true });
       expect(await secondWindow.readDecision(guardIdentity, marker)).toEqual({
         explicitlyResolved: true,
@@ -290,7 +316,17 @@ it.each([
     await vi.waitFor(() => expect(controller.taskWriteGuard.unknown).toBe(false));
     await vi.waitFor(async () => expect(await secondWindow.read(guardIdentity)).toBeNull());
     const [result] = await fileStore.transaction((tx) => tx.read());
-    if (explicitlyResolved) {
+    if (confirmed) {
+      expect(decide).toHaveBeenCalledOnce();
+      expect(mocks.verifiedAction.fenceDecision).not.toHaveBeenCalled();
+      expect(result).toMatchObject({
+        status: 'completed',
+        completion: 'user_attested',
+        attempts: 1,
+        decisionReceipt: { id: decisionId, decision: 'completed' },
+      });
+      expect(host.textContent).not.toContain('verifiedAction.question');
+    } else if (explicitlyResolved) {
       expect(mocks.verifiedAction.fenceDecision).not.toHaveBeenCalled();
       expect(result).toMatchObject({ status: 'question', attempts: 1 });
       expect(result.decisionReceipt).toBeUndefined();

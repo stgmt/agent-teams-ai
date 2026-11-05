@@ -412,7 +412,7 @@ export function useTaskWriteGuard({
     [identity, identityKey, readGuardContext, requireOwner]
   );
 
-  const { markGuardedDecisionFenceSent, releaseUnadmittedDecisionFence, syncManifestDecision } =
+  const { markGuardedDecisionFenceSent, releaseUnadmittedDecisionFence, syncGuardedOutcome } =
     useTaskWriteFence({
       identity,
       identityKey,
@@ -514,7 +514,7 @@ export function useTaskWriteGuard({
         )
           throw new Error('Task context changed');
         await withArtifactOutcomeDeadline(
-          taskWriteGuardStorage.release(
+          taskWriteGuardStorage.confirm(
             {
               ...identity,
               dataRootFingerprint: current.taskWriteRootFingerprint!,
@@ -545,13 +545,7 @@ export function useTaskWriteGuard({
   );
 
   const checkGuardedTaskWriteOutcome = useCallback(
-    async (
-      operation: TaskWriteOperation
-    ): Promise<{
-      expectedContext: AppConnectionContext;
-      expectedRootFingerprint: string;
-      manifest?: { markerId: string; decision: TaskWriteDecision | null; resolved?: true };
-    }> => {
+    async (operation: TaskWriteOperation) => {
       if (!isOriginCurrent()) throw new Error('Task context changed');
       const before = useStore.getState();
       const priorSession = before.taskDetailSessionById[identityKey];
@@ -630,15 +624,14 @@ export function useTaskWriteGuard({
         (session?.taskWriteOperation && session.taskWriteOperation !== operation)
       )
         throw new Error('Task outcome changed during the check');
-      let manifest:
-        | { markerId: string; decision: TaskWriteDecision | null; resolved?: true }
-        | undefined;
-      if (operation === 'manifest' && priorSession?.artifactOutcomeUnknown) {
+      let outcome: Awaited<ReturnType<typeof syncGuardedOutcome>> | undefined;
+      if (priorSession?.artifactOutcomeUnknown) {
         if (!priorSession.taskWriteMarkerId)
           throw new Error('Task write safety marker is unavailable');
-        manifest = await syncManifestDecision(
+        outcome = await syncGuardedOutcome(
           priorSession.taskWriteMarkerId,
           expectedRoot,
+          operation,
           priorSession.taskWriteDecision ?? null,
           revision
         );
@@ -649,15 +642,15 @@ export function useTaskWriteGuard({
       const current = latest.taskDetailSessionById[identityKey];
       if (
         (current?.artifactOutcomeRevision ?? 0) !== revision ||
-        (manifest &&
-          (current?.taskWriteMarkerId !== manifest.markerId ||
+        (outcome &&
+          (current?.taskWriteMarkerId !== outcome.markerId ||
             current.taskWriteRootFingerprint !== expectedRoot ||
-            current.taskWriteOperation !== 'manifest'))
+            current.taskWriteOperation !== operation))
       )
         throw new Error('Task outcome changed during the check');
-      if (manifest?.resolved) {
-        // The explicit receipt refers to this exact attempt. No durable marker
-        // is deleted here: a later write must still acquire its own marker.
+      if (outcome?.resolved) {
+        // The exact attempt has a durable explicit or confirmed receipt. No
+        // marker is deleted here; future writes still acquire atomically.
         latest.updateTaskDetailSession(identity, {
           artifactOutcomeUnknown: false,
           artifactOutcomeChecked: false,
@@ -672,10 +665,19 @@ export function useTaskWriteGuard({
       return {
         expectedContext,
         expectedRootFingerprint: expectedRoot,
-        ...(manifest ? { manifest } : {}),
+        ...(operation === 'manifest' && outcome
+          ? {
+              manifest: {
+                markerId: outcome.markerId,
+                decision: outcome.decision,
+                ...(outcome.resolved ? { resolved: true as const } : {}),
+              },
+            }
+          : {}),
+        ...(outcome?.resolved ? { resolution: outcome.resolution } : {}),
       };
     },
-    [identity, identityKey, isOriginCurrent, readGuardContext, syncManifestDecision]
+    [identity, identityKey, isOriginCurrent, readGuardContext, syncGuardedOutcome]
   );
 
   const confirmGuardedTaskWriteOutcome = useCallback(

@@ -4,7 +4,7 @@ import { useStore } from '@renderer/store';
 
 import { taskWriteGuardStorage } from '../adapters/taskWriteGuardStorage';
 
-import type { TaskDetailIdentity, TaskWriteDecision } from '../../contracts';
+import type { TaskDetailIdentity, TaskWriteDecision, TaskWriteOperation } from '../../contracts';
 
 function sameDecision(
   left: TaskWriteDecision | null | undefined,
@@ -117,10 +117,11 @@ export function useTaskWriteFence({
     [identity, identityKey, withDeadline]
   );
 
-  const syncManifestDecision = useCallback(
+  const syncGuardedOutcome = useCallback(
     async (
       token: string,
       rootFingerprint: string,
+      operation: TaskWriteOperation,
       decision: TaskWriteDecision | null,
       revision: number
     ) => {
@@ -129,17 +130,18 @@ export function useTaskWriteFence({
       const snapshot = await withDeadline(
         taskWriteGuardStorage.readDecision(
           { ...identity, dataRootFingerprint: rootFingerprint },
-          { version: 1, attemptId: token, operation: 'manifest' }
+          { version: 1, attemptId: token, operation }
         )
       );
       const stored = snapshot.marker;
       if (
         stored
           ? snapshot.explicitlyResolved ||
+            snapshot.confirmed ||
             stored.attemptId !== token ||
-            stored.operation !== 'manifest' ||
+            stored.operation !== operation ||
             !sameDecision(stored.decision, decision)
-          : !snapshot.explicitlyResolved
+          : !snapshot.explicitlyResolved && !snapshot.confirmed && operation !== 'artifact'
       )
         throw new Error('Task outcome changed during the check');
       const state = useStore.getState();
@@ -149,13 +151,24 @@ export function useTaskWriteFence({
         !session?.artifactOutcomeUnknown ||
         session.artifactWriteId ||
         session.taskWriteMarkerId !== token ||
-        session.taskWriteOperation !== 'manifest' ||
+        session.taskWriteOperation !== operation ||
         session.taskWriteRootFingerprint !== rootFingerprint ||
         (session.artifactOutcomeRevision ?? 0) !== revision ||
         !sameDecision(session.taskWriteDecision, decision)
       )
         throw new Error('Task outcome changed during the check');
-      if (!stored) return { markerId: token, decision: null, resolved: true as const };
+      if (!stored) {
+        if (snapshot.confirmed || snapshot.explicitlyResolved)
+          return {
+            markerId: token,
+            decision: null,
+            resolved: true as const,
+            resolution: snapshot.confirmed ? ('confirmed' as const) : ('explicit' as const),
+          };
+        // A missing artifact marker without a receipt remains unknown; the
+        // user may still inspect and explicitly confirm it as before.
+        return { markerId: token, decision: null };
+      }
       const currentDecision = stored.decision ?? null;
       state.updateTaskDetailSession(identity, { taskWriteDecision: currentDecision });
       return { markerId: token, decision: currentDecision };
@@ -163,5 +176,5 @@ export function useTaskWriteFence({
     [identity, identityKey, isOriginCurrent, withDeadline]
   );
 
-  return { markGuardedDecisionFenceSent, releaseUnadmittedDecisionFence, syncManifestDecision };
+  return { markGuardedDecisionFenceSent, releaseUnadmittedDecisionFence, syncGuardedOutcome };
 }
