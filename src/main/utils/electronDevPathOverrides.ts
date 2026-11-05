@@ -73,16 +73,47 @@ export function applyElectronDevPathOverrides(
   const userDataDir = normalizeAbsolutePath(env[AGENT_TEAMS_ELECTRON_USER_DATA_DIR_ENV]);
   const rawUserDataDir = env[AGENT_TEAMS_ELECTRON_USER_DATA_DIR_ENV]?.trim();
   if (rawUserDataDir && !userDataDir) {
-    warnings.push(`${AGENT_TEAMS_ELECTRON_USER_DATA_DIR_ENV} must be an absolute path.`);
+    throw new Error(`${AGENT_TEAMS_ELECTRON_USER_DATA_DIR_ENV} must be an absolute path.`);
   }
 
-  const appliedUserDataDir =
-    userDataDir && ensureDirectory(userDataDir, warnings, AGENT_TEAMS_ELECTRON_USER_DATA_DIR_ENV)
-      ? userDataDir
-      : null;
-  if (appliedUserDataDir) {
-    app.setPath?.('userData', appliedUserDataDir);
-    setAppDataBasePath(appliedUserDataDir);
+  if (userDataDir) {
+    if (typeof app.setPath !== 'function') {
+      throw new Error('Electron path overrides require app.setPath');
+    }
+
+    const isolatedPaths = [
+      ['userData', userDataDir],
+      ['sessionData', path.join(userDataDir, 'session')],
+      ['logs', path.join(userDataDir, 'logs')],
+      ['crashDumps', path.join(userDataDir, 'crashes')],
+    ] as const;
+
+    // Prepare every path before changing any Electron path. A failed explicit
+    // override must never continue with part of the regular user's profile.
+    for (const [name, directory] of isolatedPaths) {
+      if (
+        !ensureDirectory(directory, warnings, `${AGENT_TEAMS_ELECTRON_USER_DATA_DIR_ENV}/${name}`)
+      ) {
+        throw new Error(warnings[warnings.length - 1]);
+      }
+    }
+    const realUserDataDir = fs.realpathSync(userDataDir);
+    for (const [name, directory] of isolatedPaths.slice(1)) {
+      const relative = path.relative(realUserDataDir, fs.realpathSync(directory));
+      if (
+        fs.lstatSync(directory).isSymbolicLink() ||
+        !relative ||
+        relative === '..' ||
+        relative.startsWith(`..${path.sep}`) ||
+        path.isAbsolute(relative)
+      ) {
+        throw new Error(`Electron ${name} must be a real directory within the isolated userData`);
+      }
+    }
+    for (const [name, directory] of isolatedPaths) {
+      app.setPath(name, directory);
+    }
+    setAppDataBasePath(userDataDir);
   }
 
   const claudeRoot = resolveElectronDevClaudeRootOverride(env);
@@ -101,7 +132,7 @@ export function applyElectronDevPathOverrides(
   appliedElectronDevClaudeRootOverride = appliedClaudeRoot;
 
   return {
-    userDataDir: appliedUserDataDir,
+    userDataDir,
     claudeRoot: appliedClaudeRoot,
     warnings,
   };
