@@ -7,10 +7,11 @@ const { getTeamBoardLockContext } = require('./boardLock.js');
 const reviewStateHelpers = require('./reviewState.js');
 const { normalizeCreationCommand } = require('./taskCreationCommand.js');
 const { normalizeTaskGroupChatId, applyTaskGroupChatUpdate } = require('./taskGroupAssociation.js');
+const { deriveDisplayId } = require('./taskIdentity.js');
+const { normalizeOwnerValue } = require('./taskOwnerValue.js');
+const { resolveTaskBackend } = require('./taskBackendSelection.js');
 
 const TASK_STATUSES = new Set(['pending', 'in_progress', 'completed', 'deleted']);
-const UUID_TASK_ID_PATTERN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const TASK_STORAGE_IDENTITY = Symbol('taskStorageIdentity');
 const TASK_SCAN_SNAPSHOTS = Symbol('taskScanSnapshots');
 const DEFAULT_TASK_SCAN_SNAPSHOT_TTL_MS = 250;
@@ -49,16 +50,6 @@ function writeJson(filePath, value) {
 
 function getTaskPath(paths, taskId) {
   return path.join(paths.tasksDir, `${String(taskId)}.json`);
-}
-
-function looksLikeCanonicalTaskId(taskId) {
-  return UUID_TASK_ID_PATTERN.test(String(taskId || '').trim());
-}
-
-function deriveDisplayId(taskId) {
-  const normalized = String(taskId || '').trim();
-  if (!normalized) return normalized;
-  return looksLikeCanonicalTaskId(normalized) ? normalized.slice(0, 8).toLowerCase() : normalized;
 }
 
 function getPersistedTaskId(rawTask) {
@@ -290,7 +281,13 @@ function readTaskScanSnapshotCacheClock() {
   return clockMs;
 }
 
-function scanTaskRows(paths) {
+/**
+ * Reads every task row from the local task files.
+ *
+ * Kept apart from the dispatching {@link scanTaskRows} so a file-backed helper
+ * can never accidentally read a registry-backed team half-way through a write.
+ */
+function scanFileTaskRows(paths) {
   const lockContext = getTeamBoardLockContext(paths);
   const snapshotKey = path.resolve(paths.tasksDir);
   if (!lockContext) {
@@ -365,9 +362,16 @@ function sortTasks(tasks) {
   });
 }
 
-function listTaskRows(paths, options = {}) {
+/** Every task row of the active backend: local files, or the app's registry view. */
+function scanTaskRows(paths) {
+  const backend = resolveTaskBackend(paths);
+  if (backend) return backend.scanTaskRows();
+  return scanFileTaskRows(paths);
+}
+
+function listTaskRowsFromFiles(paths, options = {}) {
   const includeDeleted = options.includeDeleted === true;
-  const { rows, anomalies } = scanTaskRows(paths);
+  const { rows, anomalies } = scanFileTaskRows(paths);
   const tasks = rows
     .map((row) => cloneTaskForCaller(row.task))
     .filter((task) => includeDeleted || task.status !== 'deleted');
@@ -375,12 +379,20 @@ function listTaskRows(paths, options = {}) {
   return { tasks, anomalies: anomalies.map((anomaly) => cloneTaskValue(anomaly)) };
 }
 
+function listTaskRows(paths, options = {}) {
+  const backend = resolveTaskBackend(paths);
+  if (backend) return backend.listTaskRows(options);
+  return listTaskRowsFromFiles(paths, options);
+}
+
 function listRawTasks(paths) {
-  return listTaskRows(paths, { includeDeleted: true }).tasks;
+  return listTaskRowsFromFiles(paths, { includeDeleted: true }).tasks;
 }
 
 function listTasks(paths, options = {}) {
-  return listTaskRows(paths, options).tasks;
+  const backend = resolveTaskBackend(paths);
+  if (backend) return backend.listTasks(options);
+  return listTaskRowsFromFiles(paths, options).tasks;
 }
 
 function assertTaskRowHasUnambiguousIdentity(scan, row, taskRef) {
@@ -399,7 +411,7 @@ function resolveTaskRow(paths, taskRef, options = {}) {
   }
 
   const includeDeleted = options.includeDeleted === true;
-  const scan = scanTaskRows(paths);
+  const scan = scanFileTaskRows(paths);
   assertReadableTaskRef(scan, normalizedRef);
   const exact = scan.rowsByCanonicalId.get(normalizedRef);
 
@@ -445,11 +457,23 @@ function resolveTaskRow(paths, taskRef, options = {}) {
 }
 
 function resolveTaskRef(paths, taskRef, options = {}) {
+  const backend = resolveTaskBackend(paths);
+  if (backend) return backend.resolveTaskRef(taskRef, options);
+  return resolveTaskRefFromFiles(paths, taskRef, options);
+}
+
+function resolveTaskRefFromFiles(paths, taskRef, options = {}) {
   return resolveTaskRow(paths, taskRef, options).canonicalTaskId;
 }
 
-function readTask(paths, taskRef, options = {}) {
+function readTaskFromFiles(paths, taskRef, options = {}) {
   return cloneTaskForCaller(resolveTaskRow(paths, taskRef, options).task);
+}
+
+function readTask(paths, taskRef, options = {}) {
+  const backend = resolveTaskBackend(paths);
+  if (backend) return backend.readTask(taskRef, options);
+  return readTaskFromFiles(paths, taskRef, options);
 }
 
 function appendHistoryEvent(events, event) {
@@ -564,7 +588,7 @@ function wouldCreateBlockCycle(paths, sourceId, targetId) {
     if (currentId === sourceId) return true;
     visited.add(currentId);
     try {
-      const currentTask = readTask(paths, currentId, { includeDeleted: true });
+      const currentTask = readTaskFromFiles(paths, currentId, { includeDeleted: true });
       for (const depId of currentTask.blockedBy || []) {
         stack.push(depId);
       }
@@ -595,7 +619,7 @@ function writeTask(paths, task) {
 }
 
 function assertTaskIdIsAvailable(paths, canonicalTaskId) {
-  const claimedRows = scanTaskRows(paths).identityClaims.get(canonicalTaskId) || [];
+  const claimedRows = scanFileTaskRows(paths).identityClaims.get(canonicalTaskId) || [];
   if (claimedRows.length === 0) return;
   throw new Error(
     `Task id collision: "${canonicalTaskId}" is already claimed by ${claimedRows
@@ -606,6 +630,12 @@ function assertTaskIdIsAvailable(paths, canonicalTaskId) {
 }
 
 function createTask(paths, input = {}) {
+  const backend = resolveTaskBackend(paths);
+  if (backend) return backend.createTask(input);
+  return createTaskFromFiles(paths, input);
+}
+
+function createTaskFromFiles(paths, input = {}) {
   ensureDir(paths.tasksDir);
 
   const canonicalId = pickTaskId(input);
@@ -714,7 +744,7 @@ function createTask(paths, input = {}) {
   writeTask(paths, task);
 
   for (const depId of blockedByIds) {
-    const dependencyTask = readTask(paths, depId, { includeDeleted: true });
+    const dependencyTask = readTaskFromFiles(paths, depId, { includeDeleted: true });
     const dependencyBlocks = Array.isArray(dependencyTask.blocks) ? dependencyTask.blocks : [];
     if (!dependencyBlocks.includes(task.id)) {
       dependencyTask.blocks = dependencyBlocks.concat([task.id]);
@@ -724,7 +754,7 @@ function createTask(paths, input = {}) {
   }
 
   for (const relatedId of relatedIds) {
-    const relatedTask = readTask(paths, relatedId, { includeDeleted: true });
+    const relatedTask = readTaskFromFiles(paths, relatedId, { includeDeleted: true });
     const existingRelated = Array.isArray(relatedTask.related) ? relatedTask.related : [];
     if (!existingRelated.includes(task.id)) {
       relatedTask.related = existingRelated.concat([task.id]);
@@ -737,6 +767,12 @@ function createTask(paths, input = {}) {
 }
 
 function reconcileTaskCreation(paths, input = {}) {
+  const backend = resolveTaskBackend(paths);
+  if (backend) return backend.reconcileTaskCreation(input);
+  return reconcileTaskCreationFromFiles(paths, input);
+}
+
+function reconcileTaskCreationFromFiles(paths, input = {}) {
   const taskId = String(input.id || '').trim();
   if (!taskId) {
     throw new Error('Task creation command conflict: missing task id');
@@ -746,7 +782,7 @@ function reconcileTaskCreation(paths, input = {}) {
     throw new Error('Task creation command conflict: command id does not match task id');
   }
 
-  const task = readTask(paths, taskId, { includeDeleted: true });
+  const task = readTaskFromFiles(paths, taskId, { includeDeleted: true });
   const existingCommand = normalizeCreationCommand(task.creationCommand);
   const blockedByIds = Array.isArray(task.blockedBy) ? task.blockedBy.map(String) : [];
   const relatedIds = Array.isArray(task.related) ? task.related.map(String) : [];
@@ -776,17 +812,17 @@ function reconcileTaskCreation(paths, input = {}) {
 
   ensureTaskCreationBacklinks(paths, taskId, blockedByIds, relatedIds);
 
-  const reconciled = readTask(paths, taskId, { includeDeleted: true });
+  const reconciled = readTaskFromFiles(paths, taskId, { includeDeleted: true });
   if (shouldPersistExpectedCommand) {
     reconciled.creationCommand = expectedCommand;
     writeTask(paths, reconciled);
   }
-  return readTask(paths, taskId, { includeDeleted: true });
+  return readTaskFromFiles(paths, taskId, { includeDeleted: true });
 }
 
 function ensureTaskCreationBacklinks(paths, taskId, blockedByIds, relatedIds) {
   for (const dependencyId of blockedByIds) {
-    const dependency = readTask(paths, dependencyId, { includeDeleted: true });
+    const dependency = readTaskFromFiles(paths, dependencyId, { includeDeleted: true });
     const blocks = Array.isArray(dependency.blocks) ? dependency.blocks : [];
     if (!blocks.includes(taskId)) {
       dependency.blocks = [...blocks, taskId];
@@ -795,7 +831,7 @@ function ensureTaskCreationBacklinks(paths, taskId, blockedByIds, relatedIds) {
     }
   }
   for (const relatedId of relatedIds) {
-    const related = readTask(paths, relatedId, { includeDeleted: true });
+    const related = readTaskFromFiles(paths, relatedId, { includeDeleted: true });
     const existingRelatedIds = Array.isArray(related.related) ? related.related : [];
     if (!existingRelatedIds.includes(taskId)) {
       related.related = [...existingRelatedIds, taskId];
@@ -820,7 +856,13 @@ function assertLegacyTaskMatchesCreationInput(task, input) {
 }
 
 function updateTask(paths, taskRef, updater, options = {}) {
-  const existingTask = readTask(paths, taskRef, { includeDeleted: true });
+  const backend = resolveTaskBackend(paths);
+  if (backend) return backend.updateTask(taskRef, updater);
+  return updateTaskFromFiles(paths, taskRef, updater);
+}
+
+function updateTaskFromFiles(paths, taskRef, updater) {
+  const existingTask = readTaskFromFiles(paths, taskRef, { includeDeleted: true });
   const updatedTask = updater({ ...existingTask }) || existingTask;
   if (String(updatedTask.id) !== existingTask.id) {
     throw new Error(
@@ -838,12 +880,18 @@ function updateTask(paths, taskRef, updater, options = {}) {
 }
 
 function setTaskStatus(paths, taskRef, nextStatus, actor) {
+  const backend = resolveTaskBackend(paths);
+  if (backend) return backend.setTaskStatus(taskRef, nextStatus, actor);
+  return setTaskStatusFromFiles(paths, taskRef, nextStatus, actor);
+}
+
+function setTaskStatusFromFiles(paths, taskRef, nextStatus, actor) {
   const status = normalizeStatus(nextStatus);
   if (!status) {
     throw new Error(`Invalid status: ${String(nextStatus)}`);
   }
 
-  return updateTask(paths, taskRef, (task) => {
+  return updateTaskFromFiles(paths, taskRef, (task) => {
     if (task.status === status) {
       if (status === 'deleted' || status === 'in_progress') {
         task.reviewState = 'none';
@@ -899,16 +947,14 @@ function setTaskStatus(paths, taskRef, nextStatus, actor) {
   });
 }
 
-function normalizeOwnerValue(owner) {
-  if (owner == null || owner === 'clear' || owner === 'none') {
-    return undefined;
-  }
-  const normalized = String(owner).trim();
-  return normalized ? normalized : undefined;
+function setTaskOwner(paths, taskRef, owner, actor) {
+  const backend = resolveTaskBackend(paths);
+  if (backend) return backend.setTaskOwner(taskRef, owner, actor);
+  return setTaskOwnerFromFiles(paths, taskRef, owner, actor);
 }
 
-function setTaskOwner(paths, taskRef, owner, actor) {
-  return updateTask(paths, taskRef, (task) => {
+function setTaskOwnerFromFiles(paths, taskRef, owner, actor) {
+  return updateTaskFromFiles(paths, taskRef, (task) => {
     const previousOwner = normalizeOwnerValue(task.owner);
     const nextOwner = normalizeOwnerValue(owner);
 
@@ -932,16 +978,20 @@ function setTaskOwner(paths, taskRef, owner, actor) {
 }
 
 function updateTaskFields(paths, taskRef, fields) {
-  return updateTask(paths, taskRef, (task) => {
-    applyTaskGroupChatUpdate(task, fields.groupChatId);
-    if (fields.subject !== undefined) {
-      task.subject = fields.subject;
-    }
-    if (fields.description !== undefined) {
-      task.description = fields.description;
-    }
-    return task;
-  });
+  const backend = resolveTaskBackend(paths);
+  if (backend) return backend.updateTask(taskRef, (task) => applyTaskFieldsUpdate(task, fields));
+  return updateTaskFromFiles(paths, taskRef, (task) => applyTaskFieldsUpdate(task, fields));
+}
+
+function applyTaskFieldsUpdate(task, fields) {
+  applyTaskGroupChatUpdate(task, fields.groupChatId);
+  if (fields.subject !== undefined) {
+    task.subject = fields.subject;
+  }
+  if (fields.description !== undefined) {
+    task.description = fields.description;
+  }
+  return task;
 }
 
 function normalizeMemberName(value) {
@@ -1038,14 +1088,20 @@ function addCommentAttachmentMeta(paths, taskRef, commentRef, meta) {
 }
 
 function linkTask(paths, taskRef, targetRef, relationship) {
-  const sourceId = resolveTaskRef(paths, taskRef);
-  const targetId = resolveTaskRef(paths, targetRef);
+  const backend = resolveTaskBackend(paths);
+  if (backend) return backend.linkTask(taskRef, targetRef, relationship);
+  return linkTaskFromFiles(paths, taskRef, targetRef, relationship);
+}
+
+function linkTaskFromFiles(paths, taskRef, targetRef, relationship) {
+  const sourceId = resolveTaskRefFromFiles(paths, taskRef);
+  const targetId = resolveTaskRefFromFiles(paths, targetRef);
   if (sourceId === targetId) {
     throw new Error('Cannot link a task to itself');
   }
 
   if (relationship === 'blocks') {
-    return linkTask(paths, targetId, sourceId, 'blocked-by');
+    return linkTaskFromFiles(paths, targetId, sourceId, 'blocked-by');
   }
 
   if (relationship === 'blocked-by') {
@@ -1053,8 +1109,8 @@ function linkTask(paths, taskRef, targetRef, relationship) {
       throw new Error(`Circular dependency: ${targetId} already depends on ${sourceId}`);
     }
 
-    const sourceTask = readTask(paths, sourceId, { includeDeleted: true });
-    const targetTask = readTask(paths, targetId, { includeDeleted: true });
+    const sourceTask = readTaskFromFiles(paths, sourceId, { includeDeleted: true });
+    const targetTask = readTaskFromFiles(paths, targetId, { includeDeleted: true });
     if (!(sourceTask.blockedBy || []).includes(targetId)) {
       sourceTask.blockedBy = [...(sourceTask.blockedBy || []), targetId];
       writeTask(paths, sourceTask);
@@ -1063,15 +1119,15 @@ function linkTask(paths, taskRef, targetRef, relationship) {
       targetTask.blocks = [...(targetTask.blocks || []), sourceId];
       writeTask(paths, targetTask);
     }
-    return readTask(paths, sourceId, { includeDeleted: true });
+    return readTaskFromFiles(paths, sourceId, { includeDeleted: true });
   }
 
   if (relationship !== 'related') {
     throw new Error(`Unsupported relationship: ${String(relationship)}`);
   }
 
-  const sourceTask = readTask(paths, sourceId, { includeDeleted: true });
-  const targetTask = readTask(paths, targetId, { includeDeleted: true });
+  const sourceTask = readTaskFromFiles(paths, sourceId, { includeDeleted: true });
+  const targetTask = readTaskFromFiles(paths, targetId, { includeDeleted: true });
   if (!(sourceTask.related || []).includes(targetId)) {
     sourceTask.related = [...(sourceTask.related || []), targetId];
     writeTask(paths, sourceTask);
@@ -1080,29 +1136,35 @@ function linkTask(paths, taskRef, targetRef, relationship) {
     targetTask.related = [...(targetTask.related || []), sourceId];
     writeTask(paths, targetTask);
   }
-  return readTask(paths, sourceId, { includeDeleted: true });
+  return readTaskFromFiles(paths, sourceId, { includeDeleted: true });
 }
 
 function unlinkTask(paths, taskRef, targetRef, relationship) {
-  const sourceId = resolveTaskRef(paths, taskRef, { includeDeleted: true });
-  const targetId = resolveTaskRef(paths, targetRef, { includeDeleted: true });
+  const backend = resolveTaskBackend(paths);
+  if (backend) return backend.unlinkTask(taskRef, targetRef, relationship);
+  return unlinkTaskFromFiles(paths, taskRef, targetRef, relationship);
+}
+
+function unlinkTaskFromFiles(paths, taskRef, targetRef, relationship) {
+  const sourceId = resolveTaskRefFromFiles(paths, taskRef, { includeDeleted: true });
+  const targetId = resolveTaskRefFromFiles(paths, targetRef, { includeDeleted: true });
 
   if (relationship === 'blocks') {
-    return unlinkTask(paths, targetId, sourceId, 'blocked-by');
+    return unlinkTaskFromFiles(paths, targetId, sourceId, 'blocked-by');
   }
 
-  const sourceTask = readTask(paths, sourceId, { includeDeleted: true });
+  const sourceTask = readTaskFromFiles(paths, sourceId, { includeDeleted: true });
   if (relationship === 'blocked-by') {
     sourceTask.blockedBy = (sourceTask.blockedBy || []).filter((entry) => entry !== targetId);
     writeTask(paths, sourceTask);
     try {
-      const targetTask = readTask(paths, targetId, { includeDeleted: true });
+      const targetTask = readTaskFromFiles(paths, targetId, { includeDeleted: true });
       targetTask.blocks = (targetTask.blocks || []).filter((entry) => entry !== sourceId);
       writeTask(paths, targetTask);
     } catch {
       // Ignore missing reverse link target.
     }
-    return readTask(paths, sourceId, { includeDeleted: true });
+    return readTaskFromFiles(paths, sourceId, { includeDeleted: true });
   }
 
   if (relationship !== 'related') {
@@ -1112,13 +1174,13 @@ function unlinkTask(paths, taskRef, targetRef, relationship) {
   sourceTask.related = (sourceTask.related || []).filter((entry) => entry !== targetId);
   writeTask(paths, sourceTask);
   try {
-    const targetTask = readTask(paths, targetId, { includeDeleted: true });
+    const targetTask = readTaskFromFiles(paths, targetId, { includeDeleted: true });
     targetTask.related = (targetTask.related || []).filter((entry) => entry !== sourceId);
     writeTask(paths, targetTask);
   } catch {
     // Ignore missing reverse link target.
   }
-  return readTask(paths, sourceId, { includeDeleted: true });
+  return readTaskFromFiles(paths, sourceId, { includeDeleted: true });
 }
 
 function buildTaskReference(task) {
