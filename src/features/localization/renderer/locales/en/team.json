@@ -15,7 +15,7 @@
     "notStarted": "No update was sent; check the current task or wait for the ongoing update.",
     "guardLoading": "Checking task write safety state…",
     "guardUnavailable": "Task write safety storage is unavailable. Changes are disabled; reopen the app when storage is working.",
-    "guardUnsupported": "Artifact changes are available only in the local desktop app.",
+    "guardUnsupported": "Artifact editing and downloads are available only in the local desktop app.",
     "otherOperation": "Another task operation needs attention in its own section.",
     "attach": "Attach file",
     "missing": "No required artifact attached yet.",

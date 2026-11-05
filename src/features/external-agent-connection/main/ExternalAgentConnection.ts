@@ -10,6 +10,7 @@ interface ConnectionDependencies {
   getCdpEnabled(): boolean;
   getAppVersion(): string;
   getProfileFingerprint(): string;
+  getTaskWriteRootFingerprint?(): string | null;
   isLocalContext(): boolean;
   getControlUrl(): string | null;
   getBoundControlUrl(): string | null;
@@ -94,6 +95,7 @@ export class ExternalAgentConnection {
       context,
       appVersion: this.deps.getAppVersion(),
       profileFingerprint: this.deps.getProfileFingerprint(),
+      taskWriteRootFingerprint: this.deps.getTaskWriteRootFingerprint?.() ?? null,
       observedAt: new Date().toISOString(),
       mcp: {
         status: ready ? 'ready' : failure || !local ? 'error' : 'starting',

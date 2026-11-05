@@ -63,10 +63,18 @@ export function createTaskWriteGuardStorage(
       });
       if (occupied) throw new TaskWriteGuardOccupiedError(occupied);
     },
-    async release(identity: TaskWriteGuardIdentity, marker: TaskWriteGuardMarker): Promise<void> {
+    async release(
+      identity: TaskWriteGuardIdentity,
+      marker: TaskWriteGuardMarker,
+      options: { allowMissingAfterDecision?: boolean } = {}
+    ): Promise<void> {
       let released = false;
       await backend.update(taskWriteGuardKey(identity), (value: unknown) => {
         const current = parseMarker(value);
+        if (!current && options.allowMissingAfterDecision) {
+          released = true;
+          return value;
+        }
         if (current?.attemptId === marker.attemptId && current.operation === marker.operation) {
           released = true;
           return null;

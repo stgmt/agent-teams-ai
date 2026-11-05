@@ -393,8 +393,10 @@ describe('ipc teams handlers', () => {
   };
   const artifactAdmission = async <T>(
     expected: typeof artifactContext,
+    expectedRootFingerprint: string,
     operation: () => Promise<T>
   ): Promise<T> => {
+    if (expectedRootFingerprint !== 'c'.repeat(64)) throw new Error('Task root mismatch');
     if (JSON.stringify(expected) !== JSON.stringify(artifactContext))
       throw new Error('APP_CONTEXT_MISMATCH');
     return operation();
@@ -1019,6 +1021,7 @@ describe('ipc teams handlers', () => {
       artifactExpectedFilename: 'result.mp4',
       artifactFile: { filename: 'result.mp4', base64Data: 'YWJj' },
       artifactExpectedContext: artifactContext,
+      artifactExpectedRootFingerprint: 'c'.repeat(64),
       artifactRequirement: { required: false, proof: { sha256: 'forged' } },
     });
     expect(result).toEqual({ success: true, data: undefined });
@@ -1060,8 +1063,28 @@ describe('ipc teams handlers', () => {
     const result = await handler({}, 'my-team', 'task-1', {
       artifactRequired: true,
       artifactExpectedContext: { ...artifactContext, dataRootFingerprint: 'b'.repeat(64) },
+      artifactExpectedRootFingerprint: 'c'.repeat(64),
     });
     expect(result).toMatchObject({ success: false, error: 'APP_CONTEXT_MISMATCH' });
+    expect(service.updateTaskFields).not.toHaveBeenCalled();
+    vi.mocked(console.error).mockClear();
+  });
+
+  it('rejects missing or changed physical root identity before writing an artifact', async () => {
+    const handler = handlers.get(TEAM_UPDATE_TASK_FIELDS)!;
+    expect(
+      await handler({}, 'my-team', 'task-1', {
+        artifactRequired: true,
+        artifactExpectedContext: artifactContext,
+      })
+    ).toMatchObject({ success: false });
+    expect(
+      await handler({}, 'my-team', 'task-1', {
+        artifactRequired: true,
+        artifactExpectedContext: artifactContext,
+        artifactExpectedRootFingerprint: 'd'.repeat(64),
+      })
+    ).toMatchObject({ success: false, error: 'Task root mismatch' });
     expect(service.updateTaskFields).not.toHaveBeenCalled();
     vi.mocked(console.error).mockClear();
   });
@@ -1141,6 +1164,7 @@ describe('ipc teams handlers', () => {
     const updated = await handlers.get(TEAM_UPDATE_TASK_FIELDS)!({}, 'my-team', task.id, {
       ...fields,
       artifactExpectedContext: artifactContext,
+      artifactExpectedRootFingerprint: 'c'.repeat(64),
     });
     expect(updated).toEqual({ success: true, data: undefined });
     expect(service.updateTaskFields).toHaveBeenCalledWith('my-team', task.id, fields);

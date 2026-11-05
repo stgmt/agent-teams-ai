@@ -331,7 +331,12 @@ export const TaskArtifactSettings = ({
                 {requirement.expectedFilename} · {requirement.proof.size} B · SHA-256{' '}
                 {requirement.proof.sha256}
               </p>
-              <Button type="button" size="sm" disabled={pending} onClick={() => void download()}>
+              <Button
+                type="button"
+                size="sm"
+                disabled={pending || guardStatus === 'loading' || guardReason === 'unsupported'}
+                onClick={() => void download()}
+              >
                 {t('artifact.download')}
               </Button>
             </>

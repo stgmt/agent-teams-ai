@@ -31,12 +31,28 @@ function withArtifactOutcomeDeadline<T>(operation: Promise<T>): Promise<T> {
   });
 }
 
-function sameGuardContext(a: AppConnectionContext, b: AppConnectionContext): boolean {
+type GuardContext = AppConnectionContext & { physicalRootFingerprint: string };
+
+function sameGuardContext(
+  a: AppConnectionContext,
+  root: string | null | undefined,
+  b: GuardContext
+): boolean {
   return (
     a.appInstanceId === b.appInstanceId &&
     a.dataRootFingerprint === b.dataRootFingerprint &&
-    a.connectionGeneration === b.connectionGeneration
+    a.connectionGeneration === b.connectionGeneration &&
+    !!root &&
+    root === b.physicalRootFingerprint
   );
+}
+
+function connectionContext(value: GuardContext): AppConnectionContext {
+  return {
+    appInstanceId: value.appInstanceId,
+    dataRootFingerprint: value.dataRootFingerprint,
+    connectionGeneration: value.connectionGeneration,
+  };
 }
 
 export function useTaskWriteGuard({
@@ -52,7 +68,7 @@ export function useTaskWriteGuard({
   isOriginCurrent: () => boolean;
   requireOwner: () => boolean;
 }) {
-  const readGuardContext = useCallback(async (): Promise<AppConnectionContext> => {
+  const readGuardContext = useCallback(async (): Promise<GuardContext> => {
     if (!isOriginCurrent() || identity.contextId !== 'local' || !isElectronMode())
       throw new Error('Local Electron task context is required');
     const info = await withArtifactOutcomeDeadline(api.externalAgentConnection.getConnectionInfo());
@@ -63,12 +79,14 @@ export function useTaskWriteGuard({
       typeof context.appInstanceId !== 'string' ||
       !context.appInstanceId ||
       !/^[a-f0-9]{64}$/i.test(context.dataRootFingerprint) ||
+      typeof info.taskWriteRootFingerprint !== 'string' ||
+      !/^[a-f0-9]{64}$/i.test(info.taskWriteRootFingerprint) ||
       !Number.isSafeInteger(context.connectionGeneration) ||
       context.connectionGeneration < 1
     ) {
       throw new Error('Task data root identity is unavailable');
     }
-    return context;
+    return { ...context, physicalRootFingerprint: info.taskWriteRootFingerprint };
   }, [identity.contextId, isOriginCurrent]);
   useEffect(() => {
     if (!isOriginCurrent() || session.taskWriteGuardState) return;
@@ -89,10 +107,10 @@ export function useTaskWriteGuard({
       const marker = await withArtifactOutcomeDeadline(
         taskWriteGuardStorage.read({
           ...identity,
-          dataRootFingerprint: context.dataRootFingerprint,
+          dataRootFingerprint: context.physicalRootFingerprint,
         })
       );
-      if (!sameGuardContext(context, await readGuardContext()))
+      if (!sameGuardContext(context, context.physicalRootFingerprint, await readGuardContext()))
         throw new Error('Task context changed');
       return { marker, context };
     })()
@@ -107,8 +125,8 @@ export function useTaskWriteGuard({
                 taskWriteGuardState: 'ready',
                 taskWriteMarkerId: marker.attemptId,
                 taskWriteOperation: marker.operation,
-                taskWriteRootFingerprint: context.dataRootFingerprint,
-                taskWriteExpectedContext: context,
+                taskWriteRootFingerprint: context.physicalRootFingerprint,
+                taskWriteExpectedContext: connectionContext(context),
                 artifactOutcomeUnknown: true,
                 artifactOutcomeChecked: false,
                 artifactOutcomeRevision: (current.artifactOutcomeRevision ?? 0) + 1,
@@ -117,8 +135,8 @@ export function useTaskWriteGuard({
                 taskWriteGuardState: 'ready',
                 taskWriteMarkerId: null,
                 taskWriteOperation: null,
-                taskWriteRootFingerprint: context.dataRootFingerprint,
-                taskWriteExpectedContext: context,
+                taskWriteRootFingerprint: context.physicalRootFingerprint,
+                taskWriteExpectedContext: connectionContext(context),
               }
         );
       })
@@ -149,7 +167,11 @@ export function useTaskWriteGuard({
   const beginGuardedTaskWrite = useCallback(
     async (
       operation: TaskWriteOperation
-    ): Promise<{ token: string; expectedContext: AppConnectionContext }> => {
+    ): Promise<{
+      token: string;
+      expectedContext: AppConnectionContext;
+      expectedRootFingerprint: string;
+    }> => {
       const state = useStore.getState();
       const session = state.taskDetailSessionById[identityKey];
       if (
@@ -166,14 +188,14 @@ export function useTaskWriteGuard({
         artifactWriteId: token,
         taskWriteOperation: operation,
       });
-      let context: AppConnectionContext;
+      let context: GuardContext;
       try {
         context = await readGuardContext();
-        if (context.dataRootFingerprint !== session.taskWriteRootFingerprint)
+        if (context.physicalRootFingerprint !== session.taskWriteRootFingerprint)
           throw new Error('Task data root changed');
         await withArtifactOutcomeDeadline(
           taskWriteGuardStorage.acquire(
-            { ...identity, dataRootFingerprint: context.dataRootFingerprint },
+            { ...identity, dataRootFingerprint: context.physicalRootFingerprint },
             marker
           )
         );
@@ -189,7 +211,7 @@ export function useTaskWriteGuard({
                   taskWriteGuardState: 'ready',
                   taskWriteMarkerId: error.marker.attemptId,
                   taskWriteOperation: error.marker.operation,
-                  taskWriteExpectedContext: context!,
+                  taskWriteExpectedContext: connectionContext(context!),
                   artifactOutcomeUnknown: true,
                   artifactOutcomeChecked: false,
                   artifactOutcomeRevision: (current.artifactOutcomeRevision ?? 0) + 1,
@@ -204,7 +226,11 @@ export function useTaskWriteGuard({
       const latest = useStore.getState();
       let sameContext = false;
       try {
-        sameContext = sameGuardContext(context, await readGuardContext());
+        sameContext = sameGuardContext(
+          context,
+          context.physicalRootFingerprint,
+          await readGuardContext()
+        );
       } catch {
         /* fail closed */
       }
@@ -216,7 +242,7 @@ export function useTaskWriteGuard({
         try {
           await withArtifactOutcomeDeadline(
             taskWriteGuardStorage.release(
-              { ...identity, dataRootFingerprint: context.dataRootFingerprint },
+              { ...identity, dataRootFingerprint: context.physicalRootFingerprint },
               marker
             )
           );
@@ -232,9 +258,13 @@ export function useTaskWriteGuard({
       }
       latest.updateTaskDetailSession(identity, {
         taskWriteMarkerId: token,
-        taskWriteExpectedContext: context,
+        taskWriteExpectedContext: connectionContext(context),
       });
-      return { token, expectedContext: context };
+      return {
+        token,
+        expectedContext: connectionContext(context),
+        expectedRootFingerprint: context.physicalRootFingerprint,
+      };
     },
     [identity, identityKey, readGuardContext, requireOwner]
   );
@@ -271,14 +301,18 @@ export function useTaskWriteGuard({
       try {
         if (
           !current.taskWriteExpectedContext ||
-          !sameGuardContext(current.taskWriteExpectedContext, await readGuardContext())
+          !sameGuardContext(
+            current.taskWriteExpectedContext,
+            current.taskWriteRootFingerprint,
+            await readGuardContext()
+          )
         )
           throw new Error('Task context changed');
         await withArtifactOutcomeDeadline(
           taskWriteGuardStorage.release(
             {
               ...identity,
-              dataRootFingerprint: current.taskWriteExpectedContext.dataRootFingerprint,
+              dataRootFingerprint: current.taskWriteRootFingerprint!,
             },
             { version: 1, attemptId: token, operation }
           )
@@ -316,13 +350,17 @@ export function useTaskWriteGuard({
       if (priorSession?.taskWriteOperation && priorSession.taskWriteOperation !== operation)
         throw new Error('A different task operation requires attention');
       const expectedContext = priorSession?.taskWriteExpectedContext;
-      if (!expectedContext || !sameGuardContext(expectedContext, await readGuardContext()))
+      const expectedRoot = priorSession?.taskWriteRootFingerprint;
+      if (
+        !expectedContext ||
+        !sameGuardContext(expectedContext, expectedRoot, await readGuardContext())
+      )
         throw new Error('Task data root changed');
       const revision = priorSession?.artifactOutcomeRevision ?? 0;
       const previousToken = before.taskDetailById[identityKey]?.fullToken;
       before.invalidateTaskDetailSource(identity);
       await withArtifactOutcomeDeadline(useStore.getState().ensureTaskDetail(identity));
-      if (!sameGuardContext(expectedContext, await readGuardContext()))
+      if (!sameGuardContext(expectedContext, expectedRoot, await readGuardContext()))
         throw new Error('Task data root changed');
       const state = useStore.getState();
       const entry = state.taskDetailById[identityKey];
@@ -367,7 +405,11 @@ export function useTaskWriteGuard({
         throw new Error('Check the matching task operation first');
       if (
         !session.taskWriteExpectedContext ||
-        !sameGuardContext(session.taskWriteExpectedContext, await readGuardContext())
+        !sameGuardContext(
+          session.taskWriteExpectedContext,
+          session.taskWriteRootFingerprint,
+          await readGuardContext()
+        )
       )
         throw new Error('Task data root changed');
       const revision = session.artifactOutcomeRevision;
@@ -375,9 +417,10 @@ export function useTaskWriteGuard({
         taskWriteGuardStorage.release(
           {
             ...identity,
-            dataRootFingerprint: session.taskWriteExpectedContext.dataRootFingerprint,
+            dataRootFingerprint: session.taskWriteRootFingerprint!,
           },
-          { version: 1, attemptId: token, operation }
+          { version: 1, attemptId: token, operation },
+          { allowMissingAfterDecision: true }
         )
       );
       const latest = useStore.getState();
@@ -419,6 +462,7 @@ export function useTaskWriteGuard({
           useStore.getState().updateTaskFields(identity.teamName, identity.taskId, {
             ...fields,
             artifactExpectedContext: attempt.expectedContext,
+            artifactExpectedRootFingerprint: attempt.expectedRootFingerprint,
           })
         );
         await checkGuardedTaskWriteOutcome('artifact');
@@ -448,6 +492,7 @@ export function useTaskWriteGuard({
       unknown: session.artifactOutcomeUnknown === true,
       checked: session.artifactOutcomeChecked === true,
       expectedContext: session.taskWriteExpectedContext ?? null,
+      expectedRootFingerprint: session.taskWriteRootFingerprint ?? null,
     },
     beginGuardedTaskWrite,
     settleGuardedTaskWrite,

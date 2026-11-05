@@ -165,6 +165,11 @@ export function initializeIpcHandlers(
       expected: AppConnectionContext,
       operation: () => Promise<T>
     ): Promise<T>;
+    withExpectedTaskWriteContext?<T>(
+      expected: AppConnectionContext,
+      expectedRootFingerprint: string,
+      operation: () => Promise<T>
+    ): Promise<T>;
     onAgentLanguageUpdated: (newLangCode: string) => Promise<void> | void;
   },
   httpServerDeps?: {
@@ -247,7 +252,7 @@ export function initializeIpcHandlers(
     }),
     resolveOpenCodeInputDeclaration,
     retireGatewayBindings,
-    contextCallbacks.withExpectedContext
+    contextCallbacks.withExpectedTaskWriteContext
   );
   initializeConfigHandlers({
     updateClaudeRoot: contextCallbacks.updateClaudeRoot,

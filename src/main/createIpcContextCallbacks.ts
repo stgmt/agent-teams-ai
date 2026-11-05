@@ -1,3 +1,5 @@
+import { assertTaskWriteRootFingerprint } from '@features/external-agent-connection/main';
+
 import type { AppConnectionContext } from '@features/external-agent-connection/contracts';
 import type { DesktopExternalAgentConnection } from '@features/external-agent-connection/main';
 import type { ServiceContext } from '@main/services';
@@ -6,6 +8,7 @@ export function createIpcContextCallbacks(input: {
   rewire(context: ServiceContext): void;
   full(context: ServiceContext): void;
   connection(): DesktopExternalAgentConnection | null;
+  getTaskWriteRoot(): string;
   notifyLanguageChange(language: string): Promise<void> | void;
 }) {
   const connection = (): DesktopExternalAgentConnection => {
@@ -22,6 +25,15 @@ export function createIpcContextCallbacks(input: {
       expected: AppConnectionContext,
       operation: () => Promise<T>
     ): Promise<T> => connection().withExpectedContext(expected, operation),
+    withExpectedTaskWriteContext: <T>(
+      expected: AppConnectionContext,
+      expectedRootFingerprint: string,
+      operation: () => Promise<T>
+    ): Promise<T> =>
+      connection().withExpectedContext(expected, async () => {
+        assertTaskWriteRootFingerprint(input.getTaskWriteRoot(), expectedRootFingerprint);
+        return operation();
+      }),
     withLocalAdmission: async <T>(operation: () => Promise<T>): Promise<T> => {
       const current = connection();
       const expected = (await current.getConnectionInfo()).context;

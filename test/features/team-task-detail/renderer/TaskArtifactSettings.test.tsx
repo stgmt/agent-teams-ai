@@ -217,6 +217,39 @@ describe('task artifact settings', () => {
     await act(async () => root.unmount());
   });
 
+  it('disables artifact download in unsupported browser contexts', async () => {
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+    const onDownload = vi.fn(async () => null);
+    const host = document.createElement('div');
+    const root = createRoot(host);
+    await act(async () => {
+      root.render(
+        <TaskArtifactSettings
+          {...outcomeProps}
+          guardStatus="unavailable"
+          guardReason="unsupported"
+          onUpdate={updateTaskFields}
+          onDownload={onDownload}
+          canMutate={() => true}
+          completed
+          requirement={{
+            required: true,
+            expectedFilename: 'result.txt',
+            proof: { attachmentId: 'artifact-1', sha256: 'a'.repeat(64), size: 3 },
+          }}
+        />
+      );
+    });
+    const button = Array.from(host.querySelectorAll('button')).find(
+      (item) => item.textContent === 'artifact.download'
+    )!;
+    expect(button.disabled).toBe(true);
+    expect(host.textContent).toContain('artifact.guardUnsupported');
+    button.click();
+    expect(onDownload).not.toHaveBeenCalled();
+    await act(async () => root.unmount());
+  });
+
   it('downloads the verified attachment bytes under the expected filename', async () => {
     vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
     vi.stubGlobal(
