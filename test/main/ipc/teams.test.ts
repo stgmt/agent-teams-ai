@@ -1089,6 +1089,22 @@ describe('ipc teams handlers', () => {
     vi.mocked(console.error).mockClear();
   });
 
+  it('rejects combining artifact fields with asynchronously validated group chat updates', async () => {
+    const handler = handlers.get(TEAM_UPDATE_TASK_FIELDS)!;
+    const result = await handler({}, 'my-team', 'task-1', {
+      artifactRequired: true,
+      groupChatId: '11111111-1111-4111-8111-111111111111',
+      artifactExpectedContext: artifactContext,
+      artifactExpectedRootFingerprint: 'c'.repeat(64),
+    });
+    expect(result).toMatchObject({
+      success: false,
+      error: 'Artifact updates must be submitted separately from other task fields',
+    });
+    expect(service.updateTaskFields).not.toHaveBeenCalled();
+    vi.mocked(console.error).mockClear();
+  });
+
   it('returns the verified controller artifact before a colliding appData attachment', async () => {
     const taskId = 'task-artifact';
     const attachmentId = 'artifact-1';

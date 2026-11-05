@@ -409,6 +409,90 @@ describe('task session surface and origin integration', () => {
     expect(await taskWriteGuardStorage.read(guardIdentity)).toEqual(marker);
   });
 
+  it('checks the same physical root after a generation-only settings change', async () => {
+    let controller!: TaskDetailSessionController;
+    await act(async () => {
+      mount('dialog', (value) => {
+        controller = value;
+      });
+    });
+    const token = await makeUnknown(controller);
+    const newContext = { ...guardContext, connectionGeneration: 2 };
+    apiMock.externalAgentConnection.getConnectionInfo.mockResolvedValue({
+      context: newContext,
+      taskWriteRootFingerprint: guardContext.dataRootFingerprint,
+    });
+    apiMock.teams.getTask.mockResolvedValueOnce({ ...task });
+    await act(async () => {
+      await controller.checkGuardedTaskWriteOutcome('artifact');
+      expect(useStore.getState().taskDetailSessionById[key].taskWriteExpectedContext).toEqual(
+        newContext
+      );
+      await controller.confirmGuardedTaskWriteOutcome(token, 'artifact');
+    });
+    expect(
+      await taskWriteGuardStorage.read({
+        ...identity,
+        dataRootFingerprint: guardContext.dataRootFingerprint,
+      })
+    ).toBeNull();
+  });
+
+  it.each([false, true])(
+    'does not ask again after another window resolves a late ambiguous write (new marker: %s)',
+    async (newMarker) => {
+      let controller!: TaskDetailSessionController;
+      await act(async () => {
+        mount('dialog', (value) => {
+          controller = value;
+        });
+      });
+      await waitForGuard();
+      let rejectWrite!: (reason: Error) => void;
+      let started!: () => void;
+      const startedPromise = new Promise<void>((resolve) => {
+        started = resolve;
+      });
+      const update = vi.fn(() => {
+        started();
+        return new Promise<void>((_resolve, reject) => {
+          rejectWrite = reject;
+        });
+      });
+      useStore.setState({ updateTaskFields: update });
+      let pending!: Promise<void>;
+      await act(async () => {
+        pending = controller.updateTaskArtifact({ artifactRequired: true });
+        await startedPromise;
+      });
+      const token = useStore.getState().taskDetailSessionById[key].artifactWriteId!;
+      const guardIdentity = { ...identity, dataRootFingerprint: guardContext.dataRootFingerprint };
+      await taskWriteGuardStorage.release(
+        guardIdentity,
+        { version: 1, attemptId: token, operation: 'artifact' },
+        { explicitDecision: true }
+      );
+      const next = {
+        version: 1 as const,
+        attemptId: 'next-manifest',
+        operation: 'manifest' as const,
+      };
+      if (newMarker) await taskWriteGuardStorage.acquire(guardIdentity, next);
+      await act(async () => {
+        rejectWrite(new Error('late unknown'));
+        await expect(pending).rejects.toThrow(/late unknown/);
+      });
+      expect(update).toHaveBeenCalledTimes(1);
+      expect(controller.taskWriteGuard).toMatchObject({
+        activeId: null,
+        unknown: newMarker,
+        markerId: newMarker ? next.attemptId : null,
+        operation: newMarker ? 'manifest' : null,
+      });
+      expect(await taskWriteGuardStorage.read(guardIdentity)).toEqual(newMarker ? next : null);
+    }
+  );
+
   it('rehydrates independent markers when the same task id moves between roots and back', async () => {
     const rootB = { ...guardContext, dataRootFingerprint: 'b'.repeat(64), connectionGeneration: 3 };
     const identityA = { ...identity, dataRootFingerprint: guardContext.dataRootFingerprint };

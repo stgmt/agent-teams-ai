@@ -40,6 +40,35 @@ function parseMarker(value: unknown): TaskWriteGuardMarker | null {
   return marker as unknown as TaskWriteGuardMarker;
 }
 
+interface GuardState {
+  version: 2;
+  marker: TaskWriteGuardMarker | null;
+  decisions: { attemptId: string; operation: TaskWriteOperation }[];
+}
+
+function parseState(value: unknown): GuardState {
+  if (value === null || value === undefined) return { version: 2, marker: null, decisions: [] };
+  if (!value || typeof value !== 'object')
+    throw new Error('Task write safety marker is unreadable');
+  const raw = value as Record<string, unknown>;
+  if (raw.version === 1) return { version: 2, marker: parseMarker(value), decisions: [] };
+  if (raw.version !== 2 || !Object.hasOwn(raw, 'marker') || !Array.isArray(raw.decisions))
+    throw new Error('Task write safety marker is unreadable');
+  const decisions: GuardState['decisions'] = raw.decisions.map((entry: unknown) => {
+    if (!entry || typeof entry !== 'object')
+      throw new Error('Task write safety decision is unreadable');
+    const item = entry as Record<string, unknown>;
+    if (
+      typeof item.attemptId !== 'string' ||
+      !item.attemptId ||
+      (item.operation !== 'artifact' && item.operation !== 'manifest')
+    )
+      throw new Error('Task write safety decision is unreadable');
+    return { attemptId: item.attemptId, operation: item.operation };
+  });
+  return { version: 2, marker: parseMarker(raw.marker), decisions };
+}
+
 interface GuardBackend {
   get(key: string): Promise<unknown>;
   update(key: string, change: (value: unknown) => unknown): Promise<void>;
@@ -53,33 +82,53 @@ export function createTaskWriteGuardStorage(
 ) {
   return {
     async read(identity: TaskWriteGuardIdentity): Promise<TaskWriteGuardMarker | null> {
-      return parseMarker(await backend.get(taskWriteGuardKey(identity)));
+      return parseState(await backend.get(taskWriteGuardKey(identity))).marker;
+    },
+    async readDecision(
+      identity: TaskWriteGuardIdentity,
+      marker: TaskWriteGuardMarker
+    ): Promise<{ explicitlyResolved: boolean; marker: TaskWriteGuardMarker | null }> {
+      const state = parseState(await backend.get(taskWriteGuardKey(identity)));
+      return {
+        explicitlyResolved: state.decisions.some(
+          (entry) => entry.attemptId === marker.attemptId && entry.operation === marker.operation
+        ),
+        marker: state.marker,
+      };
     },
     async acquire(identity: TaskWriteGuardIdentity, marker: TaskWriteGuardMarker): Promise<void> {
       let occupied: TaskWriteGuardMarker | null = null;
       await backend.update(taskWriteGuardKey(identity), (value: unknown) => {
-        occupied = parseMarker(value);
-        return occupied ?? marker;
+        const state = parseState(value);
+        occupied = state.marker;
+        return occupied ? state : { ...state, marker };
       });
       if (occupied) throw new TaskWriteGuardOccupiedError(occupied);
     },
     async release(
       identity: TaskWriteGuardIdentity,
       marker: TaskWriteGuardMarker,
-      options: { allowMissingAfterDecision?: boolean } = {}
+      options: { explicitDecision?: boolean } = {}
     ): Promise<void> {
       let released = false;
       await backend.update(taskWriteGuardKey(identity), (value: unknown) => {
-        const current = parseMarker(value);
-        if (!current && options.allowMissingAfterDecision) {
+        const state = parseState(value);
+        const current = state.marker;
+        if (
+          (!current && options.explicitDecision) ||
+          (current?.attemptId === marker.attemptId && current.operation === marker.operation)
+        ) {
           released = true;
-          return value;
+          const alreadyRecorded = state.decisions.some(
+            (entry) => entry.attemptId === marker.attemptId && entry.operation === marker.operation
+          );
+          const decisions =
+            options.explicitDecision && !alreadyRecorded
+              ? [...state.decisions, { attemptId: marker.attemptId, operation: marker.operation }]
+              : state.decisions;
+          return { ...state, marker: null, decisions };
         }
-        if (current?.attemptId === marker.attemptId && current.operation === marker.operation) {
-          released = true;
-          return null;
-        }
-        return value;
+        return state;
       });
       if (!released) throw new Error('Task write safety marker changed');
     },
