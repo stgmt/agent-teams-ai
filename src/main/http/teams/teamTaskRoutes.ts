@@ -425,7 +425,9 @@ export function registerTeamTaskRoutes(app: FastifyInstance, services: HttpServi
           }
         }
 
-        await api.updateTaskStatus(teamName, taskId, status);
+        const transitions = api.updateTaskStatusWithReceipt
+          ? await api.updateTaskStatusWithReceipt(teamName, taskId, status)
+          : (await api.updateTaskStatus(teamName, taskId, status), []);
         const task = await api.getTask(teamName, taskId);
         if (!task) {
           return reply.status(404).send({
@@ -433,7 +435,7 @@ export function registerTeamTaskRoutes(app: FastifyInstance, services: HttpServi
             message: `Task "${taskId}" was not found in team "${teamName}"`,
           });
         }
-        return reply.send({ task, transitions: [] });
+        return reply.send({ task, transitions });
       } catch (error) {
         return sendTaskRouteError(reply, error, route);
       }

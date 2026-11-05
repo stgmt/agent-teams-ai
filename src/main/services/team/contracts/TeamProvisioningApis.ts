@@ -6,6 +6,7 @@ import {
   whenOpenCodeStartupRuntimeSweepSettled,
 } from '../opencode/bridge/OpenCodeStartupSweepGate';
 
+import type { RegistryTaskTransition } from '../registry/RegistryTaskClientTypes';
 import type { OpenCodeRuntimeControlAck, OpenCodeRuntimeControlApi } from '../runtime-control';
 import type { TeamProvisioningStatusApi as FeatureTeamProvisioningStatusApi } from '@features/team-provisioning/contracts';
 import type {
@@ -157,6 +158,13 @@ export interface TeamHttpDataApi {
     status: TeamTaskStatus,
     actor?: string
   ): Promise<void>;
+  /** Optional receipt-returning variant; absent for file-backed services. */
+  updateTaskStatusWithReceipt?(
+    teamName: string,
+    taskId: string,
+    status: TeamTaskStatus,
+    actor?: string
+  ): Promise<readonly RegistryTaskTransition[]>;
   updateTaskOwner(teamName: string, taskId: string, owner: string | null): Promise<void>;
   updateTaskFields(teamName: string, taskId: string, fields: TaskFieldUpdates): Promise<void>;
   addTaskRelationship(
@@ -591,6 +599,7 @@ export function bindTeamHttpDataApi(source: TeamHttpDataApi): TeamHttpDataApi {
     getTask: source.getTask.bind(source),
     createTask: source.createTask.bind(source),
     updateTaskStatus: source.updateTaskStatus.bind(source),
+    updateTaskStatusWithReceipt: source.updateTaskStatusWithReceipt?.bind(source),
     updateTaskOwner: source.updateTaskOwner.bind(source),
     updateTaskFields: source.updateTaskFields.bind(source),
     addTaskRelationship: source.addTaskRelationship.bind(source),

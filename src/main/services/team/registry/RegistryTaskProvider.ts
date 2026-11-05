@@ -6,6 +6,7 @@ import { ExecutionTaskStore } from '../execution/ExecutionTaskStore';
 
 import { RegistryTaskClient } from './RegistryTaskClient';
 import { RegistryTaskClientError } from './RegistryTaskClientErrors';
+import { REGISTRY_TASK_STATUSES } from './RegistryTaskClientTypes';
 import { resolveTeamSpecBinding, TeamSpecBindingError } from './TeamSpecBinding';
 
 import type { ExecutionTaskRecord } from '../execution/ExecutionTaskStore';
@@ -109,6 +110,13 @@ interface CachedRegistryTasks {
  * same team's local task ids, so strip the current spec's namespace and keep
  * foreign ids verbatim (they still identify the task unambiguously).
  */
+function stripTaskPrefix(value: string): string {
+  return value
+    .trim()
+    .replace(/^#/, '')
+    .replace(/^TASK-/i, '');
+}
+
 function toLocalTaskRef(ref: string, spec: string): string {
   const prefix = `${spec}:`;
   if (!ref.startsWith(prefix)) {
@@ -215,9 +223,11 @@ export class RegistryTaskProvider {
     if (scope === null) {
       return { backed: false };
     }
-    const wantedId = toLocalTaskRef(taskId.trim(), scope.spec);
+    // The board and the MCP store address a task as `12`; the corpus stores
+    // `TASK-12`. Compare canonical ids, never the spelling.
+    const wantedId = stripTaskPrefix(toLocalTaskRef(taskId.trim(), scope.spec));
     const registryTasks = await this.readRegistryTasks(teamName, scope);
-    const match = registryTasks.find((task) => task.localId === wantedId);
+    const match = registryTasks.find((task) => stripTaskPrefix(task.localId) === wantedId);
     if (!match) {
       return { backed: true, task: null };
     }
@@ -289,7 +299,13 @@ export class RegistryTaskProvider {
   ): Promise<RegistryTask[]> {
     try {
       const client = await this.clientFactory();
-      return await client.listTasks({ project: scope.project, spec: scope.spec });
+      // The registry filters to active statuses unless asked otherwise; a board
+      // must show finished work too, so request the full vocabulary.
+      return await client.listTasks({
+        project: scope.project,
+        spec: scope.spec,
+        statuses: [...REGISTRY_TASK_STATUSES],
+      });
     } catch (error) {
       const causeCode =
         error instanceof RegistryTaskClientError
@@ -357,14 +373,18 @@ export class RegistryTaskProvider {
     registryTask: RegistryTask,
     record: ExecutionTaskRecord | undefined
   ): TeamTask {
-    const id = registryTask.localId;
+    const id = stripTaskPrefix(registryTask.localId);
     const status = REGISTRY_TO_TEAM_STATUS[registryTask.status] ?? 'pending';
     const blockedBy = uniqueRefs([
-      ...registryTask.blockedBy.map((ref) => toLocalTaskRef(ref, scope.spec)),
-      ...registryTask.dependsOn.map((ref) => toLocalTaskRef(ref, scope.spec)),
+      ...registryTask.blockedBy.map((ref) => stripTaskPrefix(toLocalTaskRef(ref, scope.spec))),
+      ...registryTask.dependsOn.map((ref) => stripTaskPrefix(toLocalTaskRef(ref, scope.spec))),
     ]);
-    const blocks = uniqueRefs(registryTask.blocks.map((ref) => toLocalTaskRef(ref, scope.spec)));
-    const related = uniqueRefs(registryTask.refs.map((ref) => toLocalTaskRef(ref, scope.spec)));
+    const blocks = uniqueRefs(
+      registryTask.blocks.map((ref) => stripTaskPrefix(toLocalTaskRef(ref, scope.spec)))
+    );
+    const related = uniqueRefs(
+      registryTask.refs.map((ref) => stripTaskPrefix(toLocalTaskRef(ref, scope.spec)))
+    );
     const historyEvents = record?.historyEvents.length ? record.historyEvents : undefined;
 
     return {

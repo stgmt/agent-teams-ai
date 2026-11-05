@@ -47,6 +47,7 @@ import {
   RegistryTaskProviderError,
   type RegistryTaskScope,
 } from './registry/RegistryTaskProvider';
+import type { RegistryTaskTransition } from './registry/RegistryTaskClientTypes';
 import {
   RegistryTeamTaskWriteError,
   type RegistryTeamTaskWriter,
@@ -2769,14 +2770,28 @@ export class TeamDataService {
     status: TeamTaskStatus,
     actor?: string
   ): Promise<void> {
+    await this.updateTaskStatusWithReceipt(teamName, taskId, status, actor);
+  }
+
+  /**
+   * Same transition, but hands back the registry receipt so the caller can show
+   * or journal `requestId/from/to/actor/at` instead of inventing its own record.
+   */
+  async updateTaskStatusWithReceipt(
+    teamName: string,
+    taskId: string,
+    status: TeamTaskStatus,
+    actor?: string
+  ): Promise<readonly RegistryTaskTransition[]> {
     const registryWriter = await this.resolveRegistryTeamTaskWriter(teamName);
     if (registryWriter) {
-      await registryWriter.replaceStatus({ taskId, to: status, actor });
+      const result = await registryWriter.replaceStatus({ taskId, to: status, actor });
       this.invalidateGlobalTaskProjectionCache();
-      return;
+      return result.transitions;
     }
     this.getTaskBoard(teamName).setTaskStatus(taskId, status, actor);
     this.invalidateGlobalTaskProjectionCache();
+    return [];
   }
 
   /**

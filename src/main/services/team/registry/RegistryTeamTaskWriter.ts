@@ -28,6 +28,7 @@ import type {
   ReplaceRegistryTaskLinksInput,
   ReplaceRegistryTaskOwnerInput,
   ReplaceRegistryTaskStatusInput,
+  RegistryTaskTransition,
   UpsertRegistryTaskInput,
 } from './RegistryTaskClientTypes';
 import type { TeamSpecBinding } from './TeamSpecBinding';
@@ -402,20 +403,26 @@ export class RegistryTeamTaskWriter {
     taskId: string;
     to: TeamTaskStatus;
     actor?: string;
-  }): Promise<'APPLIED' | 'UNCHANGED'> {
+  }): Promise<{
+    outcome: 'APPLIED' | 'UNCHANGED';
+    transitions: readonly RegistryTaskTransition[];
+  }> {
     const target = toRegistryStatusOrThrow(input.to, input.taskId);
     return this.#withWriteLock(async () => {
       const current = await this.readCanonicalTask(input.taskId);
       const localId = normalizeLocalId(current.localId) ?? current.localId;
-      if (REGISTRY_TO_TEAM_STATUS[current.status] === input.to) return 'UNCHANGED';
+      if (REGISTRY_TO_TEAM_STATUS[current.status] === input.to)
+        return { outcome: 'UNCHANGED', transitions: [] };
+      let transitions: readonly RegistryTaskTransition[] = [];
       try {
-        await this.#client.replaceTaskStatus({
+        const result = await this.#client.replaceTaskStatus({
           project: this.#binding.project,
           spec: this.#binding.spec,
           entity: localId,
           status: target,
           expectedStatus: current.status,
         });
+        transitions = result.transitions;
       } catch (error) {
         if (error instanceof RegistryStatusConflictError) {
           this.#listingCache = null;
@@ -436,7 +443,7 @@ export class RegistryTeamTaskWriter {
       }
       this.#listingCache = null;
       this.#applyStatusToExecution(localId, current.status, input.to, input.actor);
-      return 'APPLIED';
+      return { outcome: 'APPLIED', transitions };
     });
   }
 
