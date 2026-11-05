@@ -1,4 +1,5 @@
 const taskStore = require('./taskStore.js');
+const taskArtifact = require('./taskArtifact.js');
 const runtimeHelpers = require('./runtimeHelpers.js');
 const messages = require('./messages.js');
 const messageStore = require('./messageStore.js');
@@ -39,7 +40,6 @@ const {
     buildProcessProtocolText,
     appendChatVisualizationProtocol,
 } = require('./briefingProtocols.js');
-
 function mergeMemberRecord(base, overlay) {
     return {
         ...(base && typeof base === 'object' ? base : {}),
@@ -362,7 +362,6 @@ function listDeletedTasks(context) {
         (task) => task.status === 'deleted'
     );
 }
-
 function resolveTaskId(context, taskRef) {
     return taskStore.resolveTaskRef(context.paths, taskRef, { includeDeleted: true });
 }
@@ -383,6 +382,7 @@ function setTaskStatus(context, taskId, status, actor, options = {}) {
                   });
         if (normalizedStatus === 'in_progress' || normalizedStatus === 'completed') {
             assertDependenciesResolved(context, before, normalizedStatus);
+            if (normalizedStatus === 'completed') taskArtifact.verifyTask(context, before);
         }
         let task = taskStore.setTaskStatus(context.paths, taskId, status, actorForWrite);
         if (normalizedStatus === 'deleted' || normalizedStatus === 'in_progress' || normalizedStatus === 'pending') {
@@ -689,8 +689,8 @@ function setTaskOwner(context, taskId, owner, actor) {
 
 function updateTaskFields(context, taskId, fields) {
     return withTeamBoardLock(context.paths, () => {
-        readMutableTask(context, taskId, 'updating task fields');
-        return taskStore.updateTaskFields(context.paths, taskId, fields);
+        const task = readMutableTask(context, taskId, 'updating task fields');
+        return taskStore.updateTaskFields(context.paths, taskId, taskArtifact.prepareUpdate(context, task, fields));
     });
 }
 

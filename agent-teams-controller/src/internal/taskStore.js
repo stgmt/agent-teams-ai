@@ -934,6 +934,8 @@ function setTaskOwner(paths, taskRef, owner, actor) {
 function updateTaskFields(paths, taskRef, fields) {
   return updateTask(paths, taskRef, (task) => {
     applyTaskGroupChatUpdate(task, fields.groupChatId);
+    if (fields.artifactRequirement !== undefined) task.artifactRequirement = fields.artifactRequirement;
+    if (fields.attachments !== undefined) task.attachments = fields.attachments;
     if (fields.subject !== undefined) {
       task.subject = fields.subject;
     }

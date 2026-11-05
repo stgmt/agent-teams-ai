@@ -65,6 +65,7 @@ function setKanbanColumn(context, taskId, column, options = {}) {
     const canonicalTaskId = tasks.resolveTaskId(context, taskId);
     const task = tasks.getTask(context, canonicalTaskId);
     assertKanbanColumnAllowed(context, task, String(column), options);
+    if (column === 'review' || column === 'approved') require('./taskArtifact.js').verifyTask(context, task);
     kanbanStore.setKanbanColumn(context.paths, context.teamName, canonicalTaskId, String(column));
     return getKanbanState(context);
   });

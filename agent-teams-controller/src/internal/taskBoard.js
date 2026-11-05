@@ -5,6 +5,7 @@ const review = require('./review.js');
 const tasks = require('./tasks.js');
 const startupWork = require('./startupWork.js');
 const taskBriefingGate = require('./taskBriefingGate.js');
+const taskArtifact = require('./taskArtifact.js');
 const { buildDeferredTaskQueueText } = require('./deferredTaskQueue.js');
 
 // Application boundary for task-board lifecycle writes.
@@ -184,6 +185,8 @@ function requestChanges(context, taskId, flags) {
 }
 
 module.exports = {
+  verifyTaskArtifact: taskArtifact.verifyTaskArtifact,
+  setTaskArtifactFile: taskArtifact.setTaskArtifactFile,
   addReviewer,
   addTaskAttachmentMeta,
   addTaskComment,
