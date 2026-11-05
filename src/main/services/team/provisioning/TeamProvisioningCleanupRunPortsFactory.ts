@@ -82,6 +82,7 @@ export interface TeamProvisioningCleanupRunServiceHost<
   removeRunMemberMcpConfigFilesLater: CleanupRunPortsFactoryDeps<TRun>['removeRunMemberMcpConfigFilesLater'];
   retainedClaudeLogsByTeam: CleanupRunPortsFactoryDeps<TRun>['retainedClaudeLogsByTeam'];
   retainProvisioningProgress: CleanupRunPortsFactoryDeps<TRun>['retainProvisioningProgress'];
+  clearStartupWorkDeliveryState: CleanupRunPortsFactoryDeps<TRun>['clearStartupWorkDeliveryState'];
 }
 
 export function createTeamProvisioningCleanupRunPortsDepsFromService<
@@ -140,6 +141,7 @@ export function createTeamProvisioningCleanupRunPortsDepsFromService<
     retainedClaudeLogsByTeam: service.retainedClaudeLogsByTeam,
     retainProvisioningProgress: (runId, progress) =>
       service.retainProvisioningProgress(runId, progress),
+    clearStartupWorkDeliveryState: (run) => service.clearStartupWorkDeliveryState(run),
     runs: service.runs,
   };
 }

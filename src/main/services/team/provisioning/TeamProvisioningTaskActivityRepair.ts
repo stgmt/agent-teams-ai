@@ -13,8 +13,9 @@ export interface TaskActivityRepairResult {
 export interface TaskActivityRepairServicePort {
   repairStaleIntervalsAfterCrash(
     teamName: string,
-    launchSnapshot: PersistedTeamLaunchSnapshot | null
-  ): TaskActivityRepairResult;
+    launchSnapshot: PersistedTeamLaunchSnapshot | null,
+    binding?: { specProject?: string; specSlug?: string }
+  ): Promise<TaskActivityRepairResult>;
 }
 
 export interface TaskActivityRepairSnapshotStorePort {
@@ -67,14 +68,15 @@ export function decideStaleTaskActivityRepair(
   };
 }
 
-export function repairStaleTaskActivityIntervalsOnce(
+export async function repairStaleTaskActivityIntervalsOnce(
   teamName: string,
   launchSnapshot: PersistedTeamLaunchSnapshot | null | undefined,
   ports: {
     taskActivityIntervalService: TaskActivityRepairServicePort;
     tracking: TaskActivityRepairTrackingPorts;
-  }
-): boolean {
+  },
+  binding?: { specProject?: string; specSlug?: string }
+): Promise<boolean> {
   const hasPendingSnapshot = ports.tracking.pendingSnapshots.has(teamName);
   const decision = decideStaleTaskActivityRepair({
     alreadyRepaired: ports.tracking.repairedTeams.has(teamName),
@@ -87,10 +89,19 @@ export function repairStaleTaskActivityIntervalsOnce(
     return true;
   }
 
-  const result = ports.taskActivityIntervalService.repairStaleIntervalsAfterCrash(
-    teamName,
-    decision.repairSnapshot
-  );
+  let result: TaskActivityRepairResult;
+  try {
+    result = await ports.taskActivityIntervalService.repairStaleIntervalsAfterCrash(
+      teamName,
+      decision.repairSnapshot,
+      binding
+    );
+  } catch {
+    if (decision.shouldRememberSnapshotOnFailure) {
+      ports.tracking.pendingSnapshots.set(teamName, decision.snapshotToRememberOnFailure);
+    }
+    return false;
+  }
   if (result.failed) {
     if (decision.shouldRememberSnapshotOnFailure) {
       ports.tracking.pendingSnapshots.set(teamName, decision.snapshotToRememberOnFailure);
@@ -130,7 +141,10 @@ export interface RepairStaleTaskActivityIntervalsBeforeSnapshotPorts {
   getTrackedRunId(teamName: string): string | null;
   hasRun(runId: string): boolean;
   readRepairLaunchSnapshot(teamName: string): Promise<PersistedTeamLaunchSnapshot | null>;
-  repairOnce(teamName: string, launchSnapshot: PersistedTeamLaunchSnapshot | null): boolean;
+  repairOnce(
+    teamName: string,
+    launchSnapshot: PersistedTeamLaunchSnapshot | null
+  ): Promise<boolean>;
 }
 
 export async function repairStaleTaskActivityIntervalsBeforeSnapshot(
@@ -147,7 +161,7 @@ export async function repairStaleTaskActivityIntervalsBeforeSnapshot(
   }
 
   const repairSnapshot = await ports.readRepairLaunchSnapshot(teamName);
-  const repaired = ports.repairOnce(teamName, repairSnapshot);
+  const repaired = await ports.repairOnce(teamName, repairSnapshot);
   if (!repaired) {
     throw new Error(`Task activity interval repair failed before snapshot for team ${teamName}`);
   }

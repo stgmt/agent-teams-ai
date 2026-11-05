@@ -5,6 +5,7 @@ import * as agentTeamsControllerModule from 'agent-teams-controller';
 
 import { boundLaunchDiagnostics } from '../progressPayload';
 import { type TeamMembersMetaStore } from '../TeamMembersMetaStore';
+import { TeamTaskReader } from '../TeamTaskReader';
 
 import {
   createTeamProvisioningBootstrapFailureMarker,
@@ -52,7 +53,15 @@ import type {
   MemberSpawnStatusesSnapshot,
   TeamAgentRuntimeSnapshot,
   TeamProviderId,
+  TeamTask,
 } from '@shared/types';
+
+interface StartupWorkDeliveryState {
+  runId: string;
+  launchAttemptId: string;
+  completed: boolean;
+  inFlight: Promise<void> | null;
+}
 
 const logger = createLogger('Service:TeamProvisioning');
 const { createController } = agentTeamsControllerModule;
@@ -72,6 +81,11 @@ export abstract class TeamProvisioningMemberStatusQueryFacade<
   >;
   protected abstract readonly reevaluateMemberLaunchStatusBoundary: TeamProvisioningReevaluateMemberLaunchStatusBoundary<TRun>;
   protected abstract readonly pendingTimeouts: Map<string, NodeJS.Timeout>;
+  private readonly startupWorkDeliveriesByTeam = new Map<
+    string,
+    Map<string, StartupWorkDeliveryState>
+  >();
+  private readonly pendingStartupWorkDeliveriesByTeam = new Map<string, Set<Promise<void>>>();
 
   protected abstract findBootstrapTranscriptOutcome(
     teamName: string,
@@ -102,6 +116,10 @@ export abstract class TeamProvisioningMemberStatusQueryFacade<
         readMembersMeta: (candidateTeamName) => this.membersMetaStore.getMembers(candidateTeamName),
       }
     );
+  }
+
+  protected readTeamTasks(teamName: string): Promise<TeamTask[]> {
+    return new TeamTaskReader().getTasks(teamName);
   }
 
   async isOpenCodeRuntimeRecipient(teamName: string, memberName: string): Promise<boolean> {
@@ -205,7 +223,7 @@ export abstract class TeamProvisioningMemberStatusQueryFacade<
     previous: MemberSpawnStatusEntry,
     next: MemberSpawnStatusEntry,
     observedAt: string
-  ): void {
+  ): Promise<void> {
     this.runtimeToolActivity.syncMemberTaskActivityForRuntimeTransition(
       run,
       memberName,
@@ -213,54 +231,160 @@ export abstract class TeamProvisioningMemberStatusQueryFacade<
       next,
       observedAt
     );
-    this.handOverStartupWorkOnFirstConfirmation(run, memberName, previous, next);
+    return this.ensureStartupWorkDelivery(run, memberName, next);
   }
 
   /**
-   * Hands the member its Actionable work once its launch attempt is confirmed. The startup
-   * context carries no work, so this is the only way a native member learns its tasks.
-   * Every change of a member's launch status passes through
-   * syncMemberTaskActivityForRuntimeTransition (events, transcript proof, the overlay of the
-   * bootstrap state read by every status poll), so the first one that shows the member
-   * confirmed hands the work over, whichever path it came by.
+   * Retry a confirmed member's startup hand-over on every status activity until it succeeds.
+   * The per-team/member record is scoped to one run and launch attempt, so a restart cannot
+   * inherit an earlier attempt's completion or pending request.
    */
-  private handOverStartupWorkOnFirstConfirmation(
+  private ensureStartupWorkDelivery(
     run: TRun,
     memberName: string,
-    previous: MemberSpawnStatusEntry,
-    next: MemberSpawnStatusEntry
-  ): void {
-    if (previous.bootstrapConfirmed || !next.bootstrapConfirmed) {
-      return;
+    status: MemberSpawnStatusEntry
+  ): Promise<void> {
+    if (!status.bootstrapConfirmed || !this.isCurrentTrackedRun(run)) {
+      return Promise.resolve();
     }
-    if (!this.isCurrentTrackedRun(run)) {
-      return;
+    const launchAttemptId = `${run.runId}@${status.firstSpawnAcceptedAt ?? status.updatedAt}`;
+    const teamDeliveries =
+      this.startupWorkDeliveriesByTeam.get(run.teamName) ??
+      new Map<string, StartupWorkDeliveryState>();
+    this.startupWorkDeliveriesByTeam.set(run.teamName, teamDeliveries);
+    let state = teamDeliveries.get(memberName);
+    if (!state || state.runId !== run.runId || state.launchAttemptId !== launchAttemptId) {
+      state = {
+        runId: run.runId,
+        launchAttemptId,
+        completed: false,
+        inFlight: null,
+      };
+      teamDeliveries.set(memberName, state);
     }
-    // A restart inside the same run starts a new attempt: its acceptance time differs.
-    deliverStartupWorkAfterConfirmation(
-      run,
-      memberName,
-      `${run.runId}@${next.firstSpawnAcceptedAt ?? next.updatedAt}`,
-      {
-        createController: (input) => createController(input),
-        getClaudeBasePath,
-        appendMemberBootstrapDiagnostic: (targetRun, targetMember, text) =>
-          this.appendMemberBootstrapDiagnostic(targetRun, targetMember, text),
-        logger,
+    if (state.completed) {
+      return Promise.resolve();
+    }
+    if (state.inFlight) {
+      return state.inFlight;
+    }
+
+    const delivery = deliverStartupWorkAfterConfirmation(run, memberName, launchAttemptId, {
+      createController: (input) => createController(input),
+      readTasks: (teamName) => this.readTeamTasks(teamName),
+      getClaudeBasePath,
+      isCurrent: () =>
+        this.isCurrentTrackedRun(run) &&
+        teamDeliveries.get(memberName) === state &&
+        state.runId === run.runId &&
+        state.launchAttemptId === launchAttemptId,
+      appendMemberBootstrapDiagnostic: (targetRun, targetMember, text) =>
+        this.appendMemberBootstrapDiagnostic(targetRun, targetMember, text),
+      logger,
+    });
+    const ownedDelivery = delivery.then(
+      (deliveredCount) => {
+        if (teamDeliveries.get(memberName) === state) {
+          state.completed = true;
+          if (deliveredCount > 0) {
+            this.appendMemberBootstrapDiagnostic(
+              run,
+              memberName,
+              `startup work delivered after launch confirmation for ${launchAttemptId}: ` +
+                `${deliveredCount} task message(s)`
+            );
+          }
+        }
+      },
+      () => {
+        if (teamDeliveries.get(memberName) === state) {
+          state.completed = false;
+        }
       }
     );
+    const trackedDelivery = this.trackStartupWorkDelivery(run.teamName, ownedDelivery);
+    const stateDelivery: Promise<void> = trackedDelivery.finally(() => {
+      if (teamDeliveries.get(memberName) === state && state.inFlight === stateDelivery) {
+        state.inFlight = null;
+      }
+    });
+    state.inFlight = stateDelivery;
+    return stateDelivery;
   }
 
-  protected createMemberSpawnStatusesSnapshotPorts() {
-    return createTeamProvisioningMemberSpawnStatusesSnapshotPortsBoundary<TRun>(
-      createTeamProvisioningMemberSpawnStatusesSnapshotHostFromService(
-        this as unknown as TeamProvisioningMemberSpawnStatusesSnapshotServiceHost<TRun>
-      )
+  protected clearStartupWorkDeliveryState(run: Pick<TRun, 'runId' | 'teamName'>): void {
+    const teamDeliveries = this.startupWorkDeliveriesByTeam.get(run.teamName);
+    if (!teamDeliveries) {
+      return;
+    }
+    for (const [memberName, state] of teamDeliveries) {
+      if (state.runId === run.runId) {
+        teamDeliveries.delete(memberName);
+      }
+    }
+    if (teamDeliveries.size === 0) {
+      this.startupWorkDeliveriesByTeam.delete(run.teamName);
+    }
+  }
+
+  private trackStartupWorkDelivery(teamName: string, delivery: Promise<void>): Promise<void> {
+    const pending =
+      this.pendingStartupWorkDeliveriesByTeam.get(teamName) ?? new Set<Promise<void>>();
+    this.pendingStartupWorkDeliveriesByTeam.set(teamName, pending);
+    const trackedDelivery: Promise<void> = delivery.finally(() => {
+      pending.delete(trackedDelivery);
+      if (pending.size === 0) {
+        this.pendingStartupWorkDeliveriesByTeam.delete(teamName);
+      }
+    });
+    pending.add(trackedDelivery);
+    void trackedDelivery.catch(() => undefined);
+    return trackedDelivery;
+  }
+
+  private async waitForStartupWorkDeliveries(teamName: string): Promise<void> {
+    while (true) {
+      const pending = this.pendingStartupWorkDeliveriesByTeam.get(teamName);
+      if (!pending || pending.size === 0) {
+        return;
+      }
+      await Promise.all([...pending]);
+    }
+  }
+
+  private createMemberSpawnStatusesSnapshotPorts() {
+    const host = createTeamProvisioningMemberSpawnStatusesSnapshotHostFromService(
+      this as unknown as TeamProvisioningMemberSpawnStatusesSnapshotServiceHost<TRun>
+    );
+    return createTeamProvisioningMemberSpawnStatusesSnapshotPortsBoundary(host);
+  }
+
+  protected loadMemberSpawnStatusesSnapshot(
+    teamName: string
+  ): Promise<MemberSpawnStatusesSnapshot> {
+    return getMemberSpawnStatusesSnapshot(teamName, this.createMemberSpawnStatusesSnapshotPorts());
+  }
+
+  private async retryConfirmedStartupWorkDeliveries(
+    teamName: string,
+    snapshot: MemberSpawnStatusesSnapshot
+  ): Promise<void> {
+    const run = snapshot.runId ? this.runs.get(snapshot.runId) : undefined;
+    if (!run || run.teamName !== teamName || !this.isCurrentTrackedRun(run)) {
+      return;
+    }
+    await Promise.all(
+      Object.entries(snapshot.statuses)
+        .filter(([, status]) => status.bootstrapConfirmed)
+        .map(([memberName, status]) => this.ensureStartupWorkDelivery(run, memberName, status))
     );
   }
 
   async getMemberSpawnStatuses(teamName: string): Promise<MemberSpawnStatusesSnapshot> {
-    return getMemberSpawnStatusesSnapshot(teamName, this.createMemberSpawnStatusesSnapshotPorts());
+    const snapshot = await this.loadMemberSpawnStatusesSnapshot(teamName);
+    await this.retryConfirmedStartupWorkDeliveries(teamName, snapshot);
+    await this.waitForStartupWorkDeliveries(teamName);
+    return snapshot;
   }
 
   /**

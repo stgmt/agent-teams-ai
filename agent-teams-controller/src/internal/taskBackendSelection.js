@@ -1,76 +1,84 @@
-/**
- * Chooses the task backend for one team.
- *
- * Only an app-owned MCP child may talk to the app: the registry backend needs
- * the `AGENT_TEAMS_BOUND_CONTROL_URL` binding the desktop app injects. Any other
- * process — including the app's own main process — keeps the file store, so a
- * task read can never recurse into an HTTP call to the caller itself.
- *
- * A team opts into the registry through its own config: `specProject` (with
- * `specSlug`, which the app validates) is the only switch. A team without it
- * keeps the legacy file behaviour byte-for-byte.
- *
- * The choice is made once per team directory: re-reading the environment or the
- * config on every task read would let a live child be retargeted mid-flight.
- */
-
+/** Canonical tasks use the desktop app API unless an operation supplies a read-only snapshot. */
 const path = require('path');
-
 const desktopControlBinding = require('./desktopControlBinding.js');
-const runtimeHelpers = require('./runtimeHelpers.js');
 const { createRegistryTaskBackend } = require('./registryTaskBackend.js');
+const { TaskBackendError, TASK_BACKEND_ERROR_CODES } = require('./taskBackendErrors.js');
 
 const RESOLVED_BACKENDS = new Map();
+const READ_ONLY_TASK_BACKEND = Symbol('readOnlyTaskBackend');
 
-function readSpecProject(paths) {
-  if (!paths || typeof paths.teamDir !== 'string' || !paths.teamDir.trim()) return '';
-  let config;
-  try {
-    config = runtimeHelpers.readTeamConfig(paths);
-  } catch {
-    // A corrupt config is reported by the config reader; the task store must not
-    // turn that into a silently "registry-backed" team.
-    return '';
+function bindReadOnlyTaskSnapshot(paths, tasks) {
+  if (!paths || typeof paths.teamDir !== 'string' || !paths.teamDir.trim()) {
+    throw new TaskBackendError(
+      TASK_BACKEND_ERROR_CODES.APP_BINDING_REQUIRED,
+      'A read-only task snapshot requires a team directory'
+    );
   }
-  if (!config || typeof config !== 'object') return '';
-  return typeof config.specProject === 'string' ? config.specProject.trim() : '';
-}
-
-function buildBackend(paths) {
-  const binding = desktopControlBinding.readBindingFromEnvironment();
-  if (!binding) return null;
-  const specProject = readSpecProject(paths);
-  if (!specProject) return null;
-  return createRegistryTaskBackend({
-    teamName: path.basename(paths.teamDir),
-    baseUrl: binding.controlUrl,
-    headers: binding.headers,
-    specProject,
+  if (!Array.isArray(tasks)) {
+    throw new TypeError('readOnlyTaskSnapshot must be an array');
+  }
+  Object.defineProperty(paths, READ_ONLY_TASK_BACKEND, {
+    value: createRegistryTaskBackend({
+      teamName: path.basename(path.resolve(paths.teamDir)),
+      readOnlyTasks: tasks,
+    }),
   });
 }
 
-/**
- * @returns {object|null} a registry backend, or `null` for the file store.
- */
+function isReadOnlyTaskSnapshot(paths) {
+  return Boolean(paths && paths[READ_ONLY_TASK_BACKEND]);
+}
+
 function resolveTaskBackend(paths) {
-  if (!paths || typeof paths.tasksDir !== 'string' || !paths.tasksDir.trim()) {
-    return null;
+  if (!paths || typeof paths.teamDir !== 'string' || !paths.teamDir.trim()) {
+    throw new TaskBackendError(
+      TASK_BACKEND_ERROR_CODES.APP_BINDING_REQUIRED,
+      'Canonical task operations require a team directory and a desktop app binding'
+    );
   }
-  const cacheKey = path.resolve(paths.tasksDir);
-  if (RESOLVED_BACKENDS.has(cacheKey)) {
-    return RESOLVED_BACKENDS.get(cacheKey);
+  const cacheKey = path.resolve(paths.teamDir);
+  const readOnlyBackend = paths[READ_ONLY_TASK_BACKEND];
+  if (readOnlyBackend) return readOnlyBackend;
+  const binding = desktopControlBinding.readBindingFromEnvironment();
+  if (!binding) {
+    throw new TaskBackendError(
+      TASK_BACKEND_ERROR_CODES.APP_BINDING_REQUIRED,
+      'Canonical task operations require the desktop app-bound control URL and context'
+    );
   }
-  const backend = buildBackend(paths);
-  RESOLVED_BACKENDS.set(cacheKey, backend);
+  const expectedTeamRoot = path.join(binding.claudeDir, 'teams');
+  if (path.dirname(cacheKey) !== expectedTeamRoot) {
+    throw new TaskBackendError(
+      'APP_CONTEXT_MISMATCH',
+      'Task team directory differs from the desktop app binding'
+    );
+  }
+  const fingerprint = JSON.stringify([binding.controlUrl, binding.headers]);
+  const cached = RESOLVED_BACKENDS.get(cacheKey);
+  if (cached) {
+    if (cached.fingerprint !== fingerprint) {
+      throw new TaskBackendError('APP_CONTEXT_MISMATCH', 'Desktop app binding changed for this team');
+    }
+    return cached.backend;
+  }
+  // The app validates required specProject/specSlug; no child-side opt-in or file read.
+  const backend = createRegistryTaskBackend({
+    teamName: path.basename(cacheKey),
+    baseUrl: binding.controlUrl,
+    headers: binding.headers,
+  });
+  RESOLVED_BACKENDS.set(cacheKey, { fingerprint, backend });
   return backend;
 }
 
-/** Test hook: forget resolved backends so env/config changes are observable. */
+/** Test hook: forget clients so a new test binding can be installed. */
 function resetTaskBackendCache() {
   RESOLVED_BACKENDS.clear();
 }
 
 module.exports = {
+  bindReadOnlyTaskSnapshot,
+  isReadOnlyTaskSnapshot,
   resetTaskBackendCache,
   resolveTaskBackend,
 };

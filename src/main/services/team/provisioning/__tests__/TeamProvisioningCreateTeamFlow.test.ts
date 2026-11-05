@@ -151,9 +151,15 @@ describe('TeamProvisioningCreateTeamFlow', () => {
   });
 
   it('preserves create request fields in the pre-spawn metadata payload', () => {
-    const payload = buildCreateTeamMetaPayload(buildRequest(), null, 12345);
+    const payload = buildCreateTeamMetaPayload(
+      buildRequest({ specProject: 'sandbox/project', specSlug: 'feature' }),
+      null,
+      12345
+    );
 
     expect(payload).toEqual({
+      specProject: 'sandbox/project',
+      specSlug: 'feature',
       displayName: 'Runtime Team',
       description: 'Build runtime features',
       color: '#336699',

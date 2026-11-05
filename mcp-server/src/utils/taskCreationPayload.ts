@@ -25,9 +25,9 @@ const INVALID_REQUIREMENTS_MESSAGE =
   'INVALID_REQUIREMENTS: requirements must be an array of non-empty requirement ids such as "FR-1".';
 
 /**
- * Requirement ids are optional at the tool boundary: legacy file-backed teams
- * accept tasks without them. A present value must still be well-formed so the
- * registry never receives a malformed `Implements` list.
+ * Validate provided requirement ids before forwarding them to the canonical
+ * registry. Missing or empty requirements are refused by the app, never routed
+ * to a separate task store.
  */
 function normalizeTaskRequirements(value: unknown): string[] | undefined {
   if (value === undefined) {

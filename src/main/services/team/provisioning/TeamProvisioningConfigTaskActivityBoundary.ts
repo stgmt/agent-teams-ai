@@ -27,8 +27,9 @@ export interface TeamProvisioningConfigTaskActivityRepairPort<
 > {
   repairStaleTaskActivityIntervalsOnce(
     teamName: string,
-    launchSnapshot?: PersistedTeamLaunchSnapshot | null
-  ): boolean;
+    launchSnapshot?: PersistedTeamLaunchSnapshot | null,
+    binding?: { specProject?: string; specSlug?: string }
+  ): Promise<boolean>;
   readTaskActivityRepairLaunchSnapshot(
     teamName: string
   ): Promise<PersistedTeamLaunchSnapshot | null>;
@@ -76,11 +77,13 @@ export class TeamProvisioningConfigTaskActivityBoundary<
 
   repairStaleTaskActivityIntervalsOnce(
     teamName: string,
-    launchSnapshot?: PersistedTeamLaunchSnapshot | null
-  ): boolean {
+    launchSnapshot?: PersistedTeamLaunchSnapshot | null,
+    binding?: { specProject?: string; specSlug?: string }
+  ): Promise<boolean> {
     return this.ports.taskActivityRepair.repairStaleTaskActivityIntervalsOnce(
       teamName,
-      launchSnapshot
+      launchSnapshot,
+      binding
     );
   }
 

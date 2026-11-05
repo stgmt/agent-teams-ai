@@ -1034,6 +1034,9 @@ export class HttpAPIClient implements ElectronAPI {
   };
 
   teams: TeamsAPI = {
+    discoverSpecRegistry: async () => {
+      throw new Error('Specification registry discovery is only available in the desktop app');
+    },
     list: async (): Promise<TeamSummary[]> => {
       console.warn('[HttpAPIClient] teams API is not available in browser mode');
       return [];

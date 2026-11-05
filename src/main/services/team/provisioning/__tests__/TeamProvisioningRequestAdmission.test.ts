@@ -59,6 +59,7 @@ function createHost(
       getResolvableProvisioningRunId: vi.fn(() => 'run-active'),
     },
     configTaskActivityBoundary: {
+      readConfigSnapshot: vi.fn(unexpected),
       readTaskActivityRepairLaunchSnapshot: vi.fn(unexpected),
       repairStaleTaskActivityIntervalsOnce: vi.fn(unexpected),
     },
@@ -340,6 +341,7 @@ describe('TeamProvisioningRequestAdmission', () => {
         getResolvableProvisioningRunId: vi.fn(() => null),
       },
       configTaskActivityBoundary: {
+        readConfigSnapshot: vi.fn(async () => ({})),
         readTaskActivityRepairLaunchSnapshot: vi.fn(async () => {
           snapshotReads += 1;
           if (snapshotReads === 1) {
@@ -351,7 +353,7 @@ describe('TeamProvisioningRequestAdmission', () => {
           }
           return null;
         }),
-        repairStaleTaskActivityIntervalsOnce: vi.fn(),
+        repairStaleTaskActivityIntervalsOnce: vi.fn(async () => true),
       },
       shouldRouteOpenCodeToRuntimeAdapter: vi.fn(() => true),
       createOpenCodeTeamThroughRuntimeAdapter: vi.fn(async () => ({

@@ -1,4 +1,3 @@
-import { createLogger } from '@shared/utils/logger';
 import { getReviewStateFromTask } from '@shared/utils/reviewState';
 import { deriveTaskDisplayId } from '@shared/utils/taskIdentity';
 
@@ -7,22 +6,17 @@ import { ExecutionTaskStore } from '../execution/ExecutionTaskStore';
 import { RegistryTaskClient } from './RegistryTaskClient';
 import { RegistryTaskClientError } from './RegistryTaskClientErrors';
 import { REGISTRY_TASK_STATUSES } from './RegistryTaskClientTypes';
+import { taskCreationTimestamp } from './RegistryTeamTaskProjection';
 import { resolveTeamSpecBinding, TeamSpecBindingError } from './TeamSpecBinding';
 
 import type { ExecutionTaskRecord } from '../execution/ExecutionTaskStore';
 import type { RegistryTask, RegistryTaskStatus } from './RegistryTaskClientTypes';
 import type { TeamConfig, TeamTask, TeamTaskStatus } from '@shared/types';
 
-const logger = createLogger('Service:RegistryTaskProvider');
-
 /** Short enough that a registry edit shows up promptly, long enough to absorb board re-renders. */
 export const REGISTRY_TASK_CACHE_TTL_MS = 5_000;
 
-/**
- * Registry task vocabulary translated into the board's own statuses. The
- * registry has no `deleted` state; soft deletion is a local concept and is
- * therefore not representable here.
- */
+/** Registry task vocabulary translated into the board's own statuses. */
 const REGISTRY_TO_TEAM_STATUS: Readonly<Record<RegistryTaskStatus, TeamTaskStatus>> = {
   planned: 'pending',
   todo: 'pending',
@@ -30,6 +24,7 @@ const REGISTRY_TO_TEAM_STATUS: Readonly<Record<RegistryTaskStatus, TeamTaskStatu
   'in-progress': 'in_progress',
   blocked: 'pending',
   done: 'completed',
+  deleted: 'deleted',
   deferred: 'pending',
   unknown: 'pending',
 };
@@ -76,17 +71,13 @@ export interface RegistryTaskScope {
   spec: string;
 }
 
-/** `backed: false` means "this team has no registry binding — use the file path". */
-export type RegistryTasksReadResult = { backed: false } | { backed: true; tasks: TeamTask[] };
+export type RegistryTasksReadResult = { backed: true; tasks: TeamTask[] };
 
-export type RegistryTaskReadResult = { backed: false } | { backed: true; task: TeamTask | null };
+export type RegistryTaskReadResult = { backed: true; task: TeamTask | null };
 
-/**
- * Binding the caller already knows. `null` states that the team is file-backed,
- * so the provider must not spend a config read to find out.
- */
+/** Binding already validated by the caller, avoiding a second config read. */
 export interface RegistryTaskReadOptions {
-  binding?: RegistryTaskScope | null;
+  binding?: RegistryTaskScope;
 }
 
 export interface RegistryTaskProviderOptions {
@@ -168,6 +159,7 @@ export class RegistryTaskProvider {
   private readonly cacheTtlMs: number;
   private readonly now: () => number;
   private readonly cache = new Map<string, CachedRegistryTasks>();
+  private cacheGeneration = 0;
   private readonly inFlight = new Map<string, Promise<RegistryTask[]>>();
 
   constructor(options: RegistryTaskProviderOptions) {
@@ -178,8 +170,8 @@ export class RegistryTaskProvider {
     this.now = options.now ?? (() => Date.now());
   }
 
-  /** Registry binding of the team, or `null` when the team is file-backed. */
-  async getScope(teamName: string): Promise<RegistryTaskScope | null> {
+  /** Required registry binding of the team. */
+  async getScope(teamName: string): Promise<RegistryTaskScope> {
     const config = await this.readConfig(teamName);
     // `resolveTeamSpecBinding` validates every field at runtime; the cast only
     // recovers the two optional config keys the config reader returns as `unknown`.
@@ -207,11 +199,15 @@ export class RegistryTaskProvider {
     options: RegistryTaskReadOptions = {}
   ): Promise<RegistryTasksReadResult> {
     const scope = options.binding === undefined ? await this.getScope(teamName) : options.binding;
-    if (scope === null) {
-      return { backed: false };
-    }
     const registryTasks = await this.readRegistryTasks(teamName, scope);
-    return { backed: true, tasks: this.mergeExecutionFields(teamName, scope, registryTasks) };
+    return {
+      backed: true,
+      tasks: this.mergeExecutionFields(
+        teamName,
+        scope,
+        registryTasks.filter((task) => task.status !== 'deleted')
+      ),
+    };
   }
 
   async getTask(
@@ -220,9 +216,6 @@ export class RegistryTaskProvider {
     options: RegistryTaskReadOptions = {}
   ): Promise<RegistryTaskReadResult> {
     const scope = options.binding === undefined ? await this.getScope(teamName) : options.binding;
-    if (scope === null) {
-      return { backed: false };
-    }
     // The board and the MCP store address a task as `12`; the corpus stores
     // `TASK-12`. Compare canonical ids, never the spelling.
     const wantedId = stripTaskPrefix(toLocalTaskRef(taskId.trim(), scope.spec));
@@ -233,33 +226,44 @@ export class RegistryTaskProvider {
     }
     return {
       backed: true,
-      task: this.toTeamTask(scope, match, this.readRecord(teamName, match.localId)),
+      task: this.toTeamTask(
+        scope,
+        match,
+        this.readRecord(teamName, match.localId),
+        registryTasks
+          .filter((task) => task.refs.some((ref) => ref === `${scope.spec}:TASK-${wantedId}`))
+          .map((task) => stripTaskPrefix(task.localId))
+      ),
     };
   }
 
-  /**
-   * The registry has no soft-delete state, so a registry-backed team has no
-   * deleted tasks to restore. Returning an empty list is the honest answer;
-   * reading the (never written) local task files would not be.
-   */
+  /** Deleted tasks remain canonical registry records and retain their execution fields. */
   async getDeletedTasks(
     teamName: string,
     options: RegistryTaskReadOptions = {}
   ): Promise<RegistryTasksReadResult> {
     const scope = options.binding === undefined ? await this.getScope(teamName) : options.binding;
-    if (scope === null) {
-      return { backed: false };
-    }
-    return { backed: true, tasks: [] };
+    const registryTasks = await this.readRegistryTasks(teamName, scope);
+    return {
+      backed: true,
+      tasks: this.mergeExecutionFields(
+        teamName,
+        scope,
+        registryTasks.filter((task) => task.status === 'deleted')
+      ),
+    };
   }
 
   /** Drops cached registry reads; call after a registry write for the team. */
   invalidate(scope?: RegistryTaskScope): void {
+    this.cacheGeneration += 1;
     if (!scope) {
       this.cache.clear();
+      this.inFlight.clear();
       return;
     }
     this.cache.delete(RegistryTaskProvider.cacheKey(scope));
+    this.inFlight.delete(RegistryTaskProvider.cacheKey(scope));
   }
 
   private static cacheKey(scope: RegistryTaskScope): string {
@@ -280,11 +284,14 @@ export class RegistryTaskProvider {
       return pending;
     }
 
+    const generation = this.cacheGeneration;
     const request = this.loadRegistryTasks(teamName, scope);
     this.inFlight.set(key, request);
     try {
       const tasks = await request;
-      this.cache.set(key, { expiresAt: this.now() + this.cacheTtlMs, tasks });
+      if (generation === this.cacheGeneration) {
+        this.cache.set(key, { expiresAt: this.now() + this.cacheTtlMs, tasks });
+      }
       return tasks;
     } finally {
       if (this.inFlight.get(key) === request) {
@@ -305,6 +312,7 @@ export class RegistryTaskProvider {
         project: scope.project,
         spec: scope.spec,
         statuses: [...REGISTRY_TASK_STATUSES],
+        includeBodies: true,
       });
     } catch (error) {
       const causeCode =
@@ -337,41 +345,41 @@ export class RegistryTaskProvider {
     registryTasks: readonly RegistryTask[]
   ): TeamTask[] {
     const recordsById = new Map<string, ExecutionTaskRecord>();
-    let records: ExecutionTaskRecord[] = [];
-    try {
-      records = this.executionStore.list(teamName);
-    } catch (error) {
-      // A corrupt execution record must not blank the canonical board.
-      logger.warn(
-        `[RegistryTaskProvider] execution records unreadable team=${teamName}: ` +
-          `${error instanceof Error ? error.message : String(error)}`
-      );
+    for (const record of this.executionStore.list(teamName)) {
+      recordsById.set(stripTaskPrefix(record.taskId), record);
     }
-    for (const record of records) {
-      recordsById.set(record.taskId, record);
+    const incoming = new Map<string, string[]>();
+    for (const task of registryTasks) {
+      for (const ref of task.refs) {
+        const prefix = `${scope.spec}:TASK-`;
+        if (!ref.startsWith(prefix)) continue;
+        const target = ref.slice(prefix.length);
+        const sources = incoming.get(target) ?? [];
+        sources.push(stripTaskPrefix(task.localId));
+        incoming.set(target, sources);
+      }
     }
-
     return registryTasks
-      .map((task) => this.toTeamTask(scope, task, recordsById.get(task.localId)))
+      .map((task) =>
+        this.toTeamTask(
+          scope,
+          task,
+          recordsById.get(stripTaskPrefix(task.localId)),
+          incoming.get(stripTaskPrefix(task.localId))
+        )
+      )
       .sort(compareTasks);
   }
 
   private readRecord(teamName: string, taskId: string): ExecutionTaskRecord | undefined {
-    try {
-      return this.executionStore.read(teamName, taskId) ?? undefined;
-    } catch (error) {
-      logger.warn(
-        `[RegistryTaskProvider] execution record unreadable team=${teamName} task=${taskId}: ` +
-          `${error instanceof Error ? error.message : String(error)}`
-      );
-      return undefined;
-    }
+    return this.executionStore.read(teamName, stripTaskPrefix(taskId)) ?? undefined;
   }
 
   private toTeamTask(
     scope: RegistryTaskScope,
     registryTask: RegistryTask,
-    record: ExecutionTaskRecord | undefined
+    record: ExecutionTaskRecord | undefined,
+    incomingRelated: readonly string[] = []
   ): TeamTask {
     const id = stripTaskPrefix(registryTask.localId);
     const status = REGISTRY_TO_TEAM_STATUS[registryTask.status] ?? 'pending';
@@ -382,17 +390,32 @@ export class RegistryTaskProvider {
     const blocks = uniqueRefs(
       registryTask.blocks.map((ref) => stripTaskPrefix(toLocalTaskRef(ref, scope.spec)))
     );
-    const related = uniqueRefs(
-      registryTask.refs.map((ref) => stripTaskPrefix(toLocalTaskRef(ref, scope.spec)))
-    );
+    const related = uniqueRefs([
+      ...registryTask.refs.map((ref) => stripTaskPrefix(toLocalTaskRef(ref, scope.spec))),
+      ...incomingRelated,
+    ]);
     const historyEvents = record?.historyEvents.length ? record.historyEvents : undefined;
+    const createdAt = taskCreationTimestamp(historyEvents);
+    let deletedAt: string | undefined;
+    if (status === 'deleted' && historyEvents) {
+      for (let index = historyEvents.length - 1; index >= 0; index -= 1) {
+        const event = historyEvents[index];
+        if (event.type === 'status_changed') {
+          if (event.to === 'deleted') deletedAt = event.timestamp;
+          break;
+        }
+      }
+    }
 
     return {
       id,
       displayId: deriveTaskDisplayId(id),
+      ...(registryTask.body !== undefined ? { description: registryTask.body } : {}),
       subject: registryTask.title,
       ...(registryTask.owner === null ? {} : { owner: registryTask.owner }),
       status,
+      ...(createdAt ? { createdAt } : {}),
+      ...(deletedAt ? { deletedAt } : {}),
       ...(blockedBy ? { blockedBy } : {}),
       ...(blocks ? { blocks } : {}),
       ...(related ? { related } : {}),
@@ -401,14 +424,28 @@ export class RegistryTaskProvider {
       ...(historyEvents ? { historyEvents } : {}),
       ...(record?.comments.length ? { comments: record.comments } : {}),
       ...(record?.attachments.length ? { attachments: record.attachments } : {}),
+      ...(record?.activeForm !== undefined ? { activeForm: record.activeForm } : {}),
+      ...(record?.groupChatId !== undefined ? { groupChatId: record.groupChatId } : {}),
+      ...(record?.prompt !== undefined ? { prompt: record.prompt } : {}),
+      ...(record?.projectPath !== undefined ? { projectPath: record.projectPath } : {}),
+      ...(record?.descriptionTaskRefs !== undefined
+        ? { descriptionTaskRefs: record.descriptionTaskRefs }
+        : {}),
+      ...(record?.promptTaskRefs !== undefined ? { promptTaskRefs: record.promptTaskRefs } : {}),
+      ...(record?.sourceMessageId !== undefined ? { sourceMessageId: record.sourceMessageId } : {}),
+      ...(record?.sourceMessage !== undefined ? { sourceMessage: record.sourceMessage } : {}),
+      ...(record?.createdBy !== undefined ? { createdBy: record.createdBy } : {}),
+      ...(record?.creationCommand !== undefined ? { creationCommand: record.creationCommand } : {}),
       ...(record?.needsClarification ? { needsClarification: record.needsClarification } : {}),
       // The registry list payload carries no timestamps; the execution record's
       // updatedAt is the only "last touched" signal this team has.
       ...(record ? { updatedAt: record.updatedAt } : {}),
-      reviewState: getReviewStateFromTask({
-        ...(historyEvents ? { historyEvents } : {}),
-        status,
-      }),
+      reviewState:
+        record?.reviewState ??
+        getReviewStateFromTask({
+          ...(historyEvents ? { historyEvents } : {}),
+          status,
+        }),
     };
   }
 }

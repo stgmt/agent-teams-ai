@@ -28,6 +28,11 @@ import type {
   TeamSummary,
   TeamViewSnapshot,
 } from '@shared/types/team';
+const TEST_SPEC_BINDING = {
+  specProject: 'sandbox/agent-teams-tests',
+  specSlug: 'sandbox-spec',
+} as const;
+
 
 describe('HTTP team runtime routes', () => {
   function createServicesMock() {
@@ -230,6 +235,7 @@ describe('HTTP team runtime routes', () => {
         url: '/api/teams',
         payload: {
           teamName: 'new-team',
+          ...TEST_SPEC_BINDING,
           displayName: 'New Team',
           members: [
             {
@@ -257,6 +263,7 @@ describe('HTTP team runtime routes', () => {
       });
       expect(createTeamConfig).toHaveBeenCalledWith({
         teamName: 'new-team',
+        ...TEST_SPEC_BINDING,
         displayName: 'New Team',
         members: [
           {
@@ -513,6 +520,7 @@ describe('HTTP team runtime routes', () => {
         url: '/api/teams',
         payload: {
           teamName: 'default-anthropic-effort-team',
+          ...TEST_SPEC_BINDING,
           members: [{ name: 'builder' }],
           cwd: '/Users/test/project',
           effort: 'max',
@@ -522,6 +530,7 @@ describe('HTTP team runtime routes', () => {
       expect(response.statusCode).toBe(201);
       expect(createTeamConfig).toHaveBeenCalledWith({
         teamName: 'default-anthropic-effort-team',
+        ...TEST_SPEC_BINDING,
         members: [{ name: 'builder' }],
         cwd: '/Users/test/project',
         effort: 'max',
@@ -540,6 +549,7 @@ describe('HTTP team runtime routes', () => {
         url: '/api/teams',
         payload: {
           teamName: 'inherited-backend-team',
+          ...TEST_SPEC_BINDING,
           members: [{ name: 'builder', providerBackendId: 'codex-native', effort: 'xhigh' }],
           cwd: '/Users/test/project',
           providerId: 'codex',
@@ -551,6 +561,7 @@ describe('HTTP team runtime routes', () => {
       expect(createTeamConfig).toHaveBeenCalledWith({
         teamName: 'inherited-backend-team',
         members: [{ name: 'builder', providerBackendId: 'codex-native', effort: 'xhigh' }],
+        ...TEST_SPEC_BINDING,
         cwd: '/Users/test/project',
         providerId: 'codex',
         providerBackendId: 'codex-native',
@@ -627,6 +638,7 @@ describe('HTTP team runtime routes', () => {
       const { app, createTeam, launchTeam, getSavedRequest, renameDraftTeam, resumeTeam } =
         await createApp();
     getSavedRequest.mockResolvedValue({
+      ...TEST_SPEC_BINDING,
       teamName: 'unresolved-draft',
       runtimeSelectionVersion: 1,
       cwd: '/sandbox/test-project',
@@ -658,6 +670,7 @@ describe('HTTP team runtime routes', () => {
   it('routes draft team launch through createTeam with saved metadata', async () => {
     const { app, createTeam, getSavedRequest, launchTeam, resumeTeam } = await createApp();
     getSavedRequest.mockResolvedValue({
+      ...TEST_SPEC_BINDING,
       teamName: 'draft-team',
       displayName: 'Draft Team',
       description: 'Saved draft',
@@ -691,6 +704,7 @@ describe('HTTP team runtime routes', () => {
       expect(resumeTeam).toHaveBeenCalledWith('draft-team');
       expect(createTeam).toHaveBeenCalledWith(
         {
+          ...TEST_SPEC_BINDING,
           teamName: 'draft-team',
           displayName: 'Draft Team',
           description: 'Saved draft',
@@ -716,6 +730,7 @@ describe('HTTP team runtime routes', () => {
   it('renames the draft directory before create when launch carries the final team name', async () => {
     const { app, createTeam, getSavedRequest, renameDraftTeam, resumeTeam } = await createApp();
     getSavedRequest.mockResolvedValue({
+      ...TEST_SPEC_BINDING,
       teamName: 'signal-ops',
       cwd: '/Users/test/saved-project',
       members: [{ name: 'builder' }],
@@ -756,6 +771,7 @@ describe('HTTP team runtime routes', () => {
     const { app, createTeam, getSavedRequest, renameDraftTeam } = await createApp();
     getSavedRequest.mockResolvedValue({
       teamName: 'signal-ops',
+      ...TEST_SPEC_BINDING,
       cwd: '/Users/test/saved-project',
       members: [{ name: 'builder' }],
     });
@@ -786,6 +802,7 @@ describe('HTTP team runtime routes', () => {
     const { app, createTeam, getSavedRequest, renameDraftTeam } = await createApp();
     getSavedRequest.mockResolvedValue({
       teamName: 'signal-ops',
+      ...TEST_SPEC_BINDING,
       cwd: '/Users/test/saved-project',
       members: [{ name: 'builder' }],
     });
@@ -811,6 +828,7 @@ describe('HTTP team runtime routes', () => {
   it('drops stale saved draft backend when draft launch switches provider over HTTP', async () => {
     const { app, createTeam, getSavedRequest } = await createApp();
     getSavedRequest.mockResolvedValue({
+      ...TEST_SPEC_BINDING,
       teamName: 'draft-team',
       displayName: 'Draft Team',
       cwd: '/Users/test/saved-project',
@@ -858,6 +876,7 @@ describe('HTTP team runtime routes', () => {
   it('does not reuse saved draft model defaults when draft launch switches provider over HTTP', async () => {
     const { app, createTeam, getSavedRequest } = await createApp();
     getSavedRequest.mockResolvedValue({
+      ...TEST_SPEC_BINDING,
       teamName: 'draft-team',
       displayName: 'Draft Team',
       cwd: '/Users/test/saved-project',
@@ -901,6 +920,7 @@ describe('HTTP team runtime routes', () => {
   it('clears saved draft model when same-provider draft launch requests default over HTTP', async () => {
     const { app, createTeam, getSavedRequest } = await createApp();
     getSavedRequest.mockResolvedValue({
+      ...TEST_SPEC_BINDING,
       teamName: 'draft-team',
       displayName: 'Draft Team',
       cwd: '/Users/test/saved-project',

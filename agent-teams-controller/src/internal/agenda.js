@@ -2,7 +2,7 @@ const kanbanStore = require('./kanbanStore.js');
 const taskStore = require('./taskStore.js');
 const runtimeHelpers = require('./runtimeHelpers.js');
 const reviewStateHelpers = require('./reviewState.js');
-const { withTeamBoardLock } = require('./boardLock.js');
+const { withTeamBoardReadLock } = require('./boardLock.js');
 const { bucketLeadItems } = require('./leadQueueBuckets.js');
 
 const { buildTaskInventoryRow, INVENTORY_KANBAN_COLUMNS } = require('./taskInventoryRow.js');
@@ -516,7 +516,7 @@ function compareAgendaItems(left, right) {
 }
 
 function buildAgendaSnapshot(paths, teamName, actor) {
-  return withTeamBoardLock(paths, () => {
+  return withTeamBoardReadLock(paths, () => {
     const boardState = buildBoardState(paths, teamName);
     const items = boardState.tasks.map((task) => buildAgendaItem(task, boardState));
     const actionable = [];
@@ -589,7 +589,7 @@ function buildAgendaSnapshot(paths, teamName, actor) {
  * member themselves (the lead briefing members section).
  */
 function listAgendaItems(paths, teamName) {
-  return withTeamBoardLock(paths, () => {
+  return withTeamBoardReadLock(paths, () => {
     const boardState = buildBoardState(paths, teamName);
     return { items: boardState.tasks.map((task) => buildAgendaItem(task, boardState)) };
   });
@@ -627,7 +627,7 @@ function matchesInventoryFilters(row, filters) {
 }
 
 function listTaskInventory(paths, teamName, filters = {}) {
-  return withTeamBoardLock(paths, () => {
+  return withTeamBoardReadLock(paths, () => {
     const taskRows = taskStore.listTaskRows(paths);
     const kanbanState = kanbanStore.readKanbanState(paths, teamName);
     const resolvedRelatedTo = normalizeName(filters.relatedTo)

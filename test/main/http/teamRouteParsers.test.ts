@@ -12,6 +12,11 @@ import {
 import { describe, expect, it } from 'vitest';
 
 import type { TeamCreateRequest } from '@shared/types/team';
+const TEST_SPEC_BINDING = {
+  specProject: 'sandbox/agent-teams-tests',
+  specSlug: 'sandbox-spec',
+} as const;
+
 
 function expectBadRequest(fn: () => unknown, message: string): void {
   expect(fn).toThrow(HttpBadRequestError);
@@ -118,6 +123,7 @@ describe('HTTP team route parsers', () => {
     expect(
       parseCreateTeamRequest({
         teamName: 'new-team',
+        ...TEST_SPEC_BINDING,
         displayName: ' New Team ',
         description: ' Saved draft ',
         members: [
@@ -143,6 +149,7 @@ describe('HTTP team route parsers', () => {
       })
     ).toEqual({
       teamName: 'new-team',
+      ...TEST_SPEC_BINDING,
       displayName: 'New Team',
       description: 'Saved draft',
       members: [
@@ -168,24 +175,42 @@ describe('HTTP team route parsers', () => {
     });
 
     expectBadRequest(
-      () => parseCreateTeamRequest({ teamName: 'new-team', members: 'builder' }),
+      () =>
+        parseCreateTeamRequest({
+          teamName: 'new-team',
+          ...TEST_SPEC_BINDING,
+          members: 'builder',
+        }),
       'members must be an array'
     );
-
-    expectBadRequest(
-      () => parseCreateTeamRequest({ teamName: 'new-team', members: null }),
-      'members must be an array'
-    );
-
-    expect(parseCreateTeamRequest({ teamName: 'new-team' })).toEqual({
-      teamName: 'new-team',
-      members: [],
-    });
 
     expectBadRequest(
       () =>
         parseCreateTeamRequest({
           teamName: 'new-team',
+          ...TEST_SPEC_BINDING,
+          members: null,
+        }),
+      'members must be an array'
+    );
+
+    expect(
+      parseCreateTeamRequest({ teamName: 'new-team', ...TEST_SPEC_BINDING })
+    ).toEqual({
+      teamName: 'new-team',
+      ...TEST_SPEC_BINDING,
+      members: [],
+    });
+    expectBadRequest(
+      () => parseCreateTeamRequest({ teamName: 'new-team' }),
+      'requires specProject and specSlug'
+    );
+
+    expectBadRequest(
+      () =>
+        parseCreateTeamRequest({
+          teamName: 'new-team',
+          ...TEST_SPEC_BINDING,
           members: [{ name: 'Builder' }, { name: 'builder' }],
         }),
       'member names must be unique'
@@ -195,6 +220,7 @@ describe('HTTP team route parsers', () => {
   it('merges draft launch bodies with saved requests without reusing provider-specific defaults', () => {
     const savedRequest: TeamCreateRequest = {
       teamName: 'draft-team',
+      ...TEST_SPEC_BINDING,
       displayName: 'Draft Team',
       description: 'Saved draft',
       color: '#3366ff',
@@ -213,12 +239,15 @@ describe('HTTP team route parsers', () => {
 
     const request = parseDraftLaunchCreateRequest(savedRequest, {
       cwd: '/Users/test/project',
+      specProject: 'other-owner/other-project',
+      specSlug: 'other-spec',
       providerId: 'anthropic',
       allowExperimentalLocalModels: true,
     });
 
     expect(request).toMatchObject({
       teamName: 'draft-team',
+      ...TEST_SPEC_BINDING,
       displayName: 'Draft Team',
       description: 'Saved draft',
       color: '#3366ff',
@@ -256,6 +285,14 @@ describe('HTTP team route parsers', () => {
         }),
       'allowExperimentalLocalModels must be a boolean'
     );
+    expectBadRequest(
+      () =>
+        parseDraftLaunchCreateRequest(
+          { ...savedRequest, specProject: undefined, specSlug: undefined },
+          {}
+        ),
+      'requires specProject and specSlug'
+    );
   });
 
   it.each([
@@ -265,6 +302,7 @@ describe('HTTP team route parsers', () => {
   ])('rejects an explicit $bodyType draft launch body', ({ body }) => {
     const savedRequest: TeamCreateRequest = {
       teamName: 'draft-team',
+      ...TEST_SPEC_BINDING,
       cwd: '/Users/test/saved-project',
       members: [{ name: 'builder' }],
     };
@@ -277,6 +315,7 @@ describe('HTTP team route parsers', () => {
 
   it.each([undefined, {}])('accepts an omitted or empty draft launch override', (body) => {
     const savedRequest: TeamCreateRequest = {
+      ...TEST_SPEC_BINDING,
       teamName: 'draft-team',
       cwd: '/Users/test/saved-project',
       members: [{ name: 'builder' }],
@@ -288,6 +327,7 @@ describe('HTTP team route parsers', () => {
   it('uses the final body teamName for a draft launch instead of the stale draft name', () => {
     const savedRequest: TeamCreateRequest = {
       teamName: 'signal-ops',
+      ...TEST_SPEC_BINDING,
       cwd: '/Users/test/saved-project',
       members: [{ name: 'builder' }],
     };

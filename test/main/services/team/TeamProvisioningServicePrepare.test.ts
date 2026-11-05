@@ -13,9 +13,18 @@ import { PassThrough } from 'stream';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { openCodeProviderStatus } from './fixtures/openCodeProviderStatus';
+import { isolateTaskActivityRepairForProvisioningTest } from './provisioningHarness/ancillaryTaskServiceTestSeams';
 
 vi.mock('@main/services/team/ClaudeBinaryResolver', () => ({
   ClaudeBinaryResolver: { resolve: vi.fn() },
+}));
+
+vi.mock('@main/services/team/TeamTaskReader', () => ({
+  TeamTaskReader: class {
+    async getTasks() {
+      return [];
+    }
+  },
 }));
 
 vi.mock('@main/utils/shellEnv', () => ({
@@ -715,6 +724,8 @@ describe('TeamProvisioningService prepare/auth behavior', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    isolateTaskActivityRepairForProvisioningTest();
+
     execCliMock.mockReset();
     execCliMock.mockImplementation(defaultExecCliMockImplementation);
     addTeamNotificationMock.mockResolvedValue(null);

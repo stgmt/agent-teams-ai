@@ -11,6 +11,7 @@ vi.mock('../../../../src/main/utils/pathDecoder', () => ({
   getBackupsBasePath: () => path.join(state.root, 'backups'),
   getAppDataPath: () => path.join(state.root, 'app'),
   getTasksBasePath: () => path.join(state.root, 'tasks'),
+  getLocalTasksBasePath: () => path.join(state.root, 'tasks-local'),
 }));
 
 import { TeamBackupService } from '../../../../src/main/services/team/TeamBackupService';

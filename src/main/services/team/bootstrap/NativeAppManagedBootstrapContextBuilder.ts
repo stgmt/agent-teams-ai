@@ -4,6 +4,7 @@ import * as agentTeamsControllerModule from 'agent-teams-controller';
 import { createHash } from 'crypto';
 
 import { buildChatVisualizationBriefing } from '../provisioning/TeamProvisioningVisualizationPrompt';
+import { TeamTaskReader } from '../TeamTaskReader';
 
 import type { TeamCreateRequest, TeamProviderId } from '@shared/types';
 
@@ -296,24 +297,25 @@ function buildCompactNativeMemberBriefing(params: {
     .join('\n');
 }
 
-export async function buildNativeAppManagedBootstrapSpecs(params: {
-  teamName: string;
-  cwd: string;
-  members: TeamCreateRequest['members'];
-}): Promise<Map<string, NativeAppManagedBootstrapSpec>> {
-  return (await buildNativeAppManagedBootstrapSpecsWithDiagnostics(params)).specs;
+export async function buildNativeAppManagedBootstrapSpecs(
+  params: {
+    teamName: string;
+    cwd: string;
+    members: TeamCreateRequest['members'];
+  },
+  taskReader: Pick<TeamTaskReader, 'getTasks'> = new TeamTaskReader()
+): Promise<Map<string, NativeAppManagedBootstrapSpec>> {
+  return (await buildNativeAppManagedBootstrapSpecsWithDiagnostics(params, taskReader)).specs;
 }
 
-export async function buildNativeAppManagedBootstrapSpecsWithDiagnostics(params: {
-  teamName: string;
-  cwd: string;
-  members: TeamCreateRequest['members'];
-}): Promise<NativeAppManagedBootstrapBuildResult> {
-  const controller = createController({
-    teamName: params.teamName,
-    claudeDir: getClaudeBasePath(),
-    allowUserMessageSender: false,
-  });
+export async function buildNativeAppManagedBootstrapSpecsWithDiagnostics(
+  params: {
+    teamName: string;
+    cwd: string;
+    members: TeamCreateRequest['members'];
+  },
+  taskReader: Pick<TeamTaskReader, 'getTasks'> = new TeamTaskReader()
+): Promise<NativeAppManagedBootstrapBuildResult> {
   const result = new Map<string, NativeAppManagedBootstrapSpec>();
   const briefings = new Map<string, string>();
   let totalContextChars = 0;
@@ -324,6 +326,14 @@ export async function buildNativeAppManagedBootstrapSpecsWithDiagnostics(params:
     }))
     .filter(({ providerId }) => isNativeAppManagedBootstrapProvider(providerId));
   const nativeMemberCount = nativeMembers.length;
+  const taskSnapshot =
+    nativeMemberCount > 0 ? await taskReader.getTasks(params.teamName) : undefined;
+  const controller = createController({
+    teamName: params.teamName,
+    claudeDir: getClaudeBasePath(),
+    allowUserMessageSender: false,
+    ...(taskSnapshot === undefined ? {} : { readOnlyTaskSnapshot: taskSnapshot }),
+  });
   const compactContext = shouldUseCompactNativeBootstrapContext(nativeMemberCount);
   const maxContextChars = getNativeBootstrapContextCharLimit(nativeMemberCount);
 

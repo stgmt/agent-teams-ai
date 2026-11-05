@@ -86,6 +86,7 @@ export const CreateTaskDialog = ({
   );
   const { suggestions: taskSuggestions } = useTaskSuggestions(teamName);
   const [subject, setSubject] = useState(defaultSubject);
+  const [requirementsInput, setRequirementsInput] = useState('');
   const [submitError, setSubmitError] = useState<string | null>(null);
   const descriptionDraft = useDraftPersistence({
     key: `createTask:${teamName}:description`,
@@ -115,6 +116,7 @@ export const CreateTaskDialog = ({
       resetCreateTaskSubmit(submitGateRef.current);
       // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional sync on prop change
       setSubject(defaultSubject);
+      setRequirementsInput('');
       setSubmitError(null);
       if (defaultChip) {
         const token = chipToken(defaultChip);
@@ -175,8 +177,13 @@ export const CreateTaskDialog = ({
     [members, colorMap]
   );
 
+  const requirements = [...new Set(requirementsInput.split(/[,\s]+/).filter(Boolean))];
   const requiresOwner = defaultStartImmediately === true;
-  const canSubmit = subject.trim().length > 0 && !submitting && (!requiresOwner || !!owner);
+  const canSubmit =
+    subject.trim().length > 0 &&
+    requirements.length > 0 &&
+    !submitting &&
+    (!requiresOwner || !!owner);
 
   // Only show non-internal, non-deleted tasks as candidates for blocking
   const availableTasks = tasks.filter(
@@ -208,6 +215,7 @@ export const CreateTaskDialog = ({
       : [];
     const request: CreateTaskRequest = {
       subject: subject.trim(),
+      requirements,
       description: serializedDesc || undefined,
       owner: owner || undefined,
       groupChatId: groupChatId ?? undefined,
@@ -266,7 +274,7 @@ export const CreateTaskDialog = ({
       <DialogContent className="sm:max-w-[580px]">
         <DialogHeader>
           <DialogTitle>{t('tasks.createTask.title')}</DialogTitle>
-          <DialogDescription>{t('tasks.createTask.description')}</DialogDescription>
+          <DialogDescription>{t('tasks.createTask.registryDescription')}</DialogDescription>
         </DialogHeader>
 
         {!isTeamAlive ? (
@@ -300,6 +308,19 @@ export const CreateTaskDialog = ({
                 if (!isImeComposing(e) && e.key === 'Enter' && canSubmit) handleSubmit();
               }}
             />
+          </div>
+
+          <div className="grid gap-2">
+            <Label htmlFor="task-requirements">{t('tasks.createTask.requirements')}</Label>
+            <Input
+              id="task-requirements"
+              placeholder={t('tasks.createTask.requirementsPlaceholder')}
+              value={requirementsInput}
+              onChange={(event) => setRequirementsInput(event.target.value)}
+            />
+            <p className="text-xs text-[var(--color-text-muted)]">
+              {t('tasks.createTask.requirementsHint')}
+            </p>
           </div>
 
           {assigneeField}

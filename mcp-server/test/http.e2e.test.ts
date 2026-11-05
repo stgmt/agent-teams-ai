@@ -7,12 +7,14 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { afterEach, describe, expect, it } from 'vitest';
+import { startControlServer } from '../../agent-teams-controller/test/helpers/controlServer.js';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const serverEntry = path.join(repoRoot, 'dist', 'index.js');
 
 const children: ChildProcess[] = [];
 const tempDirectories: string[] = [];
+const controlServers: Array<{ stop(): Promise<void> }> = [];
 
 type McpHttpResponse = {
   statusCode: number | null;
@@ -165,6 +167,7 @@ afterEach(async () => {
         })
     )
   );
+  await Promise.all(controlServers.splice(0).map((server) => server.stop()));
   await Promise.all(
     tempDirectories.splice(0).map((directory) => rm(directory, { recursive: true, force: true }))
   );
@@ -299,6 +302,8 @@ describe('agent-teams-mcp HTTP e2e', () => {
       expect((await call('app_get_connection_info')).context).toEqual(context);
       await expect(call('app_get_connection_info', { controlUrl: fallbackUrl })).rejects.toThrow();
       const args = {
+        specProject: 'sandbox/project',
+        specSlug: 'mcp-http-sandbox',
         teamName,
         runtimeSelectionVersion: 1,
         expectedContext: context,
@@ -426,6 +431,13 @@ describe('agent-teams-mcp HTTP e2e', () => {
       'utf8'
     );
 
+    const control = await startControlServer();
+    controlServers.push(control);
+    const context = {
+      appInstanceId: 'http-lifecycle-app',
+      dataRootFingerprint: 'http-lifecycle-root',
+      connectionGeneration: 1,
+    };
     const port = await allocateLoopbackPort();
     const child = spawn(
       process.execPath,
@@ -440,7 +452,15 @@ describe('agent-teams-mcp HTTP e2e', () => {
         '--endpoint',
         'mcp',
       ],
-      { stdio: ['ignore', 'ignore', 'pipe'] }
+      {
+        env: {
+          ...process.env,
+          AGENT_TEAMS_BOUND_CONTROL_URL: control.url,
+          AGENT_TEAMS_BOUND_CONTEXT_JSON: JSON.stringify(context),
+          AGENT_TEAMS_MCP_CLAUDE_DIR: claudeDir,
+        },
+        stdio: ['ignore', 'ignore', 'pipe'],
+      }
     );
     children.push(child);
     await waitForHealthBody(port);
@@ -490,9 +510,10 @@ describe('agent-teams-mcp HTTP e2e', () => {
       subject: 'HTTP lifecycle task',
       owner: 'alice',
       description: 'Exercise the shared HTTP MCP transport.',
+      requirements: ['FR-1'],
     });
     expect(created.owner).toBe('alice');
-    expect(typeof created.id).toBe('string');
+    expect(created.id).toMatch(/^\d+$/);
 
     const started = await callTool('task_start', {
       claudeDir,
@@ -519,5 +540,21 @@ describe('agent-teams-mcp HTTP e2e', () => {
     });
     expect(completed.status).toBe('completed');
     expect(completed.owner).toBe('bob');
+    const controlRequests = await control.requests();
+    expect(
+      controlRequests.some(
+        (request) =>
+          request.method === 'POST' && request.pathname === `/api/teams/${teamName}/tasks`
+      )
+    ).toBe(true);
+    expect(
+      controlRequests.every(
+        (request) =>
+          request.headers['x-agent-teams-app-context'] === JSON.stringify(context)
+      )
+    ).toBe(true);
+    await expect(
+      readFile(path.join(claudeDir, 'tasks', teamName, `${created.id}.json`), 'utf8')
+    ).rejects.toMatchObject({ code: 'ENOENT' });
   });
 });

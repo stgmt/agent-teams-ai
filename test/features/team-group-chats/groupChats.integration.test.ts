@@ -390,7 +390,6 @@ describe('group chat main authority and durable identity', () => {
       {} as never,
       {} as never,
       {} as never,
-      {} as never,
       () => controller as never
     );
     try {

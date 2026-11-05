@@ -7,6 +7,8 @@
  */
 
 const TASK_BACKEND_ERROR_CODES = Object.freeze({
+  /** Canonical task operations without an explicit projection require a desktop app-bound child. */
+  APP_BINDING_REQUIRED: 'APP_BINDING_REQUIRED',
   /** The control API of the desktop app could not be reached or refused the request. */
   REGISTRY_UNAVAILABLE: 'REGISTRY_UNAVAILABLE',
   /** The control API answered with a payload that is not a TeamTask envelope. */
@@ -22,10 +24,10 @@ const TASK_BACKEND_ERROR_CODES = Object.freeze({
   FIELD_UNSUPPORTED: 'REGISTRY_FIELD_UNSUPPORTED',
   /** The registry cannot clear a task owner. */
   OWNER_CLEAR_UNSUPPORTED: 'OWNER_CLEAR_UNSUPPORTED',
+  /** Any controller carrying an explicit task projection cannot mutate canonical tasks. */
+  READ_ONLY_TASK_SNAPSHOT: 'READ_ONLY_TASK_SNAPSHOT',
   /** Registry ids are allocated by the registry; a caller cannot choose one. */
   TASK_ID_UNSUPPORTED: 'TASK_ID_UNSUPPORTED',
-  /** File-only store operations (creation reconciliation) have no registry shape. */
-  OPERATION_UNSUPPORTED: 'REGISTRY_OPERATION_UNSUPPORTED',
 });
 
 class TaskBackendError extends Error {

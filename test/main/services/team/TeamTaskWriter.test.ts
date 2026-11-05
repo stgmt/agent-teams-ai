@@ -1,441 +1,156 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
-const hoisted = vi.hoisted(() => {
-  const files = new Map<string, string>();
-  let overrideVerifyRead: string | null = null;
-  let readCount = 0;
+import { ExecutionTaskStore } from '../../../../src/main/services/team/execution/ExecutionTaskStore';
+import { RegistryTeamTaskWriter } from '../../../../src/main/services/team/registry/RegistryTeamTaskWriter';
+import type { RegistryTask, RegistryTaskWriteResult } from '../../../../src/main/services/team/registry/RegistryTaskClientTypes';
+import type { RegistryTeamTaskClientPort } from '../../../../src/main/services/team/registry/RegistryTeamTaskWriter';
 
-  // Normalize path separators so tests pass on Windows (backslash → forward slash)
-  const norm = (p: string): string => p.replace(/\\/g, '/');
+const TEAM = 'my-team';
+const SPEC = 'test-spec';
+const NOW = '2026-01-01T00:00:00.000Z';
+const tempPaths: string[] = [];
 
-  const readFile = vi.fn(async (filePath: string) => {
-    readCount += 1;
-    if (overrideVerifyRead && readCount >= 2) {
-      return overrideVerifyRead;
-    }
-
-    const data = files.get(norm(filePath));
-    if (data === undefined) {
-      const error = new Error('ENOENT') as NodeJS.ErrnoException;
-      error.code = 'ENOENT';
-      throw error;
-    }
-    return data;
-  });
-
-  const atomicWrite = vi.fn(async (filePath: string, data: string) => {
-    files.set(norm(filePath), data);
-  });
-
-  return {
-    files,
-    readFile,
-    atomicWrite,
-    setVerifyOverride: (value: string | null) => {
-      overrideVerifyRead = value;
-    },
-    resetReadCount: () => {
-      readCount = 0;
-    },
-  };
+afterEach(() => {
+  for (const dir of tempPaths.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
 });
 
-vi.mock('fs', () => ({
-  promises: {
-    readFile: hoisted.readFile,
-    mkdir: vi.fn(async () => undefined),
-    access: vi.fn(async () => {
-      const error = new Error('ENOENT') as NodeJS.ErrnoException;
-      error.code = 'ENOENT';
-      throw error;
-    }),
-  },
-  constants: { F_OK: 0 },
-}));
+function task(overrides: Partial<RegistryTask> = {}): RegistryTask {
+  return {
+    canonicalId: `${SPEC}:TASK-12`, localId: '12', title: 'task', status: 'todo',
+    owner: 'alice', tracking: null, requirements: ['FR-1'], dependsOn: [], blocks: [],
+    blockedBy: [], refs: [], contentHash: null, ...overrides,
+  };
+}
 
-vi.mock('../../../../src/main/utils/pathDecoder', () => ({
-  getTasksBasePath: () => '/mock/tasks',
-}));
-
-vi.mock('../../../../src/main/services/team/atomicWrite', () => ({
-  atomicWriteAsync: hoisted.atomicWrite,
-}));
-
-import { TeamTaskWriter } from '../../../../src/main/services/team/TeamTaskWriter';
-
-describe('TeamTaskWriter', () => {
-  const writer = new TeamTaskWriter();
-  const taskPath = '/mock/tasks/my-team/12.json';
-
-  beforeEach(() => {
-    hoisted.files.clear();
-    hoisted.readFile.mockClear();
-    hoisted.atomicWrite.mockClear();
-    hoisted.setVerifyOverride(null);
-    hoisted.resetReadCount();
+function setup(tasks: RegistryTask[] = []) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'registry-writer-behavior-'));
+  tempPaths.push(dir);
+  const store = new ExecutionTaskStore({ basePath: dir });
+  const applied = (): RegistryTaskWriteResult => ({ outcome: 'APPLIED', transitions: [], refusal: null });
+  const client: RegistryTeamTaskClientPort = {
+    readTasksDocumentSha: vi.fn(async () => 'a'.repeat(64)),
+    confirmTaskCreation: vi.fn(async () => false),
+    listTasks: vi.fn(async () => tasks),
+    upsertTask: vi.fn(async () => applied()),
+    replaceTaskStatus: vi.fn(async () => ({ outcome: 'APPLIED' as const, transitions: [] })),
+    replaceTaskOwner: vi.fn(async () => applied()),
+    replaceTaskLinks: vi.fn(async () => applied()),
+  };
+  const writer = new RegistryTeamTaskWriter({
+    teamName: TEAM, binding: { project: 'test/project', spec: SPEC }, client,
+    executionStore: store, clock: () => new Date(NOW),
   });
+  return { writer, store, client };
+}
 
-  it('createTask writes CLI-compatible format with description, blocks, blockedBy', async () => {
-    await writer.createTask('my-team', {
-      id: '5',
-      subject: 'Test task',
-      owner: 'bob',
-      status: 'pending',
+describe('registry task writer behavior', () => {
+  it('creates canonical task details and records creation history separately', async () => {
+    const { writer, store, client } = setup();
+    const { task: created } = await writer.createTask({
+      subject: 'Test task', description: 'Some description', owner: 'bob',
+      requirements: ['FR-1'], actor: 'alice',
     });
-
-    const writtenPath = '/mock/tasks/my-team/5.json';
-    const persisted = JSON.parse(hoisted.files.get(writtenPath) ?? '{}') as Record<string, unknown>;
-    expect(persisted.id).toBe('5');
-    expect(persisted.subject).toBe('Test task');
-    expect(persisted.owner).toBe('bob');
-    expect(persisted.status).toBe('pending');
-    // CLI requires these fields for Zod schema validation
-    expect(persisted.description).toBe('');
-    expect(persisted.blocks).toEqual([]);
-    expect(persisted.blockedBy).toEqual([]);
+    expect(created).toMatchObject({ id: '1', subject: 'Test task', owner: 'bob', status: 'pending' });
+    expect(client.upsertTask).toHaveBeenCalledWith(expect.objectContaining({
+      localId: '1', title: 'Test task', description: 'Some description', owner: 'bob',
+      status: 'todo', requirements: ['FR-1'],
+    }));
+    expect(store.read(TEAM, '1')?.historyEvents).toEqual([
+      expect.objectContaining({ type: 'task_created', status: 'pending', actor: 'alice', timestamp: NOW }),
+    ]);
   });
 
-  it('createTask preserves provided description, blocks, blockedBy', async () => {
-    await writer.createTask('my-team', {
-      id: '6',
-      subject: 'Task with details',
-      description: 'Some description',
-      status: 'pending',
-      blocks: ['7'],
-      blockedBy: ['3'],
+  it('preserves creation dependencies in canonical task references', async () => {
+    const { writer, client, store } = setup();
+    await writer.createTask({
+      subject: 'With dependencies', requirements: ['FR-1'],
+      blockedBy: ['7'], related: ['3'],
     });
-
-    const writtenPath = '/mock/tasks/my-team/6.json';
-    const persisted = JSON.parse(hoisted.files.get(writtenPath) ?? '{}') as Record<string, unknown>;
-    expect(persisted.description).toBe('Some description');
-    expect(persisted.blocks).toEqual(['7']);
-    expect(persisted.blockedBy).toEqual(['3']);
+    expect(client.upsertTask).toHaveBeenCalledWith(expect.objectContaining({
+      dependsOn: [`${SPEC}:TASK-7`], refs: [`${SPEC}:TASK-3`],
+    }));
+    expect(store.read(TEAM, '1')?.historyEvents).toEqual([
+      expect.objectContaining({ type: 'task_created', actor: 'user' }),
+    ]);
   });
 
-  it('updates status and preserves other fields', async () => {
-    hoisted.files.set(
-      taskPath,
-      JSON.stringify({
-        id: '12',
-        subject: 'task',
-        owner: 'alice',
-        status: 'pending',
-      })
-    );
+  it('opens an interval and records creation history when started immediately', async () => {
+    const { writer, store } = setup();
+    const { task: created } = await writer.createTask({
+      subject: 'Start immediately', requirements: ['FR-1'], status: 'in_progress', actor: 'bob',
+    });
+    const execution = store.read(TEAM, created.id);
+    expect(execution?.workIntervals).toEqual([{ startedAt: NOW }]);
+    expect(execution?.historyEvents).toEqual([
+      expect.objectContaining({ type: 'task_created', status: 'in_progress', actor: 'bob' }),
+    ]);
+  });
 
-    await writer.updateStatus('my-team', '12', 'in_progress');
-
-    const persisted = JSON.parse(hoisted.files.get(taskPath) ?? '{}') as Record<string, string>;
-    expect(persisted).toMatchObject({
-      id: '12',
-      subject: 'task',
-      owner: 'alice',
-      status: 'in_progress',
+  it('updates status using the canonical precondition and appends execution history', async () => {
+    const { writer, store, client } = setup([task()]);
+    await writer.replaceStatus({ taskId: '12', to: 'in_progress', actor: 'alice' });
+    expect(client.replaceTaskStatus).toHaveBeenCalledWith(expect.objectContaining({
+      entity: '12', expectedStatus: 'todo', status: 'in-progress',
+    }));
+    expect(store.read(TEAM, '12')).toMatchObject({
+      workIntervals: [{ startedAt: NOW }],
+      historyEvents: [expect.objectContaining({ type: 'status_changed', from: 'pending', to: 'in_progress', actor: 'alice' })],
     });
   });
 
-  it('opens a new work interval when the previous completedAt is malformed', async () => {
-    hoisted.files.set(
-      taskPath,
-      JSON.stringify({
-        id: '12',
-        subject: 'task',
-        owner: 'alice',
-        status: 'pending',
-        workIntervals: [{ startedAt: '2026-05-02T10:00:00.000Z', completedAt: '' }],
-      })
-    );
-
-    await writer.updateStatus('my-team', '12', 'in_progress');
-
-    const persisted = JSON.parse(hoisted.files.get(taskPath) ?? '{}') as {
-      workIntervals?: { startedAt?: string; completedAt?: string }[];
-    };
-    expect(persisted.workIntervals).toHaveLength(2);
-    expect(persisted.workIntervals?.[0]?.completedAt).toBe('');
-    expect(persisted.workIntervals?.[1]?.completedAt).toBeUndefined();
+  it('opens a new interval after a completed interval', async () => {
+    const { writer, store } = setup([task()]);
+    store.write(TEAM, '12', { workIntervals: [{ startedAt: '2025-12-30T10:00:00.000Z', completedAt: '2025-12-30T11:00:00.000Z' }] });
+    await writer.replaceStatus({ taskId: '12', to: 'in_progress' });
+    expect(store.read(TEAM, '12')?.workIntervals).toEqual([
+      { startedAt: '2025-12-30T10:00:00.000Z', completedAt: '2025-12-30T11:00:00.000Z' },
+      { startedAt: NOW },
+    ]);
   });
 
-  it('throws when verify detects conflicting status', async () => {
-    hoisted.files.set(
-      taskPath,
-      JSON.stringify({
-        id: '12',
-        subject: 'task',
-        status: 'pending',
-      })
-    );
-    hoisted.setVerifyOverride(
-      JSON.stringify({
-        id: '12',
-        subject: 'task',
-        status: 'pending',
-      })
-    );
-
-    await expect(writer.updateStatus('my-team', '12', 'in_progress')).rejects.toThrow(
-      'Task status update verification failed: 12'
-    );
+  it('closes the open interval and preserves prior execution history', async () => {
+    const { writer, store } = setup([task({ status: 'in-progress' })]);
+    store.write(TEAM, '12', {
+      workIntervals: [{ startedAt: '2025-12-30T10:00:00.000Z' }],
+      historyEvents: [{ id: 'created', type: 'task_created', timestamp: '2025-12-30T10:00:00.000Z', status: 'pending' }],
+    });
+    await writer.replaceStatus({ taskId: '12', to: 'completed' });
+    const record = store.read(TEAM, '12');
+    expect(record?.workIntervals).toEqual([{ startedAt: '2025-12-30T10:00:00.000Z', completedAt: NOW }]);
+    expect(record?.historyEvents).toEqual([
+      expect.objectContaining({ id: 'created', type: 'task_created' }),
+      expect.objectContaining({ type: 'status_changed', from: 'in_progress', to: 'completed' }),
+    ]);
+    expect(record?.historyEvents[1].actor).toBeUndefined();
   });
 
-  describe('historyEvents', () => {
-    it('createTask records initial task_created event', async () => {
-      await writer.createTask('my-team', {
-        id: '10',
-        subject: 'New task',
-        status: 'pending',
-        createdBy: 'alice',
-      });
-
-      const writtenPath = '/mock/tasks/my-team/10.json';
-      const persisted = JSON.parse(hoisted.files.get(writtenPath) ?? '{}');
-      expect(persisted.historyEvents).toHaveLength(1);
-      expect(persisted.historyEvents[0]).toMatchObject({
-        type: 'task_created',
-        status: 'pending',
-        actor: 'alice',
-      });
-      expect(typeof persisted.historyEvents[0].id).toBe('string');
-      expect(typeof persisted.historyEvents[0].timestamp).toBe('string');
-    });
-
-    it('createTask with in_progress records initial task_created event', async () => {
-      await writer.createTask('my-team', {
-        id: '11',
-        subject: 'Start immediately',
-        status: 'in_progress',
-        createdBy: 'bob',
-      });
-
-      const writtenPath = '/mock/tasks/my-team/11.json';
-      const persisted = JSON.parse(hoisted.files.get(writtenPath) ?? '{}');
-      expect(persisted.historyEvents).toHaveLength(1);
-    expect(persisted.historyEvents[0]).toMatchObject({
-      type: 'task_created',
-      status: 'in_progress',
-      actor: 'bob',
-    });
+  it('rejects stale status preconditions without writing execution history', async () => {
+    const { writer, store, client } = setup([task()]);
+    await expect(writer.replaceStatus({ taskId: '12', to: 'in_progress', expectedStatus: 'completed' }))
+      .rejects.toMatchObject({ code: 'STATUS_CONFLICT' });
+    expect(client.replaceTaskStatus).not.toHaveBeenCalled();
+    expect(store.read(TEAM, '12')).toBeNull();
   });
 
-  it('createTask records in_progress workIntervals as status time, not runtime activity', async () => {
-    await writer.createTask('my-team', {
-      id: '14',
-      subject: 'Already assigned',
-      status: 'in_progress',
-      createdAt: '2026-05-14T10:00:00.000Z',
-    });
-
-    const writtenPath = '/mock/tasks/my-team/14.json';
-    const persisted = JSON.parse(hoisted.files.get(writtenPath) ?? '{}');
-    expect(persisted.workIntervals).toEqual([{ startedAt: '2026-05-14T10:00:00.000Z' }]);
+  it('records an owner change and clears the registry owner', async () => {
+    const { writer, store, client } = setup([task()]);
+    await writer.replaceOwner({ taskId: '12', owner: 'bob' });
+    expect(client.replaceTaskOwner).toHaveBeenCalledWith(expect.objectContaining({ entity: '12', owner: 'bob' }));
+    expect(store.read(TEAM, '12')?.historyEvents).toEqual([
+      expect.objectContaining({ type: 'owner_changed', from: 'alice', to: 'bob', actor: 'user' }),
+    ]);
+    await writer.replaceOwner({ taskId: '12', owner: null });
+    expect(client.replaceTaskOwner).toHaveBeenLastCalledWith(expect.objectContaining({ entity: '12', owner: null }));
+    expect(store.read(TEAM, '12')?.historyEvents.at(-1)).toMatchObject({ type: 'owner_changed', from: 'alice' });
   });
 
-  it('createTask without createdBy omits actor', async () => {
-    await writer.createTask('my-team', {
-      id: '13',
-        subject: 'No author',
-        status: 'pending',
-      });
-
-      const writtenPath = '/mock/tasks/my-team/13.json';
-      const persisted = JSON.parse(hoisted.files.get(writtenPath) ?? '{}');
-      expect(persisted.historyEvents).toHaveLength(1);
-      expect(persisted.historyEvents[0].type).toBe('task_created');
-      expect(persisted.historyEvents[0].actor).toBeUndefined();
-    });
-
-    it('updateStatus appends status_changed event', async () => {
-      hoisted.files.set(
-        taskPath,
-        JSON.stringify({
-          id: '12',
-          subject: 'task',
-          status: 'pending',
-          historyEvents: [
-            {
-              type: 'task_created',
-              id: 'ev1',
-              status: 'pending',
-              timestamp: '2024-01-01T00:00:00.000Z',
-              actor: 'user',
-            },
-          ],
-        })
-      );
-
-      await writer.updateStatus('my-team', '12', 'in_progress', 'alice');
-
-      const persisted = JSON.parse(hoisted.files.get(taskPath) ?? '{}');
-      expect(persisted.historyEvents).toHaveLength(2);
-      expect(persisted.historyEvents[1]).toMatchObject({
-        type: 'status_changed',
-        from: 'pending',
-        to: 'in_progress',
-        actor: 'alice',
-      });
-    });
-
-    it('updateStatus works on task without historyEvents', async () => {
-      hoisted.files.set(
-        taskPath,
-        JSON.stringify({
-          id: '12',
-          subject: 'legacy task',
-          status: 'pending',
-        })
-      );
-
-      await writer.updateStatus('my-team', '12', 'in_progress');
-
-      const persisted = JSON.parse(hoisted.files.get(taskPath) ?? '{}');
-      expect(persisted.historyEvents).toHaveLength(1);
-      expect(persisted.historyEvents[0]).toMatchObject({
-        type: 'status_changed',
-        from: 'pending',
-        to: 'in_progress',
-      });
-      expect(persisted.historyEvents[0].actor).toBeUndefined();
-    });
-
-    it('softDelete appends status_changed to deleted', async () => {
-      hoisted.files.set(
-        taskPath,
-        JSON.stringify({
-          id: '12',
-          subject: 'task',
-          status: 'in_progress',
-          historyEvents: [
-            {
-              type: 'task_created',
-              id: 'ev1',
-              status: 'pending',
-              timestamp: '2024-01-01T00:00:00.000Z',
-            },
-            {
-              type: 'status_changed',
-              id: 'ev2',
-              from: 'pending',
-              to: 'in_progress',
-              timestamp: '2024-01-01T00:01:00.000Z',
-            },
-          ],
-        })
-      );
-
-      await writer.softDelete('my-team', '12', 'user');
-
-      const persisted = JSON.parse(hoisted.files.get(taskPath) ?? '{}');
-      expect(persisted.historyEvents).toHaveLength(3);
-      expect(persisted.historyEvents[2]).toMatchObject({
-        type: 'status_changed',
-        from: 'in_progress',
-        to: 'deleted',
-        actor: 'user',
-      });
-    });
-
-    it('restoreTask appends status_changed to pending', async () => {
-      hoisted.files.set(
-        taskPath,
-        JSON.stringify({
-          id: '12',
-          subject: 'task',
-          status: 'deleted',
-          deletedAt: '2024-01-01T00:02:00.000Z',
-          historyEvents: [
-            {
-              type: 'task_created',
-              id: 'ev1',
-              status: 'pending',
-              timestamp: '2024-01-01T00:00:00.000Z',
-            },
-            {
-              type: 'status_changed',
-              id: 'ev2',
-              from: 'pending',
-              to: 'deleted',
-              timestamp: '2024-01-01T00:02:00.000Z',
-            },
-          ],
-        })
-      );
-
-      await writer.restoreTask('my-team', '12', 'user');
-
-      const persisted = JSON.parse(hoisted.files.get(taskPath) ?? '{}');
-      expect(persisted.status).toBe('pending');
-      expect(persisted.historyEvents).toHaveLength(3);
-      expect(persisted.historyEvents[2]).toMatchObject({
-        type: 'status_changed',
-        from: 'deleted',
-        to: 'pending',
-        actor: 'user',
-      });
-    });
-
-    it('restoreTask defaults actor to user when not provided', async () => {
-      hoisted.files.set(
-        taskPath,
-        JSON.stringify({
-          id: '12',
-          subject: 'task',
-          status: 'deleted',
-          deletedAt: '2024-01-01T00:02:00.000Z',
-        })
-      );
-
-      await writer.restoreTask('my-team', '12');
-
-      const persisted = JSON.parse(hoisted.files.get(taskPath) ?? '{}');
-      expect(persisted.historyEvents).toHaveLength(1);
-      expect(persisted.historyEvents[0]).toMatchObject({
-        type: 'status_changed',
-        from: 'deleted',
-        to: 'pending',
-        actor: 'user',
-      });
-    });
-
-    it('updateOwner appends owner_changed event', async () => {
-      hoisted.files.set(
-        taskPath,
-        JSON.stringify({
-          id: '12',
-          subject: 'task',
-          owner: 'alice',
-          status: 'pending',
-          historyEvents: [
-            {
-              type: 'task_created',
-              id: 'ev1',
-              status: 'pending',
-              timestamp: '2024-01-01T00:00:00.000Z',
-            },
-          ],
-        })
-      );
-
-      await writer.updateOwner('my-team', '12', 'bob');
-      await writer.updateOwner('my-team', '12', 'bob');
-      await writer.updateOwner('my-team', '12', null);
-
-      const persisted = JSON.parse(hoisted.files.get(taskPath) ?? '{}');
-      const ownerEvents = persisted.historyEvents.filter(
-        (event: Record<string, unknown>) => event.type === 'owner_changed'
-      );
-      expect(ownerEvents).toHaveLength(2);
-      expect(ownerEvents[0]).toMatchObject({
-        type: 'owner_changed',
-        from: 'alice',
-        to: 'bob',
-        actor: 'user',
-      });
-      expect(ownerEvents[1]).toMatchObject({
-        type: 'owner_changed',
-        from: 'bob',
-        actor: 'user',
-      });
-      expect(ownerEvents[1].to).toBeUndefined();
-    });
+  it('writes deletion to the registry and records the status change locally', async () => {
+    const { writer, store, client } = setup([task()]);
+    await writer.replaceStatus({ taskId: '12', to: 'deleted' });
+    expect(client.replaceTaskStatus).toHaveBeenCalledWith(expect.objectContaining({ status: 'deleted', expectedStatus: 'todo' }));
+    expect(store.read(TEAM, '12')?.historyEvents.at(-1)).toMatchObject({ type: 'status_changed', from: 'pending', to: 'deleted' });
   });
 });

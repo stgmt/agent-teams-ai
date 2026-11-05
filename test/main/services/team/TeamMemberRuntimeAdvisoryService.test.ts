@@ -3,6 +3,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { OpenCodeRuntimeDeliveryProofReader } from '../../../../src/main/services/team/opencode/delivery/OpenCodeRuntimeDeliveryProofReader';
 import { TeamMemberRuntimeAdvisoryService } from '../../../../src/main/services/team/TeamMemberRuntimeAdvisoryService';
 import { setClaudeBasePathOverride } from '../../../../src/main/utils/pathDecoder';
 
@@ -1339,7 +1340,7 @@ describe('TeamMemberRuntimeAdvisoryService', () => {
 
     const teamName = 'relay-works-69';
     const laneId = 'secondary:opencode:tom';
-    const taskId = 'a7fd5f34-ff82-4ead-8089-34064454a623';
+    const taskId = '7';
     const laneDir = path.join(
       tmpDir,
       'teams',
@@ -1350,7 +1351,6 @@ describe('TeamMemberRuntimeAdvisoryService', () => {
     );
     await fs.mkdir(laneDir, { recursive: true });
     await fs.mkdir(path.join(tmpDir, 'teams', teamName, 'inboxes'), { recursive: true });
-    await fs.mkdir(path.join(tmpDir, 'tasks', teamName), { recursive: true });
     await fs.writeFile(
       path.join(tmpDir, 'teams', teamName, '.opencode-runtime', 'lanes.json'),
       JSON.stringify({
@@ -1425,55 +1425,50 @@ describe('TeamMemberRuntimeAdvisoryService', () => {
           from: 'team-lead',
           to: 'tom',
           text: [
-            '**Comment on task #a7fd5f34** _Calculator styles_',
+            '**Comment on task #7** _Calculator styles_',
             '',
-            '> **Dependency resolved** - task #8dc34135 completed.',
-            '> All blockers for #a7fd5f34 are resolved - this task is ready to start.',
+            '> **Dependency resolved** - task #8 completed.',
+            '> All blockers for #7 are resolved - this task is ready to start.',
           ].join('\n'),
           timestamp: '2026-05-18T21:25:05.428Z',
           read: false,
-          summary: 'Comment on #a7fd5f34',
+          summary: 'Comment on #7',
           messageId: 'dependency-comment-1',
           source: 'system_notification',
         },
       ]),
       'utf8'
     );
-    await fs.writeFile(
-      path.join(tmpDir, 'tasks', teamName, `${taskId}.json`),
-      JSON.stringify({
-        id: taskId,
-        displayId: 'a7fd5f34',
-        subject: 'Calculator styles',
-        owner: 'tom',
-        status: 'completed',
-        updatedAt: '2026-05-18T21:25:21.453Z',
-        comments: [
-          {
-            id: 'result-comment',
-            author: 'tom',
-            text: 'Styles completed and verified.',
-            createdAt: '2026-05-18T21:25:18.441Z',
-            type: 'regular',
-          },
-        ],
-        historyEvents: [
-          {
-            id: 'completed-event',
-            type: 'status_changed',
-            from: 'in_progress',
-            to: 'completed',
-            actor: 'tom',
-            timestamp: '2026-05-18T21:25:21.453Z',
-          },
-        ],
-      }),
-      'utf8'
-    );
-
-    const service = new TeamMemberRuntimeAdvisoryService({
-      findMemberLogs: vi.fn(async () => []),
+    const task: TeamTask = {
+      id: taskId,
+      displayId: taskId,
+      subject: 'Calculator styles',
+      owner: 'tom',
+      status: 'completed',
+      updatedAt: '2026-05-18T21:25:21.453Z',
+      comments: [{
+        id: 'result-comment',
+        author: 'tom',
+        text: 'Styles completed and verified.',
+        createdAt: '2026-05-18T21:25:18.441Z',
+        type: 'regular',
+      }],
+      historyEvents: [{
+        id: 'completed-event',
+        type: 'status_changed',
+        from: 'in_progress',
+        to: 'completed',
+        actor: 'tom',
+        timestamp: '2026-05-18T21:25:21.453Z',
+      }],
+    };
+    const proofReader = new OpenCodeRuntimeDeliveryProofReader({
+      taskReader: { getTasks: async () => [task] },
     });
+    const service = new TeamMemberRuntimeAdvisoryService(
+      { findMemberLogs: vi.fn(async () => []) },
+      proofReader
+    );
     const advisory = await service.getMemberAdvisory(teamName, 'tom');
 
     expect(advisory).toBeNull();

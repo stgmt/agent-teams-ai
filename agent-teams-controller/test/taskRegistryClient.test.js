@@ -64,6 +64,25 @@ describe('registry task client over a real control API', () => {
     expect(createRequest.body).toEqual({ subject: 'New task', requirements: ['FR-1'] });
   });
 
+  it('preserves creation outcomes and returns the existing task on replay', async () => {
+    const server = await startServer({ initialTasks: [] });
+    const client = makeClient(server);
+    const input = {
+      subject: 'One intent',
+      requirements: ['FR-1'],
+      creationCommand: {
+        namespace: 'test', scopeKey: 'team a', operation: 'task.create',
+        commandId: 'request-1', payloadHash: 'hash-1',
+      },
+    };
+    const first = client.createTaskWithOutcome(input);
+    const replay = client.createTaskWithOutcome(input);
+    expect(first.outcome).toBe('APPLIED');
+    expect(replay.outcome).toBe('REPLAY');
+    expect(replay.task.id).toBe(first.task.id);
+    expect(client.listTasks()).toHaveLength(1);
+  });
+
   it('maps a missing-requirements refusal to a typed error', async () => {
     const server = await startServer({ initialTasks: [] });
 
@@ -109,7 +128,7 @@ describe('registry task client over a real control API', () => {
     delete process.env.CLAUDE_TEAM_CONTROL_URL;
     try {
       expect(() => createRegistryTaskClient({ teamName: 'team-a' })).toThrowError(
-        expect.objectContaining({ code: 'REGISTRY_UNAVAILABLE' })
+        expect.objectContaining({ code: 'APP_BINDING_REQUIRED' })
       );
     } finally {
       if (previousBound === undefined) delete process.env.AGENT_TEAMS_BOUND_CONTROL_URL;

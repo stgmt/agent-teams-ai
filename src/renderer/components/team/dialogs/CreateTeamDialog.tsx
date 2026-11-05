@@ -90,7 +90,6 @@ import { normalizePath } from '@renderer/utils/pathNormalize';
 import { resolveUiOwnedProviderBackendId } from '@renderer/utils/providerBackendIdentity';
 import { getAvailableTeamEffortValue } from '@renderer/utils/teamEffortOptions';
 import { normalizeExplicitTeamModelForUi } from '@renderer/utils/teamModelAvailability';
-import { getTeamProviderLabel as getCatalogTeamProviderLabel } from '@renderer/utils/teamModelCatalog';
 import { isTeamProviderRuntimeStatusLoading } from '@renderer/utils/teamProviderRuntimeStatusLoading';
 import { isEphemeralProjectPath } from '@shared/utils/ephemeralProjectPath';
 import { getAnthropicRuntimeDefaultLaunchModel } from '@shared/utils/providerDefaultModel';
@@ -103,6 +102,13 @@ import { AdvancedCliSection } from './AdvancedCliSection';
 import { AnthropicFastModeSelector } from './AnthropicFastModeSelector';
 import { CodexFastModeSelector } from './CodexFastModeSelector';
 import { CodexReconnectPrompt, shouldShowCodexReconnectPrompt } from './CodexReconnectPrompt';
+import {
+  alignProvisioningChecks,
+  buildDefaultTeamDescription,
+  getProviderLabel,
+  isCurrentPrepareGeneration,
+  validateTeamNameInline,
+} from './createTeamDialogHelpers';
 import { buildInitialRosterMemberDrafts } from './createTeamInitialRoster';
 import {
   getOrganizationPlacementUnitKindKey,
@@ -179,6 +185,7 @@ import {
   analyzeTeammateRuntimeCompatibility,
   useTmuxRuntimeReadiness,
 } from './teammateRuntimeCompatibility';
+import { registrySelectionKey, SpecRegistryPicker } from './SpecRegistryPicker';
 import { TeammateRuntimeCompatibilityNotice } from './TeammateRuntimeCompatibilityNotice';
 import { computeEffectiveTeamModel } from './TeamModelSelector';
 import { getNextSuggestedTeamName } from './teamNameSets';
@@ -221,58 +228,6 @@ const TEAM_COLOR_NAMES = [
 
 const APP_TEAM_RUNTIME_DISALLOWED_TOOLS = 'TeamDelete,TodoWrite,TaskCreate,TaskUpdate';
 const CREATE_LAUNCH_AUTHORITY_BLOCKER_ID = 'create-team-launch-authority-blocker';
-
-function getProviderLabel(providerId: TeamProviderId): string {
-  return getCatalogTeamProviderLabel(providerId) ?? 'Anthropic';
-}
-
-function alignProvisioningChecks(
-  existingChecks: ProvisioningProviderCheck[],
-  providerIds: TeamProviderId[]
-): ProvisioningProviderCheck[] {
-  const existingByProviderId = new Map(
-    existingChecks.map((check) => [check.providerId, check] as const)
-  );
-  return providerIds.map(
-    (providerId) =>
-      existingByProviderId.get(providerId) ?? {
-        providerId,
-        status: 'pending',
-        backendSummary: null,
-        details: [],
-      }
-  );
-}
-
-function validateTeamNameInline(
-  name: string,
-  t: ReturnType<typeof useAppTranslation>['t']
-): string | null {
-  const trimmed = name.trim();
-  if (!trimmed) return null;
-  const sanitized = sanitizeTeamName(trimmed);
-  if (!sanitized) {
-    return t('create.validation.nameMustContainLetterOrDigit');
-  }
-  if (sanitized.length > 64) {
-    return t('create.validation.nameTooLong');
-  }
-  return null;
-}
-
-function buildDefaultTeamDescription(
-  teamName: string,
-  t: ReturnType<typeof useAppTranslation>['t']
-): string {
-  const trimmedName = teamName.trim();
-  return trimmedName.length > 0
-    ? t('create.defaultDescription.named', { teamName: trimmedName })
-    : t('create.defaultDescription.fallback');
-}
-
-function isCurrentPrepareGeneration(ref: { current: number }, generation: number): boolean {
-  return ref.current === generation;
-}
 
 export const CreateTeamDialog = ({
   open,
@@ -342,6 +297,10 @@ export const CreateTeamDialog = ({
     setRuntimeSelection,
     teamName,
     setTeamName,
+    specProject,
+    setSpecProject,
+    specSlug,
+    setSpecSlug,
     members,
     setMembers,
     syncModelsWithLead,
@@ -363,6 +322,7 @@ export const CreateTeamDialog = ({
     isLoaded: draftLoaded,
     clearDraft,
   } = useCreateTeamDraft();
+  const [validRegistrySelection, setValidRegistrySelection] = useState<string | null>(null);
   const runtimeSelectionUnresolved = runtimeSelectionVersion === 1 && !runtimeProviderId;
   const descriptionDraft = useDraftPersistence({ key: 'createTeam:description' });
   const promptDraft = useDraftPersistence({ key: 'createTeam:prompt' });
@@ -1423,6 +1383,8 @@ export const CreateTeamDialog = ({
       if (initialData.runtimeSelectionVersion === 1 && !initialData.providerId)
         setLaunchTeam(false);
       setTeamName(initialData.teamName);
+      setSpecProject(initialData.specProject ?? '');
+      setSpecSlug(initialData.specSlug ?? '');
       descriptionDraft.setValue(initialData.description ?? '');
       promptDraft.setValue(initialData.prompt ?? '');
       setTeamColor(initialData.color ?? '');
@@ -1572,10 +1534,11 @@ export const CreateTeamDialog = ({
     if (!nextSelection) {
       return;
     }
-    appliedDefaultProjectPathRef.current = nextSelection.appliedDefaultProjectPath;
     if (normalizePath(selectedProjectPath) !== normalizePath(nextSelection.selectedProjectPath)) {
       setSelectedProjectPath(nextSelection.selectedProjectPath);
+      return;
     }
+    appliedDefaultProjectPathRef.current = nextSelection.appliedDefaultProjectPath;
   }, [
     open,
     draftLoaded,
@@ -1817,6 +1780,8 @@ export const CreateTeamDialog = ({
     () => ({
       runtimeSelectionVersion,
       teamName: sanitizedTeamName,
+      specProject: specProject.trim(),
+      specSlug: specSlug.trim(),
       description: description.trim() || undefined,
       color: teamColor || undefined,
       members: soloTeam
@@ -1850,6 +1815,8 @@ export const CreateTeamDialog = ({
       runtimeSelectionVersion,
       runtimeSelectionUnresolved,
       sanitizedTeamName,
+      specProject,
+      specSlug,
       description,
       teamColor,
       soloTeam,
@@ -1929,6 +1896,7 @@ export const CreateTeamDialog = ({
     );
   const hasCreateFormErrors =
     gatewayBindings.pending ||
+    validRegistrySelection !== registrySelectionKey(specProject, specSlug) ||
     !!teamNameInlineError ||
     isNameTakenByExistingTeam ||
     isNameProvisioning ||
@@ -2118,6 +2086,10 @@ export const CreateTeamDialog = ({
     if (!canCreate || !draftLoaded) return;
     if (launchTeam && !launchPreflightSelectionReady) return;
     if (submissionFence.busy || isSubmitting) return;
+    if (validRegistrySelection !== registrySelectionKey(specProject, specSlug)) {
+      setLocalError(t('create.validation.registryBindingRequired'));
+      return;
+    }
     if (prepareState === 'loading' && !canSkipPreflight()) return;
     if (allTakenTeamNames.includes(sanitizedTeamName)) {
       const msg = isNameProvisioning
@@ -2187,6 +2159,8 @@ export const CreateTeamDialog = ({
             api.teams.createConfig({
               runtimeSelectionVersion: request.runtimeSelectionVersion,
               teamName: request.teamName,
+              specProject: request.specProject,
+              specSlug: request.specSlug,
               displayName: request.displayName,
               description: request.description,
               color: request.color,
@@ -2456,6 +2430,17 @@ export const CreateTeamDialog = ({
               </p>
             ) : null}
           </div>
+
+          {open && draftLoaded && (
+            <SpecRegistryPicker
+              project={specProject}
+              slug={specSlug}
+              onProjectChange={setSpecProject}
+              onSlugChange={setSpecSlug}
+              onValidSelectionChange={setValidRegistrySelection}
+              disabled={isSubmitting}
+            />
+          )}
 
           <div className="space-y-4 md:col-span-2">
             <TeamTemplatePicker

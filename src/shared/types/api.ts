@@ -448,8 +448,15 @@ export interface HttpServerAPI {
 // Teams API
 // =============================================================================
 
+/** Registry project/specification choices; credentials and server errors stay in main. */
+export interface SpecRegistryDiscovery {
+  url: string;
+  projects: { id: string; specs: { slug: string }[]; unavailable?: true }[];
+}
+
 export interface TeamsAPI extends TeamMemberSettingsApi, TeamReadLegacyApi {
   readRecovery?: TeamReadRecoveryApi;
+  discoverSpecRegistry: () => Promise<SpecRegistryDiscovery>;
   list: () => Promise<TeamSummary[]>;
   getTaskChangePresence: (teamName: string) => Promise<Record<string, TaskChangePresenceState>>;
   setChangePresenceTracking: (teamName: string, enabled: boolean) => Promise<void>;
@@ -537,7 +544,7 @@ export interface TeamsAPI extends TeamMemberSettingsApi, TeamReadLegacyApi {
   getMemberStats: (teamName: string, memberName: string) => Promise<MemberFullStats>;
   launchTeam: (request: TeamLaunchRequest) => Promise<TeamLaunchResponse>;
   getAllTasks: () => Promise<GlobalTask[]>;
-  updateConfig: (teamName: string, updates: TeamUpdateConfigRequest) => Promise<TeamConfig>;
+  updateConfig: (teamName: string, updates: TeamUpdateConfigRequest) => Promise<TeamConfig | null>;
   addMember: (teamName: string, request: AddMemberRequest) => Promise<void>;
   replaceMembers: (teamName: string, request: ReplaceMembersRequest) => Promise<void>;
   removeMember: (teamName: string, memberName: string) => Promise<void>;

@@ -13,7 +13,6 @@ import { createLogger } from '@shared/utils/logger';
 import { resolveTeamMemberMcpScopes } from '@shared/utils/teamMemberMcpPolicy';
 import { randomUUID } from 'crypto';
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 
 import { McpConfigStateReader } from '../extensions/runtime/McpConfigStateReader';
@@ -27,6 +26,7 @@ import {
   parseNodeRuntimeProbeMetadata,
   probePackagedElectronNodeRuntime,
 } from './McpNodeRuntimeProbe';
+import { resolveRegistryTaskClientConfig } from './registry/RegistryTaskClientConfig';
 import { resolveWorkspaceMcpBundle } from './WorkspaceMcpBundle';
 
 import type { TeamMemberMcpPolicy, TeamMemberMcpScope } from '@shared/types';
@@ -60,10 +60,6 @@ const MCP_CONTROL_URL_ENV = 'CLAUDE_TEAM_CONTROL_URL';
  * not depend on the user's `~/.claude.json` MCP entries.
  */
 const SPEC_REGISTRY_SERVER_NAME = 'omp-spec-kit';
-const SPEC_REGISTRY_URL_ENV = 'OMP_SPEC_REGISTRY_URL';
-const SPEC_REGISTRY_TOKEN_ENV = 'OMP_SPEC_REGISTRY_TOKEN';
-const SPEC_REGISTRY_DEFAULT_URL = 'http://127.0.0.1:8650/mcp';
-const SPEC_REGISTRY_TOKEN_FILE_SEGMENTS = ['.spec-registry', 'mcp-token.txt'] as const;
 const logger = createLogger('Service:TeamMcpConfigBuilder');
 const MCP_CONFIG_PREFIX = 'agent-teams-mcp-';
 const MCP_CONFIG_REMOVE_RETRY_DELAYS_MS = [25, 75, 150] as const;
@@ -273,56 +269,6 @@ function isWriteMcpConfigOptions(value: unknown): value is WriteMcpConfigOptions
     typeof value === 'object' &&
     ('mcpPolicy' in value || 'controlApiBaseUrl' in value)
   );
-}
-
-/** Location of the spec registry bearer token written by `omp-spec-kit` setup. */
-export function getSpecRegistryTokenFilePath(): string {
-  return path.join(os.homedir(), ...SPEC_REGISTRY_TOKEN_FILE_SEGMENTS);
-}
-
-/**
- * Resolve the spec registry bearer token.
- * Order: `OMP_SPEC_REGISTRY_TOKEN`, then `~/.spec-registry/mcp-token.txt`.
- * Returns `null` when no non-empty token is available — callers must then skip
- * the server entirely instead of emitting a config that cannot authenticate.
- * Never log or return diagnostics that contain the token itself.
- */
-export async function resolveSpecRegistryToken(
-  env: NodeJS.ProcessEnv = process.env
-): Promise<string | null> {
-  const envToken = env[SPEC_REGISTRY_TOKEN_ENV]?.trim();
-  if (envToken) {
-    return envToken;
-  }
-
-  try {
-    const fileToken = (await fs.promises.readFile(getSpecRegistryTokenFilePath(), 'utf8')).trim();
-    return fileToken ? fileToken : null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Build the static HTTP MCP entry for the spec registry.
- * Returns `null` for a missing/blank token so the caller keeps the previous
- * `agent-teams`-only config unchanged.
- */
-export function buildSpecRegistryServerConfig(
-  token: string | null | undefined,
-  env: NodeJS.ProcessEnv = process.env
-): Record<string, unknown> | null {
-  const normalizedToken = token?.trim();
-  if (!normalizedToken) {
-    return null;
-  }
-
-  return {
-    type: 'http',
-    url: env[SPEC_REGISTRY_URL_ENV]?.trim() || SPEC_REGISTRY_DEFAULT_URL,
-    headers: { Authorization: `Bearer ${normalizedToken}` },
-    enabled: true,
-  };
 }
 
 /** Host-only endpoint description, safe to log (never the token or query). */
@@ -662,15 +608,19 @@ export class TeamMcpConfigBuilder {
 
     // Spec registry is provisioned after the allowlist merge so a user-configured
     // `omp-spec-kit` entry can never shadow the registry this app knows about.
-    const specRegistryServer = buildSpecRegistryServerConfig(await resolveSpecRegistryToken());
-    if (specRegistryServer) {
-      generatedServers[SPEC_REGISTRY_SERVER_NAME] = specRegistryServer;
-      logger.info(
-        `Registered ${SPEC_REGISTRY_SERVER_NAME} MCP server (host=${describeSpecRegistryHost(
-          specRegistryServer
-        )})`
-      );
-    }
+    const registryConfig = await resolveRegistryTaskClientConfig();
+    const specRegistryServer = {
+      type: 'http',
+      url: registryConfig.url,
+      headers: { Authorization: `Bearer ${registryConfig.token}` },
+      enabled: true,
+    };
+    generatedServers[SPEC_REGISTRY_SERVER_NAME] = specRegistryServer;
+    logger.info(
+      `Registered ${SPEC_REGISTRY_SERVER_NAME} MCP server (host=${describeSpecRegistryHost(
+        specRegistryServer
+      )})`
+    );
 
     await fs.promises.mkdir(configDir, { recursive: true });
     // The config can carry the spec registry bearer token, so keep it owner-only.

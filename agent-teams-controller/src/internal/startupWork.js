@@ -3,20 +3,20 @@ const messages = require('./messages.js');
 const messageStore = require('./messageStore.js');
 const runtimeHelpers = require('./runtimeHelpers.js');
 const taskStore = require('./taskStore.js');
+const { isReadOnlyTaskSnapshot } = require('./taskBackendSelection.js');
 const { buildAssignmentMessage } = require('./taskAssignmentMessage.js');
 const { buildReviewRequestText } = require('./reviewRequestMessage.js');
 const {
     createMemberMessagingProtocol,
-    isCodexMember,
-    isOpenCodeMember,
+    resolveMemberRuntimeProvider,
 } = require('./memberMessagingProtocol.js');
 
 // Work hand-over at launch. The startup context of a member carries no
 // Actionable work (deferredTaskQueue.js): the runtime keeps a member with work
 // in its first turn and the launch confirmation would not arrive within the
-// window. Once the app has confirmed the launch it calls deliverStartupWork,
-// which sends the member one message per task it has to act on, through the same
-// inbox path as an ordinary assignment or review request.
+// window. The app calls deliverStartupWork after confirmation; snapshot-backed
+// handovers use its async variant so inbox locks never block the app thread.
+// Both send through the same inbox path as an ordinary assignment or review request.
 
 // in_progress work is resumed first, then fixes after review, then new tasks,
 // then reviews (the order the member briefing asks for on reconnect).
@@ -36,12 +36,6 @@ function reviewSummary(task) {
     return `Review request for #${task.displayId || task.id}`;
 }
 
-function resolveRuntimeProvider(member) {
-    if (isOpenCodeMember(member)) return 'opencode';
-    if (isCodexMember(member)) return 'codex';
-    return 'native';
-}
-
 function hasUnreadNotice(unreadRows, taskId, summary) {
     return unreadRows.some(
         (row) =>
@@ -51,7 +45,7 @@ function hasUnreadNotice(unreadRows, taskId, summary) {
     );
 }
 
-function deliverStartupWork(context, memberName, options = {}) {
+function prepareStartupWorkPlan(context, memberName, options = {}) {
     const launchId = typeof options.launchId === 'string' ? options.launchId.trim() : '';
     if (!launchId) {
         throw new Error('deliverStartupWork requires options.launchId');
@@ -67,7 +61,7 @@ function deliverStartupWork(context, memberName, options = {}) {
             (entry) =>
                 String((entry && entry.name) || '').trim().toLowerCase() === resolvedName.toLowerCase()
         ) || null;
-    const messagingProtocol = createMemberMessagingProtocol(resolveRuntimeProvider(member));
+    const messagingProtocol = createMemberMessagingProtocol(resolveMemberRuntimeProvider(member));
     const leadName = runtimeHelpers.inferLeadName(context.paths);
     const leadSessionId = runtimeHelpers.resolveLeadSessionId(context.paths);
 
@@ -85,27 +79,39 @@ function deliverStartupWork(context, memberName, options = {}) {
         .map((entry) => entry.item);
     const unreadRows = messageStore.listUnreadSystemNotifications(context.paths, resolvedName);
 
-    const delivered = [];
-    const skipped = [];
-    for (const item of items) {
-        const isReview = item.nextAction === 'review';
-        const kind = isReview ? 'review' : 'assignment';
-        const task = taskStore.readTask(context.paths, item.taskId);
-        const summary = isReview ? reviewSummary(task) : assignmentSummary(task);
-        if (hasUnreadNotice(unreadRows, task.id, summary)) {
-            skipped.push({ taskId: task.id, kind, reason: 'unread_notification_exists' });
-            continue;
-        }
-        const text = isReview
-            ? buildReviewRequestText(context, task, { launchId })
-            : buildAssignmentMessage(context, task, {
-                  messagingProtocol,
-                  startup: { launchId, status: task.status, reasonCode: item.reasonCode },
-              });
-        const messageId = `startup-work:${launchId}:${resolvedName.toLowerCase()}:${task.id}:${kind}`;
-        const sent = messages.sendMessage(context, {
-            member: resolvedName,
-            from: leadName,
+    return {
+        launchId,
+        memberName: resolvedName,
+        items,
+        unreadRows,
+        messagingProtocol,
+        leadName,
+        leadSessionId,
+    };
+}
+
+function prepareStartupWorkMessage(context, plan, item) {
+    const isReview = item.nextAction === 'review';
+    const kind = isReview ? 'review' : 'assignment';
+    const task = taskStore.readTask(context.paths, item.taskId);
+    const summary = isReview ? reviewSummary(task) : assignmentSummary(task);
+    if (hasUnreadNotice(plan.unreadRows, task.id, summary)) {
+        return { skipped: { taskId: task.id, kind, reason: 'unread_notification_exists' } };
+    }
+    const text = isReview
+        ? buildReviewRequestText(context, task, { launchId: plan.launchId })
+        : buildAssignmentMessage(context, task, {
+              messagingProtocol: plan.messagingProtocol,
+              startup: { launchId: plan.launchId, status: task.status, reasonCode: item.reasonCode },
+          });
+    const messageId = `startup-work:${plan.launchId}:${plan.memberName.toLowerCase()}:${task.id}:${kind}`;
+    return {
+        taskId: task.id,
+        displayId: task.displayId || task.id,
+        kind,
+        flags: {
+            member: plan.memberName,
+            from: plan.leadName,
             text,
             taskRefs: [
                 { taskId: task.id, displayId: task.displayId || task.id, teamName: context.teamName },
@@ -113,18 +119,77 @@ function deliverStartupWork(context, memberName, options = {}) {
             summary,
             source: 'system_notification',
             messageId,
-            ...(leadSessionId ? { leadSessionId } : {}),
-        });
-        if (sent.deduplicated) {
-            skipped.push({ taskId: task.id, kind, reason: 'duplicate_message' });
+            ...(plan.leadSessionId ? { leadSessionId: plan.leadSessionId } : {}),
+        },
+    };
+}
+
+function recordStartupWorkSend(item, sent, delivered, skipped) {
+    if (sent.deduplicated) {
+        skipped.push({ taskId: item.taskId, kind: item.kind, reason: 'duplicate_message' });
+        return;
+    }
+    delivered.push({
+        taskId: item.taskId,
+        displayId: item.displayId,
+        kind: item.kind,
+        messageId: item.flags.messageId,
+    });
+}
+
+function deliverStartupWork(context, memberName, options = {}) {
+    const plan = prepareStartupWorkPlan(context, memberName, options);
+    const delivered = [];
+    const skipped = [];
+    for (const item of plan.items) {
+        const prepared = prepareStartupWorkMessage(context, plan, item);
+        if (prepared.skipped) {
+            skipped.push(prepared.skipped);
             continue;
         }
-        delivered.push({ taskId: task.id, displayId: task.displayId || task.id, kind, messageId });
+        recordStartupWorkSend(
+            prepared,
+            messages.sendMessage(context, prepared.flags),
+            delivered,
+            skipped
+        );
     }
+    return { memberName: plan.memberName, delivered, skipped };
+}
 
-    return { memberName: resolvedName, delivered, skipped };
+async function deliverStartupWorkAsync(context, memberName, options = {}) {
+    if (!isReadOnlyTaskSnapshot(context.paths)) {
+        throw new Error('deliverStartupWorkAsync requires a read-only task snapshot');
+    }
+    if (typeof options.isCurrent !== 'function') {
+        throw new Error('deliverStartupWorkAsync requires options.isCurrent');
+    }
+    const isCurrent = options.isCurrent;
+    const plan = prepareStartupWorkPlan(context, memberName, options);
+    const delivered = [];
+    const skipped = [];
+    if (!isCurrent()) {
+        return { memberName: plan.memberName, delivered, skipped, cancelled: true };
+    }
+    for (const item of plan.items) {
+        if (!isCurrent()) {
+            return { memberName: plan.memberName, delivered, skipped, cancelled: true };
+        }
+        const prepared = prepareStartupWorkMessage(context, plan, item);
+        if (prepared.skipped) {
+            skipped.push(prepared.skipped);
+            continue;
+        }
+        const sent = await messages.sendMessageAsync(context, prepared.flags, { isCurrent });
+        if (sent.cancelled) {
+            return { memberName: plan.memberName, delivered, skipped, cancelled: true };
+        }
+        recordStartupWorkSend(prepared, sent, delivered, skipped);
+    }
+    return { memberName: plan.memberName, delivered, skipped };
 }
 
 module.exports = {
     deliverStartupWork,
+    deliverStartupWorkAsync,
 };

@@ -1,15 +1,25 @@
-import * as agentTeamsControllerModule from 'agent-teams-controller';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
-import { tmpdir } from 'os';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
-import { deliverStartupWorkAfterConfirmation } from '../TeamProvisioningStartupWorkDelivery';
+import { registryOnlyTaskControlFixture } from '../../../../../../test/main/services/team/helpers/registryOnlyTaskControlFixture';
+import {
+  createRegistryTaskTestBoundary,
+  type RegistryTaskTestBoundary,
+} from '../../../../../../test/main/services/team/helpers/registryTaskTestBoundary';
 
-const { createController } = agentTeamsControllerModule;
+import type { deliverStartupWorkAfterConfirmation as DeliverStartupWorkAfterConfirmation } from '../TeamProvisioningStartupWorkDelivery';
+import type { TeamTask } from '@shared/types';
 
-// Real controller, real board and inbox files in a temp Claude root. The only
-// recorders are the diagnostic and log sinks, which are outputs, not behavior under test.
+// A bound local app-control API provides canonical task rows without using the user's registry.
+let deliverStartupWorkAfterConfirmation: typeof DeliverStartupWorkAfterConfirmation;
+let registryBoundary: RegistryTaskTestBoundary;
+
+beforeAll(async () => {
+  // The delivery module imports the controller via its bootstrap provider; load it after binding.
+  const module = await import('../TeamProvisioningStartupWorkDelivery');
+  deliverStartupWorkAfterConfirmation = module.deliverStartupWorkAfterConfirmation;
+});
 
 interface InboxRow {
   messageId?: string;
@@ -22,6 +32,7 @@ describe('startup work delivery after a confirmed launch', () => {
   let claudeDir = '';
   const diagnostics: string[] = [];
   const warnings: string[] = [];
+  let registryTasks: TeamTask[] = [];
 
   const teamDir = () => join(claudeDir, 'teams', 'fixture');
   const inbox = (member: string): InboxRow[] => {
@@ -45,23 +56,32 @@ describe('startup work delivery after a confirmed launch', () => {
   const deliver = (
     memberName: string,
     launchAttemptId: string,
-    members = [{ name: 'bob' }, { name: 'carol', providerId: 'opencode' }]
+    members = [{ name: 'bob' }, { name: 'carol', providerId: 'opencode' }],
+    readTasks = (teamName: string) => registryBoundary.taskReader.getTasks(teamName),
+    isCurrent = () => true
   ) =>
     deliverStartupWorkAfterConfirmation(run(members) as never, memberName, launchAttemptId, {
-      createController: (input) => createController(input),
+      createController: (input) => registryOnlyTaskControlFixture.createController(input),
+      readTasks,
       getClaudeBasePath: () => claudeDir,
+      isCurrent,
       appendMemberBootstrapDiagnostic: (_run, member, text) =>
         diagnostics.push(`${member}: ${text}`),
       logger: { warn: (message: string) => warnings.push(message) },
     });
 
-  beforeEach(() => {
-    claudeDir = mkdtempSync(join(tmpdir(), 'startup-work-delivery-'));
+  beforeEach(async () => {
+    claudeDir = registryOnlyTaskControlFixture.claudeDir;
+    await registryOnlyTaskControlFixture.clearTeam('fixture');
+    registryBoundary = await createRegistryTaskTestBoundary({ teamName: 'fixture' });
+    registryTasks = [];
     mkdirSync(teamDir(), { recursive: true });
     writeFileSync(
       join(teamDir(), 'config.json'),
       JSON.stringify({
         name: 'fixture',
+        specProject: 'sandbox/project',
+        specSlug: 'sandbox-spec',
         leadSessionId: 'lead-session-1',
         members: [
           { name: 'alice', role: 'team-lead' },
@@ -74,71 +94,133 @@ describe('startup work delivery after a confirmed launch', () => {
     warnings.length = 0;
   });
 
-  afterEach(() => rmSync(claudeDir, { recursive: true, force: true }));
+  afterEach(async () => {
+    await registryOnlyTaskControlFixture.clearTeam('fixture');
+    await registryBoundary.dispose();
+  });
+  afterAll(() => registryOnlyTaskControlFixture.dispose());
 
-  const board = () => createController({ teamName: 'fixture', claudeDir }).taskBoard;
+  const board = () =>
+    registryOnlyTaskControlFixture.createController({ teamName: 'fixture', claudeDir }).taskBoard;
+  const createTask = async (subject: string, owner: string) => {
+    const task = board().createTask({ requirements: ['FR-1'], subject, owner });
+    const createdTask = task as { id: string };
+    registryOnlyTaskControlFixture.trackTask('fixture', String(createdTask.id));
+    registryTasks.push({
+      id: String(createdTask.id),
+      displayId: String(createdTask.id),
+      subject,
+      owner,
+      status: 'pending',
+      createdAt: '2026-10-22T10:00:00.000Z',
+      updatedAt: '2026-10-22T10:00:00.000Z',
+    });
+    await registryBoundary.replaceTasks(registryTasks);
+    return task;
+  };
 
-  it('S1.3, S1.5: a native member gets its tasks as messages and a diagnostic records the count', () => {
-    board().createTask({ subject: 'First job', owner: 'bob' });
-    const second = board().createTask({ subject: 'Second job', owner: 'bob' });
-    board().startTask(String((second as { id: string }).id), 'bob');
+  it('S1.3: a native member gets its tasks as messages with a delivery count', async () => {
+    await createTask('First job', 'bob');
+    const second = await createTask('Second job', 'bob');
+    const secondId = String((second as { id: string }).id);
+    board().startTask(secondId, 'bob');
+    registryTasks = registryTasks.map((task) =>
+      task.id === secondId ? { ...task, status: 'in_progress' } : task
+    );
+    await registryBoundary.replaceTasks(registryTasks);
     markInboxRead('bob');
 
-    deliver('bob', 'run-1@2026-10-22T10:00:00.000Z');
+    const deliveredCount = await deliver('bob', 'run-1@2026-10-22T10:00:00.000Z');
 
+    expect(deliveredCount).toBe(2);
     expect(startupRows('bob')).toHaveLength(2);
     expect(startupRows('bob').every((row) => row.read === false)).toBe(true);
-    expect(diagnostics).toEqual([expect.stringMatching(/^bob: .*2 .*task/i)]);
+    expect(diagnostics).toEqual([]);
     expect(warnings).toEqual([]);
   });
 
-  it('S1.17: an OpenCode member is left alone (its briefing keeps the task queue)', () => {
-    board().createTask({ subject: 'OpenCode job', owner: 'carol' });
+  it('S1.17: an OpenCode member is left alone (its briefing keeps the task queue)', async () => {
+    await createTask('OpenCode job', 'carol');
     markInboxRead('carol');
 
-    deliver('carol', 'run-1@2026-10-22T10:00:00.000Z');
+    await deliver('carol', 'run-1@2026-10-22T10:00:00.000Z');
 
     expect(startupRows('carol')).toEqual([]);
     expect(diagnostics).toEqual([]);
   });
 
-  it('a member with no work gets nothing and no diagnostic noise', () => {
-    deliver('bob', 'run-1@2026-10-22T10:00:00.000Z');
+  it('does not read or deliver after the connection generation becomes stale', async () => {
+    const count = await deliver(
+      'bob',
+      'run-1-generation-1-operation-1',
+      undefined,
+      async () => {
+        throw new Error('stale delivery must not read the task registry');
+      },
+      () => false
+    );
+
+    expect(count).toBe(0);
+    expect(inbox('bob')).toEqual([]);
+    expect(warnings).toEqual([]);
+    expect(diagnostics).toEqual([]);
+  });
+
+  it('a member with no work gets nothing and no diagnostic noise', async () => {
+    await deliver('bob', 'run-1@2026-10-22T10:00:00.000Z');
 
     expect(inbox('bob')).toEqual([]);
     expect(diagnostics).toEqual([]);
   });
 
-  it('S1.12: the same launch attempt delivers once', () => {
-    board().createTask({ subject: 'Only once', owner: 'bob' });
+  it('S1.12: the same launch attempt delivers once', async () => {
+    await createTask('Only once', 'bob');
     markInboxRead('bob');
 
-    deliver('bob', 'run-1@2026-10-22T10:00:00.000Z');
+    await deliver('bob', 'run-1@2026-10-22T10:00:00.000Z');
     markInboxRead('bob');
-    deliver('bob', 'run-1@2026-10-22T10:00:00.000Z');
+    await deliver('bob', 'run-1@2026-10-22T10:00:00.000Z');
 
     expect(startupRows('bob')).toHaveLength(1);
   });
 
-  it('S1.18: a restart inside the same run is a new launch attempt and delivers again', () => {
-    board().createTask({ subject: 'Survives a restart', owner: 'bob' });
+  it('S1.18: a restart inside the same run is a new launch attempt and delivers again', async () => {
+    await createTask('Survives a restart', 'bob');
     markInboxRead('bob');
 
-    deliver('bob', 'run-1@2026-10-22T10:00:00.000Z');
+    await deliver('bob', 'run-1@2026-10-22T10:00:00.000Z');
     markInboxRead('bob');
-    deliver('bob', 'run-1@2026-10-22T10:20:00.000Z');
+    await deliver('bob', 'run-1@2026-10-22T10:20:00.000Z');
 
     expect(startupRows('bob')).toHaveLength(2);
     expect(startupRows('bob')[1]?.read).toBe(false);
   });
 
-  it('S1.19: a delivery failure is logged and recorded as a diagnostic, never swallowed', () => {
+  it('S1.19: delivery failures are logged, diagnosed, and returned to the retry owner', async () => {
     // The member is in the run but not in the team config: the controller refuses it.
-    deliver('stranger', 'run-1@2026-10-22T10:00:00.000Z', [{ name: 'stranger' }]);
+    await expect(
+      deliver('stranger', 'run-1@2026-10-22T10:00:00.000Z', [{ name: 'stranger' }])
+    ).rejects.toThrow();
 
     expect(warnings).toHaveLength(1);
     expect(warnings[0]).toContain('stranger');
     expect(diagnostics).toHaveLength(1);
     expect(diagnostics[0]).toMatch(/^stranger: .*(failed|could not)/i);
+  });
+
+  it('propagates and diagnoses registry read failures rather than delivering from an empty queue', async () => {
+    const error = new Error('task registry unavailable');
+
+    await expect(
+      deliver('bob', 'run-1@2026-10-22T10:00:00.000Z', undefined, async () => {
+        throw error;
+      })
+    ).rejects.toBe(error);
+    expect(diagnostics).toEqual([
+      'bob: startup work delivery failed after launch confirmation for run-1@2026-10-22T10:00:00.000Z: task registry unavailable',
+    ]);
+    expect(warnings).toEqual([
+      '[fixture] Startup work delivery failed for "bob" (run-1@2026-10-22T10:00:00.000Z): task registry unavailable',
+    ]);
   });
 });

@@ -119,6 +119,8 @@ export function buildCreateTeamMetaPayload(
   createdAt: number = Date.now()
 ): {
   runtimeSelectionVersion: TeamCreateRequest['runtimeSelectionVersion'];
+  specProject: TeamCreateRequest['specProject'];
+  specSlug: TeamCreateRequest['specSlug'];
   displayName: TeamCreateRequest['displayName'];
   description: TeamCreateRequest['description'];
   color: TeamCreateRequest['color'];
@@ -139,6 +141,8 @@ export function buildCreateTeamMetaPayload(
 } {
   return {
     runtimeSelectionVersion: request.runtimeSelectionVersion,
+    specProject: request.specProject,
+    specSlug: request.specSlug,
     displayName: request.displayName,
     description: request.description,
     color: request.color,

@@ -1,9 +1,8 @@
+import { getHomeDir } from '@main/utils/pathDecoder';
 import * as fs from 'fs';
 import * as path from 'path';
 
 import { RegistryTaskClientConfigError } from './RegistryTaskClientErrors';
-
-import { getHomeDir } from '@main/utils/pathDecoder';
 
 /**
  * Configuration of the spec registry HTTP MCP endpoint.
@@ -15,6 +14,7 @@ import { getHomeDir } from '@main/utils/pathDecoder';
  */
 export const SPEC_REGISTRY_URL_ENV = 'OMP_SPEC_REGISTRY_URL';
 export const SPEC_REGISTRY_TOKEN_ENV = 'OMP_SPEC_REGISTRY_TOKEN';
+export const SPEC_REGISTRY_TOKEN_FILE_ENV = 'OMP_SPEC_REGISTRY_TOKEN_FILE';
 export const DEFAULT_SPEC_REGISTRY_URL = 'http://127.0.0.1:8650/mcp';
 export const SPEC_REGISTRY_TOKEN_FILE_SEGMENTS = ['.spec-registry', 'mcp-token.txt'] as const;
 export const DEFAULT_SPEC_REGISTRY_REQUEST_TIMEOUT_MS = 20_000;
@@ -27,7 +27,7 @@ export interface ResolveRegistryTaskClientConfigInput {
    * explicit `null` or blank string means "there is no token" and fails.
    */
   token?: string | null;
-  /** Override for tests; otherwise `~/.spec-registry/mcp-token.txt`. */
+  /** Override for tests; otherwise `OMP_SPEC_REGISTRY_TOKEN_FILE`, then the default home path. */
   tokenFilePath?: string;
   env?: NodeJS.ProcessEnv;
   requestTimeoutMs?: number;
@@ -106,7 +106,9 @@ async function resolveToken(
 
   // The on-disk token is the maintained source (setup rewrites it); an inherited
   // env value can be stale and silently point at an expired credential.
-  const tokenFilePath = input.tokenFilePath ?? getRegistryTokenFilePath();
+  const tokenFilePath =
+    input.tokenFilePath ??
+    (env[SPEC_REGISTRY_TOKEN_FILE_ENV]?.trim() || getRegistryTokenFilePath());
   let fileToken: string | null = null;
   try {
     fileToken = (await fs.promises.readFile(tokenFilePath, 'utf8')).trim();

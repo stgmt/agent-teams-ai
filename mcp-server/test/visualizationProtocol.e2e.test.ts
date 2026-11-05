@@ -6,13 +6,34 @@ import { fileURLToPath } from 'node:url';
 import { expect, it } from 'vitest';
 
 import { McpStdIoClient } from './McpStdIoClient';
+import { startControlServer } from '../../agent-teams-controller/test/helpers/controlServer.js';
 
 it('supplies the embedded protocol and preserves a supplied gallery through real MCP inbox delivery', async () => {
   const sandbox = await mkdtemp(join(tmpdir(), 'mcp-visualization-protocol-test-'));
   const teamName = 'visualization-sandbox';
   const teamDir = join(sandbox, 'teams', teamName);
   await mkdir(join(teamDir, 'inboxes'), { recursive: true });
-  await mkdir(join(sandbox, 'tasks', teamName), { recursive: true });
+  const context = {
+    appInstanceId: 'visualization-sandbox-app',
+    dataRootFingerprint: 'visualization-sandbox-root',
+    connectionGeneration: 1,
+  };
+  const control = await startControlServer({
+    initialTasks: [
+      {
+        id: '42',
+        displayId: '#42',
+        subject: 'Registry-backed visualization task',
+        status: 'pending',
+        owner: 'alice',
+        requirements: ['FR-1'],
+        blockedBy: [],
+        related: [],
+        createdAt: '2026-11-05T00:00:00.000Z',
+        updatedAt: '2026-11-05T00:00:00.000Z',
+      },
+    ],
+  });
   await writeFile(
     join(teamDir, 'config.json'),
     JSON.stringify({
@@ -27,7 +48,11 @@ it('supplies the embedded protocol and preserves a supplied gallery through real
     fileURLToPath(new URL('../dist/index.js', import.meta.url)),
     sandbox,
     ['--transport', 'stdio'],
-    { AGENT_TEAMS_MCP_CLAUDE_DIR: sandbox }
+    {
+      AGENT_TEAMS_BOUND_CONTROL_URL: control.url,
+      AGENT_TEAMS_BOUND_CONTEXT_JSON: JSON.stringify(context),
+      AGENT_TEAMS_MCP_CLAUDE_DIR: sandbox,
+    }
   );
   try {
     const initialized = (await client.initialize()) as {
@@ -118,8 +143,25 @@ it('supplies the embedded protocol and preserves a supplied gallery through real
     expect(JSON.parse(await readFile(join(teamDir, 'inboxes', 'user.json'), 'utf8'))).toEqual(
       expectedReplies
     );
+    const controlRequests = await control.requests();
+    expect(
+      controlRequests.some(
+        (request) =>
+          request.method === 'GET' && request.pathname === `/api/teams/${teamName}/tasks`
+      )
+    ).toBe(true);
+    expect(
+      controlRequests.every(
+        (request) =>
+          request.headers['x-agent-teams-app-context'] === JSON.stringify(context)
+      )
+    ).toBe(true);
+    await expect(readFile(join(sandbox, 'tasks', teamName, '42.json'), 'utf8')).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
   } finally {
     await client.close();
+    await control.stop();
     await rm(sandbox, { recursive: true, force: true });
   }
 });

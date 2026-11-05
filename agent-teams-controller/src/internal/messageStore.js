@@ -566,8 +566,14 @@ function appendInboxRow(filePath, row, options = {}) {
   return withFileLockSync(filePath, () => appendInboxRowUnlocked(filePath, row, options));
 }
 
-function appendInboxRowAsync(filePath, row, options = {}) {
-  return withFileLock(filePath, () => appendInboxRowUnlocked(filePath, row, options));
+function appendInboxRowAsync(filePath, row, options = {}, isCurrent) {
+  if (isCurrent !== undefined && typeof isCurrent !== 'function') {
+    throw new Error('Invalid async inbox authorization check');
+  }
+  return withFileLock(filePath, () => {
+    if (isCurrent && !isCurrent()) return null;
+    return appendInboxRowUnlocked(filePath, row, options);
+  });
 }
 
 function prepareInboxMessage(paths, flags) {
@@ -636,9 +642,10 @@ function sendInboxMessage(paths, flags) {
   return inboxSendResult(appendInboxRow(filePath, payload, options));
 }
 
-async function sendInboxMessageAsync(paths, flags) {
+async function sendInboxMessageAsync(paths, flags, isCurrent) {
   const { filePath, payload, options } = prepareInboxMessage(paths, flags);
-  return inboxSendResult(await appendInboxRowAsync(filePath, payload, options));
+  const appended = await appendInboxRowAsync(filePath, payload, options, isCurrent);
+  return appended ? inboxSendResult(appended) : { deliveredToInbox: false, cancelled: true };
 }
 
 function isRetractableTaskNotificationRow(row, taskId, displayToken) {

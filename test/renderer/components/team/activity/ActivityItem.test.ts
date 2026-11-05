@@ -1467,6 +1467,15 @@ describe('message task action and dialog ownership', () => {
     [...host.querySelectorAll<HTMLButtonElement>('button')].find(
       (button) => button.textContent === 'Create'
     )!;
+  const setRequirements = async (host: HTMLElement): Promise<void> => {
+    await act(() => {
+      const input = host.querySelector<HTMLInputElement>('#task-requirements')!;
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+      setter.call(input, 'FR-1, AC-2');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      return Promise.resolve();
+    });
+  };
 
   it('preserves source A over filter B and keeps the rejected form and command for explicit retry', async () => {
     vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
@@ -1519,9 +1528,12 @@ describe('message task action and dialog ownership', () => {
     expect(description).toContain('Keep the original group');
     expect(description).not.toContain('info_for_agent');
     expect(description).not.toContain('private task context');
+    expect(createButton(host).disabled).toBe(true);
+    await setRequirements(host);
     await act(() => Promise.resolve(createButton(host).click()));
     expect(host.querySelector('[role="alert"]')?.textContent).toBe('Group A is archived');
     expect(submit.mock.calls[0][0].groupChatId).toBe('group-a');
+    expect(submit.mock.calls[0][0].requirements).toEqual(['FR-1', 'AC-2']);
     const command = submit.mock.calls[0][0].command;
     expect(command?.commandId).toBeTruthy();
     expect(createButton(host).disabled).toBe(false);
@@ -1546,6 +1558,7 @@ describe('message task action and dialog ownership', () => {
     expect(submit.mock.calls[2][0].command).not.toEqual(command);
     expect(host.querySelector('#task-subject')).toBeNull();
     await act(() => Promise.resolve(dialog.openCreateTaskDialog('Ordinary task')));
+    await setRequirements(host);
     await act(() => Promise.resolve(createButton(host).click()));
     expect(submit.mock.calls[3][0].groupChatId).toBe('group-b');
     await act(() =>
@@ -1557,6 +1570,7 @@ describe('message task action and dialog ownership', () => {
         })
       )
     );
+    await setRequirements(host);
     await act(() => Promise.resolve(createButton(host).click()));
     expect(submit.mock.calls[4][0].groupChatId).toBeUndefined();
     await act(() => Promise.resolve(root.unmount()));

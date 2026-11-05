@@ -3,12 +3,12 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Worker } from 'node:worker_threads';
 
-import { getAppDataPath, getTasksBasePath, getTeamsBasePath } from '@main/utils/pathDecoder';
+import { getTeamsBasePath } from '@main/utils/pathDecoder';
 import { createLogger } from '@shared/utils/logger';
 
 import { formatCurrentProcessMemorySnapshot } from '../../utils/startupTelemetry';
 
-import type { TeamSummary, TeamTask } from '@shared/types';
+import type { TeamSummary } from '@shared/types';
 
 const logger = createLogger('Service:TeamFsWorkerClient');
 
@@ -31,18 +31,9 @@ interface ListTeamsPayload {
   concurrency: number;
 }
 
-interface GetAllTasksPayload {
-  tasksBase: string;
-  projectionCacheBase: string;
-  maxTaskBytes: number;
-  maxTaskReadMs: number;
-  concurrency: number;
-}
-
 type WorkerRequest =
   | { id: string; op: 'warmup'; payload?: Record<string, never> }
-  | { id: string; op: 'listTeams'; payload: ListTeamsPayload }
-  | { id: string; op: 'getAllTasks'; payload: GetAllTasksPayload };
+  | { id: string; op: 'listTeams'; payload: ListTeamsPayload };
 
 type WorkerResponse =
   | { id: string; ok: true; result: unknown; diag?: WorkerDiag }
@@ -74,16 +65,7 @@ function summarizeWorkerPayload(payload: WorkerRequest['payload']): Record<strin
       maxConfigBytes: payload.maxConfigBytes,
     };
   }
-  if (!('tasksBase' in payload)) {
-    return {};
-  }
-  return {
-    tasksBase: payload.tasksBase,
-    projectionCacheBase: payload.projectionCacheBase,
-    concurrency: payload.concurrency,
-    maxTaskReadMs: payload.maxTaskReadMs,
-    maxTaskBytes: payload.maxTaskBytes,
-  };
+  return {};
 }
 
 function getDiagTotalMs(diag: WorkerDiag | undefined): unknown {
@@ -368,22 +350,6 @@ export class TeamFsWorkerClient {
     };
     const { result, diag } = await this.call('listTeams', payload);
     return { teams: result as TeamSummary[], diag };
-  }
-
-  async getAllTasks(options: {
-    maxTaskBytes: number;
-    concurrency?: number;
-    maxTaskReadMs?: number;
-  }): Promise<{ tasks: (TeamTask & { teamName: string })[]; diag?: WorkerDiag }> {
-    const payload: GetAllTasksPayload = {
-      tasksBase: getTasksBasePath(),
-      projectionCacheBase: path.join(getAppDataPath(), 'cache', 'team-task-projections'),
-      maxTaskBytes: options.maxTaskBytes,
-      maxTaskReadMs: options.maxTaskReadMs ?? DEFAULT_READ_TIMEOUT_MS,
-      concurrency: options.concurrency ?? DEFAULT_CONCURRENCY,
-    };
-    const { result, diag } = await this.call('getAllTasks', payload);
-    return { tasks: result as (TeamTask & { teamName: string })[], diag };
   }
 }
 

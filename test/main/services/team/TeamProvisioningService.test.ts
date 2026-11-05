@@ -87,13 +87,24 @@ vi.mock('pidusage', () => {
   };
 });
 
-vi.mock('@main/services/team/TeamTaskReader', () => ({
-  TeamTaskReader: class {
-    async getTasks() {
-      return [];
-    }
-  },
-}));
+// Only the cache-status scenarios need an empty startup queue; keep other controller behavior real.
+vi.mock('agent-teams-controller', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('agent-teams-controller')>();
+  return {
+    ...actual,
+    createController: (input: Parameters<typeof actual.createController>[0]) => {
+      const controller = actual.createController(input);
+      if (!input.teamName.startsWith('spawn-cache-')) return controller;
+      return {
+        ...controller,
+        taskBoard: {
+          ...controller.taskBoard,
+          deliverStartupWork: () => ({ delivered: [], skipped: [] }),
+        },
+      };
+    },
+  };
+});
 
 vi.mock('@main/utils/childProcess', () => ({
   execCli: vi.fn(async (_binaryPath: string | null, args: string[]) => {
@@ -291,6 +302,7 @@ import {
   TeamProvisioningService,
 } from '@main/services/team/TeamProvisioningService';
 import { TeamTaskActivityIntervalService } from '@main/services/team/TeamTaskActivityIntervalService';
+import { isolateAncillaryRegistryTaskReadsForProvisioningTest } from './provisioningHarness/ancillaryTaskServiceTestSeams';
 import { spawnCli } from '@main/utils/childProcess';
 import { encodePath } from '@main/utils/pathDecoder';
 import { killProcessByPid, killProcessByPidAndWait } from '@main/utils/processKill';
@@ -1333,6 +1345,7 @@ describe('TeamProvisioningService', () => {
     fs.mkdirSync(tempTasksBase, { recursive: true });
     fs.mkdirSync(tempProjectsBase, { recursive: true });
     writeAliveProcessRegistry('team-a');
+    isolateAncillaryRegistryTaskReadsForProvisioningTest(tempClaudeRoot);
   });
 
   afterEach(() => {
@@ -2408,7 +2421,7 @@ describe('TeamProvisioningService', () => {
       vi.setSystemTime(new Date('2026-05-02T10:00:00.000Z'));
       const resumeSpy = vi
         .spyOn(TeamTaskActivityIntervalService.prototype, 'resumeActiveIntervalsForMember')
-        .mockReturnValue({ changedTasks: 1 });
+        .mockResolvedValue({ changedTasks: 1 });
       try {
         const svc = new TeamProvisioningService();
         const internals = svc as unknown as LeadActivityServiceInternals;
@@ -2446,10 +2459,10 @@ describe('TeamProvisioningService', () => {
       vi.setSystemTime(new Date('2026-05-02T10:05:00.000Z'));
       const resumeSpy = vi
         .spyOn(TeamTaskActivityIntervalService.prototype, 'resumeActiveIntervalsForMember')
-        .mockReturnValue({ changedTasks: 1 });
+        .mockResolvedValue({ changedTasks: 1 });
       const pauseSpy = vi
         .spyOn(TeamTaskActivityIntervalService.prototype, 'pauseActiveIntervalsForMember')
-        .mockReturnValue({ changedTasks: 1 });
+        .mockResolvedValue({ changedTasks: 1 });
       try {
         const svc = new TeamProvisioningService();
         const internals = svc as unknown as LeadActivityServiceInternals;
@@ -2497,6 +2510,8 @@ describe('TeamProvisioningService', () => {
   });
 
   describe('member spawn status launch reads', () => {
+    // Status snapshot assembly now awaits its ancillary task repair before the owner inbox refresh.
+
     it('coalesces concurrent active launch status reads and serves a short cached follow-up', async () => {
       const svc = new TeamProvisioningService();
       const teamName = 'spawn-cache-team';
@@ -2534,9 +2549,8 @@ describe('TeamProvisioningService', () => {
 
       const first = svc.getMemberSpawnStatuses(teamName);
       const second = svc.getMemberSpawnStatuses(teamName);
-      await Promise.resolve();
+      await vi.waitFor(() => expect(refreshLeadInbox).toHaveBeenCalledTimes(1));
 
-      expect(refreshLeadInbox).toHaveBeenCalledTimes(1);
       refreshDeferred.resolve();
       const [firstSnapshot, secondSnapshot] = await Promise.all([first, second]);
 
@@ -2559,8 +2573,7 @@ describe('TeamProvisioningService', () => {
         expectedMembers: ['alice'],
       });
       run.isLaunch = true;
-      // A running team always has its config on disk; the startup work hand-over after the
-      // heartbeat confirmation reads it for real and finds no tasks to deliver.
+      // The startup queue is ancillary here; the controller fixture returns none.
       run.allEffectiveMembers = [{ name: 'alice', role: 'developer' }];
       fs.mkdirSync(path.join(tempTeamsBase, teamName), { recursive: true });
       fs.writeFileSync(
@@ -2616,7 +2629,7 @@ describe('TeamProvisioningService', () => {
       vi.setSystemTime(new Date('2026-05-02T10:05:00.000Z'));
       const pauseSpy = vi
         .spyOn(TeamTaskActivityIntervalService.prototype, 'pauseActiveIntervalsForMember')
-        .mockReturnValue({ changedTasks: 0 });
+        .mockResolvedValue({ changedTasks: 0 });
       const svc = new TeamProvisioningService();
       const teamName = 'spawn-runtime-offline-team';
       const run = createMemberSpawnRun({
@@ -2651,7 +2664,7 @@ describe('TeamProvisioningService', () => {
       vi.setSystemTime(new Date('2026-05-02T10:05:00.000Z'));
       const pauseSpy = vi
         .spyOn(TeamTaskActivityIntervalService.prototype, 'pauseActiveIntervalsForMember')
-        .mockReturnValue({ changedTasks: 0 });
+        .mockResolvedValue({ changedTasks: 0 });
       const svc = new TeamProvisioningService();
       const teamName = 'spawn-runtime-snapshot-offline-team';
       const run = createMemberSpawnRun({
@@ -2708,7 +2721,7 @@ describe('TeamProvisioningService', () => {
       vi.setSystemTime(new Date('2026-05-02T10:05:00.000Z'));
       const resumeSpy = vi
         .spyOn(TeamTaskActivityIntervalService.prototype, 'resumeActiveIntervalsForMember')
-        .mockReturnValue({ changedTasks: 0 });
+        .mockResolvedValue({ changedTasks: 0 });
       const svc = new TeamProvisioningService();
       const teamName = 'spawn-runtime-online-team';
       const run = createMemberSpawnRun({
@@ -2747,7 +2760,7 @@ describe('TeamProvisioningService', () => {
       vi.setSystemTime(new Date('2026-05-02T10:05:00.000Z'));
       const resumeSpy = vi
         .spyOn(TeamTaskActivityIntervalService.prototype, 'resumeActiveIntervalsForMember')
-        .mockReturnValue({ changedTasks: 0 });
+        .mockResolvedValue({ changedTasks: 0 });
       const svc = new TeamProvisioningService();
       const teamName = 'spawn-runtime-stale-heartbeat-team';
       const run = createMemberSpawnRun({
@@ -2787,7 +2800,7 @@ describe('TeamProvisioningService', () => {
       vi.setSystemTime(new Date('2026-05-02T10:05:00.000Z'));
       const resumeSpy = vi
         .spyOn(TeamTaskActivityIntervalService.prototype, 'resumeActiveIntervalsForMember')
-        .mockReturnValue({ changedTasks: 0 });
+        .mockResolvedValue({ changedTasks: 0 });
       const svc = new TeamProvisioningService();
       const teamName = 'spawn-runtime-stale-direct-evidence-team';
       const run = createMemberSpawnRun({
@@ -2831,8 +2844,7 @@ describe('TeamProvisioningService', () => {
         expectedMembers: ['alice'],
       });
       run.isLaunch = true;
-      // A running team always has its config on disk; the startup work hand-over after the
-      // heartbeat confirmation reads it for real and finds no tasks to deliver.
+      // The startup queue is ancillary here; the controller fixture returns none.
       run.allEffectiveMembers = [{ name: 'alice', role: 'developer' }];
       fs.mkdirSync(path.join(tempTeamsBase, teamName), { recursive: true });
       fs.writeFileSync(
@@ -2870,8 +2882,7 @@ describe('TeamProvisioningService', () => {
       vi.spyOn(svc as any, 'persistLaunchStateSnapshot').mockResolvedValue(null);
 
       const pending = svc.getMemberSpawnStatuses(teamName);
-      await Promise.resolve();
-      expect(refreshLeadInbox).toHaveBeenCalledTimes(1);
+      await vi.waitFor(() => expect(refreshLeadInbox).toHaveBeenCalledTimes(1));
 
       (svc as any).setMemberSpawnStatus(
         run,

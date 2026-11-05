@@ -73,13 +73,12 @@ function makeService(options: HarnessOptions): {
   };
   const kanbanManager = { getState: async () => ({ tasks: {} }) };
   const getTasks: Mock<(teamName: string) => Promise<RegistryTasksReadResult>> = vi.fn(
-    options.getTasks ?? (async () => ({ backed: false }))
+    options.getTasks ?? (async () => ({ backed: true, tasks: [] }))
   );
 
   const service = new TeamDataService(
     configReader as never,
     taskReader as never,
-    undefined,
     undefined,
     undefined,
     undefined,
@@ -101,7 +100,7 @@ function makeService(options: HarnessOptions): {
 }
 
 describe('TeamDataService global board', () => {
-  it('merges file-backed and registry-backed teams and passes the known binding', async () => {
+  it('reads only registry tasks and reports an unbound team', async () => {
     const { service, getTasks } = makeService({
       teams: [summary(FILE_TEAM), summary(REG_TEAM, { project: PROJECT, spec: SPEC })],
       configs: {
@@ -112,12 +111,9 @@ describe('TeamDataService global board', () => {
       getTasks: async () => ({ backed: true, tasks: [makeTask('7', 'Registry task')] }),
     });
 
-    const tasks = await service.getAllTasks();
-
-    expect(tasks.map((task) => `${task.teamName}:${task.id}`)).toEqual([
-      `${FILE_TEAM}:1`,
-      `${REG_TEAM}:7`,
-    ]);
+    const { tasks, failures } = await service.getAllTasksWithDiagnostics();
+    expect(tasks.map((task) => `${task.teamName}:${task.id}`)).toEqual([`${REG_TEAM}:7`]);
+    expect(failures).toMatchObject([{ teamName: FILE_TEAM, code: 'SPEC_PROJECT_MISSING' }]);
     expect(getTasks).toHaveBeenCalledTimes(1);
     expect(getTasks).toHaveBeenCalledWith(REG_TEAM, {
       binding: { project: PROJECT, spec: SPEC },
@@ -127,7 +123,7 @@ describe('TeamDataService global board', () => {
   it('serves the rest of the board and reports the team when the registry is unavailable', async () => {
     const { service } = makeService({
       teams: [
-        summary(FILE_TEAM),
+        summary(FILE_TEAM, { project: PROJECT, spec: 'file-team-spec' }),
         summary(REG_TEAM, { project: PROJECT, spec: SPEC }),
         summary(DOWN_TEAM, { project: PROJECT, spec: 'other-spec' }),
       ],
@@ -143,6 +139,8 @@ describe('TeamDataService global board', () => {
         { ...makeTask('5', 'Stale file task'), teamName: DOWN_TEAM },
       ],
       getTasks: async (teamName) => {
+        if (teamName === FILE_TEAM)
+          return { backed: true, tasks: [makeTask('1', 'Registry task')] };
         if (teamName === DOWN_TEAM) {
           throw new RegistryTaskProviderError({
             code: 'REGISTRY_UNAVAILABLE',
@@ -173,19 +171,13 @@ describe('TeamDataService global board', () => {
       },
     ]);
 
-    // `getAllTasks` keeps its shape: partial board, no throw. The failure is
-    // surfaced as one console warning for the dropped team, which the suite's
-    // shared "no unexpected console output" invariant would otherwise flag.
-    const warnMock = console.warn as unknown as Mock;
-    warnMock.mockClear();
-    await expect(service.getAllTasks()).resolves.toHaveLength(2);
-    expect(warnMock.mock.calls.map((call) => String(call[1]))).toEqual([
-      expect.stringContaining(`team=${DOWN_TEAM} code=REGISTRY_UNAVAILABLE`),
-    ]);
-    warnMock.mockClear();
+    // The legacy list endpoint must not present an incomplete board as complete.
+    await expect(service.getAllTasks()).rejects.toThrow(
+      'Global task board unavailable for down-team'
+    );
   });
 
-  it('keeps the file-only board untouched when no team carries a binding', async () => {
+  it('reports an unbound team instead of reading stale local tasks', async () => {
     const { service, getTasks } = makeService({
       teams: [summary(FILE_TEAM)],
       configs: { [FILE_TEAM]: { name: 'File Team', projectPath: '/teams/file' } as TeamConfig },
@@ -194,9 +186,8 @@ describe('TeamDataService global board', () => {
 
     const { tasks, failures } = await service.getAllTasksWithDiagnostics();
 
-    expect(tasks).toHaveLength(1);
-    expect(tasks[0]).toMatchObject({ id: '1', teamName: FILE_TEAM, teamDisplayName: 'File Team' });
-    expect(failures).toEqual([]);
+    expect(tasks).toEqual([]);
+    expect(failures).toMatchObject([{ teamName: FILE_TEAM, code: 'SPEC_PROJECT_MISSING' }]);
     expect(getTasks).not.toHaveBeenCalled();
   });
 

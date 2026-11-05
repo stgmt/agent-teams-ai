@@ -26,6 +26,8 @@ export function buildOpenCodeTeamConfig(
 ): TeamConfig {
   return {
     name: request.displayName?.trim() || request.teamName,
+    specProject: request.specProject,
+    specSlug: request.specSlug,
     description: request.description,
     color: request.color,
     projectPath: request.cwd,

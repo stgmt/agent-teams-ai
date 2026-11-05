@@ -6,12 +6,12 @@ export interface TeamProvisioningLeadActivityIntervalService {
     teamName: string,
     memberName: string,
     at: string
-  ): { failed?: boolean };
+  ): { failed?: boolean } | Promise<{ failed?: boolean }>;
   pauseActiveIntervalsForMember(
     teamName: string,
     memberName: string,
     at: string
-  ): { failed?: boolean };
+  ): { failed?: boolean } | Promise<{ failed?: boolean }>;
 }
 
 export interface TeamProvisioningLeadActivityPortsFactoryDeps<TRun extends LeadActivityRunLike> {

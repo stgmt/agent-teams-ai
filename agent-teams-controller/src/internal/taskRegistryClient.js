@@ -8,7 +8,7 @@
  *
  * Contract (fixed, owned by the app's Fastify routes):
  *
- *   GET   /api/teams/:teamName/tasks                 -> { tasks }
+ *   GET   /api/teams/:teamName/tasks?includeDeleted=true -> { tasks }
  *   POST  /api/teams/:teamName/tasks                 -> { task, outcome }
  *   POST  /api/teams/:teamName/tasks/:taskId/status  -> { task, transitions }
  *   PATCH /api/teams/:teamName/tasks/:taskId         -> { task }
@@ -18,12 +18,6 @@ const { DEFAULT_TIMEOUT_MS, syncControlRequest } = require('./syncControlRequest
 const { TASK_BACKEND_ERROR_CODES, TaskBackendError } = require('./taskBackendErrors.js');
 
 const CONTROL_URL_ENV = 'AGENT_TEAMS_BOUND_CONTROL_URL';
-const LEGACY_CONTROL_URL_ENV = 'CLAUDE_TEAM_CONTROL_URL';
-
-function readEnvUrl(name) {
-  const value = process.env[name];
-  return typeof value === 'string' && value.trim() ? value.trim() : '';
-}
 
 function normalizeBaseUrl(rawUrl) {
   const trimmed = String(rawUrl || '').trim();
@@ -53,23 +47,13 @@ function normalizeBaseUrl(rawUrl) {
   return `${parsed.origin}${pathname}`;
 }
 
-/**
- * The app the MCP child is bound to wins; `CLAUDE_TEAM_CONTROL_URL` is the
- * legacy discovery fallback used by the work-sync client.
- */
+/** Resolve the app-bound URL; legacy discovery is not a canonical task source. */
 function resolveControlBaseUrl(explicitBaseUrl) {
-  const candidates = [
-    explicitBaseUrl,
-    readEnvUrl(CONTROL_URL_ENV),
-    readEnvUrl(LEGACY_CONTROL_URL_ENV),
-  ];
-  for (const candidate of candidates) {
-    const normalized = normalizeBaseUrl(candidate);
-    if (normalized) return normalized;
-  }
+  const baseUrl = normalizeBaseUrl(explicitBaseUrl ?? process.env[CONTROL_URL_ENV]);
+  if (baseUrl) return baseUrl;
   throw new TaskBackendError(
-    TASK_BACKEND_ERROR_CODES.REGISTRY_UNAVAILABLE,
-    `Team control API is unavailable: none of ${CONTROL_URL_ENV}, ${LEGACY_CONTROL_URL_ENV} is set.`
+    TASK_BACKEND_ERROR_CODES.APP_BINDING_REQUIRED,
+    `Canonical task operations require ${CONTROL_URL_ENV}.`
   );
 }
 
@@ -127,7 +111,7 @@ function toFailure(operation, status, payload) {
       httpStatus: status,
     });
   }
-  return new TaskBackendError(TASK_BACKEND_ERROR_CODES.REQUEST_REJECTED, message, {
+  return new TaskBackendError(code || TASK_BACKEND_ERROR_CODES.REQUEST_REJECTED, message, {
     status,
     operation,
     serverCode: code || undefined,
@@ -159,7 +143,7 @@ function readTasksEnvelope(payload, operation) {
 /**
  * @param {object} options
  * @param {string} options.teamName
- * @param {string} [options.baseUrl] - defaults to the bound control URL / legacy env
+ * @param {string} [options.baseUrl] - defaults to the bound control URL
  * @param {Record<string,string>} [options.headers] - e.g. `x-agent-teams-app-context`
  * @param {number} [options.timeoutMs]
  * @param {(request: object) => {status:number, ok:boolean, body:string}} [options.request]
@@ -225,11 +209,23 @@ function createRegistryTaskClient(options = {}) {
     teamName,
 
     listTasks() {
-      return readTasksEnvelope(send('listTasks', 'GET', teamPath), 'listTasks');
+      return readTasksEnvelope(send('listTasks', 'GET', `${teamPath}?includeDeleted=true`), 'listTasks');
     },
 
     createTask(input) {
       return readTaskEnvelope(send('createTask', 'POST', teamPath, input), 'createTask');
+    },
+
+    createTaskWithOutcome(input) {
+      const payload = send('createTask', 'POST', teamPath, input);
+      const task = readTaskEnvelope(payload, 'createTask');
+      if (payload.outcome !== 'APPLIED' && payload.outcome !== 'REPLAY') {
+        throw new TaskBackendError(
+          TASK_BACKEND_ERROR_CODES.REGISTRY_PROTOCOL_ERROR,
+          'Team control API createTask returned no valid creation outcome.'
+        );
+      }
+      return { task, outcome: payload.outcome };
     },
 
     setTaskStatus(taskId, input) {

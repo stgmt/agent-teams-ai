@@ -5,14 +5,27 @@ import { join } from 'path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
-  buildNativeAppManagedBootstrapSpecs,
-  buildNativeAppManagedBootstrapSpecsWithDiagnostics,
+  buildNativeAppManagedBootstrapSpecs as buildNativeAppManagedBootstrapSpecsWithReader,
+  buildNativeAppManagedBootstrapSpecsWithDiagnostics as buildNativeAppManagedBootstrapSpecsWithDiagnosticsWithReader,
   hashNativeBootstrapText,
   MAX_NATIVE_BOOTSTRAP_TOTAL_CONTEXT_CHARS,
 } from '../../../../src/main/services/team/bootstrap/NativeAppManagedBootstrapContextBuilder';
+import {
+  createRegistryTaskTestBoundary,
+  type RegistryTaskTestBoundary,
+} from './helpers/registryTaskTestBoundary';
 import { TeamMembersMetaStore } from '../../../../src/main/services/team/TeamMembersMetaStore';
 import { TeamMetaStore } from '../../../../src/main/services/team/TeamMetaStore';
 import { setClaudeBasePathOverride } from '../../../../src/main/utils/pathDecoder';
+
+let registryBoundary: RegistryTaskTestBoundary;
+const buildNativeAppManagedBootstrapSpecs = (
+  params: Parameters<typeof buildNativeAppManagedBootstrapSpecsWithReader>[0]
+) => buildNativeAppManagedBootstrapSpecsWithReader(params, registryBoundary.taskReader);
+const buildNativeAppManagedBootstrapSpecsWithDiagnostics = (
+  params: Parameters<typeof buildNativeAppManagedBootstrapSpecsWithReader>[0]
+) =>
+  buildNativeAppManagedBootstrapSpecsWithDiagnosticsWithReader(params, registryBoundary.taskReader);
 
 describe('NativeAppManagedBootstrapContextBuilder', () => {
   let tempClaudeRoot = '';
@@ -20,10 +33,12 @@ describe('NativeAppManagedBootstrapContextBuilder', () => {
   beforeEach(async () => {
     tempClaudeRoot = await mkdtemp(join(tmpdir(), 'native-bootstrap-builder-'));
     setClaudeBasePathOverride(tempClaudeRoot);
+    registryBoundary = await createRegistryTaskTestBoundary({ teamName: 'sandbox-spec' });
   });
 
   afterEach(async () => {
     setClaudeBasePathOverride(null);
+    await registryBoundary.dispose();
     await rm(tempClaudeRoot, { recursive: true, force: true });
   });
 

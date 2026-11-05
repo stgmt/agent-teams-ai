@@ -43,6 +43,7 @@ import {
   getLiveRosterIdentityChanges,
   getMembersRequiringRuntimeRestart,
 } from './editTeamRuntimeChanges';
+import { registrySelectionKey, SpecRegistryPicker } from './SpecRegistryPicker';
 
 import type { ResolvedTeamMember } from '@shared/types';
 
@@ -63,6 +64,8 @@ interface EditTeamDialogProps {
   currentName: string;
   currentDescription: string;
   currentColor: string;
+  currentSpecProject?: string;
+  currentSpecSlug?: string;
   currentMembers: ResolvedTeamMember[];
   leadMember?: ResolvedTeamMember | null;
   resolvedMemberColorMap?: ReadonlyMap<string, string>;
@@ -152,6 +155,8 @@ export const EditTeamDialog = ({
   currentName,
   currentDescription,
   currentColor,
+  currentSpecProject = '',
+  currentSpecSlug = '',
   currentMembers,
   leadMember = null,
   resolvedMemberColorMap,
@@ -167,6 +172,9 @@ export const EditTeamDialog = ({
   const [name, setName] = useState(currentName);
   const [description, setDescription] = useState(currentDescription);
   const [color, setColor] = useState(currentColor);
+  const [specProject, setSpecProject] = useState(currentSpecProject);
+  const [specSlug, setSpecSlug] = useState(currentSpecSlug);
+  const [validRegistrySelection, setValidRegistrySelection] = useState<string | null>(null);
   const [members, setMembers] = useState(() => membersToDrafts(currentMembers));
   const [teammateWorktreeDefault, setTeammateWorktreeDefault] = useState(() =>
     deriveTeammateWorktreeDefault(currentMembers)
@@ -216,6 +224,8 @@ export const EditTeamDialog = ({
         setName(currentName);
         setDescription(currentDescription);
         setColor(currentColor);
+        setSpecProject(currentSpecProject);
+        setSpecSlug(currentSpecSlug);
         setMembers(membersToDrafts(currentMembers));
         setTeammateWorktreeDefault(deriveTeammateWorktreeDefault(currentMembers));
         setError(null);
@@ -225,6 +235,8 @@ export const EditTeamDialog = ({
           name: currentName,
           description: currentDescription,
           color: currentColor,
+          specProject: currentSpecProject,
+          specSlug: currentSpecSlug,
           members: currentMembers,
         });
         pendingCommittedSourceSnapshotRef.current = null;
@@ -233,6 +245,8 @@ export const EditTeamDialog = ({
           name: currentName,
           description: currentDescription,
           color: currentColor,
+          specProject: currentSpecProject,
+          specSlug: currentSpecSlug,
           members: currentMembers,
         });
         if (latestSourceSnapshot === pendingCommittedSourceSnapshotRef.current) {
@@ -246,7 +260,16 @@ export const EditTeamDialog = ({
       pendingCommittedSourceSnapshotRef.current = null;
     }
     wasOpenRef.current = open;
-  }, [open, teamName, currentName, currentDescription, currentColor, currentMembers]);
+  }, [
+    open,
+    teamName,
+    currentName,
+    currentDescription,
+    currentColor,
+    currentMembers,
+    currentSpecProject,
+    currentSpecSlug,
+  ]);
 
   const builtMembers = useMemo(() => buildMembersFromDrafts(members), [members]);
   const invalidMemberNamesError = useMemo(
@@ -379,6 +402,10 @@ export const EditTeamDialog = ({
       setError(t('editTeam.errors.teamNameEmpty'));
       return;
     }
+    if (validRegistrySelection !== registrySelectionKey(specProject, specSlug)) {
+      setError(t('create.validation.registryBindingRequired'));
+      return;
+    }
     if (invalidMemberNamesError) {
       setError(invalidMemberNamesError);
       return;
@@ -391,6 +418,8 @@ export const EditTeamDialog = ({
       name: currentName,
       description: currentDescription,
       color: currentColor,
+      specProject: currentSpecProject,
+      specSlug: currentSpecSlug,
       members: currentMembers,
     });
     const allowedSourceSnapshots = new Set(
@@ -439,6 +468,8 @@ export const EditTeamDialog = ({
           name: name.trim(),
           description: description.trim(),
           color,
+          specProject: specProject.trim(),
+          specSlug: specSlug.trim(),
         });
         configSaved = true;
         if (hasMemberRosterChanges) {
@@ -462,6 +493,8 @@ export const EditTeamDialog = ({
           name: name.trim(),
           description: description.trim(),
           color: color.trim(),
+          specProject: specProject.trim(),
+          specSlug: specSlug.trim(),
           members: builtMembers.map((member) => ({
             name: member.name,
             role: member.role,
@@ -478,7 +511,12 @@ export const EditTeamDialog = ({
         await Promise.resolve(onSaved());
         onClose();
       } catch (e) {
-        const message = e instanceof Error ? e.message : t('editTeam.errors.saveFailed');
+        const message =
+          e instanceof Error && e.message.includes('SPEC_BINDING_IMMUTABLE')
+            ? t('create.registryPicker.bindingImmutable')
+            : e instanceof Error
+              ? e.message
+              : t('editTeam.errors.saveFailed');
         if (membersSaved) {
           setSaveOutcomeError(t('editTeam.errors.changesSavedRefreshFailed', { message }));
         } else if (configSaved) {
@@ -486,6 +524,8 @@ export const EditTeamDialog = ({
             name: name.trim(),
             description: description.trim(),
             color: color.trim(),
+            specProject: specProject.trim(),
+            specSlug: specSlug.trim(),
             members: committedMembersForSnapshot,
           });
           if (refreshAfterSaveAttempted) {
@@ -547,6 +587,16 @@ export const EditTeamDialog = ({
               placeholder={t('editTeam.placeholders.teamName')}
             />
           </div>
+          {open && (
+            <SpecRegistryPicker
+              project={specProject}
+              slug={specSlug}
+              onProjectChange={setSpecProject}
+              onSlugChange={setSpecSlug}
+              onValidSelectionChange={setValidRegistrySelection}
+              disabled={saving}
+            />
+          )}
           <div>
             <label
               htmlFor="edit-team-description"
@@ -715,6 +765,7 @@ export const EditTeamDialog = ({
               gatewayBindings.pending ||
               isTeamProvisioning ||
               !name.trim() ||
+              validRegistrySelection !== registrySelectionKey(specProject, specSlug) ||
               hasDuplicateMembers ||
               Boolean(invalidMemberNamesError) ||
               unsupportedLiveMixedPrimaryMutationNames.length > 0

@@ -35,6 +35,8 @@ async function setup() {
   });
   const request = {
     teamName: 'test-definition',
+    specProject: 'sandbox/project',
+    specSlug: 'team-definition',
     cwd: root,
     providerId: 'anthropic' as const,
     model: 'TEST-model',
@@ -56,6 +58,8 @@ describe('app-owned canonical team definition creation', () => {
       version: 1,
       runtimeSelectionVersion: 1,
       providerId: 'anthropic',
+      specProject: 'sandbox/project',
+      specSlug: 'team-definition',
       cwd: request.cwd,
       model: 'TEST-model',
       effort: 'high',
@@ -79,15 +83,40 @@ describe('app-owned canonical team definition creation', () => {
   it('preserves an unresolved draft explicitly rather than inventing a provider', async () => {
     const { store, request, teamsRoot } = await setup();
     await store.create(
-      { teamName: request.teamName, members: request.members },
+      {
+        teamName: request.teamName,
+        specProject: request.specProject,
+        specSlug: request.specSlug,
+        members: request.members,
+      },
       new AbortController().signal
     );
     const meta = JSON.parse(
       await readFile(join(teamsRoot, request.teamName, 'team.meta.json'), 'utf8')
     );
+    expect(meta.specProject).toBe(request.specProject);
+    expect(meta.specSlug).toBe(request.specSlug);
     expect(meta.runtimeSelectionVersion).toBe(1);
     expect(meta.providerId).toBeUndefined();
     expect(meta.cwd).toBe('');
+  });
+
+  it('rejects a missing or incomplete registry binding before publishing a draft', async () => {
+    const { store, request, teamsRoot } = await setup();
+    const unbound = {
+      teamName: request.teamName,
+      members: request.members,
+    };
+    for (const invalidRequest of [
+      unbound,
+      { ...unbound, specProject: request.specProject },
+      { ...unbound, specSlug: request.specSlug },
+    ]) {
+      await expect(
+        store.create(invalidRequest as typeof request, new AbortController().signal)
+      ).rejects.toThrow(/specProject and specSlug|specSlug/);
+    }
+    await expect(readdir(teamsRoot)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it('never replaces an existing team or task directory and serializes concurrent creation by ownership', async () => {

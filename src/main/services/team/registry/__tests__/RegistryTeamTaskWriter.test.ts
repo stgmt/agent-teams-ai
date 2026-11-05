@@ -6,7 +6,10 @@ import * as path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { ExecutionTaskStore } from '../../execution/ExecutionTaskStore';
-import { RegistryStatusConflictError } from '../RegistryTaskClientErrors';
+import {
+  RegistryStatusConflictError,
+  RegistryTaskRequestFailedError,
+} from '../RegistryTaskClientErrors';
 import { RegistryTeamTaskWriteError, RegistryTeamTaskWriter } from '../RegistryTeamTaskWriter';
 
 import type {
@@ -64,7 +67,12 @@ function applied(): RegistryTaskWriteResult {
 
 class FakeRegistryClient implements RegistryTeamTaskClientPort {
   tasks: RegistryTask[] = [];
+  readonly readTasksDocumentSha = vi.fn(async () => 'a'.repeat(64));
   readonly listTasks = vi.fn(async (_input: ListRegistryTasksInput) => this.tasks);
+  readonly confirmTaskCreation = vi.fn(
+    async (_input: { project: string; spec: string; entity: string; creationToken: string }) =>
+      false
+  );
   readonly upsertTask = vi.fn(
     async (_input: UpsertRegistryTaskInput): Promise<RegistryTaskWriteResult> => applied()
   );
@@ -114,6 +122,52 @@ async function expectWriteError(
 }
 
 describe('RegistryTeamTaskWriter creation', () => {
+  it('replays an applied command without re-admitting an archived group', async () => {
+    const client = new FakeRegistryClient();
+    const { writer } = createWriter(client);
+    const input = {
+      subject: 'Group task',
+      requirements: ['FR-1'],
+      groupChatId: 'group',
+      commandIdempotencyKey: 'group-command',
+    };
+    const admission = vi.fn(async () => undefined);
+    await writer.createTask(input, admission);
+    client.tasks = [registryTask('1', { title: 'Group task' })];
+    admission.mockRejectedValueOnce(new Error('group archived'));
+    const replay = await writer.createTask(input, admission);
+    expect(replay.createdInAttempt).toBe(false);
+    expect(admission).toHaveBeenCalledTimes(1);
+    await expect(
+      writer.createTask({ ...input, commandIdempotencyKey: 'new-command' }, admission)
+    ).rejects.toThrow('group archived');
+    expect(client.upsertTask).toHaveBeenCalledTimes(1);
+  });
+
+  it('fences allocation with the pre-list document hash and releases a refused reservation', async () => {
+    const client = new FakeRegistryClient();
+    const { writer } = createWriter(client);
+    const input = { subject: 'Fenced', requirements: ['FR-1'], commandIdempotencyKey: 'fenced' };
+    client.upsertTask.mockRejectedValueOnce(
+      new RegistryTaskRequestFailedError('upsert_task', 'CONFLICT', 'document changed', true)
+    );
+    await expectWriteError(writer.createTask(input), 'REGISTRY_REFUSED');
+    expect(client.readTasksDocumentSha.mock.invocationCallOrder[0]).toBeLessThan(
+      client.listTasks.mock.invocationCallOrder[0]
+    );
+    expect(client.upsertTask.mock.calls[0][0]).toMatchObject({
+      localId: '1',
+      expectedSha: 'a'.repeat(64),
+    });
+    client.tasks = [registryTask('1')];
+    const retried = await writer.createTask(input);
+    expect(retried.task.id).toBe('2');
+    expect(client.upsertTask.mock.calls[1][0]).toMatchObject({
+      localId: '2',
+      expectedSha: 'a'.repeat(64),
+    });
+  });
+
   it('refuses to create a task without requirements and never writes the registry', async () => {
     const client = new FakeRegistryClient();
     const { writer } = createWriter(client);
@@ -152,7 +206,7 @@ describe('RegistryTeamTaskWriter creation', () => {
       status: 'todo',
       owner: 'lead',
       tracking: 'track-1',
-      body: 'Body text',
+      description: 'Body text',
     });
 
     const record = store.read(TEAM, '1');
@@ -198,6 +252,214 @@ describe('RegistryTeamTaskWriter creation', () => {
     expect(second.task.id).toBe('1');
     expect(client.upsertTask).toHaveBeenCalledTimes(1);
   });
+
+  it('replays a committed command after writer restart and preserves execution metadata', async () => {
+    const client = new FakeRegistryClient();
+    const { writer, store } = createWriter(client);
+    const input = {
+      subject: 'Durable',
+      requirements: ['FR-1'],
+      commandIdempotencyKey: 'key',
+      commandId: 'command-1',
+      projectPath: '/old',
+      executionPatch: { prompt: 'instructions' },
+    };
+    await writer.createTask(input);
+    client.tasks = [registryTask('1', { title: 'Durable' })];
+    const restarted = new RegistryTeamTaskWriter({
+      teamName: TEAM,
+      binding: { project: PROJECT, spec: SPEC },
+      client,
+      executionStore: store,
+      clock: () => new Date(NOW),
+    });
+    const replay = await restarted.createTask({ ...input, projectPath: '/new' });
+    expect(replay.createdInAttempt).toBe(false);
+    expect(replay.task.prompt).toBe('instructions');
+    expect(replay.task.projectPath).toBe('/old');
+    expect(client.upsertTask).toHaveBeenCalledTimes(1);
+    await expectWriteError(
+      restarted.createTask({ ...input, subject: 'changed' }),
+      'IDEMPOTENCY_CONFLICT'
+    );
+  });
+
+  it('does not submit a second create after an unknown registry outcome', async () => {
+    const client = new FakeRegistryClient();
+    const { writer, store } = createWriter(client);
+    client.upsertTask.mockRejectedValueOnce(new Error('connection lost'));
+    const input = {
+      subject: 'Uncertain',
+      requirements: ['FR-1'],
+      commandIdempotencyKey: 'uncertain',
+    };
+    await expectWriteError(writer.createTask(input), 'CREATION_OUTCOME_UNKNOWN');
+    const restarted = new RegistryTeamTaskWriter({
+      teamName: TEAM,
+      binding: { project: PROJECT, spec: SPEC },
+      client,
+      executionStore: store,
+    });
+    await expectWriteError(restarted.createTask(input), 'CREATION_OUTCOME_UNKNOWN');
+    expect(client.upsertTask).toHaveBeenCalledTimes(1);
+  });
+
+  it('recovers a lost create response only after the authoritative branch confirms its marker', async () => {
+    const client = new FakeRegistryClient();
+    const { writer, store } = createWriter(client);
+    const input = {
+      subject: 'Recover me',
+      requirements: ['FR-1'],
+      commandIdempotencyKey: 'recovery-key',
+      projectPath: '/original',
+      executionPatch: { prompt: 'original work' },
+    };
+    client.upsertTask.mockImplementationOnce(async (operation) => {
+      client.tasks = [
+        registryTask('1', { title: 'Edited remotely', creationToken: operation.creationToken }),
+      ];
+      throw new Error('response lost');
+    });
+    await expectWriteError(writer.createTask(input), 'CREATION_OUTCOME_UNKNOWN');
+    client.confirmTaskCreation.mockResolvedValueOnce(true);
+    const restarted = new RegistryTeamTaskWriter({
+      teamName: TEAM,
+      binding: { project: PROJECT, spec: SPEC },
+      client,
+      executionStore: store,
+    });
+    const recovered = await restarted.createTask({ ...input, projectPath: '/changed' });
+    expect(recovered.createdInAttempt).toBe(false);
+    expect(recovered.task).toMatchObject({
+      id: '1',
+      subject: 'Edited remotely',
+      projectPath: '/original',
+      prompt: 'original work',
+    });
+    expect(client.upsertTask).toHaveBeenCalledTimes(1);
+    expect(
+      store.read(TEAM, '1')?.historyEvents.filter((event) => event.type === 'task_created')
+    ).toHaveLength(1);
+  });
+
+  it('does not accept an unrelated task even when remote confirmation says the marker exists', async () => {
+    const client = new FakeRegistryClient();
+    const { writer, store } = createWriter(client);
+    client.upsertTask.mockRejectedValueOnce(new Error('response lost'));
+    const input = {
+      subject: 'Uncertain',
+      requirements: ['FR-1'],
+      commandIdempotencyKey: 'different',
+    };
+    await expectWriteError(writer.createTask(input), 'CREATION_OUTCOME_UNKNOWN');
+    client.tasks = [registryTask('1', { creationToken: 'another-command' })];
+    client.confirmTaskCreation.mockResolvedValueOnce(true);
+    await expectWriteError(writer.createTask(input), 'CREATION_OUTCOME_UNKNOWN');
+    expect(store.read(TEAM, '1')).toBeNull();
+    expect(client.upsertTask).toHaveBeenCalledTimes(1);
+  });
+
+  it('finishes local execution metadata after the registry committed but the local write failed', async () => {
+    const client = new FakeRegistryClient();
+    const { writer, store } = createWriter(client);
+    const input = {
+      subject: 'Local failure',
+      requirements: ['FR-1'],
+      commandIdempotencyKey: 'local-failure',
+    };
+    client.upsertTask.mockImplementationOnce(async (operation) => {
+      client.tasks = [
+        registryTask('1', { title: input.subject, creationToken: operation.creationToken }),
+      ];
+      return applied();
+    });
+    vi.spyOn(store, 'write').mockImplementationOnce(() => {
+      throw new Error('disk temporarily unavailable');
+    });
+    await expectWriteError(writer.createTask(input), 'CREATION_OUTCOME_UNKNOWN');
+    client.confirmTaskCreation.mockResolvedValueOnce(true);
+    const recovered = await writer.createTask(input);
+    expect(recovered.createdInAttempt).toBe(false);
+    expect(
+      store.read(TEAM, '1')?.historyEvents.filter((event) => event.type === 'task_created')
+    ).toHaveLength(1);
+    expect(client.upsertTask).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves a supplied creation event without adding a duplicate during recovery', async () => {
+    const client = new FakeRegistryClient();
+    const { writer, store } = createWriter(client);
+    const created = {
+      id: 'original-event',
+      timestamp: NOW,
+      type: 'task_created' as const,
+      status: 'pending' as const,
+      actor: 'lead',
+    };
+    const input = {
+      subject: 'Imported task',
+      requirements: ['FR-1'],
+      commandIdempotencyKey: 'imported',
+      executionPatch: { historyEvents: [created] },
+    };
+    client.upsertTask.mockImplementationOnce(async (operation) => {
+      client.tasks = [registryTask('1', { creationToken: operation.creationToken })];
+      return applied();
+    });
+    vi.spyOn(store, 'write').mockImplementationOnce(() => {
+      throw new Error('disk unavailable');
+    });
+    await expectWriteError(writer.createTask(input), 'CREATION_OUTCOME_UNKNOWN');
+    client.confirmTaskCreation.mockResolvedValueOnce(true);
+    await writer.createTask(input);
+    expect(store.read(TEAM, '1')?.historyEvents).toEqual([created]);
+    expect(client.upsertTask).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not overwrite unrelated execution history when recovering a confirmed creation', async () => {
+    const client = new FakeRegistryClient();
+    const { writer, store } = createWriter(client);
+    const input = {
+      subject: 'Uncertain',
+      requirements: ['FR-1'],
+      commandIdempotencyKey: 'existing-local',
+    };
+    client.upsertTask.mockImplementationOnce(async (operation) => {
+      client.tasks = [registryTask('1', { creationToken: operation.creationToken })];
+      throw new Error('response lost');
+    });
+    await expectWriteError(writer.createTask(input), 'CREATION_OUTCOME_UNKNOWN');
+    store.write(TEAM, '1', { prompt: 'unrelated existing work' });
+    client.confirmTaskCreation.mockResolvedValueOnce(true);
+    await expectWriteError(writer.createTask(input), 'CREATION_OUTCOME_UNKNOWN');
+    expect(store.read(TEAM, '1')?.prompt).toBe('unrelated existing work');
+    expect(client.upsertTask).toHaveBeenCalledTimes(1);
+  });
+
+  it('sends completed as the initial registry status and rejects deleted before writing', async () => {
+    const client = new FakeRegistryClient();
+    const { writer } = createWriter(client);
+    await writer.createTask({ subject: 'Finished', requirements: ['FR-1'], status: 'completed' });
+    expect(client.upsertTask.mock.calls[0][0]).toMatchObject({ status: 'done' });
+    await expectWriteError(
+      writer.createTask({ subject: 'Deleted', requirements: ['FR-1'], status: 'deleted' }),
+      'STATUS_UNSUPPORTED'
+    );
+    expect(client.upsertTask).toHaveBeenCalledTimes(1);
+  });
+
+  it('sends multiline descriptions without trimming or interpreting task headings', async () => {
+    const client = new FakeRegistryClient();
+    const { writer } = createWriter(client);
+    const description = ' line one\n## TASK-99: injected\n**Status:** done\n';
+    const result = await writer.createTask({
+      subject: 'Description',
+      description,
+      requirements: ['FR-1'],
+    });
+    expect(client.upsertTask.mock.calls[0][0].description).toBe(description);
+    expect(result.task.description).toBe(description);
+  });
 });
 
 describe('RegistryTeamTaskWriter status', () => {
@@ -239,16 +501,22 @@ describe('RegistryTeamTaskWriter status', () => {
     expect(store.read(TEAM, '1')).toBeNull();
   });
 
-  it('refuses to represent the local "deleted" status in the registry', async () => {
+  it('deletes and restores using registry status preconditions', async () => {
     const client = new FakeRegistryClient();
-    client.tasks = [registryTask('1')];
-    const { writer } = createWriter(client);
-
-    await expectWriteError(
-      writer.replaceStatus({ taskId: '1', to: 'deleted' }),
-      'STATUS_UNSUPPORTED'
+    client.tasks = [registryTask('1', { status: 'in-progress' })];
+    const { writer, store } = createWriter(client);
+    store.write(TEAM, '1', { workIntervals: [{ startedAt: '2025-01-01T00:00:00.000Z' }] });
+    await writer.replaceStatus({ taskId: '1', to: 'deleted' });
+    expect(client.replaceTaskStatus).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'deleted', expectedStatus: 'in-progress' })
     );
-    expect(client.replaceTaskStatus).not.toHaveBeenCalled();
+    expect(store.read(TEAM, '1')?.workIntervals[0].completedAt).toBe(NOW);
+    client.tasks = [registryTask('1', { status: 'deleted' })];
+    await expectWriteError(writer.replaceStatus({ taskId: '1', to: 'pending' }), 'STATUS_CONFLICT');
+    await writer.replaceStatus({ taskId: '1', to: 'pending', expectedStatus: 'deleted' });
+    expect(client.replaceTaskStatus).toHaveBeenLastCalledWith(
+      expect.objectContaining({ status: 'todo', expectedStatus: 'deleted' })
+    );
   });
 
   it('closes the work interval and records the transition locally', async () => {
@@ -272,6 +540,35 @@ describe('RegistryTeamTaskWriter status', () => {
   });
 });
 
+describe('RegistryTeamTaskWriter review execution', () => {
+  it('records review decisions and closes active intervals without local canonical writes', async () => {
+    const client = new FakeRegistryClient();
+    client.tasks = [registryTask('1', { status: 'done', owner: 'alice' })];
+    const { writer, store } = createWriter(client);
+    await writer.transitionReview({
+      taskId: '1',
+      action: 'request',
+      actor: 'lead',
+      reviewer: 'bob',
+    });
+    store.write(TEAM, '1', {
+      reviewIntervals: [{ reviewer: 'bob', startedAt: '2025-12-31T23:00:00.000Z' }],
+    });
+    await writer.transitionReview({ taskId: '1', action: 'approve', actor: 'bob' });
+    expect(store.read(TEAM, '1')).toMatchObject({
+      reviewState: 'approved',
+      reviewIntervals: [
+        { reviewer: 'bob', startedAt: '2025-12-31T23:00:00.000Z', completedAt: NOW },
+      ],
+      historyEvents: [
+        expect.objectContaining({ type: 'review_requested', actor: 'lead', reviewer: 'bob' }),
+        expect.objectContaining({ type: 'review_approved', actor: 'bob' }),
+      ],
+    });
+    expect(client.upsertTask).not.toHaveBeenCalled();
+  });
+});
+
 describe('RegistryTeamTaskWriter owner and links', () => {
   it('replaces the owner through the registry and records the change locally', async () => {
     const client = new FakeRegistryClient();
@@ -288,16 +585,18 @@ describe('RegistryTeamTaskWriter owner and links', () => {
     });
   });
 
-  it('refuses to clear an owner instead of writing a bogus empty value', async () => {
+  it('clears an owner through the registry and records the change', async () => {
     const client = new FakeRegistryClient();
     client.tasks = [registryTask('1', { owner: 'alice' })];
-    const { writer } = createWriter(client);
-
-    await expectWriteError(
-      writer.replaceOwner({ taskId: '1', owner: null }),
-      'OWNER_CLEAR_UNSUPPORTED'
+    const { writer, store } = createWriter(client);
+    await writer.replaceOwner({ taskId: '1', owner: null });
+    expect(client.replaceTaskOwner).toHaveBeenCalledWith(
+      expect.objectContaining({ entity: '1', owner: null })
     );
-    expect(client.replaceTaskOwner).not.toHaveBeenCalled();
+    expect(store.read(TEAM, '1')?.historyEvents.at(-1)).toMatchObject({
+      type: 'owner_changed',
+      from: 'alice',
+    });
   });
 
   it('writes blockedBy as a registry dependsOn link', async () => {
@@ -313,20 +612,98 @@ describe('RegistryTeamTaskWriter owner and links', () => {
     });
   });
 
-  it('writes related as a registry ref and removes it again', async () => {
+  it('writes related links in both directions and removes them from both tasks', async () => {
     const client = new FakeRegistryClient();
     client.tasks = [registryTask('1'), registryTask('2')];
+    client.replaceTaskLinks.mockImplementation(async (input) => {
+      const target = client.tasks.find((task) => task.localId === input.entity)!;
+      target.refs = [...(input.refs ?? target.refs)];
+      return applied();
+    });
     const { writer } = createWriter(client);
 
     await writer.addLink({ taskId: '1', targetId: '2', type: 'related' });
-    expect(client.replaceTaskLinks.mock.calls[0][0]).toMatchObject({
-      entity: '1',
-      refs: [`${SPEC}:TASK-2`],
-    });
+    expect(client.tasks.map((task) => task.refs)).toEqual([[`${SPEC}:TASK-2`], [`${SPEC}:TASK-1`]]);
+    expect(client.replaceTaskLinks.mock.calls[0][0].expectedSha).toBe('a'.repeat(64));
+    expect(client.replaceTaskLinks.mock.calls[1][0].expectedSha).toBe('a'.repeat(64));
+    await writer.removeLink({ taskId: '2', targetId: '1', type: 'related' });
+    expect(client.tasks.map((task) => task.refs)).toEqual([[], []]);
+  });
 
-    client.tasks = [registryTask('1', { refs: [`${SPEC}:TASK-2`] }), registryTask('2')];
-    await writer.removeLink({ taskId: '1', targetId: '2', type: 'related' });
-    expect(client.replaceTaskLinks.mock.calls[1][0]).toMatchObject({ entity: '1', refs: [] });
+  it('rejects normalized self-links and unknown targets without writing', async () => {
+    const client = new FakeRegistryClient();
+    client.tasks = [registryTask('1')];
+    const { writer } = createWriter(client);
+    await expectWriteError(
+      writer.addLink({ taskId: '1', targetId: 'TASK-1', type: 'related' }),
+      'LINK_CYCLE'
+    );
+    await expectWriteError(
+      writer.addLink({ taskId: '1', targetId: '2', type: 'related' }),
+      'TASK_NOT_FOUND'
+    );
+    expect(client.replaceTaskLinks).not.toHaveBeenCalled();
+  });
+
+  it('compensates a confirmed reciprocal refusal using a guarded preimage', async () => {
+    const client = new FakeRegistryClient();
+    client.tasks = [registryTask('1'), registryTask('2')];
+    let calls = 0;
+    client.replaceTaskLinks.mockImplementation(async (input) => {
+      calls += 1;
+      if (calls === 2)
+        throw new RegistryTaskRequestFailedError('replace_task_links', 'CONFLICT', 'changed', true);
+      const target = client.tasks.find((task) => task.localId === input.entity)!;
+      target.refs = [...(input.refs ?? target.refs)];
+      return applied();
+    });
+    const { writer } = createWriter(client);
+    await expectWriteError(
+      writer.addLink({ taskId: '1', targetId: '2', type: 'related' }),
+      'REGISTRY_REFUSED'
+    );
+    expect(client.tasks.map((task) => task.refs)).toEqual([[], []]);
+    expect(client.replaceTaskLinks.mock.calls[2][0]).toMatchObject({
+      entity: '1',
+      refs: [],
+      expectedSha: 'a'.repeat(64),
+    });
+  });
+
+  it('reports a partial relationship when concurrent mutation prevents compensation', async () => {
+    const client = new FakeRegistryClient();
+    client.tasks = [registryTask('1'), registryTask('2')];
+    let calls = 0;
+    client.replaceTaskLinks.mockImplementation(async (input) => {
+      calls += 1;
+      if (calls === 2) {
+        client.tasks[0].refs = [`${SPEC}:TASK-2`, `${SPEC}:TASK-3`];
+        throw new RegistryTaskRequestFailedError('replace_task_links', 'CONFLICT', 'changed', true);
+      }
+      client.tasks[0].refs = [...(input.refs ?? [])];
+      return applied();
+    });
+    const { writer } = createWriter(client);
+    await expectWriteError(
+      writer.addLink({ taskId: '1', targetId: '2', type: 'related' }),
+      'RELATIONSHIP_PARTIAL'
+    );
+    expect(client.replaceTaskLinks).toHaveBeenCalledTimes(2);
+    expect(client.tasks[0].refs).toEqual([`${SPEC}:TASK-2`, `${SPEC}:TASK-3`]);
+  });
+
+  it('reports uncertain reciprocal writes without unsafe rollback', async () => {
+    const client = new FakeRegistryClient();
+    client.tasks = [registryTask('1'), registryTask('2')];
+    client.replaceTaskLinks
+      .mockResolvedValueOnce(applied())
+      .mockRejectedValueOnce(new Error('connection lost'));
+    const { writer } = createWriter(client);
+    await expectWriteError(
+      writer.addLink({ taskId: '1', targetId: '2', type: 'related' }),
+      'RELATIONSHIP_OUTCOME_UNKNOWN'
+    );
+    expect(client.replaceTaskLinks).toHaveBeenCalledTimes(2);
   });
 
   it('rejects a blockedBy link that would close a dependency cycle', async () => {

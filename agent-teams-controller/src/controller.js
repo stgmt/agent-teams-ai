@@ -6,7 +6,6 @@ const review = require('./internal/review.js');
 const taskBoard = require('./internal/taskBoard.js');
 const messages = require('./internal/messages.js');
 const processes = require('./internal/processes.js');
-const maintenance = require('./internal/maintenance.js');
 const crossTeam = require('./internal/crossTeam.js');
 const runtime = require('./internal/runtime.js');
 const workSync = require('./internal/workSync.js');
@@ -37,7 +36,6 @@ function createController(options) {
     taskBoard: bindModule(context, taskBoard),
     messages: bindModule(context, messages),
     processes: bindModule(context, processes),
-    maintenance: bindModule(context, maintenance),
     crossTeam: bindModule(context, crossTeam),
     runtime: bindModule(context, runtime),
     workSync: bindModule(context, workSync),
@@ -65,7 +63,6 @@ module.exports = {
   taskBoard,
   messages,
   processes,
-  maintenance,
   crossTeam,
   runtime,
   workSync,

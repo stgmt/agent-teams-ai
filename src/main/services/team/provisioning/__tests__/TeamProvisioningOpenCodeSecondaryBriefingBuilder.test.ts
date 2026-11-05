@@ -6,11 +6,16 @@ import {
   createTeamProvisioningOpenCodeSecondaryBriefingBuilder,
   type OpenCodeSecondaryBriefingBuilderPorts,
 } from '../TeamProvisioningOpenCodeSecondaryBriefingBuilder';
+import type { TeamTask } from '@shared/types';
 
-function createPorts(briefing: unknown): {
+function createPorts(
+  briefing: unknown,
+  tasks: TeamTask[] = []
+): {
   createController: ReturnType<typeof vi.fn>;
   getClaudeBasePath: ReturnType<typeof vi.fn>;
   memberBriefing: ReturnType<typeof vi.fn>;
+  readTasks: ReturnType<typeof vi.fn>;
   ports: OpenCodeSecondaryBriefingBuilderPorts;
 } {
   const memberBriefing = vi.fn(async () => briefing);
@@ -23,22 +28,43 @@ function createPorts(briefing: unknown): {
     },
   }));
   const getClaudeBasePath = vi.fn(() => '/home/test/.claude');
+  const readTasks = vi.fn(async () => tasks);
 
   return {
     createController,
     getClaudeBasePath,
     memberBriefing,
+    readTasks,
     ports: {
       createController,
       getClaudeBasePath,
+      readTasks,
     },
   };
 }
 
 describe('TeamProvisioningOpenCodeSecondaryBriefingBuilder', () => {
   it('loads the OpenCode member briefing through the controller port and wraps it for launch', async () => {
-    const { createController, getClaudeBasePath, memberBriefing, ports } = createPorts(
-      '  Builder briefing\nBearer ABCDEFGHIJKLMNOP  '
+    const fullTask: TeamTask = {
+      id: '1',
+      displayId: '1',
+      subject: 'Builder job',
+      description: 'Complete project details retained in the registry snapshot.',
+      prompt: 'Full assigned instruction.',
+      comments: [
+        {
+          id: 'comment-1',
+          author: 'Lead',
+          text: 'Keep this comment intact.',
+          createdAt: '2026-11-05T00:00:00.000Z',
+          type: 'regular',
+        },
+      ],
+      status: 'pending',
+    };
+    const { createController, getClaudeBasePath, memberBriefing, readTasks, ports } = createPorts(
+      '  Builder briefing\nBearer ABCDEFGHIJKLMNOP  ',
+      [fullTask]
     );
     const builder = createTeamProvisioningOpenCodeSecondaryBriefingBuilder(ports);
 
@@ -47,11 +73,14 @@ describe('TeamProvisioningOpenCodeSecondaryBriefingBuilder', () => {
       memberName: 'Builder',
     });
 
+    expect(readTasks).toHaveBeenCalledTimes(1);
+    expect(readTasks).toHaveBeenCalledWith('atlas-hq');
     expect(getClaudeBasePath).toHaveBeenCalledTimes(1);
     expect(createController).toHaveBeenCalledWith({
       teamName: 'atlas-hq',
       claudeDir: '/home/test/.claude',
       allowUserMessageSender: false,
+      readOnlyTaskSnapshot: [fullTask],
     });
     expect(memberBriefing).toHaveBeenCalledWith('Builder', {
       runtimeProvider: 'opencode',

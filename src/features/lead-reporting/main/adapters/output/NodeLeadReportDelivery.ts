@@ -4,13 +4,14 @@ import agentTeamsController from 'agent-teams-controller';
 
 import type { DeliveredLeadReport, LeadReportRunIdentity } from '../../../contracts';
 import type { LeadReportDelivery } from '../../../core/application/ports';
-
+import type { TeamTaskReader } from '@main/services/team/TeamTaskReader';
 
 /** Only this app-side adapter writes user reports. MCP never appends them independently. */
 export class NodeLeadReportDelivery implements LeadReportDelivery {
   constructor(
     private readonly deps: {
       teamsRoot: string;
+      taskReader: Pick<TeamTaskReader, 'getTasks'>;
       leadName(run: LeadReportRunIdentity): Promise<string>;
       assertCurrentRun(run: LeadReportRunIdentity): Promise<void>;
       delivered(run: LeadReportRunIdentity, report: DeliveredLeadReport): void;
@@ -23,10 +24,12 @@ export class NodeLeadReportDelivery implements LeadReportDelivery {
   ): Promise<{ messageId: string }> {
     const from = await this.deps.leadName(input.run);
     await this.deps.assertCurrentRun(input.run);
+    const readOnlyTaskSnapshot = await this.deps.taskReader.getTasks(input.run.teamName);
     const controller = agentTeamsController.createController({
       teamName: input.run.teamName,
       claudeDir: dirname(this.deps.teamsRoot),
       allowUserMessageSender: true,
+      readOnlyTaskSnapshot,
     });
     const result = await controller.messages.sendMessageAsync({
       from,

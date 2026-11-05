@@ -23,18 +23,20 @@ function createFakeClient(initialTasks = []) {
       calls.push({ operation: 'listTasks' });
       return tasks.map(clone);
     },
-    createTask(body) {
+    createTaskWithOutcome(body) {
       calls.push({ operation: 'createTask', body: clone(body) });
       const task = {
         id: String(nextId),
         displayId: `#${nextId}`,
         subject: body.subject,
-        status: 'pending',
+        status: body.status || (body.startImmediately ? 'in_progress' : 'pending'),
         ...(body.owner ? { owner: body.owner } : {}),
+        ...(body.blockedBy ? { blockedBy: body.blockedBy } : {}),
+        ...(body.related ? { related: body.related } : {}),
       };
       nextId += 1;
       tasks.push(task);
-      return clone(task);
+      return { task: clone(task), outcome: 'APPLIED' };
     },
     setTaskStatus(taskId, body) {
       calls.push({ operation: 'setTaskStatus', taskId, body: clone(body) });
@@ -51,7 +53,9 @@ function createFakeClient(initialTasks = []) {
       if (!task) {
         throw Object.assign(new Error('Task not found'), { code: 'TASK_NOT_FOUND' });
       }
-      Object.assign(task, clone(patch));
+      const { actor: _actor, ...fields } = patch;
+      Object.assign(task, clone(fields));
+      if (fields.owner === null) delete task.owner;
       return clone(task);
     },
   };
@@ -92,7 +96,7 @@ describe('registry task backend', () => {
     expect(() => backend.readTask('7')).toThrowError(/Ambiguous task reference/);
   });
 
-  it('creates a task with requirements, relations and an immediate start', () => {
+  it('creates a blocked task with requirements and relations without starting it', () => {
     const client = createFakeClient([{ id: '1', displayId: '1', subject: 'Blocker', status: 'pending' }]);
     const backend = createRegistryTaskBackend({ teamName: 'team-a', client });
 
@@ -108,21 +112,21 @@ describe('registry task backend', () => {
 
     expect(task.id).toBe('2');
     expect(client.calls.map((call) => call.operation)).toEqual([
+      'listTasks',
+      'listTasks',
       'createTask',
       'listTasks',
-      'listTasks',
-      'patchTask',
-      'setTaskStatus',
-      'listTasks',
     ]);
-    expect(client.calls[0].body).toMatchObject({
+    expect(client.calls[2].body).toMatchObject({
       subject: 'Child',
       description: 'Do it',
       requirements: ['FR-1', 'AC-2'],
       owner: 'alice',
+      blockedBy: ['1'],
+      related: ['1'],
     });
-    expect(client.calls[3].patch).toEqual({ blockedBy: ['1'], related: ['1'] });
-    expect(client.calls[4].body).toEqual({ status: 'in_progress', expectedStatus: 'pending' });
+    expect(client.calls[2].body.startImmediately).toBeUndefined();
+    expect(task.status).toBe('pending');
   });
 
   it('refuses to accept a caller-chosen task id', () => {
@@ -130,6 +134,17 @@ describe('registry task backend', () => {
 
     expect(() => backend.createTask({ id: '42', subject: 'Pinned' })).toThrowError(
       expect.objectContaining({ code: 'TASK_ID_UNSUPPORTED' })
+    );
+  });
+
+  it('sends initial status in the create request without a second transition', () => {
+    const client = createFakeClient();
+    const backend = createRegistryTaskBackend({ teamName: 'team-a', client });
+    expect(backend.createTask({ subject: 'Done', requirements: ['FR-1'], status: 'completed' }).status).toBe('completed');
+    expect(client.calls.find((call) => call.operation === 'createTask').body.status).toBe('completed');
+    expect(client.calls.some((call) => call.operation === 'setTaskStatus')).toBe(false);
+    expect(() => backend.createTask({ subject: 'Deleted', status: 'deleted' })).toThrowError(
+      expect.objectContaining({ code: 'REGISTRY_FIELD_UNSUPPORTED' })
     );
   });
 
@@ -156,30 +171,46 @@ describe('registry task backend', () => {
     });
   });
 
-  it('rejects an updater that touches execution-only fields', () => {
+  it('persists execution metadata through the app patch API', () => {
     const client = createFakeClient([{ id: '7', displayId: '7', subject: 'S', status: 'pending' }]);
     const backend = createRegistryTaskBackend({ teamName: 'team-a', client });
 
-    expect(() =>
-      backend.updateTask('7', (task) => {
-        task.comments = [{ id: 'c1', text: 'hello' }];
-        return task;
-      })
-    ).toThrowError(
-      expect.objectContaining({ code: 'REGISTRY_FIELD_UNSUPPORTED', fields: ['comments'] })
-    );
-    expect(client.calls.some((call) => call.operation === 'patchTask')).toBe(false);
+    const updated = backend.updateTask('7', (task) => {
+      task.comments = [{ id: 'c1', text: 'hello' }];
+      return task;
+    });
+    expect(updated.comments).toEqual([{ id: 'c1', text: 'hello' }]);
+    expect(client.calls.find((call) => call.operation === 'patchTask').patch).toEqual({
+      comments: [{ id: 'c1', text: 'hello' }],
+    });
+  });
+ 
+  it('forwards the status actor to the app', () => {
+    const client = createFakeClient([{ id: '7', subject: 'S', status: 'pending' }]);
+    const backend = createRegistryTaskBackend({ teamName: 'team-a', client });
+    backend.setTaskStatus('7', 'in_progress', 'alice');
+    expect(client.calls.find((call) => call.operation === 'setTaskStatus').body).toEqual({
+      status: 'in_progress', expectedStatus: 'pending', actor: 'alice',
+    });
   });
 
-  it('mirrors the file backend owner rules: clearing an owner is refused', () => {
+  it('forwards the owner-change actor to the app', () => {
+    const client = createFakeClient([{ id: '7', subject: 'S', status: 'pending', owner: 'alice' }]);
+    const backend = createRegistryTaskBackend({ teamName: 'team-a', client });
+    backend.setTaskOwner('7', 'bob', 'lead');
+    expect(client.calls.find((call) => call.operation === 'patchTask').patch).toEqual({
+      owner: 'bob', actor: 'lead',
+    });
+  });
+
+  it('unassigns an owner and allows a new owner to be assigned', () => {
     const client = createFakeClient([
       { id: '7', displayId: '7', subject: 'S', status: 'pending', owner: 'alice' },
     ]);
     const backend = createRegistryTaskBackend({ teamName: 'team-a', client });
 
-    expect(() => backend.setTaskOwner('7', null)).toThrowError(
-      expect.objectContaining({ code: 'OWNER_CLEAR_UNSUPPORTED' })
-    );
+    expect(backend.setTaskOwner('7', null).owner).toBeUndefined();
+    expect(client.calls.find((call) => call.operation === 'patchTask').patch).toEqual({ owner: null });
     expect(backend.setTaskOwner('7', ' bob ').owner).toBe('bob');
   });
 
@@ -209,11 +240,11 @@ describe('registry task backend', () => {
     expect(client.calls.some((call) => call.operation === 'patchTask')).toBe(false);
   });
 
-  it('fails closed: execution-store operations have no registry shape', () => {
+  it('requires a creation command for reconciliation', () => {
     const backend = createRegistryTaskBackend({ teamName: 'team-a', client: createFakeClient() });
 
-    expect(() => backend.reconcileTaskCreation({ id: '1' })).toThrowError(
-      expect.objectContaining({ code: 'REGISTRY_OPERATION_UNSUPPORTED' })
+    expect(() => backend.reconcileTaskCreation({ id: '1' })).toThrow(
+      'Task creation reconciliation requires creationCommand'
     );
   });
 

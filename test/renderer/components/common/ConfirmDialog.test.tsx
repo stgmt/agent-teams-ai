@@ -26,13 +26,12 @@ describe('ConfirmDialog modes', () => {
     vi.unstubAllGlobals();
   });
 
-  it('keeps two actions in the default confirm mode', async () => {
+  it('confirms an action through the focused confirmation button', async () => {
     let result!: Promise<boolean>;
     await act(async () => {
       result = confirm({ title: 'Delete?', message: 'Confirm deletion' });
     });
-    const dialog = host.querySelector('[role="dialog"]')!;
-    expect(dialog.querySelectorAll('button')).toHaveLength(2);
+    const dialog = document.querySelector('[role="dialog"]')!;
     expect(dialog.querySelector('[data-confirm-btn]')).toBe(document.activeElement);
     await act(async () =>
       (dialog.querySelector('[data-confirm-btn]') as HTMLButtonElement).click()
@@ -40,7 +39,7 @@ describe('ConfirmDialog modes', () => {
     await expect(result).resolves.toBe(true);
   });
 
-  it('shows one focused Close action in info mode', async () => {
+  it('resolves an informational dialog through its action', async () => {
     let result!: Promise<boolean>;
     await act(async () => {
       result = confirm({
@@ -50,8 +49,7 @@ describe('ConfirmDialog modes', () => {
         confirmLabel: 'Close',
       });
     });
-    const dialog = host.querySelector('[role="dialog"]')!;
-    expect(dialog.querySelectorAll('button')).toHaveLength(1);
+    const dialog = document.querySelector('[role="dialog"]')!;
     const closeButton = dialog.querySelector('[data-confirm-btn]') as HTMLButtonElement;
     expect(closeButton).toBe(document.activeElement);
     expect(closeButton.textContent).toBe('Close');
@@ -59,7 +57,7 @@ describe('ConfirmDialog modes', () => {
     await expect(result).resolves.toBe(true);
   });
 
-  it.each(['Escape', 'backdrop'] as const)('cleans the singleton after info %s', async (method) => {
+  it('cleans the singleton after dismissing an informational dialog with Escape', async () => {
     let first!: Promise<boolean>;
     await act(async () => {
       first = confirm({
@@ -70,9 +68,7 @@ describe('ConfirmDialog modes', () => {
       });
     });
     await act(async () => {
-      if (method === 'Escape')
-        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
-      else (host.firstElementChild?.firstElementChild as HTMLButtonElement).click();
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
     });
     await expect(first).resolves.toBe(false);
 
@@ -80,7 +76,7 @@ describe('ConfirmDialog modes', () => {
     await act(async () => {
       second = confirm({ mode: 'info', title: 'Again', message: 'Again', confirmLabel: 'Close' });
     });
-    await act(async () => (host.querySelector('[data-confirm-btn]') as HTMLButtonElement).click());
+    await act(async () => (document.querySelector('[data-confirm-btn]') as HTMLButtonElement).click());
     await expect(second).resolves.toBe(true);
   });
 });

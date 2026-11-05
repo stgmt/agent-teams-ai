@@ -9,6 +9,7 @@ import {
 } from '../../../../src/features/runtime-provider-management/main';
 import { TeamTaskReader } from '../../../../src/main/services/team/TeamTaskReader';
 import { setClaudeBasePathOverride } from '../../../../src/main/utils/pathDecoder';
+import { createRegistryLiveFixture, type RegistryLiveFixture } from './helpers/registryLiveFixture';
 
 import {
   createOpenCodeLiveHarness,
@@ -133,12 +134,14 @@ async function runModelScenario(input: {
   const projectPath = path.join(tempDir, 'project');
   const teamName = `${input.scenario.teamNamePrefix}-${sanitizeModelForTeamName(input.model)}-${Date.now()}`;
   let harness: Awaited<ReturnType<typeof createOpenCodeLiveHarness>> | null = null;
+  let registry: RegistryLiveFixture | null = null;
   let keepTempDir = false;
 
   try {
     await fs.mkdir(tempClaudeRoot, { recursive: true });
     await fs.mkdir(projectPath, { recursive: true });
     setClaudeBasePathOverride(tempClaudeRoot);
+    registry = await createRegistryLiveFixture(tempDir);
     await materializeOpenCodeScenarioProject(input.scenario, projectPath);
     await configureLocalModelForSandbox(input.model, projectPath);
     clearExpectedLocalProviderProbeConsoleNoise();
@@ -158,12 +161,15 @@ async function runModelScenario(input: {
         scenario: input.scenario,
         teamName,
         projectPath,
+        specBinding: registry.binding,
         model: harness.selectedModel,
       }),
       (progress) => progressEvents.push(progress)
     );
     diagnostics.push(`runId=${runId}`);
-    await materializeOpenCodeScenarioTasks({ scenario: input.scenario, teamName, projectPath });
+    await materializeOpenCodeScenarioTasks({
+      scenario: input.scenario, teamName, projectPath, writer: await registry.writer(teamName),
+    });
 
     const progressDump = formatProgressDump(progressEvents);
     if (
@@ -400,6 +406,7 @@ async function runModelScenario(input: {
     if (harness) {
       await cleanupOpenCodeSemanticHarness(harness, teamName);
     }
+    await registry?.dispose();
     clearExpectedLocalProviderProbeConsoleNoise();
     setClaudeBasePathOverride(null);
     if (!keepTempDir) {

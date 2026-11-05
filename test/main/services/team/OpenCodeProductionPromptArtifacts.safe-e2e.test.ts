@@ -2,7 +2,7 @@ import { createHash } from 'crypto';
 import { promises as fs } from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   createOpenCodeCanonicalProjectPathFingerprint,
@@ -11,7 +11,9 @@ import {
 } from '../../../../src/main/services/team/opencode/readiness/OpenCodeExpectedBehaviorFingerprint';
 import { TeamRuntimeAdapterRegistry } from '../../../../src/main/services/team/runtime';
 import { TeamProvisioningService } from '../../../../src/main/services/team/TeamProvisioningService';
+import { TeamTaskReader } from '../../../../src/main/services/team/TeamTaskReader';
 import { setClaudeBasePathOverride } from '../../../../src/main/utils/pathDecoder';
+import type { RegistryTeamTaskCreateInput } from '../../../../src/main/services/team/registry/RegistryTeamTaskWriter';
 
 import {
   buildOpenCodeScenarioTeamRequest,
@@ -41,6 +43,7 @@ describe('OpenCode production prompt artifacts safe e2e', () => {
 
   afterEach(async () => {
     setClaudeBasePathOverride(null);
+    vi.restoreAllMocks();
     await fs.rm(tempDir, { recursive: true, force: true });
   });
 
@@ -52,6 +55,8 @@ describe('OpenCode production prompt artifacts safe e2e', () => {
     const teamName = `${scenario.teamNamePrefix}-dry`;
     const captureAdapter = new CapturingOpenCodeRuntimeAdapter();
     const service = new TeamProvisioningService();
+    // This scenario verifies prompt construction, not registry activity repair.
+    vi.spyOn(TeamTaskReader.prototype, 'getTasks').mockResolvedValue([]);
     service.setRuntimeAdapterRegistry(new TeamRuntimeAdapterRegistry([captureAdapter]));
 
     await service.createTeam(
@@ -63,7 +68,21 @@ describe('OpenCode production prompt artifacts safe e2e', () => {
       }),
       () => undefined
     );
-    await materializeOpenCodeScenarioTasks({ scenario, teamName, projectPath });
+    // This prompt-only test uses an in-memory boundary, not a registry integration substitute.
+    let nextScenarioTask = 0;
+    const inMemoryPromptTasks: RegistryTeamTaskCreateInput[] = [];
+    const inMemoryPromptRegistryBoundary = {
+      createTask: async (input: RegistryTeamTaskCreateInput) => {
+        const task = scenario.tasks[nextScenarioTask++];
+        if (!task) throw new Error('Unexpected prompt fixture task.');
+        inMemoryPromptTasks.push(input);
+        return { task: { id: String(nextScenarioTask), displayId: String(nextScenarioTask) } };
+      },
+    };
+    await materializeOpenCodeScenarioTasks({
+      scenario, teamName, projectPath, writer: inMemoryPromptRegistryBoundary,
+    });
+    expect(inMemoryPromptTasks.map((task) => task.requirements)).toEqual([['FR-1'], ['FR-1']]);
 
     expect(captureAdapter.launchInputs).toHaveLength(1);
     const launchInput = captureAdapter.launchInputs[0];
@@ -185,11 +204,11 @@ describe('OpenCode production prompt artifacts safe e2e', () => {
     expect(directCommand?.text).not.toContain('If this delivered message assigns implementation');
     expect(directCommand?.text).toContain('You must not end this turn empty.');
     expect(directCommand?.text).toContain('include taskRefs exactly as provided');
-    expect(directCommand?.text).toContain('"displayId":"59560c95"');
+    expect(directCommand?.text).toContain('"displayId":"1"');
     expect(directCommand?.text).toContain('Do not use SendMessage or runtime_deliver_message');
     expect(directCommand?.text).toContain('never use #00000000');
     expect(directCommand?.taskRefs).toEqual([
-      { taskId: 'task-59560c95-runtime-delivery', displayId: '59560c95', teamName },
+      { taskId: '1', displayId: '1', teamName },
     ]);
 
     expect(peerCommand?.text).toContain('to="jack"');
@@ -197,9 +216,9 @@ describe('OpenCode production prompt artifacts safe e2e', () => {
     expect(peerCommand?.text).toContain('Action mode for this message: delegate.');
     expect(peerCommand?.text).toContain('Action mode DELEGATE is orchestration-only');
     expect(peerCommand?.text).not.toContain('If this delivered message assigns implementation');
-    expect(peerCommand?.text).toContain('"displayId":"3375c939"');
+    expect(peerCommand?.text).toContain('"displayId":"2"');
     expect(peerCommand?.taskRefs).toEqual([
-      { taskId: 'task-3375c939-peer-relay', displayId: '3375c939', teamName },
+      { taskId: '2', displayId: '2', teamName },
     ]);
 
     if (process.env.OPENCODE_E2E_DUMP_PROMPTS === '1') {

@@ -1,6 +1,5 @@
 /**
- * Owner value normalization shared by the file store, the registry backend and
- * its HTTP client.
+ * Owner value normalization shared by the registry backend and its HTTP client.
  *
  * `null`, `'clear'` and `'none'` are the callers' way of saying "unassign";
  * an empty or whitespace-only string means the same. Anything else is a member

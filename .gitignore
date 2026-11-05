@@ -86,6 +86,8 @@ remotion/*
 # Deterministic announcement build output (edit landing/content/announcements).
 /landing/public/announcements/
 /landing/public/announcements.tmp-*/
-release2/
-release3/
+release*/
 .drift-cache/
+
+# Per-workspace spec registry binding (machine-local, never committed).
+.omp-spec-kit/

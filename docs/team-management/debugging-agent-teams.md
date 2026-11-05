@@ -10,6 +10,22 @@ Do not guess from the UI alone. Always correlate:
 - live process table
 - runtime-specific evidence, especially OpenCode lane manifests
 
+### Native launch reports an unreleased process projection
+
+`Native team has an unreleased process projection` means `config.json` still has
+process ownership fields from an earlier run; it is not a provider authentication
+error. Compare `runtimePid` and `tmuxPaneId` with the live host process table.
+Never terminate a process solely because its PID appears in an old config: Windows
+may already have reused that number.
+
+Native launch inspects unowned legacy direct-process rows under the config lock.
+It can replace a row only when the process is missing or a readable, nonempty
+command line contains no team/member ownership flags, including escaped flags.
+A live matching process, an unreadable command, or a native/OpenCode runtime
+identity remains blocked.
+Cancellation or another unresolved member leaves the persisted config unchanged;
+history and the saved team definition are not deleted.
+
 ## Key Files
 
 Team root:

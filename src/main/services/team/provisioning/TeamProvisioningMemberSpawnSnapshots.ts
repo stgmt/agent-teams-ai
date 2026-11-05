@@ -157,7 +157,7 @@ export interface MemberSpawnStatusesPersistedPorts {
   repairStaleTaskActivityIntervalsOnce(
     teamName: string,
     launchSnapshot: PersistedTeamLaunchSnapshot | null
-  ): void;
+  ): Promise<boolean>;
   reconcilePersistedLaunchState(teamName: string): Promise<{
     snapshot: PersistedTeamLaunchSnapshot | null;
     statuses: Record<string, MemberSpawnStatusEntry>;
@@ -174,7 +174,7 @@ export interface MemberSpawnStatusesPersistedPorts {
     teamName: string,
     memberNames: readonly string[],
     observedAt: string
-  ): void;
+  ): Promise<{ failed?: boolean }>;
   readLaunchFreshness(teamName: string): Promise<TeamLaunchFreshness | null>;
 }
 
@@ -572,7 +572,11 @@ export async function readPersistedMemberSpawnStatusesSnapshot<
   if (!isCurrentRead()) {
     return getMemberSpawnStatusesSnapshot(teamName, ports);
   }
-  ports.persisted.repairStaleTaskActivityIntervalsOnce(teamName, repairSnapshot);
+  const repaired = await ports.persisted.repairStaleTaskActivityIntervalsOnce(
+    teamName,
+    repairSnapshot
+  );
+  if (!repaired) throw new Error(`Task activity interval repair failed for team ${teamName}`);
   if (!isCurrentRead()) {
     return getMemberSpawnStatusesSnapshot(teamName, ports);
   }
@@ -607,11 +611,13 @@ export async function readPersistedMemberSpawnStatusesSnapshot<
     .filter(([, entry]) => entry.runtimeAlive === true)
     .map(([memberName]) => memberName);
   if (aliveMemberNames.length > 0 && !stoppedProjection.stopped) {
-    ports.persisted.resumeActiveTaskActivityForMembers(
+    const result = await ports.persisted.resumeActiveTaskActivityForMembers(
       teamName,
       aliveMemberNames,
       runtimeObservedAt
     );
+    if (result.failed) throw new Error(`Task activity interval resume failed for team ${teamName}`);
+    if (!isCurrentRead()) return getMemberSpawnStatusesSnapshot(teamName, ports);
   }
   const expectedMembers = snapshot ? ports.live.getPersistedLaunchMemberNames(snapshot) : undefined;
   const summary = expectedMembers

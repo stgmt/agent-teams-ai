@@ -7,7 +7,8 @@ import { expect, it } from 'vitest';
 const store = createRequire(import.meta.url)('../src/internal/messageStore.js') as {
   sendInboxMessageAsync(
     paths: { teamDir: string },
-    flags: Record<string, unknown>
+    flags: Record<string, unknown>,
+    isCurrent: () => boolean,
   ): Promise<unknown>;
 };
 
@@ -51,7 +52,8 @@ it.each(['private', 'mixed', 'group-history', 'group-write'])(
           messageId: 'next',
           text: 'Next private message',
           ...(kind === 'group-write' ? { ...groupFields, text: 'x'.repeat(10 * 1024 * 1024) } : {}),
-        }
+        },
+        () => true,
       );
       if (kind === 'group-write') {
         await expect(send).rejects.toThrow('size limit exceeded');

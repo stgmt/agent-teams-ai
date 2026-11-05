@@ -282,6 +282,26 @@ describe('TeamProvisioningEnvBuilder', () => {
       revoke();
     }
   });
+
+  it('keeps spawned teammates on the desktop registry despite stale shell settings', async () => {
+    const ports = createPorts({
+      processEnv: {
+        PATH: '/usr/bin',
+        OMP_SPEC_REGISTRY_URL: 'http://127.0.0.1:28651/mcp',
+        OMP_SPEC_REGISTRY_TOKEN_FILE: '/sandbox/token.txt',
+      },
+      resolveInteractiveShellEnvBestEffort: vi.fn(async () => ({
+        PATH: '/usr/bin',
+        OMP_SPEC_REGISTRY_URL: 'http://stale-registry/mcp',
+        OMP_SPEC_REGISTRY_TOKEN_FILE: '/stale/token.txt',
+        OMP_SPEC_REGISTRY_TOKEN: 'stale-token',
+      })),
+    });
+    const result = await buildProvisioningEnv({ providerId: 'opencode', ports });
+    expect(result.env.OMP_SPEC_REGISTRY_URL).toBe('http://127.0.0.1:28651/mcp');
+    expect(result.env.OMP_SPEC_REGISTRY_TOKEN_FILE).toBe('/sandbox/token.txt');
+    expect(result.env.OMP_SPEC_REGISTRY_TOKEN).toBeUndefined();
+  });
   it('projects the late launch-resolved control URL and app root into MCP child env as well as outer env', async () => {
     const ports = createPorts({
       getClaudeBasePath: () => '/sandbox/private-claude',

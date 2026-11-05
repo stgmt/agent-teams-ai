@@ -1,5 +1,5 @@
 import { appendOpenCodeTaskChangeDiag } from '@main/utils/openCodeTaskChangeDiagLog';
-import { getTasksBasePath, getTeamsBasePath } from '@main/utils/pathDecoder';
+import { getTeamsBasePath } from '@main/utils/pathDecoder';
 import { createLogger } from '@shared/utils/logger';
 import { resolveTaskChangePresenceFromResult } from '@shared/utils/taskChangePresence';
 import { classifyTaskChangeReviewability } from '@shared/utils/taskChangeReviewability';
@@ -37,6 +37,7 @@ import {
 } from './taskChangeWorkerTypes';
 import { TeamConfigReader } from './TeamConfigReader';
 import { TeamMetaStore } from './TeamMetaStore';
+import { TeamTaskReader } from './TeamTaskReader';
 
 import type { TaskChangePresenceRepository } from './cache/TaskChangePresenceRepository';
 import type { OpenCodeLedgerBackfillPort } from './opencode/bridge/OpenCodeReadinessBridge';
@@ -183,7 +184,8 @@ export class ChangeExtractorService {
     private readonly taskChangeSummaryRepository = new JsonTaskChangeSummaryCacheRepository(),
     private readonly taskChangeWorkerClient: TaskChangeWorkerClient = getTaskChangeWorkerClient(),
     private readonly openCodeLedgerBackfillPort: OpenCodeLedgerBackfillPort | null = null,
-    private readonly teamMetaStore: TeamMetaStore = new TeamMetaStore()
+    private readonly teamMetaStore: TeamMetaStore = new TeamMetaStore(),
+    private readonly taskReader: Pick<TeamTaskReader, 'getTasks'> = new TeamTaskReader(configReader)
   ) {
     this.taskChangeComputer = new TaskChangeComputer(logsFinder, boundaryParser);
   }
@@ -780,7 +782,9 @@ export class ChangeExtractorService {
       return { attempted: false, backfilled: false };
     }
 
-    const runtimeIdentity = await this.openCodeLedgerBackfillPort.getRuntimeIdentity?.().catch(() => null);
+    const runtimeIdentity = await this.openCodeLedgerBackfillPort
+      .getRuntimeIdentity?.()
+      .catch(() => null);
     // Another refresh may finish successfully while runtime metadata is being read.
     const refreshed = this.openCodeBackfillCache.get(cacheKey);
     if (refreshed && refreshed.expiresAt > Date.now()) {
@@ -1214,12 +1218,12 @@ export class ChangeExtractorService {
 
   // ---- Private methods ----
 
-  /** Read task metadata (owner, status) from the task JSON file */
+  /** Read canonical and execution metadata through the registry-backed task reader. */
   private async readTaskMeta(teamName: string, taskId: string): Promise<TaskChangeTaskMeta | null> {
     try {
-      const taskPath = path.join(getTasksBasePath(), teamName, `${taskId}.json`);
-      const raw = await readFile(taskPath, 'utf8');
-      const parsed = JSON.parse(raw) as Record<string, unknown>;
+      const task = (await this.taskReader.getTasks(teamName)).find((entry) => entry.id === taskId);
+      if (!task) return null;
+      const parsed = task as unknown as Record<string, unknown>;
       const intervals = Array.isArray(parsed.workIntervals)
         ? (parsed.workIntervals as unknown[]).filter(
             (i): i is { startedAt: string; completedAt?: string } =>
@@ -1290,7 +1294,7 @@ export class ChangeExtractorService {
       };
     } catch (error) {
       logger.debug(`Failed to read task meta for ${teamName}/${taskId}: ${String(error)}`);
-      return null;
+      throw error;
     }
   }
 

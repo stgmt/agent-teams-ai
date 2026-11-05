@@ -5,7 +5,7 @@ import * as path from 'path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { ChangeExtractorService } from '../../../../src/main/services/team/ChangeExtractorService';
+import { ChangeExtractorService as ProductionChangeExtractorService } from '../../../../src/main/services/team/ChangeExtractorService';
 import { OPEN_CODE_TASK_LEDGER_EVIDENCE_CONTRACT_VERSION } from '../../../../src/main/services/team/opencode/bridge/OpenCodeBridgeCommandContract';
 import { buildTaskChangePresenceDescriptor } from '../../../../src/main/services/team/taskChangePresenceUtils';
 import { setClaudeBasePathOverride } from '../../../../src/main/utils/pathDecoder';
@@ -19,6 +19,21 @@ const SUMMARY_OPTIONS = {
   stateBucket: 'completed' as const,
   summaryOnly: true,
 };
+
+let registryTask: Record<string, unknown> | null = null;
+const taskReader = {
+  getTasks: vi.fn(async () => (registryTask ? [registryTask] : [])),
+};
+
+class ChangeExtractorService extends ProductionChangeExtractorService {
+  constructor(...args: ConstructorParameters<typeof ProductionChangeExtractorService>) {
+    // Test fixtures intentionally provide only the task fields exercised by review.
+    args[7] ??= taskReader as unknown as NonNullable<
+      ConstructorParameters<typeof ProductionChangeExtractorService>[7]
+    >;
+    super(...args);
+  }
+}
 
 function buildAssistantWriteEntry(
   toolUseId: string,
@@ -51,33 +66,23 @@ async function writeJsonl(filePath: string, entries: object[]): Promise<void> {
   );
 }
 
-async function writeTaskFile(
+async function setRegistryTask(
   baseDir: string,
   overrides?: Record<string, unknown>
 ): Promise<string> {
-  const taskPath = path.join(baseDir, 'tasks', TEAM_NAME, `${TASK_ID}.json`);
-  await fs.mkdir(path.dirname(taskPath), { recursive: true });
-  await fs.writeFile(
-    taskPath,
-    JSON.stringify(
-      {
-        id: TASK_ID,
-        owner: 'alice',
-        status: 'completed',
-        createdAt: '2026-03-01T09:55:00.000Z',
-        updatedAt: '2026-03-01T10:10:00.000Z',
-        workIntervals: [
-          { startedAt: '2026-03-01T10:00:00.000Z', completedAt: '2026-03-01T10:10:00.000Z' },
-        ],
-        historyEvents: [],
-        ...overrides,
-      },
-      null,
-      2
-    ),
-    'utf8'
-  );
-  return taskPath;
+  registryTask = {
+    id: TASK_ID,
+    owner: 'alice',
+    status: 'completed',
+    createdAt: '2026-03-01T09:55:00.000Z',
+    updatedAt: '2026-03-01T10:10:00.000Z',
+    workIntervals: [
+      { startedAt: '2026-03-01T10:00:00.000Z', completedAt: '2026-03-01T10:10:00.000Z' },
+    ],
+    historyEvents: [],
+    ...overrides,
+  };
+  return path.join(baseDir, 'tasks', TEAM_NAME, `${TASK_ID}.json`);
 }
 
 async function writeOpenCodeDeliveryLedger(
@@ -450,6 +455,8 @@ describe('ChangeExtractorService', () => {
 
   afterEach(async () => {
     vi.useRealTimers();
+    registryTask = null;
+    taskReader.getTasks.mockClear();
     setClaudeBasePathOverride(null);
     if (tmpDir) {
       await fs.rm(tmpDir, { recursive: true, force: true });
@@ -673,7 +680,7 @@ describe('ChangeExtractorService', () => {
   it('restores a persisted terminal summary after a simulated restart', async () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'change-extractor-service-'));
     setClaudeBasePathOverride(tmpDir);
-    await writeTaskFile(tmpDir);
+    await setRegistryTask(tmpDir);
 
     const logPath = path.join(tmpDir, 'alice-restart.jsonl');
     await writeJsonl(logPath, [
@@ -701,7 +708,7 @@ describe('ChangeExtractorService', () => {
   it('persists terminal summary signatures with task metadata status when request status is stale', async () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'change-extractor-service-'));
     setClaudeBasePathOverride(tmpDir);
-    await writeTaskFile(tmpDir);
+    await setRegistryTask(tmpDir);
 
     const logPath = path.join(tmpDir, 'alice-stale-status.jsonl');
     await writeJsonl(logPath, [
@@ -736,7 +743,7 @@ describe('ChangeExtractorService', () => {
   it('forceFresh overwrites the persisted terminal summary snapshot', async () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'change-extractor-service-'));
     setClaudeBasePathOverride(tmpDir);
-    await writeTaskFile(tmpDir);
+    await setRegistryTask(tmpDir);
 
     const logPath = path.join(tmpDir, 'alice-refresh.jsonl');
     await writeJsonl(logPath, [
@@ -783,7 +790,7 @@ describe('ChangeExtractorService', () => {
   it('invalidates old terminal summaries when the task moves into review', async () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'change-extractor-service-'));
     setClaudeBasePathOverride(tmpDir);
-    await writeTaskFile(tmpDir);
+    await setRegistryTask(tmpDir);
 
     const logPath = path.join(tmpDir, 'alice-review.jsonl');
     await writeJsonl(logPath, [
@@ -797,7 +804,7 @@ describe('ChangeExtractorService', () => {
 
     const { service } = createService({ logPaths: [logPath] });
     await service.getTaskChanges(TEAM_NAME, TASK_ID, SUMMARY_OPTIONS);
-    await writeTaskFile(tmpDir, {
+    await setRegistryTask(tmpDir, {
       historyEvents: [
         {
           id: 'evt-review',
@@ -821,7 +828,7 @@ describe('ChangeExtractorService', () => {
   it('rejects persisted summaries after project/worktree drift', async () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'change-extractor-service-'));
     setClaudeBasePathOverride(tmpDir);
-    await writeTaskFile(tmpDir);
+    await setRegistryTask(tmpDir);
 
     const logPath = path.join(tmpDir, 'alice-project-drift.jsonl');
     await writeJsonl(logPath, [
@@ -844,10 +851,12 @@ describe('ChangeExtractorService', () => {
     expect((drifted.findLogFileRefsForTask as any).mock.calls.length).toBeGreaterThan(1);
   });
 
-  it('rejects persisted summaries when the task file is missing on restart', async () => {
+  it('rejects persisted summaries when the registry task is missing on restart', async () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'change-extractor-service-'));
     setClaudeBasePathOverride(tmpDir);
-    const taskPath = await writeTaskFile(tmpDir);
+    const taskPath = await setRegistryTask(tmpDir);
+    await fs.mkdir(path.dirname(taskPath), { recursive: true });
+    await fs.writeFile(taskPath, JSON.stringify(registryTask), 'utf8');
 
     const logPath = path.join(tmpDir, 'alice-missing-task.jsonl');
     await writeJsonl(logPath, [
@@ -864,7 +873,7 @@ describe('ChangeExtractorService', () => {
       TASK_ID,
       SUMMARY_OPTIONS
     );
-    await fs.unlink(taskPath);
+    registryTask = null;
     await createService({ logPaths: [logPath] }).service.getTaskChanges(
       TEAM_NAME,
       TASK_ID,
@@ -874,10 +883,26 @@ describe('ChangeExtractorService', () => {
     await expect(fs.stat(persistedEntryPath(tmpDir))).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
+  it('propagates registry failures instead of reading a legacy task file', async () => {
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'change-extractor-service-'));
+    setClaudeBasePathOverride(tmpDir);
+    const taskPath = await setRegistryTask(tmpDir);
+    await fs.mkdir(path.dirname(taskPath), { recursive: true });
+    await fs.writeFile(taskPath, JSON.stringify(registryTask), 'utf8');
+    const registryError = new Error('registry unavailable');
+    taskReader.getTasks.mockRejectedValueOnce(registryError);
+
+    const { service } = createService({ logPaths: [] });
+    await expect(service.getTaskChanges(TEAM_NAME, TASK_ID, SUMMARY_OPTIONS)).rejects.toThrow(
+      'registry unavailable'
+    );
+    expect(taskReader.getTasks).toHaveBeenCalledWith(TEAM_NAME);
+  });
+
   it('falls back safely when the persisted summary file is corrupted', async () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'change-extractor-service-'));
     setClaudeBasePathOverride(tmpDir);
-    await writeTaskFile(tmpDir);
+    await setRegistryTask(tmpDir);
 
     const logPath = path.join(tmpDir, 'alice-corrupt.jsonl');
     await writeJsonl(logPath, [
@@ -909,7 +934,7 @@ describe('ChangeExtractorService', () => {
   it('does not persist low-confidence fallback summaries', async () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'change-extractor-service-'));
     setClaudeBasePathOverride(tmpDir);
-    await writeTaskFile(tmpDir, { workIntervals: [], historyEvents: [] });
+    await setRegistryTask(tmpDir, { workIntervals: [], historyEvents: [] });
 
     const logPath = path.join(tmpDir, 'alice-fallback.jsonl');
     await writeJsonl(logPath, [
@@ -991,7 +1016,7 @@ describe('ChangeExtractorService', () => {
   it('prefers worker task-change results when the worker is available', async () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'change-extractor-service-'));
     setClaudeBasePathOverride(tmpDir);
-    await writeTaskFile(tmpDir);
+    await setRegistryTask(tmpDir);
 
     const workerResult = makeTaskChangeResult();
     const computeTaskChanges = vi.fn(async () => workerResult);
@@ -1016,7 +1041,7 @@ describe('ChangeExtractorService', () => {
   it('falls back inline when task-change worker is unavailable', async () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'change-extractor-service-'));
     setClaudeBasePathOverride(tmpDir);
-    await writeTaskFile(tmpDir);
+    await setRegistryTask(tmpDir);
 
     const logPath = path.join(tmpDir, 'alice-inline-unavailable.jsonl');
     await writeJsonl(logPath, [
@@ -1051,7 +1076,7 @@ describe('ChangeExtractorService', () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'change-extractor-service-'));
     setClaudeBasePathOverride(tmpDir);
-    await writeTaskFile(tmpDir);
+    await setRegistryTask(tmpDir);
 
     const logPath = path.join(tmpDir, 'alice-inline-worker-error.jsonl');
     await writeJsonl(logPath, [
@@ -1088,7 +1113,7 @@ describe('ChangeExtractorService', () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'change-extractor-service-'));
     setClaudeBasePathOverride(tmpDir);
-    await writeTaskFile(tmpDir);
+    await setRegistryTask(tmpDir);
 
     const logPath = path.join(tmpDir, 'alice-inline-worker-oom.jsonl');
     await writeJsonl(logPath, [
@@ -1128,7 +1153,7 @@ describe('ChangeExtractorService', () => {
   it('keeps summary cache in main and skips worker on repeat terminal summary requests', async () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'change-extractor-service-'));
     setClaudeBasePathOverride(tmpDir);
-    await writeTaskFile(tmpDir);
+    await setRegistryTask(tmpDir);
 
     const logPath = path.join(tmpDir, 'alice-worker-summary-cache.jsonl');
     await writeJsonl(logPath, [
@@ -1158,7 +1183,7 @@ describe('ChangeExtractorService', () => {
   it('restores persisted summaries without invoking worker compute', async () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'change-extractor-service-'));
     setClaudeBasePathOverride(tmpDir);
-    await writeTaskFile(tmpDir);
+    await setRegistryTask(tmpDir);
 
     const logPath = path.join(tmpDir, 'alice-worker-persisted.jsonl');
     await writeJsonl(logPath, [
@@ -1195,7 +1220,7 @@ describe('ChangeExtractorService', () => {
   it('keeps in-flight summary compute across invalidation without caching stale results', async () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'change-extractor-service-'));
     setClaudeBasePathOverride(tmpDir);
-    await writeTaskFile(tmpDir);
+    await setRegistryTask(tmpDir);
 
     const first = deferred<ReturnType<typeof makeTaskChangeResult>>();
     const firstStarted = deferred<void>();
@@ -1237,10 +1262,21 @@ describe('ChangeExtractorService', () => {
     expect(worker.computeTaskChanges).toHaveBeenCalledTimes(2);
   });
 
-  it('writes has_changes presence entries after successful task diff computation', async () => {
+  it('uses registry owner, status, and intervals for review presence despite conflicting legacy data', async () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'change-extractor-service-'));
     setClaudeBasePathOverride(tmpDir);
-    await writeTaskFile(tmpDir);
+    const taskPath = await setRegistryTask(tmpDir);
+    await fs.mkdir(path.dirname(taskPath), { recursive: true });
+    await fs.writeFile(
+      taskPath,
+      JSON.stringify({
+        id: TASK_ID,
+        owner: 'legacy-owner',
+        status: 'pending',
+        workIntervals: [],
+      }),
+      'utf8'
+    );
 
     const logPath = path.join(tmpDir, 'alice-presence.jsonl');
     await writeJsonl(logPath, [
@@ -1299,7 +1335,7 @@ describe('ChangeExtractorService', () => {
   it('clears cached presence for diagnostic-only multi-scope task diff results', async () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'change-extractor-service-'));
     setClaudeBasePathOverride(tmpDir);
-    await writeTaskFile(tmpDir);
+    await setRegistryTask(tmpDir);
 
     const upsertEntry = vi.fn(() => Promise.resolve(undefined));
     const deleteEntry = vi.fn(() => Promise.resolve(undefined));
@@ -1341,7 +1377,7 @@ describe('ChangeExtractorService', () => {
   it('writes needs_attention presence entries for unclassified warning-only task diff results', async () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'change-extractor-service-'));
     setClaudeBasePathOverride(tmpDir);
-    await writeTaskFile(tmpDir);
+    await setRegistryTask(tmpDir);
 
     const upsertEntry = vi.fn(() => Promise.resolve(undefined));
     const ensureTracking = vi.fn(() =>
@@ -1389,7 +1425,7 @@ describe('ChangeExtractorService', () => {
   it('does not write warning-only presence for active interval summaries with no observed file edits yet', async () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'change-extractor-service-'));
     setClaudeBasePathOverride(tmpDir);
-    await writeTaskFile(tmpDir);
+    await setRegistryTask(tmpDir);
 
     const upsertEntry = vi.fn(async () => undefined);
     const ensureTracking = vi.fn(async () => ({
@@ -1435,7 +1471,7 @@ describe('ChangeExtractorService', () => {
   it('does not write no_changes presence entries for uncertain empty task diff results', async () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'change-extractor-service-'));
     setClaudeBasePathOverride(tmpDir);
-    await writeTaskFile(tmpDir);
+    await setRegistryTask(tmpDir);
 
     const upsertEntry = vi.fn(async () => undefined);
     const ensureTracking = vi.fn(async () => ({
@@ -1465,7 +1501,7 @@ describe('ChangeExtractorService', () => {
   it('clears stale presence entries for active uncertain empty task diff results', async () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'change-extractor-service-'));
     setClaudeBasePathOverride(tmpDir);
-    await writeTaskFile(tmpDir, {
+    await setRegistryTask(tmpDir, {
       status: 'in_progress',
       workIntervals: [{ startedAt: '2026-03-01T10:00:00.000Z' }],
     });
@@ -1506,7 +1542,7 @@ describe('ChangeExtractorService', () => {
   it('clears stale presence entries for newly created pending tasks without logs', async () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'change-extractor-service-'));
     setClaudeBasePathOverride(tmpDir);
-    await writeTaskFile(tmpDir, {
+    await setRegistryTask(tmpDir, {
       status: 'pending',
       workIntervals: [],
     });
@@ -1547,7 +1583,7 @@ describe('ChangeExtractorService', () => {
   it('clears stale presence for pending related logs that have no task boundaries or file edits yet', async () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'change-extractor-service-'));
     setClaudeBasePathOverride(tmpDir);
-    await writeTaskFile(tmpDir, {
+    await setRegistryTask(tmpDir, {
       status: 'pending',
       workIntervals: [],
     });
@@ -1593,7 +1629,7 @@ describe('ChangeExtractorService', () => {
   it('passes task metadata status to task diff workers when request status is stale', async () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'change-extractor-service-'));
     setClaudeBasePathOverride(tmpDir);
-    await writeTaskFile(tmpDir, { status: 'completed', reviewState: 'none' });
+    await setRegistryTask(tmpDir, { status: 'completed', reviewState: 'none' });
 
     const workerClient = {
       isAvailable: vi.fn(() => true),
@@ -1622,7 +1658,7 @@ describe('ChangeExtractorService', () => {
   it('keeps stale presence entries for completed uncertain empty task diff results even when request status is stale', async () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'change-extractor-service-'));
     setClaudeBasePathOverride(tmpDir);
-    await writeTaskFile(tmpDir, { status: 'completed', reviewState: 'none' });
+    await setRegistryTask(tmpDir, { status: 'completed', reviewState: 'none' });
 
     const upsertEntry = vi.fn(() => Promise.resolve(undefined));
     const deleteEntry = vi.fn(() => Promise.resolve(undefined));
@@ -1661,7 +1697,7 @@ describe('ChangeExtractorService', () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'change-extractor-service-'));
     setClaudeBasePathOverride(tmpDir);
-    await writeTaskFile(tmpDir, {
+    await setRegistryTask(tmpDir, {
       status: 'in_progress',
       workIntervals: [{ startedAt: '2026-03-01T10:00:00.000Z' }],
     });
@@ -1704,7 +1740,7 @@ describe('ChangeExtractorService', () => {
   it('runs OpenCode recovery when a ledger result only contains warning notices', async () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'change-extractor-service-'));
     setClaudeBasePathOverride(tmpDir);
-    await writeTaskFile(tmpDir, { displayId: 'abc12345', owner: 'bob' });
+    await setRegistryTask(tmpDir, { displayId: 'abc12345', owner: 'bob' });
     const projectDir = path.join(tmpDir, 'project-dir');
     const projectPath = path.join(tmpDir, 'repo');
     await fs.mkdir(projectDir, { recursive: true });
@@ -1781,7 +1817,7 @@ describe('ChangeExtractorService', () => {
   it('recovers Codex warning-only ledger results through the scoped worker path', async () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'change-extractor-service-'));
     setClaudeBasePathOverride(tmpDir);
-    await writeTaskFile(tmpDir, { owner: 'tom' });
+    await setRegistryTask(tmpDir, { owner: 'tom' });
     const projectDir = path.join(tmpDir, 'project-dir');
     const projectPath = path.join(tmpDir, 'repo');
     await fs.mkdir(projectDir, { recursive: true });
@@ -1840,7 +1876,7 @@ describe('ChangeExtractorService', () => {
   it('keeps non-Codex warning-only ledger results as diagnostics instead of adding legacy changes', async () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'change-extractor-service-'));
     setClaudeBasePathOverride(tmpDir);
-    await writeTaskFile(tmpDir, { owner: 'atlas' });
+    await setRegistryTask(tmpDir, { owner: 'atlas' });
     const projectDir = path.join(tmpDir, 'project-dir');
     const projectPath = path.join(tmpDir, 'repo');
     await fs.mkdir(projectDir, { recursive: true });
@@ -1894,7 +1930,7 @@ describe('ChangeExtractorService', () => {
   it('backfills OpenCode ledger artifacts once before falling back to legacy extraction', async () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'change-extractor-service-'));
     setClaudeBasePathOverride(tmpDir);
-    await writeTaskFile(tmpDir, { displayId: 'abc12345', owner: 'bob' });
+    await setRegistryTask(tmpDir, { displayId: 'abc12345', owner: 'bob' });
     const projectDir = path.join(tmpDir, 'project-dir');
     const projectPath = path.join(tmpDir, 'repo');
     await fs.mkdir(projectDir, { recursive: true });
@@ -1989,7 +2025,7 @@ describe('ChangeExtractorService', () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'change-extractor-service-'));
     setClaudeBasePathOverride(tmpDir);
-    await writeTaskFile(tmpDir, { displayId: 'abc12345', owner: 'bob' });
+    await setRegistryTask(tmpDir, { displayId: 'abc12345', owner: 'bob' });
     const projectDir = path.join(tmpDir, 'project-dir');
     const projectPath = path.join(tmpDir, 'repo');
     await fs.mkdir(projectDir, { recursive: true });
@@ -2046,7 +2082,7 @@ describe('ChangeExtractorService', () => {
   it('uses the OpenCode delivery member when the current task owner changed later', async () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'change-extractor-service-'));
     setClaudeBasePathOverride(tmpDir);
-    await writeTaskFile(tmpDir, { displayId: 'abc12345', owner: 'alice' });
+    await setRegistryTask(tmpDir, { displayId: 'abc12345', owner: 'alice' });
     const projectDir = path.join(tmpDir, 'project-dir');
     const projectPath = path.join(tmpDir, 'repo');
     await fs.mkdir(projectDir, { recursive: true });
@@ -2119,7 +2155,7 @@ describe('ChangeExtractorService', () => {
   it('omits member filter when multiple OpenCode delivery members match the task', async () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'change-extractor-service-'));
     setClaudeBasePathOverride(tmpDir);
-    await writeTaskFile(tmpDir, { displayId: 'abc12345', owner: 'alice' });
+    await setRegistryTask(tmpDir, { displayId: 'abc12345', owner: 'alice' });
     const projectDir = path.join(tmpDir, 'project-dir');
     const projectPath = path.join(tmpDir, 'repo');
     await fs.mkdir(projectDir, { recursive: true });
@@ -2192,7 +2228,7 @@ describe('ChangeExtractorService', () => {
   it('ignores OpenCode delivery records that match only a recreated task display id', async () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'change-extractor-service-'));
     setClaudeBasePathOverride(tmpDir);
-    await writeTaskFile(tmpDir, { displayId: 'abc12345', owner: 'bob' });
+    await setRegistryTask(tmpDir, { displayId: 'abc12345', owner: 'bob' });
     const projectDir = path.join(tmpDir, 'project-dir');
     const projectPath = path.join(tmpDir, 'repo');
     await fs.mkdir(projectDir, { recursive: true });
@@ -2251,7 +2287,7 @@ describe('ChangeExtractorService', () => {
   it('ignores OpenCode delivery records that only mention related tasks', async () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'change-extractor-service-'));
     setClaudeBasePathOverride(tmpDir);
-    await writeTaskFile(tmpDir, { displayId: 'abc12345', owner: 'bob' });
+    await setRegistryTask(tmpDir, { displayId: 'abc12345', owner: 'bob' });
     const projectDir = path.join(tmpDir, 'project-dir');
     const projectPath = path.join(tmpDir, 'repo');
     await fs.mkdir(projectDir, { recursive: true });
@@ -2310,7 +2346,7 @@ describe('ChangeExtractorService', () => {
   it('does not run OpenCode backfill for explicit non-OpenCode teams even if stale runtime files exist', async () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'change-extractor-service-'));
     setClaudeBasePathOverride(tmpDir);
-    await writeTaskFile(tmpDir, { displayId: 'abc12345', owner: 'alice' });
+    await setRegistryTask(tmpDir, { displayId: 'abc12345', owner: 'alice' });
     const projectDir = path.join(tmpDir, 'project-dir');
     const projectPath = path.join(tmpDir, 'repo');
     await fs.mkdir(projectDir, { recursive: true });
@@ -2370,7 +2406,7 @@ describe('ChangeExtractorService', () => {
   it('awaits OpenCode backfill for summary-only requests with delivery context before falling back', async () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'change-extractor-service-'));
     setClaudeBasePathOverride(tmpDir);
-    await writeTaskFile(tmpDir, { displayId: 'abc12345', owner: 'bob' });
+    await setRegistryTask(tmpDir, { displayId: 'abc12345', owner: 'bob' });
     const projectDir = path.join(tmpDir, 'project-dir');
     const projectPath = path.join(tmpDir, 'repo');
     await fs.mkdir(projectDir, { recursive: true });
@@ -2461,7 +2497,7 @@ describe('ChangeExtractorService', () => {
   it('does not reuse a negative OpenCode backfill cache entry after delivery context appears', async () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'change-extractor-service-'));
     setClaudeBasePathOverride(tmpDir);
-    await writeTaskFile(tmpDir, { displayId: 'abc12345', owner: 'bob' });
+    await setRegistryTask(tmpDir, { displayId: 'abc12345', owner: 'bob' });
     const projectDir = path.join(tmpDir, 'project-dir');
     const projectPath = path.join(tmpDir, 'repo');
     await fs.mkdir(projectDir, { recursive: true });
@@ -2545,7 +2581,7 @@ describe('ChangeExtractorService', () => {
     let runtimeIdentity = 'runtime-A';
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'change-extractor-service-'));
     setClaudeBasePathOverride(tmpDir);
-    await writeTaskFile(tmpDir, { displayId: 'abc12345', owner: 'bob' });
+    await setRegistryTask(tmpDir, { displayId: 'abc12345', owner: 'bob' });
     const projectDir = path.join(tmpDir, 'project-dir');
     const projectPath = path.join(tmpDir, 'repo');
     await fs.mkdir(projectDir, { recursive: true });
@@ -2708,7 +2744,7 @@ describe('ChangeExtractorService', () => {
     let runtimeIdentity = 'runtime-v1';
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'change-extractor-service-'));
     setClaudeBasePathOverride(tmpDir);
-    await writeTaskFile(tmpDir, { displayId: 'abc12345', owner: 'bob' });
+    await setRegistryTask(tmpDir, { displayId: 'abc12345', owner: 'bob' });
     const projectDir = path.join(tmpDir, 'project-dir');
     const projectPath = path.join(tmpDir, 'repo');
     await fs.mkdir(projectDir, { recursive: true });
@@ -2866,7 +2902,7 @@ describe('ChangeExtractorService', () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'change-extractor-service-'));
     setClaudeBasePathOverride(tmpDir);
-    await writeTaskFile(tmpDir, { displayId: 'abc12345', owner: 'bob' });
+    await setRegistryTask(tmpDir, { displayId: 'abc12345', owner: 'bob' });
     const projectDir = path.join(tmpDir, 'project-dir');
     const projectPath = path.join(tmpDir, 'repo');
     await fs.mkdir(projectDir, { recursive: true });
@@ -2940,7 +2976,7 @@ describe('ChangeExtractorService', () => {
   it('caches duplicates-only OpenCode backfill from the current evidence contract', async () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'change-extractor-service-'));
     setClaudeBasePathOverride(tmpDir);
-    await writeTaskFile(tmpDir, { displayId: 'abc12345', owner: 'bob' });
+    await setRegistryTask(tmpDir, { displayId: 'abc12345', owner: 'bob' });
     const projectDir = path.join(tmpDir, 'project-dir');
     const projectPath = path.join(tmpDir, 'repo');
     await fs.mkdir(projectDir, { recursive: true });

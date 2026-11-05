@@ -46,6 +46,7 @@ async function setup(prepareTrust?: NativeWorkspaceTrustPreparation['prepare']) 
     runtimeRoot: join(root, 'attempts'),
     workspaceRoot: join(root, 'workspaces'),
     teamsRoot,
+    readStartupTasks: async () => [],
     provider: {
       prepareWorkspaceTrust: (launch, signal) =>
         workspaceTrust.prepare('anthropic', launch.workingDirectory, signal),

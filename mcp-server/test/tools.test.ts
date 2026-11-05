@@ -4,6 +4,8 @@ import os from 'os';
 import path from 'path';
 
 import { AGENT_TEAMS_REGISTERED_TOOL_NAMES, registerTools } from '../src/tools';
+import { afterEach, beforeEach } from 'vitest';
+import { startControlServer as startRegistryControlServer } from '../../agent-teams-controller/test/helpers/controlServer.js';
 
 type RegisteredTool = {
   description?: string;
@@ -11,13 +13,28 @@ type RegisteredTool = {
   parameters?: { safeParse: (value: unknown) => { success: boolean } };
   execute: (args: Record<string, unknown>) => Promise<unknown> | unknown;
 };
+type RegistryControlServer = { url: string; stop(): Promise<void> };
 
 function collectTools() {
   const tools = new Map<string, RegisteredTool>();
 
   registerTools({
     addTool(config: RegisteredTool) {
-      tools.set(config.name, config);
+      tools.set(config.name, {
+        ...config,
+        execute(args) {
+          const usesTaskBoard =
+            config.name.startsWith('task_') ||
+            config.name.startsWith('kanban_') ||
+            config.name.startsWith('review_') ||
+            config.name === 'lead_briefing' ||
+            config.name === 'member_briefing';
+          if (usesTaskBoard && typeof args.claudeDir === 'string') {
+            process.env.AGENT_TEAMS_MCP_CLAUDE_DIR = args.claudeDir;
+          }
+          return config.execute(args);
+        },
+      });
     },
   } as never);
 
@@ -90,10 +107,41 @@ describe('agent-teams-mcp tools', () => {
 
   const tools = collectTools();
   const tempDirs: string[] = [];
+  const bindingEnvKeys = [
+    'AGENT_TEAMS_BOUND_CONTROL_URL',
+    'AGENT_TEAMS_BOUND_CONTEXT_JSON',
+    'AGENT_TEAMS_MCP_CLAUDE_DIR',
+  ] as const;
+  let previousBindingEnv: Record<(typeof bindingEnvKeys)[number], string | undefined>;
+  let registryControlServer: RegistryControlServer | undefined;
 
-  afterEach(() => {
-    for (const dir of tempDirs.splice(0)) {
-      fs.rmSync(dir, { recursive: true, force: true });
+  beforeEach(async () => {
+    previousBindingEnv = Object.fromEntries(
+      bindingEnvKeys.map((key) => [key, process.env[key]])
+    ) as Record<(typeof bindingEnvKeys)[number], string | undefined>;
+    const server = await startRegistryControlServer();
+    registryControlServer = server;
+    process.env.AGENT_TEAMS_BOUND_CONTROL_URL = server.url;
+    process.env.AGENT_TEAMS_BOUND_CONTEXT_JSON = JSON.stringify({
+      appInstanceId: 'mcp-tools-test',
+      dataRootFingerprint: 'mcp-tools-root',
+      connectionGeneration: 1,
+    });
+  });
+
+  afterEach(async () => {
+    try {
+      if (registryControlServer) await registryControlServer.stop();
+    } finally {
+      registryControlServer = undefined;
+      for (const key of bindingEnvKeys) {
+        const value = previousBindingEnv[key];
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      for (const dir of tempDirs.splice(0)) {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
     }
   });
 
@@ -106,7 +154,24 @@ describe('agent-teams-mcp tools', () => {
   function makeClaudeDir() {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-teams-mcp-'));
     tempDirs.push(dir);
+    process.env.AGENT_TEAMS_MCP_CLAUDE_DIR = dir;
     return dir;
+  }
+
+  async function registryTasks(teamName: string): Promise<Array<Record<string, unknown>>> {
+    if (!registryControlServer) throw new Error('Registry test control server is not running');
+    const response = await fetch(
+      `${registryControlServer.url}/api/teams/${encodeURIComponent(teamName)}/tasks`
+    );
+    if (!response.ok) throw new Error(`Registry task listing failed: ${response.status}`);
+    const payload = (await response.json()) as { tasks: Array<Record<string, unknown>> };
+    return payload.tasks;
+  }
+
+  async function registryTask(teamName: string, taskId: string) {
+    const task = (await registryTasks(teamName)).find((candidate) => candidate.id === taskId);
+    if (!task) throw new Error(`Registry task not found: ${taskId}`);
+    return task;
   }
 
   function writeTeamConfig(
@@ -231,6 +296,7 @@ describe('agent-teams-mcp tools', () => {
           subject: `Disposable dependency test ${++sequence}`,
           owner: 'alice',
           blockedBy,
+          requirements: ['Exercise dependency lifecycle behavior'],
         });
       const inbox = (owner: string): Array<{ text: string; messageId?: string }> => {
         const file = path.join(claudeDir, 'teams', teamName, 'inboxes', `${owner}.json`);
@@ -247,19 +313,14 @@ describe('agent-teams-mcp tools', () => {
       ];
       for (const blockerStatus of ['pending', 'in_progress']) {
         await call('task_set_status', { taskId: first.id, actor: 'alice', status: blockerStatus });
-        const before = fs.readFileSync(
-          path.join(claudeDir, 'tasks', teamName, `${dependent.id}.json`),
-          'utf8'
-        );
+        const before = await registryTask(teamName, dependent.id);
         const notices = inbox('alice');
         for (const [name, args] of protectedCalls) {
           await expect(
             call(name, { taskId: dependent.id, actor: 'alice', ...args })
           ).rejects.toThrow('unresolved dependencies');
         }
-        expect(
-          fs.readFileSync(path.join(claudeDir, 'tasks', teamName, `${dependent.id}.json`), 'utf8')
-        ).toBe(before);
+        expect(await registryTask(teamName, dependent.id)).toEqual(before);
         expect(inbox('alice')).toEqual(notices);
       }
       const finish = async (taskId: string) =>
@@ -289,9 +350,8 @@ describe('agent-teams-mcp tools', () => {
       expect(inbox('lead').filter((row) => row.text.includes('Dependency resolved'))).toHaveLength(
         0
       );
-      const stored = JSON.parse(
-        fs.readFileSync(path.join(claudeDir, 'tasks', teamName, `${dependent.id}.json`), 'utf8')
-      );
+      const stored = await registryTask(teamName, dependent.id);
+      if (!Array.isArray(stored.comments)) throw new Error('Registry task comments are missing');
       expect(stored.comments.map((comment: { id: string }) => comment.id)).toEqual([
         `dep-resolved-${first.id}-${dependent.id}`,
         `dep-resolved-${second.id}-${dependent.id}`,
@@ -401,13 +461,15 @@ describe('agent-teams-mcp tools', () => {
     expect(trash?.safeParse({ ...target, force: true }).success).toBe(false);
   });
 
-  it('accepts an omitted team_create roster while rejecting malformed provided rosters', () => {
+  it('requires a registry spec while accepting an omitted team_create roster', () => {
     const parameters = getTool('team_create').parameters;
+    const target = { teamName: 'alpha', specProject: 'sandbox', specSlug: 'alpha' };
 
-    expect(parameters?.safeParse({ teamName: 'alpha' }).success).toBe(true);
-    expect(parameters?.safeParse({ teamName: 'alpha', members: 'builder' }).success).toBe(false);
-    expect(parameters?.safeParse({ teamName: 'alpha', members: null }).success).toBe(false);
-    expect(parameters?.safeParse({ teamName: 'alpha', members: [{}] }).success).toBe(false);
+    expect(parameters?.safeParse({ teamName: 'alpha' }).success).toBe(false);
+    expect(parameters?.safeParse(target).success).toBe(true);
+    expect(parameters?.safeParse({ ...target, members: 'builder' }).success).toBe(false);
+    expect(parameters?.safeParse({ ...target, members: null }).success).toBe(false);
+    expect(parameters?.safeParse({ ...target, members: [{}] }).success).toBe(false);
   });
 
   it('launches and stops teams through the runtime MCP tools', async () => {
@@ -590,6 +652,8 @@ describe('agent-teams-mcp tools', () => {
           claudeDir,
           teamName: 'alpha',
           controlUrl: server.baseUrl,
+          specProject: 'sandbox',
+          specSlug: 'alpha',
           displayName: 'Alpha',
           members: [
             {
@@ -634,6 +698,8 @@ describe('agent-teams-mcp tools', () => {
           url: '/api/teams',
           body: {
             teamName: 'alpha',
+            specProject: 'sandbox',
+            specSlug: 'alpha',
             displayName: 'Alpha',
             members: [
               {
@@ -1079,6 +1145,7 @@ describe('agent-teams-mcp tools', () => {
         claudeDir,
         teamName,
         subject: 'Dependency',
+        requirements: ['FR-1'],
       })
     );
     const dependencyRef = {
@@ -1092,6 +1159,7 @@ describe('agent-teams-mcp tools', () => {
         claudeDir,
         teamName,
         subject: 'Review MCP adapter',
+        requirements: ['FR-1'],
         owner: 'alice',
         createdBy: 'lead',
         descriptionTaskRefs: [dependencyRef],
@@ -1392,6 +1460,7 @@ describe('agent-teams-mcp tools', () => {
         claudeDir,
         teamName,
         subject: 'Queued work',
+        requirements: ['FR-1'],
         description: 'Pending description should stay out of briefing details',
         owner: 'alice',
         prompt: 'Read the plan before starting.',
@@ -1404,6 +1473,7 @@ describe('agent-teams-mcp tools', () => {
         claudeDir,
         teamName,
         subject: 'Active work',
+        requirements: ['FR-1'],
         description: 'This one is already in progress',
         owner: 'alice',
         startImmediately: true,
@@ -1424,6 +1494,7 @@ describe('agent-teams-mcp tools', () => {
         claudeDir,
         teamName,
         subject: 'Done work',
+        requirements: ['FR-1'],
         description: 'Completed description should also stay compact',
         owner: 'alice',
       })
@@ -1440,6 +1511,7 @@ describe('agent-teams-mcp tools', () => {
         claudeDir,
         teamName,
         subject: 'Assign later',
+        requirements: ['FR-1'],
       })
     );
     await getTool('task_set_owner').execute({
@@ -1604,6 +1676,7 @@ describe('agent-teams-mcp tools', () => {
         claudeDir,
         teamName,
         subject: 'Queue raw headless work',
+        requirements: ['FR-1'],
         owner: 'lead',
       })
     );
@@ -1613,19 +1686,19 @@ describe('agent-teams-mcp tools', () => {
     expect(queuedTask.historyEvents?.[0]?.actor).toBeUndefined();
     expect(fs.existsSync(leadInboxPath)).toBe(false);
 
-    const taskDir = path.join(claudeDir, 'tasks', teamName);
     const metaActorTask = parseJsonToolResult(
       await getTool('task_create').execute({
         claudeDir,
         teamName,
         subject: 'Accept canonical metadata actor',
+        requirements: ['FR-1'],
         createdBy: 'META-ONLY',
       })
     );
     expect(metaActorTask.createdBy).toBe('meta-only');
     expect(metaActorTask.historyEvents?.[0]?.actor).toBe('meta-only');
 
-    const taskFilesBeforeRejectedActor = fs.readdirSync(taskDir);
+    const tasksBeforeRejectedActor = await registryTasks(teamName);
     for (const [actorField, actor] of [
       ['createdBy', 'external-integration'],
       ['from', 'external-integration'],
@@ -1636,6 +1709,7 @@ describe('agent-teams-mcp tools', () => {
           claudeDir,
           teamName,
           subject: `Reject forged ${actorField} actor`,
+          requirements: ['FR-1'],
           owner: 'lead',
           [actorField]: actor,
           startImmediately: true,
@@ -1644,7 +1718,7 @@ describe('agent-teams-mcp tools', () => {
         `Unknown task actor "${actor}". Use "user" or a configured team member name.`
       );
     }
-    expect(fs.readdirSync(taskDir)).toEqual(taskFilesBeforeRejectedActor);
+    expect(await registryTasks(teamName)).toEqual(tasksBeforeRejectedActor);
     expect(fs.existsSync(leadInboxPath)).toBe(false);
 
     const activeTask = parseJsonToolResult(
@@ -1652,6 +1726,7 @@ describe('agent-teams-mcp tools', () => {
         claudeDir,
         teamName,
         subject: 'Deliver raw headless work now',
+        requirements: ['FR-1'],
         owner: 'lead',
         createdBy: 'user',
         startImmediately: true,
@@ -1690,6 +1765,7 @@ describe('agent-teams-mcp tools', () => {
       claudeDir,
       teamName,
       subject: 'Codex assigned work',
+      requirements: ['FR-1'],
       owner: 'bob',
     });
 
@@ -1717,6 +1793,7 @@ describe('agent-teams-mcp tools', () => {
         claudeDir,
         teamName,
         subject: 'Queued work',
+        requirements: ['FR-1'],
         owner: 'alice',
       })
     );
@@ -1725,6 +1802,7 @@ describe('agent-teams-mcp tools', () => {
         claudeDir,
         teamName,
         subject: 'Unassigned work',
+        requirements: ['FR-1'],
       })
     );
     const reviewTask = parseJsonToolResult(
@@ -1732,6 +1810,7 @@ describe('agent-teams-mcp tools', () => {
         claudeDir,
         teamName,
         subject: 'Awaiting reviewer',
+        requirements: ['FR-1'],
         owner: 'alice',
       })
     );
@@ -1810,6 +1889,7 @@ describe('agent-teams-mcp tools', () => {
         claudeDir,
         teamName,
         subject: 'Needs revision',
+        requirements: ['FR-1'],
         owner: 'bob',
       })
     );
@@ -1882,6 +1962,7 @@ describe('agent-teams-mcp tools', () => {
         claudeDir,
         teamName,
         subject: 'Start review test',
+        requirements: ['FR-1'],
         owner: 'bob',
       })
     );
@@ -1958,6 +2039,7 @@ describe('agent-teams-mcp tools', () => {
         claudeDir,
         teamName,
         subject: 'Cannot approve directly',
+        requirements: ['FR-1'],
         owner: 'bob',
       })
     );
@@ -1975,6 +2057,7 @@ describe('agent-teams-mcp tools', () => {
         claudeDir,
         teamName,
         subject: 'Delete cleanup through generic status',
+        requirements: ['FR-1'],
         owner: 'bob',
       })
     );
@@ -2048,6 +2131,7 @@ describe('agent-teams-mcp tools', () => {
         claudeDir,
         teamName,
         subject: 'MCP ownership handoff',
+        requirements: ['FR-1'],
         owner: 'alice',
         notifyOwner: false,
       })
@@ -2122,6 +2206,7 @@ describe('agent-teams-mcp tools', () => {
         claudeDir,
         teamName,
         subject: 'Quiet approval',
+        requirements: ['FR-1'],
         owner: 'bob',
       })
     );
@@ -2154,6 +2239,7 @@ describe('agent-teams-mcp tools', () => {
         claudeDir,
         teamName,
         subject: 'Notifying approval',
+        requirements: ['FR-1'],
         owner: 'bob',
       })
     );
@@ -2288,7 +2374,7 @@ describe('agent-teams-mcp tools', () => {
     ]);
   });
 
-  it('uses forced app claude dir over model-supplied claudeDir when configured', async () => {
+  it('uses forced app claude dir over model-supplied claudeDir without an app-bound control context', async () => {
     const forcedClaudeDir = makeClaudeDir();
     const wrongClaudeDir = makeClaudeDir();
     const teamName = 'forced-root';
@@ -2300,6 +2386,10 @@ describe('agent-teams-mcp tools', () => {
     });
 
     const previousForcedDir = process.env.AGENT_TEAMS_MCP_CLAUDE_DIR;
+    const previousControlUrl = process.env.AGENT_TEAMS_BOUND_CONTROL_URL;
+    const previousControlContext = process.env.AGENT_TEAMS_BOUND_CONTEXT_JSON;
+    delete process.env.AGENT_TEAMS_BOUND_CONTROL_URL;
+    delete process.env.AGENT_TEAMS_BOUND_CONTEXT_JSON;
     process.env.AGENT_TEAMS_MCP_CLAUDE_DIR = forcedClaudeDir;
     try {
       const sent = parseJsonToolResult(
@@ -2326,6 +2416,16 @@ describe('agent-teams-mcp tools', () => {
         delete process.env.AGENT_TEAMS_MCP_CLAUDE_DIR;
       } else {
         process.env.AGENT_TEAMS_MCP_CLAUDE_DIR = previousForcedDir;
+      }
+      if (previousControlUrl === undefined) {
+        delete process.env.AGENT_TEAMS_BOUND_CONTROL_URL;
+      } else {
+        process.env.AGENT_TEAMS_BOUND_CONTROL_URL = previousControlUrl;
+      }
+      if (previousControlContext === undefined) {
+        delete process.env.AGENT_TEAMS_BOUND_CONTEXT_JSON;
+      } else {
+        process.env.AGENT_TEAMS_BOUND_CONTEXT_JSON = previousControlContext;
       }
     }
   });
@@ -2409,6 +2509,7 @@ describe('agent-teams-mcp tools', () => {
         claudeDir,
         teamName,
         subject: 'Comment resilience test',
+        requirements: ['FR-1'],
         owner: 'alice',
         notifyOwner: false,
       })
@@ -2448,7 +2549,6 @@ describe('agent-teams-mcp tools', () => {
     function setupCommentTeam() {
       const claudeDir = makeClaudeDir();
       const teamName = 'completion-claim';
-      fs.mkdirSync(path.join(claudeDir, 'tasks', teamName), { recursive: true });
       writeTeamConfig(claudeDir, teamName, {
         members: [
           { name: 'lead', role: 'team-lead' },
@@ -2465,6 +2565,7 @@ describe('agent-teams-mcp tools', () => {
           claudeDir,
           teamName,
           subject,
+          requirements: ['FR-1'],
           owner: 'alice',
           notifyOwner: false,
         })
@@ -2635,7 +2736,6 @@ describe('agent-teams-mcp tools', () => {
     const claudeDir = makeClaudeDir();
     const teamName = 'slim-check';
 
-    fs.mkdirSync(path.join(claudeDir, 'tasks', teamName), { recursive: true });
     writeTeamConfig(claudeDir, teamName, { members: [{ name: 'lead' }] });
 
     const task = parseJsonToolResult(
@@ -2643,6 +2743,7 @@ describe('agent-teams-mcp tools', () => {
         claudeDir,
         teamName,
         subject: 'Slim task test',
+        requirements: ['FR-1'],
         owner: 'lead',
         notifyOwner: false,
       })
@@ -2761,7 +2862,6 @@ describe('agent-teams-mcp tools', () => {
     it('creates a task from a valid user message with provenance', async () => {
       const claudeDir = makeClaudeDir();
       const teamName = 'msg-team';
-      fs.mkdirSync(path.join(claudeDir, 'tasks', teamName), { recursive: true });
       writeTeamConfig(claudeDir, teamName, {
         members: [{ name: 'lead', role: 'team-lead' }],
       });
@@ -2776,19 +2876,19 @@ describe('agent-teams-mcp tools', () => {
         source: 'user_sent',
       });
 
-      const taskDir = path.join(claudeDir, 'tasks', teamName);
       await expect(
         getTool('task_create_from_message').execute({
           claudeDir,
           teamName,
           messageId,
           subject: 'Reject forged message-task actor',
+          requirements: ['FR-1'],
           createdBy: 'external-integration',
         })
       ).rejects.toThrow(
         'Unknown task actor "external-integration". Use "user" or a configured team member name.'
       );
-      expect(fs.readdirSync(taskDir)).toEqual([]);
+      expect(await registryTasks(teamName)).toEqual([]);
 
       const created = parseJsonToolResult(
         await getTool('task_create_from_message').execute({
@@ -2796,6 +2896,7 @@ describe('agent-teams-mcp tools', () => {
           teamName,
           messageId,
           subject: 'Implement login page',
+          requirements: ['FR-1'],
           owner: 'lead',
         })
       );
@@ -2813,7 +2914,6 @@ describe('agent-teams-mcp tools', () => {
     it('strips agent-only blocks from source text', async () => {
       const claudeDir = makeClaudeDir();
       const teamName = 'strip-team';
-      fs.mkdirSync(path.join(claudeDir, 'tasks', teamName), { recursive: true });
       writeTeamConfig(claudeDir, teamName, {
         members: [{ name: 'lead', role: 'team-lead' }],
       });
@@ -2833,6 +2933,7 @@ describe('agent-teams-mcp tools', () => {
           teamName,
           messageId,
           subject: 'Fix API bug',
+          requirements: ['FR-1'],
         })
       );
 
@@ -2843,7 +2944,6 @@ describe('agent-teams-mcp tools', () => {
     it('rejects unknown messageId', async () => {
       const claudeDir = makeClaudeDir();
       const teamName = 'unknown-msg';
-      fs.mkdirSync(path.join(claudeDir, 'tasks', teamName), { recursive: true });
       writeTeamConfig(claudeDir, teamName, {
         members: [{ name: 'lead', role: 'team-lead' }],
       });
@@ -2863,7 +2963,6 @@ describe('agent-teams-mcp tools', () => {
     it('rejects non-user-originated message sources', async () => {
       const claudeDir = makeClaudeDir();
       const teamName = 'source-reject';
-      fs.mkdirSync(path.join(claudeDir, 'tasks', teamName), { recursive: true });
       writeTeamConfig(claudeDir, teamName, {
         members: [{ name: 'lead', role: 'team-lead' }],
       });
@@ -2892,7 +2991,6 @@ describe('agent-teams-mcp tools', () => {
     it('rejects lead_process and cross_team sources explicitly', async () => {
       const claudeDir = makeClaudeDir();
       const teamName = 'source-reject-2';
-      fs.mkdirSync(path.join(claudeDir, 'tasks', teamName), { recursive: true });
       writeTeamConfig(claudeDir, teamName, {
         members: [{ name: 'lead', role: 'team-lead' }],
       });
@@ -2939,7 +3037,6 @@ describe('agent-teams-mcp tools', () => {
     it('rejects messages without an explicit source field (fail closed)', async () => {
       const claudeDir = makeClaudeDir();
       const teamName = 'no-source';
-      fs.mkdirSync(path.join(claudeDir, 'tasks', teamName), { recursive: true });
       writeTeamConfig(claudeDir, teamName, {
         members: [{ name: 'lead', role: 'team-lead' }],
       });
@@ -2967,7 +3064,6 @@ describe('agent-teams-mcp tools', () => {
     it('rejects relay copies', async () => {
       const claudeDir = makeClaudeDir();
       const teamName = 'relay-reject';
-      fs.mkdirSync(path.join(claudeDir, 'tasks', teamName), { recursive: true });
       writeTeamConfig(claudeDir, teamName, {
         members: [{ name: 'lead', role: 'team-lead' }],
       });
@@ -2997,7 +3093,6 @@ describe('agent-teams-mcp tools', () => {
     it('preserves attachment metadata without blob copying', async () => {
       const claudeDir = makeClaudeDir();
       const teamName = 'attach-meta';
-      fs.mkdirSync(path.join(claudeDir, 'tasks', teamName), { recursive: true });
       writeTeamConfig(claudeDir, teamName, {
         members: [{ name: 'lead', role: 'team-lead' }],
       });
@@ -3021,6 +3116,7 @@ describe('agent-teams-mcp tools', () => {
           teamName,
           messageId,
           subject: 'Review screenshot',
+          requirements: ['FR-1'],
         })
       );
 
@@ -3035,7 +3131,6 @@ describe('agent-teams-mcp tools', () => {
     it('reloads ordered native PNG/reference GIF source metadata and sanitized unique reference IDs', async () => {
       const claudeDir = makeClaudeDir();
       const teamName = 'TEST-reference-source';
-      fs.mkdirSync(path.join(claudeDir, 'tasks', teamName), { recursive: true });
       writeTeamConfig(claudeDir, teamName, { members: [{ name: 'lead', role: 'team-lead' }] });
       const native = {
         id: 'native',
@@ -3073,6 +3168,7 @@ describe('agent-teams-mcp tools', () => {
           teamName,
           messageId: 'reference-source',
           subject: 'Inspect files',
+          requirements: ['FR-1'],
         })
       );
       const reloaded = parseJsonToolResult(
@@ -3108,10 +3204,9 @@ describe('agent-teams-mcp tools', () => {
       }
     });
 
-    it('produces the same canonical task shape as task_create plus provenance', async () => {
+    it('produces the same registry task shape as task_create plus provenance', async () => {
       const claudeDir = makeClaudeDir();
       const teamName = 'parity-check';
-      fs.mkdirSync(path.join(claudeDir, 'tasks', teamName), { recursive: true });
       writeTeamConfig(claudeDir, teamName, {
         members: [{ name: 'lead', role: 'team-lead' }],
       });
@@ -3131,6 +3226,7 @@ describe('agent-teams-mcp tools', () => {
           teamName,
           messageId,
           subject: 'Build dashboard',
+          requirements: ['FR-1'],
           description: 'Create the main dashboard view',
           owner: 'lead',
         })
@@ -3141,6 +3237,7 @@ describe('agent-teams-mcp tools', () => {
           claudeDir,
           teamName,
           subject: 'Build dashboard (regular)',
+          requirements: ['FR-1'],
           description: 'Create the main dashboard view',
           owner: 'lead',
         })
@@ -3162,7 +3259,6 @@ describe('agent-teams-mcp tools', () => {
     it('survives create → persist → read round-trip with provenance intact', async () => {
       const claudeDir = makeClaudeDir();
       const teamName = 'roundtrip';
-      fs.mkdirSync(path.join(claudeDir, 'tasks', teamName), { recursive: true });
       writeTeamConfig(claudeDir, teamName, {
         members: [{ name: 'lead', role: 'team-lead' }],
       });
@@ -3183,11 +3279,12 @@ describe('agent-teams-mcp tools', () => {
           teamName,
           messageId,
           subject: 'Roundtrip task',
+          requirements: ['FR-1'],
           description: 'Test persistence',
         })
       );
 
-      // Re-read from disk via task_get to verify persistence
+      // Re-read from the registry via task_get to verify persistence.
       const reloaded = parseJsonToolResult(
         await getTool('task_get').execute({
           claudeDir,
@@ -3206,10 +3303,9 @@ describe('agent-teams-mcp tools', () => {
       expect(reloaded.sourceMessage.attachments[0].id).toBe('att-rt');
     });
 
-    it('old tasks without provenance continue to read normally', async () => {
+    it('registry tasks without provenance continue to read normally', async () => {
       const claudeDir = makeClaudeDir();
       const teamName = 'legacy';
-      fs.mkdirSync(path.join(claudeDir, 'tasks', teamName), { recursive: true });
       writeTeamConfig(claudeDir, teamName, {
         members: [{ name: 'lead', role: 'team-lead' }],
       });
@@ -3220,6 +3316,7 @@ describe('agent-teams-mcp tools', () => {
           claudeDir,
           teamName,
           subject: 'Legacy task without provenance',
+          requirements: ['FR-1'],
         })
       );
 
@@ -3272,6 +3369,7 @@ describe('agent-teams-mcp tools', () => {
         claudeDir,
         teamName: 'team-lead',
         subject: 'Phantom task should fail',
+        requirements: ['FR-1'],
       })
     ).rejects.toThrow(
       'Unknown team "team-lead". Board tools require an existing configured team with config.json.'
@@ -3287,6 +3385,7 @@ describe('agent-teams-mcp tools', () => {
         teamName: 'team-lead',
         messageId: 'msg-1',
         subject: 'Phantom task should fail',
+        requirements: ['FR-1'],
       })
     ).rejects.toThrow(
       'Unknown team "team-lead". Board tools require an existing configured team with config.json.'
@@ -3306,6 +3405,7 @@ describe('agent-teams-mcp tools', () => {
       claudeDir,
       teamName,
       subject: 'Work that must not be pulled early',
+      requirements: ['FR-1'],
       owner: 'alice',
     });
     const askBriefing = async () =>

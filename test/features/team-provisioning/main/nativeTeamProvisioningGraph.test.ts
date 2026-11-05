@@ -38,6 +38,7 @@ function build(teamsRoot: string, overrides: Partial<NativeTeamProvisioningGraph
       owner,
       currentContext: () => owner,
       teamsRoot,
+      readStartupTasks: async () => [],
       provider: {} as never,
       runtimeRoot: join(teamsRoot, 'runtime'),
       workspaceRoot: join(teamsRoot, 'workspace'),

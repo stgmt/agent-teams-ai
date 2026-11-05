@@ -11,13 +11,15 @@ import type { ConfiguredMcpEntry } from '@main/services/extensions/runtime/McpCo
 import type { TeamMemberMcpPolicy } from '@shared/types';
 
 import type * as McpNodeRuntimeProbeModule from '../McpNodeRuntimeProbe';
-import { getSpecRegistryTokenFilePath, TeamMcpConfigBuilder } from '../TeamMcpConfigBuilder';
+import { getRegistryTokenFilePath } from '../registry/RegistryTaskClientConfig';
+import { TeamMcpConfigBuilder } from '../TeamMcpConfigBuilder';
 import type * as WorkspaceMcpBundleModule from '../WorkspaceMcpBundle';
 
 const testPaths = vi.hoisted(() => ({
   configsDir: '',
   claudeDir: '',
   mcpServerDir: '',
+  homeDir: '',
 }));
 
 const readerState = vi.hoisted(() => ({
@@ -26,6 +28,7 @@ const readerState = vi.hoisted(() => ({
 
 vi.mock('@main/utils/pathDecoder', async (importOriginal) => ({
   ...(await importOriginal<typeof PathDecoderModule>()),
+  getHomeDir: () => testPaths.homeDir,
   getClaudeBasePath: () => testPaths.claudeDir,
   getMcpConfigsBasePath: () => testPaths.configsDir,
   getMcpServerBasePath: () => testPaths.mcpServerDir,
@@ -81,33 +84,43 @@ function readGeneratedServers(configPath: string): Record<string, Record<string,
 }
 
 function removeSpecRegistryTokenFile(): void {
-  fs.rmSync(path.dirname(getSpecRegistryTokenFilePath()), { recursive: true, force: true });
+  fs.rmSync(path.dirname(getRegistryTokenFilePath()), { recursive: true, force: true });
 }
 
 function writeSpecRegistryTokenFile(raw: string): void {
   removeSpecRegistryTokenFile();
-  fs.mkdirSync(path.dirname(getSpecRegistryTokenFilePath()), { recursive: true });
-  fs.writeFileSync(getSpecRegistryTokenFilePath(), raw, 'utf8');
+  fs.mkdirSync(path.dirname(getRegistryTokenFilePath()), { recursive: true });
+  fs.writeFileSync(getRegistryTokenFilePath(), raw, 'utf8');
 }
 
 let testRootDir = '';
+let previousTokenFilePathEnv: string | undefined;
 
 beforeAll(() => {
   testRootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-teams-mcp-config-builder-'));
+  testPaths.homeDir = path.join(testRootDir, 'home');
   testPaths.configsDir = path.join(testRootDir, 'mcp-configs');
   testPaths.claudeDir = path.join(testRootDir, 'claude');
   testPaths.mcpServerDir = path.join(testRootDir, 'mcp-server');
   // Make the development-source branch reachable without touching the real repo.
   fs.mkdirSync(path.join(testPaths.mcpServerDir, 'src'), { recursive: true });
+  previousTokenFilePathEnv = process.env.OMP_SPEC_REGISTRY_TOKEN_FILE;
+  process.env.OMP_SPEC_REGISTRY_TOKEN_FILE = getRegistryTokenFilePath();
 });
 
 afterAll(() => {
   fs.rmSync(testRootDir, { recursive: true, force: true });
+  if (previousTokenFilePathEnv === undefined) {
+    delete process.env.OMP_SPEC_REGISTRY_TOKEN_FILE;
+  } else {
+    process.env.OMP_SPEC_REGISTRY_TOKEN_FILE = previousTokenFilePathEnv;
+  }
 });
 
 beforeEach(() => {
   delete process.env.OMP_SPEC_REGISTRY_TOKEN;
   delete process.env.OMP_SPEC_REGISTRY_URL;
+  process.env.OMP_SPEC_REGISTRY_TOKEN_FILE = getRegistryTokenFilePath();
   readerState.entries = [];
   removeSpecRegistryTokenFile();
   fs.rmSync(testPaths.configsDir, { recursive: true, force: true });
@@ -120,12 +133,10 @@ afterEach(() => {
 });
 
 describe('TeamMcpConfigBuilder spec registry MCP server', () => {
-  it('omits omp-spec-kit when no token is available and keeps agent-teams', async () => {
-    const configPath = await new TeamMcpConfigBuilder().writeConfigFile();
-
-    const servers = readGeneratedServers(configPath);
-    expect(servers[AGENT_TEAMS_SERVER_NAME]).toBeDefined();
-    expect(servers[SPEC_REGISTRY_SERVER_NAME]).toBeUndefined();
+  it('rejects team MCP setup when no registry token is available', async () => {
+    await expect(new TeamMcpConfigBuilder().writeConfigFile()).rejects.toMatchObject({
+      code: 'MISSING_TOKEN',
+    });
   });
 
   it('adds omp-spec-kit with the env token and default registry url', async () => {
@@ -168,14 +179,21 @@ describe('TeamMcpConfigBuilder spec registry MCP server', () => {
     });
   });
 
-  it('ignores a blank token file', async () => {
-    writeSpecRegistryTokenFile('   \n');
+  it('uses the maintained token file before a stale environment token', async () => {
+    process.env.OMP_SPEC_REGISTRY_TOKEN = 'stale-env-token';
+    writeSpecRegistryTokenFile('current-file-token');
 
     const configPath = await new TeamMcpConfigBuilder().writeConfigFile();
+    expect(readGeneratedServers(configPath)[SPEC_REGISTRY_SERVER_NAME]).toMatchObject({
+      headers: { Authorization: 'Bearer current-file-token' },
+    });
+  });
 
-    const servers = readGeneratedServers(configPath);
-    expect(servers[AGENT_TEAMS_SERVER_NAME]).toBeDefined();
-    expect(servers[SPEC_REGISTRY_SERVER_NAME]).toBeUndefined();
+  it('rejects a blank token file', async () => {
+    writeSpecRegistryTokenFile('   \n');
+    await expect(new TeamMcpConfigBuilder().writeConfigFile()).rejects.toMatchObject({
+      code: 'MISSING_TOKEN',
+    });
   });
 
   it('overrides an allowlisted user omp-spec-kit server with the registry config', async () => {

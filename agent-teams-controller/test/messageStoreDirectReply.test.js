@@ -1,3 +1,27 @@
+const { startControlServer } = require('./helpers/controlServer.js');
+const { resetTaskBackendCache } = require('../src/internal/taskBackendSelection.js');
+const { resetSyncControlRequestChannel } = require('../src/internal/syncControlRequest.js');
+
+let registryServer;
+let registryPreviousEnv;
+const registryEnvKeys = ['AGENT_TEAMS_BOUND_CONTROL_URL', 'AGENT_TEAMS_BOUND_CONTEXT_JSON', 'AGENT_TEAMS_MCP_CLAUDE_DIR'];
+beforeEach(async () => {
+  registryPreviousEnv = Object.fromEntries(registryEnvKeys.map((key) => [key, process.env[key]]));
+  registryServer = await startControlServer();
+  process.env.AGENT_TEAMS_BOUND_CONTROL_URL = registryServer.url;
+  process.env.AGENT_TEAMS_BOUND_CONTEXT_JSON = JSON.stringify({ appInstanceId: 'controller-consumer-test', dataRootFingerprint: 'controller-consumer-root', connectionGeneration: 1 });
+  resetTaskBackendCache();
+});
+afterEach(async () => {
+  resetTaskBackendCache();
+  resetSyncControlRequestChannel();
+  if (registryServer) await registryServer.stop();
+  for (const key of registryEnvKeys) {
+    if (registryPreviousEnv[key] === undefined) delete process.env[key];
+    else process.env[key] = registryPreviousEnv[key];
+  }
+});
+
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -9,6 +33,7 @@ describe('completed-board direct reply identity', () => {
 
   beforeEach(() => {
     claudeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'controller-direct-reply-test-'));
+    process.env.AGENT_TEAMS_MCP_CLAUDE_DIR = claudeDir;
     const teamDir = path.join(claudeDir, 'teams', 'sandbox');
     fs.mkdirSync(teamDir, { recursive: true });
     fs.writeFileSync(
@@ -22,8 +47,9 @@ describe('completed-board direct reply identity', () => {
       })
     );
     vi.useFakeTimers({ now: Date.parse('2026-09-04T14:00:00Z'), toFake: ['Date'] });
+    registryServer.setClock(Date.parse('2026-09-04T14:00:00Z'));
     controller = createController({ teamName: 'sandbox', claudeDir });
-    const task = controller.tasks.createTask({
+    const task = controller.tasks.createTask({ requirements: ['FR-1'],
       subject: 'Sandbox task',
       owner: 'alice',
       notifyOwner: false,

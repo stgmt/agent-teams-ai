@@ -182,7 +182,12 @@ export class TeamBackupRestoreService {
         genericFiles
       );
       if (restoredCount > 0) {
-        logger.info(`[Backup] Partial restored ${teamName}: ${restoredCount} files`);
+        logger.info(`[Backup] Partial restored ${teamName}: ${restoredCount} local files`);
+        if (backupConfig.specProject) {
+          logger.warn(
+            `[Backup] Registry tasks for ${teamName} were not restored. Restore them using the spec registry's own recovery process; reconcile restored local execution state and creation commands with the registry.`
+          );
+        }
         return true;
       }
       return false;
@@ -229,6 +234,7 @@ export class TeamBackupRestoreService {
     // Restore remaining files
     const launchStateFrozen = await this.isLaunchStateFrozenByStop(teamName, backupFiles);
     for (const relPath of backupFiles) {
+      if (relPath.startsWith('tasks/')) continue;
       if (
         relPath === 'config.json' ||
         relPath === 'manifest.json' ||
@@ -265,6 +271,11 @@ export class TeamBackupRestoreService {
         try {
           const srcStat = await fs.promises.stat(src);
           observedDestination = await this.readOptionalFileObservation(dest);
+          // Never overwrite execution state or a creation-command fence with
+          // an uncoordinated, potentially older registry snapshot.
+          if (relPath.startsWith('tasks-local/') && observedDestination.status === 'present') {
+            continue;
+          }
           if (
             observedDestination.status === 'present' &&
             observedDestination.mtimeMs > srcStat.mtimeMs
@@ -295,7 +306,12 @@ export class TeamBackupRestoreService {
       }
     }
 
-    logger.info(`[Backup] Restored team ${teamName} (${count} files)`);
+    logger.info(`[Backup] Restored local team files for ${teamName} (${count} files)`);
+    if (backupConfig.specProject) {
+      logger.warn(
+        `[Backup] Registry tasks for ${teamName} were not restored. Restore them using the spec registry's own recovery process; reconcile restored local execution state and creation commands with the registry.`
+      );
+    }
     return count > 0;
   }
 
@@ -312,6 +328,7 @@ export class TeamBackupRestoreService {
     let count = 0;
 
     for (const relPath of backupFiles) {
+      if (relPath.startsWith('tasks/')) continue;
       if (relPath === 'manifest.json' || relPath === TEAM_LAUNCH_FRESHNESS_FILE) continue;
       if (launchStateFrozen && LAUNCH_STATE_PUBLICATION_FILES.has(relPath)) {
         logger.info(`[Backup] Skip restore ${teamName}/${relPath}: team is stopped`);
@@ -344,6 +361,9 @@ export class TeamBackupRestoreService {
             }
           } else {
             destinationObservation = await this.readOptionalFileObservation(dest);
+            if (relPath.startsWith('tasks-local/') && destinationObservation.status === 'present') {
+              continue;
+            }
             if (dest.endsWith('.json')) {
               if (
                 destinationObservation.status === 'missing' ||

@@ -19,6 +19,7 @@ import { OpenCodeRuntimeDeliveryProofReader } from '../opencode/delivery/OpenCod
 import { type OpenCodeVisibleReplyProofService } from '../opencode/delivery/OpenCodeVisibleReplyProofService';
 import { boundLaunchDiagnostics } from '../progressPayload';
 import { readBootstrapLaunchSnapshot } from '../TeamBootstrapStateReader';
+import { TeamTaskReader } from '../TeamTaskReader';
 import { readPersistedLaunchRuntimePidsSync, TeamLaunchStateStore } from '../TeamLaunchStateStore';
 
 import { createAnthropicApiKeyHelperCleanupRetryOwner } from './TeamProvisioningAnthropicApiKeyHelperLease';
@@ -140,6 +141,7 @@ export abstract class TeamProvisioningServiceRuntimeStateFacade extends TeamProv
     createTeamProvisioningOpenCodeSecondaryBriefingBuilder({
       createController: (input) => createController(input),
       getClaudeBasePath,
+      readTasks: (teamName) => new TeamTaskReader().getTasks(teamName),
     });
   protected readonly claudePermissionSettingsDelegation =
     createTeamProvisioningClaudePermissionSettingsDelegation({

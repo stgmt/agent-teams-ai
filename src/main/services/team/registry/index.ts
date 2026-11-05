@@ -5,6 +5,8 @@
  * client only reads through `spec_tasks` and writes through the structured
  * `spec_patch` task operations. Everything is fail-closed and typed.
  */
+export { RegistryTaskClient, type RegistryTaskClientOptions } from './RegistryTaskClient';
+export type { ResolvedRegistryTaskClientConfig } from './RegistryTaskClientConfig';
 export {
   DEFAULT_SPEC_REGISTRY_REQUEST_TIMEOUT_MS,
   DEFAULT_SPEC_REGISTRY_URL,
@@ -14,6 +16,10 @@ export {
   SPEC_REGISTRY_TOKEN_FILE_SEGMENTS,
   SPEC_REGISTRY_URL_ENV,
 } from './RegistryTaskClientConfig';
+export type {
+  RegistryTaskClientErrorCode,
+  RegistryTaskClientErrorInit,
+} from './RegistryTaskClientErrors';
 export {
   RegistryStatusConflictError,
   RegistryTaskAbortedError,
@@ -29,8 +35,8 @@ export {
   RegistryTaskWriteRefusedError,
 } from './RegistryTaskClientErrors';
 export {
-  REGISTRY_TASK_STATUSES,
   type ListRegistryTasksInput,
+  REGISTRY_TASK_STATUSES,
   type RegistryTask,
   type RegistryTaskRefusal,
   type RegistryTaskStatus,
@@ -43,25 +49,12 @@ export {
   type ReplaceRegistryTaskStatusInput,
   type UpsertRegistryTaskInput,
 } from './RegistryTaskClientTypes';
-export { RegistryTaskClient, type RegistryTaskClientOptions } from './RegistryTaskClient';
-
-export type {
-  RegistryTaskClientErrorCode,
-  RegistryTaskClientErrorInit,
-} from './RegistryTaskClientErrors';
-export type { ResolvedRegistryTaskClientConfig } from './RegistryTaskClientConfig';
 export {
-  resolveTeamSpecBinding,
-  TeamSpecBindingError,
-  type TeamSpecBinding,
-  type TeamSpecBindingErrorCode,
-} from './TeamSpecBinding';
-export {
-  RegistryTeamTaskWriter,
-  RegistryTeamTaskWriteError,
   type RegistryTeamTaskClientPort,
   type RegistryTeamTaskCreateInput,
+  RegistryTeamTaskWriteError,
   type RegistryTeamTaskWriteErrorCode,
+  RegistryTeamTaskWriter,
   type RegistryTeamTaskWriterOptions,
 } from './RegistryTeamTaskWriter';
 export {
@@ -69,3 +62,9 @@ export {
   type RegistryTeamTaskWriterProvider,
   type RegistryTeamTaskWriterRequest,
 } from './RegistryTeamTaskWriterFactory';
+export {
+  resolveTeamSpecBinding,
+  type TeamSpecBinding,
+  TeamSpecBindingError,
+  type TeamSpecBindingErrorCode,
+} from './TeamSpecBinding';

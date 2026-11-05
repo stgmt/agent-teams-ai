@@ -1,5 +1,13 @@
+import { createLogger } from '@shared/utils/logger';
+
 import type { TeamChangeEvent } from '@shared/types';
 
+const logger = createLogger('Service:TeamProvisioningLeadActivity');
+const transitionVersions = new WeakMap<Set<string>, Map<string, number>>();
+let nextTransitionVersion = 0;
+
+type IntervalResult = { failed?: boolean };
+type IntervalOperation = IntervalResult | Promise<IntervalResult>;
 export type LeadActivityState = 'active' | 'idle' | 'offline';
 
 export interface LeadActivityRunLike {
@@ -33,12 +41,12 @@ export interface LeadTaskActivityIntervalPorts<TRun extends LeadActivityRunLike>
     teamName: string,
     memberName: string,
     at: string
-  ): { failed?: boolean };
+  ): IntervalOperation;
   pauseActiveIntervalsForMember(
     teamName: string,
     memberName: string,
     at: string
-  ): { failed?: boolean };
+  ): IntervalOperation;
 }
 
 export interface SetLeadActivityPorts<
@@ -89,26 +97,41 @@ export function syncLeadTaskActivityForState<TRun extends LeadActivityRunLike>(
   at: string
 ): void {
   const key = getLeadTaskActivityRunKey(run);
-  if (state === 'active') {
-    if (ports.syncedRunKeys.has(key)) return;
-    const result = ports.resumeActiveIntervalsForMember(
-      run.teamName,
-      ports.getRunLeadName(run),
-      at
-    );
-    if (result.failed) return;
-    ports.syncedRunKeys.add(key);
-    return;
-  }
-
   const wasSynced = ports.syncedRunKeys.has(key);
-  if (previousState !== 'active' && !wasSynced) return;
-  const result = ports.pauseActiveIntervalsForMember(run.teamName, ports.getRunLeadName(run), at);
-  if (result.failed) {
-    ports.syncedRunKeys.add(key);
-    return;
+  const shouldResume = state === 'active';
+  if (shouldResume ? wasSynced : previousState !== 'active' && !wasSynced) return;
+
+  // Record the desired state immediately so repeated renderer reads do not
+  // enqueue duplicate operations while the registry request is pending.
+  if (shouldResume) ports.syncedRunKeys.add(key);
+  else ports.syncedRunKeys.delete(key);
+
+  let versions = transitionVersions.get(ports.syncedRunKeys);
+  if (!versions) {
+    versions = new Map<string, number>();
+    transitionVersions.set(ports.syncedRunKeys, versions);
   }
-  ports.syncedRunKeys.delete(key);
+  const version = ++nextTransitionVersion;
+  versions.set(key, version);
+  const currentVersions = versions;
+  const onFailure = (): void => {
+    // An older failure must not undo a newer activity transition.
+    if (currentVersions.get(key) !== version) return;
+    if (shouldResume) ports.syncedRunKeys.delete(key);
+    else ports.syncedRunKeys.add(key);
+    logger.warn(`[${run.teamName}] Could not synchronize lead task activity`);
+  };
+  try {
+    const operation = shouldResume
+      ? ports.resumeActiveIntervalsForMember(run.teamName, ports.getRunLeadName(run), at)
+      : ports.pauseActiveIntervalsForMember(run.teamName, ports.getRunLeadName(run), at);
+    void Promise.resolve(operation).then((result) => {
+      if (result.failed) onFailure();
+      else if (currentVersions.get(key) === version) currentVersions.delete(key);
+    }, onFailure);
+  } catch {
+    onFailure();
+  }
 }
 
 export function setLeadActivity<TRun extends LeadActivityRunLike>(
@@ -121,7 +144,9 @@ export function setLeadActivity<TRun extends LeadActivityRunLike>(
   if (isCurrentRun) {
     syncLeadTaskActivityForState(run, state, previousState, ports, ports.nowIso());
   } else {
-    ports.syncedRunKeys.delete(getLeadTaskActivityRunKey(run));
+    const key = getLeadTaskActivityRunKey(run);
+    ports.syncedRunKeys.delete(key);
+    transitionVersions.get(ports.syncedRunKeys)?.delete(key);
   }
   if (previousState === state && run.leadActivityPublished) return;
   run.leadActivityState = state;

@@ -109,18 +109,18 @@ describe('task activity repair helpers', () => {
     });
   });
 
-  it('remembers the first failed repair snapshot and clears it after a later success', () => {
+  it('remembers the first failed repair snapshot and clears it after a later success', async () => {
     const firstSnapshot = snapshot('team-a', '2026-01-01T00:00:00.000Z');
     const newerSnapshot = snapshot('team-a', '2026-01-01T00:01:00.000Z');
     const repairedTeams = new Set<string>();
     const pendingSnapshots = new Map<string, PersistedTeamLaunchSnapshot | null>();
     const repairStaleIntervalsAfterCrash = vi
       .fn()
-      .mockReturnValueOnce({ failed: true })
-      .mockReturnValueOnce({ failed: false });
+      .mockResolvedValueOnce({ failed: true })
+      .mockResolvedValueOnce({ failed: false });
 
     expect(
-      repairStaleTaskActivityIntervalsOnce('team-a', firstSnapshot, {
+      await repairStaleTaskActivityIntervalsOnce('team-a', firstSnapshot, {
         taskActivityIntervalService: { repairStaleIntervalsAfterCrash },
         tracking: { repairedTeams, pendingSnapshots },
       })
@@ -128,14 +128,33 @@ describe('task activity repair helpers', () => {
     expect(pendingSnapshots.get('team-a')).toBe(firstSnapshot);
 
     expect(
-      repairStaleTaskActivityIntervalsOnce('team-a', newerSnapshot, {
+      await repairStaleTaskActivityIntervalsOnce('team-a', newerSnapshot, {
         taskActivityIntervalService: { repairStaleIntervalsAfterCrash },
         tracking: { repairedTeams, pendingSnapshots },
       })
     ).toBe(true);
-    expect(repairStaleIntervalsAfterCrash).toHaveBeenLastCalledWith('team-a', firstSnapshot);
+    expect(repairStaleIntervalsAfterCrash).toHaveBeenLastCalledWith(
+      'team-a',
+      firstSnapshot,
+      undefined
+    );
     expect(pendingSnapshots.has('team-a')).toBe(false);
     expect(repairedTeams.has('team-a')).toBe(true);
+  });
+
+  it('retains the launch snapshot when an asynchronous repair rejects', async () => {
+    const firstSnapshot = snapshot('team-a', '2026-01-01T00:00:00.000Z');
+    const pendingSnapshots = new Map<string, PersistedTeamLaunchSnapshot | null>();
+    const repairedTeams = new Set<string>();
+    const result = await repairStaleTaskActivityIntervalsOnce('team-a', firstSnapshot, {
+      taskActivityIntervalService: {
+        repairStaleIntervalsAfterCrash: vi.fn().mockRejectedValue(new Error('unavailable')),
+      },
+      tracking: { repairedTeams, pendingSnapshots },
+    });
+    expect(result).toBe(false);
+    expect(pendingSnapshots.get('team-a')).toBe(firstSnapshot);
+    expect(repairedTeams.has('team-a')).toBe(false);
   });
 
   it('reads bootstrap and persisted launch snapshots through explicit ports', async () => {
@@ -154,7 +173,7 @@ describe('task activity repair helpers', () => {
   });
 
   it('skips before-snapshot repair while the tracked run is still live', async () => {
-    const repairOnce = vi.fn(() => true);
+    const repairOnce = vi.fn(async () => true);
 
     await repairStaleTaskActivityIntervalsBeforeSnapshot('team-a', {
       tracking: {
@@ -180,7 +199,7 @@ describe('task activity repair helpers', () => {
         getTrackedRunId: vi.fn(() => null),
         hasRun: vi.fn(() => false),
         readRepairLaunchSnapshot: vi.fn(() => Promise.resolve(null)),
-        repairOnce: vi.fn(() => false),
+        repairOnce: vi.fn(async () => false),
       })
     ).rejects.toThrow('Task activity interval repair failed before snapshot for team team-a');
   });

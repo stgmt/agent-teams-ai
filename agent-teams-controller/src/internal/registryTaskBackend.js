@@ -1,13 +1,12 @@
 /**
  * Task backend that reads and writes through the desktop app's control API.
  *
- * A team whose config carries `specProject` owns its canonical task state in the
- * spec registry; the app is the only process holding the registry token, so the
- * MCP child asks it over HTTP. The methods mirror the file store's surface so
- * `taskStore` can pick a backend per team without callers noticing.
+ * The app is the only process holding the registry token, so live canonical
+ * task operations go through its app-bound HTTP connection. An explicit task
+ * snapshot supplies detached reads for one controller operation only.
  *
- * There is no local fallback: every failure surfaces as a typed
- * {@link TaskBackendError}, and a failed write is never retried against files.
+ * There is no local fallback: live failures surface as a typed
+ * {@link TaskBackendError}, and snapshot-backed writes are rejected.
  */
 
 const {
@@ -18,20 +17,27 @@ const { deriveDisplayId } = require('./taskIdentity.js');
 const { createRegistryTaskClient } = require('./taskRegistryClient.js');
 const { normalizeOwnerValue } = require('./taskOwnerValue.js');
 const { taskNotFound } = require('./taskReadErrors.js');
+const { normalizeTaskGroupChatId } = require('./taskGroupAssociation.js');
+const { normalizeCreationCommand } = require('./taskCreationCommand.js');
 
 const TEAM_TASK_STATUSES = new Set(['pending', 'in_progress', 'completed', 'deleted']);
 const LOCAL_TASK_ID_PATTERN = /^(?:[^:]+:)?TASK-(\d+)$/i;
 const NUMERIC_TASK_ID_PATTERN = /^\d+$/;
 
-/** Fields the control API can persist. */
-const MANAGED_FIELDS = ['subject', 'description', 'owner', 'blockedBy', 'related'];
+/** Execution fields stay in the app's ExecutionTaskStore, never in canonical files. */
+const EXECUTION_FIELDS = [
+  'reviewState', 'comments', 'attachments', 'needsClarification',
+  'workIntervals', 'reviewIntervals', 'historyEvents', 'activeForm',
+  'groupChatId', 'prompt', 'projectPath', 'descriptionTaskRefs', 'promptTaskRefs',
+  'sourceMessageId', 'sourceMessage', 'createdBy', 'creationCommand',
+];
+const MANAGED_FIELDS = ['subject', 'description', 'owner', 'blockedBy', 'related', ...EXECUTION_FIELDS];
 /** Fields handled by a dedicated call (status endpoint) or derived server-side. */
 const DERIVED_FIELDS = new Set([
   'id',
   'displayId',
   'blocks',
   'updatedAt',
-  'reviewState',
   'status',
 ]);
 
@@ -138,8 +144,9 @@ function normalizeRequirements(input) {
 
 function readRelationshipRefs(input, name) {
   const raw = input[name] ?? input[name === 'blockedBy' ? 'blocked-by' : name];
-  if (!Array.isArray(raw)) return [];
-  return raw.map((entry) => String(entry ?? '').trim()).filter(Boolean);
+  const refs = typeof raw === 'string' ? raw.split(',') : raw;
+  if (!Array.isArray(refs)) return [];
+  return refs.map((entry) => String(entry ?? '').trim()).filter(Boolean);
 }
 
 /**
@@ -150,23 +157,38 @@ function readRelationshipRefs(input, name) {
  * @param {object} [options.client] - injectable client (tests / composition)
  * @param {number} [options.timeoutMs]
  * @param {string} [options.specProject] - diagnostics only; the app owns the binding
+ * @param {object[]} [options.readOnlyTasks] - detached, read-only task projection
  */
 function createRegistryTaskBackend(options = {}) {
   const teamName = readTrimmedString(options.teamName);
   if (!teamName) {
     throw new Error('Missing teamName');
   }
+  const hasReadOnlySnapshot = options.readOnlyTasks !== undefined;
+  if (hasReadOnlySnapshot && !Array.isArray(options.readOnlyTasks)) {
+    throw protocolError('readOnlyTaskSnapshot', 'payload is not an array');
+  }
+  const readOnlyTasks = hasReadOnlySnapshot
+    ? sortTasks(
+        structuredClone(options.readOnlyTasks).map((task) =>
+          normalizeTeamTask(task, 'readOnlyTaskSnapshot')
+        )
+      )
+    : null;
   const client =
     options.client ||
-    createRegistryTaskClient({
-      teamName,
-      ...(options.baseUrl ? { baseUrl: options.baseUrl } : {}),
-      ...(options.headers ? { headers: options.headers } : {}),
-      ...(options.timeoutMs ? { timeoutMs: options.timeoutMs } : {}),
-    });
+    (hasReadOnlySnapshot
+      ? null
+      : createRegistryTaskClient({
+          teamName,
+          ...(options.baseUrl ? { baseUrl: options.baseUrl } : {}),
+          ...(options.headers ? { headers: options.headers } : {}),
+          ...(options.timeoutMs ? { timeoutMs: options.timeoutMs } : {}),
+        }));
   const specProject = readTrimmedString(options.specProject) || undefined;
 
   function listAll() {
+    if (hasReadOnlySnapshot) return readOnlyTasks;
     const tasks = client.listTasks();
     if (!Array.isArray(tasks)) {
       throw protocolError('listTasks', 'missing tasks array');
@@ -258,57 +280,67 @@ function createRegistryTaskBackend(options = {}) {
       typeof input.description === 'string' && input.description.length > 0
         ? input.description
         : undefined;
-
-    const created = normalizeTeamTask(
-      client.createTask({
-        subject,
-        requirements: normalizeRequirements(input),
-        ...(description === undefined ? {} : { description }),
-        ...(owner ? { owner } : {}),
-        ...(readTrimmedString(input.groupChatId)
-          ? { groupChatId: readTrimmedString(input.groupChatId) }
-          : {}),
-        ...(typeof input.activeForm === 'string' ? { activeForm: input.activeForm } : {}),
-        ...(readTrimmedString(input.prompt) ? { prompt: readTrimmedString(input.prompt) } : {}),
-        ...(readTrimmedString(input.projectPath)
-          ? { projectPath: readTrimmedString(input.projectPath) }
-          : {}),
-      }),
-      'createTask'
-    );
-
+    const creationCommand = normalizeCreationCommand(input.creationCommand);
+    if (input.groupChatId !== undefined) normalizeTaskGroupChatId(input.groupChatId);
+    const execution = {};
+    for (const field of EXECUTION_FIELDS) {
+      if (field === 'creationCommand') continue;
+      if (input[field] !== undefined) execution[field] = input[field];
+    }
+    if (execution.createdBy === undefined && readTrimmedString(input.from)) {
+      execution.createdBy = readTrimmedString(input.from);
+    }
+    if (creationCommand) execution.creationCommand = creationCommand;
     const blockedByIds = readRelationshipRefs(input, 'blockedBy').map((ref) =>
       resolveTask(ref, { includeDeleted: true }).id
     );
-    const relatedIds = readRelationshipRefs(input, 'related').map(
-      (ref) => resolveTask(ref, { includeDeleted: true }).id
+    const relatedIds = readRelationshipRefs(input, 'related').map((ref) =>
+      resolveTask(ref, { includeDeleted: true }).id
     );
-
-    if (blockedByIds.length > 0 || relatedIds.length > 0) {
-      patchTask(created.id, {
-        ...(blockedByIds.length > 0 ? { blockedBy: blockedByIds } : {}),
-        ...(relatedIds.length > 0 ? { related: relatedIds } : {}),
-      });
-    }
-
     const explicitStatus = normalizeStatus(input.status);
     const desiredStatus =
-      explicitStatus || (owner && input.startImmediately === true ? 'in_progress' : 'pending');
-    if (desiredStatus !== created.status) {
-      client.setTaskStatus(created.id, {
-        status: desiredStatus,
-        expectedStatus: created.status,
-      });
+      explicitStatus || (owner && input.startImmediately === true && blockedByIds.length === 0
+        ? 'in_progress'
+        : 'pending');
+    if (desiredStatus === 'deleted') {
+      throw new TaskBackendError(
+        TASK_BACKEND_ERROR_CODES.FIELD_UNSUPPORTED,
+        'The registry cannot create a task in deleted status.'
+      );
     }
 
+    const result = client.createTaskWithOutcome({
+      subject,
+      requirements: normalizeRequirements(input),
+      ...(description === undefined ? {} : { description }),
+      ...(owner ? { owner } : {}),
+      ...(blockedByIds.length ? { blockedBy: blockedByIds } : {}),
+      ...(relatedIds.length ? { related: relatedIds } : {}),
+      ...(desiredStatus === 'in_progress' ? { startImmediately: true } : {}),
+      status: desiredStatus,
+      ...execution,
+    });
+    const created = normalizeTeamTask(result.task, 'createTask');
+    if (result.outcome === 'REPLAY') return cloneTask(created);
     return readAfterWrite(created.id, { includeDeleted: true });
   }
 
-  function reconcileTaskCreation() {
-    throw new TaskBackendError(
-      TASK_BACKEND_ERROR_CODES.OPERATION_UNSUPPORTED,
-      'Task creation reconciliation is a local-file operation; the spec registry has no command replay surface.'
-    );
+  function reconcileTaskCreation(input = {}) {
+    const command = normalizeCreationCommand(input.creationCommand);
+    if (!command) throw new Error('Task creation reconciliation requires creationCommand');
+    const task = listAll().find((entry) => {
+      const existing = entry.creationCommand;
+      return existing &&
+        existing.namespace === command.namespace &&
+        existing.scopeKey === command.scopeKey &&
+        existing.operation === command.operation &&
+        existing.commandId === command.commandId;
+    });
+    if (!task) throw taskNotFound(command.commandId);
+    if (task.creationCommand.payloadHash !== command.payloadHash) {
+      throw new Error('Task creation command conflict: command payload does not match');
+    }
+    return cloneTask(task);
   }
 
   function updateTask(taskRef, updater) {
@@ -327,8 +359,7 @@ function createRegistryTaskBackend(options = {}) {
     if (unsupported.length > 0) {
       throw new TaskBackendError(
         TASK_BACKEND_ERROR_CODES.FIELD_UNSUPPORTED,
-        `The spec registry cannot persist ${unsupported.join(', ')} for task ${current.id}; ` +
-          'only subject, description, owner, blockedBy and related are canonical registry fields.',
+        `The app task API cannot persist ${unsupported.join(', ')} for task ${current.id}.`,
         { taskId: current.id, fields: unsupported }
       );
     }
@@ -336,16 +367,12 @@ function createRegistryTaskBackend(options = {}) {
     const patch = {};
     for (const field of MANAGED_FIELDS) {
       if (!changedFields.includes(field)) continue;
+      if (EXECUTION_FIELDS.includes(field)) {
+        patch[field] = updated[field] === undefined ? null : updated[field];
+        continue;
+      }
       if (field === 'owner') {
-        const owner = normalizeOwnerValue(updated.owner);
-        if (!owner) {
-          throw new TaskBackendError(
-            TASK_BACKEND_ERROR_CODES.OWNER_CLEAR_UNSUPPORTED,
-            'The spec registry cannot clear a task owner; assign it to another member instead.',
-            { taskId: current.id }
-          );
-        }
-        patch.owner = owner;
+        patch.owner = normalizeOwnerValue(updated.owner) || null;
         continue;
       }
       if (field === 'blockedBy' || field === 'related') {
@@ -374,7 +401,7 @@ function createRegistryTaskBackend(options = {}) {
     return readAfterWrite(current.id, { includeDeleted: true });
   }
 
-  function setTaskStatus(taskRef, nextStatus) {
+  function setTaskStatus(taskRef, nextStatus, actor) {
     const status = normalizeStatus(nextStatus);
     if (!status) {
       throw new Error(`Invalid status: ${String(nextStatus)}`);
@@ -383,23 +410,21 @@ function createRegistryTaskBackend(options = {}) {
     if (current.status === status) {
       return cloneTask(current);
     }
-    client.setTaskStatus(current.id, { status, expectedStatus: current.status });
+    client.setTaskStatus(current.id, {
+      status,
+      expectedStatus: current.status,
+      ...(readTrimmedString(actor) ? { actor: readTrimmedString(actor) } : {}),
+    });
     return readAfterWrite(current.id, { includeDeleted: true });
   }
 
-  function setTaskOwner(taskRef, owner) {
+  function setTaskOwner(taskRef, owner, actor) {
     const nextOwner = normalizeOwnerValue(owner);
-    if (!nextOwner) {
-      throw new TaskBackendError(
-        TASK_BACKEND_ERROR_CODES.OWNER_CLEAR_UNSUPPORTED,
-        'The spec registry cannot clear a task owner; assign it to another member instead.'
-      );
-    }
     const current = resolveTask(taskRef, { includeDeleted: true });
     if (normalizeOwnerValue(current.owner) === nextOwner) {
       return cloneTask(current);
     }
-    patchTask(current.id, { owner: nextOwner });
+    patchTask(current.id, { owner: nextOwner || null, ...(readTrimmedString(actor) ? { actor: readTrimmedString(actor) } : {}) });
     return readAfterWrite(current.id, { includeDeleted: true });
   }
 
@@ -458,8 +483,17 @@ function createRegistryTaskBackend(options = {}) {
     return { tasks: listTasks(listOptions), anomalies: [] };
   }
 
+  function rejectSnapshotMutation(operation) {
+    return () => {
+      throw new TaskBackendError(
+        TASK_BACKEND_ERROR_CODES.READ_ONLY_TASK_SNAPSHOT,
+        `Canonical task mutation "${operation}" is unavailable from a read-only task snapshot.`,
+        { operation }
+      );
+    };
+  }
   return {
-    kind: 'registry',
+    kind: hasReadOnlySnapshot ? 'registry-snapshot' : 'registry',
     teamName,
     specProject,
 
@@ -508,13 +542,15 @@ function createRegistryTaskBackend(options = {}) {
       return resolveTask(taskRef, resolveOptions).id;
     },
 
-    createTask,
-    reconcileTaskCreation,
-    updateTask,
-    setTaskStatus,
-    setTaskOwner,
-    linkTask,
-    unlinkTask,
+    createTask: hasReadOnlySnapshot ? rejectSnapshotMutation('createTask') : createTask,
+    reconcileTaskCreation: hasReadOnlySnapshot
+      ? rejectSnapshotMutation('reconcileTaskCreation')
+      : reconcileTaskCreation,
+    updateTask: hasReadOnlySnapshot ? rejectSnapshotMutation('updateTask') : updateTask,
+    setTaskStatus: hasReadOnlySnapshot ? rejectSnapshotMutation('setTaskStatus') : setTaskStatus,
+    setTaskOwner: hasReadOnlySnapshot ? rejectSnapshotMutation('setTaskOwner') : setTaskOwner,
+    linkTask: hasReadOnlySnapshot ? rejectSnapshotMutation('linkTask') : linkTask,
+    unlinkTask: hasReadOnlySnapshot ? rejectSnapshotMutation('unlinkTask') : unlinkTask,
   };
 }
 

@@ -12,6 +12,10 @@ import {
 } from '../../../../src/features/team-provisioning/main';
 import { createMemberLifecycle } from '../../../../src/features/team-provisioning/main/composition/createMemberLifecycle';
 import { createLeadHumanRequestBridge } from '../../../../src/features/team-provisioning/preload';
+import {
+  createRegistryTaskTestBoundary,
+  type RegistryTaskTestBoundary,
+} from '../../../main/services/team/helpers/registryTaskTestBoundary';
 
 import type { PersistedLeadRequest } from '../../../../src/features/team-provisioning/core/application/ports/LeadRequestDeliveryPorts';
 import type { MemberRuntimeEvents } from '../../../../src/features/team-provisioning/core/application/ports/MemberRuntimePorts';
@@ -19,6 +23,7 @@ import type { InvokeIpcWithResult } from '../../../../src/features/team-provisio
 import type { IpcMainInvokeEvent, WebContents } from 'electron';
 
 const directories: string[] = [];
+const registryBoundaries: RegistryTaskTestBoundary[] = [];
 afterEach(async () => {
   await Promise.all(
     directories.splice(0).map((path) =>
@@ -30,6 +35,7 @@ afterEach(async () => {
       })
     )
   );
+  await Promise.all(registryBoundaries.splice(0).map((boundary) => boundary.dispose()));
 });
 
 async function setup() {
@@ -38,11 +44,15 @@ async function setup() {
   const teamsRoot = join(root, 'teams');
   const owner = { appInstanceId: 'TEST-app', dataRootFingerprint: root, connectionGeneration: 1 };
   const run = { ...owner, teamName: 'test-team', runId: 'TEST-run' };
+  const registryBoundary = await createRegistryTaskTestBoundary({ teamName: run.teamName });
+  registryBoundaries.push(registryBoundary);
   await mkdir(join(teamsRoot, run.teamName), { recursive: true });
   await writeFile(
     join(teamsRoot, run.teamName, 'config.json'),
     JSON.stringify({
       name: run.teamName,
+      specProject: 'sandbox/project',
+      specSlug: 'sandbox-spec',
       leadAgentId: `team-lead@${run.teamName}`,
       members: [
         { name: 'team-lead', agentId: `team-lead@${run.teamName}`, agentType: 'team-lead' },
@@ -136,6 +146,7 @@ async function setup() {
         sendLeadMessage: (identity, text) => send(identity, text),
       },
       reporting: {
+        taskReader: registryBoundary.taskReader,
         teamsRoot,
         members: { getMeta: meta },
         leadName: () => Promise.resolve('team-lead'),

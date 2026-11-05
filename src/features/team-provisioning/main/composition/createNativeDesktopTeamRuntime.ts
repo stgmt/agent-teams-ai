@@ -27,6 +27,7 @@ export interface NativeDesktopTeamRuntimeDependencies {
   mcp: NativeTeamLifecycleDependencies['mcp'];
   inbox: NativeTeamLifecycleDependencies['inbox'];
   controlUrl(): Promise<string>;
+  readStartupTasks: NativeTeamLifecycleDependencies['readStartupTasks'];
   briefing: NativeTeamLifecycleDependencies['briefing'];
   invalidate(teamName: string): void;
   contextInvalidationSignal(expected: AppConnectionContext): AbortSignal;
@@ -89,6 +90,7 @@ export function createNativeDesktopTeamRuntime(
     mcp: deps.mcp,
     inbox: deps.inbox,
     controlUrl: deps.controlUrl,
+    readStartupTasks: deps.readStartupTasks,
     briefing: deps.briefing,
     invalidate: deps.invalidate,
     contextInvalidationSignal: deps.contextInvalidationSignal,

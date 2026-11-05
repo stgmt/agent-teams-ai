@@ -103,8 +103,12 @@ isolation; existing production team services do not use them yet:
   actual provider acceptance are not yet covered.
 - `NodeNativeTeamConfig` / `NativeTeamConfigStore`: materializes the captured roster
   before provider preparation, preserves history, binds one run claim and uses the
-  pinned CLI's `.config.lock` protocol. Foreign/unreleased processes fail closed;
-  no PID probing or termination is performed by a configuration write.
+  pinned CLI's `.config.lock` protocol. Before claiming an unowned legacy roster,
+  it inspects direct-process PIDs: missing processes and nonempty command lines
+  without any team/member ownership flags permit replacement.
+  Live matching processes, unreadable identities, native attempt identities and
+  OpenCode lanes still fail closed. Cleanup and roster publication are atomic;
+  configuration writes never terminate processes.
 - `NativeConfiguredProvider`, `NativeClaudeLaunchPlanner`,
   `NodeNativeLaunchArtifacts`, `NodeNativeMemberRegistration` and
   `NativeRuntimeConnection`: explicit Anthropic/Codex/Gemini preparation through

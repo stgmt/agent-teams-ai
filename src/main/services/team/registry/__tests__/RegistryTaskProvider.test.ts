@@ -134,12 +134,32 @@ function createProvider(
 const BOUND_CONFIG = { name: TEAM, specProject: PROJECT, specSlug: SPEC };
 
 describe('RegistryTaskProvider', () => {
+  it('exposes an authored one-way related reference to consumers of both tasks', async () => {
+    const { provider } = createProvider({
+      config: BOUND_CONFIG,
+      registry: createFakeRegistry({
+        tasks: [registryTask('1', { refs: [`${SPEC}:TASK-2`] }), registryTask('2')],
+      }),
+    });
+    const list = (await provider.getTasks(TEAM)).tasks;
+    expect(list.find((task) => task.id === '1')?.related).toEqual(['2']);
+    expect(list.find((task) => task.id === '2')?.related).toEqual(['1']);
+    expect((await provider.getTask(TEAM, '2')).task?.related).toEqual(['1']);
+  });
+
   it('reports an unbound team without touching the registry', async () => {
     const { provider, registry } = createProvider({ config: { name: TEAM } });
 
-    await expect(provider.getTasks(TEAM)).resolves.toEqual({ backed: false });
-    await expect(provider.getTask(TEAM, '7')).resolves.toEqual({ backed: false });
-    await expect(provider.getDeletedTasks(TEAM)).resolves.toEqual({ backed: false });
+    await expect(provider.getTasks(TEAM)).rejects.toMatchObject({
+      code: 'REGISTRY_SCOPE_INCOMPLETE',
+      causeCode: 'SPEC_PROJECT_MISSING',
+    });
+    await expect(provider.getTask(TEAM, '7')).rejects.toMatchObject({
+      code: 'REGISTRY_SCOPE_INCOMPLETE',
+    });
+    await expect(provider.getDeletedTasks(TEAM)).rejects.toMatchObject({
+      code: 'REGISTRY_SCOPE_INCOMPLETE',
+    });
     expect(registry.calls).toHaveLength(0);
   });
 
@@ -199,6 +219,7 @@ describe('RegistryTaskProvider', () => {
       blocks: ['8'],
       related: ['5'],
       needsClarification: 'lead',
+      createdAt: '2026-01-01T00:00:00.000Z',
       updatedAt: '2026-01-01T00:00:00.000Z',
     });
     expect(task7?.comments?.map((comment) => comment.id)).toEqual(['comment-1']);
@@ -207,6 +228,7 @@ describe('RegistryTaskProvider', () => {
 
     const task2 = tasks.find((task) => task.id === '2');
     expect(task2).toMatchObject({ subject: 'Second', owner: 'bob', status: 'in_progress' });
+    expect(task2).not.toHaveProperty('createdAt');
   });
 
   it('returns one task by id and null for an unknown id', async () => {
@@ -226,13 +248,36 @@ describe('RegistryTaskProvider', () => {
     await expect(provider.getTask(TEAM, '99')).resolves.toEqual({ backed: true, task: null });
   });
 
-  it('answers deleted-task reads with an empty list for a registry-backed team', async () => {
-    const { provider } = createProvider({
+  it('separates deleted registry tasks from the active board and retains execution history', async () => {
+    const { provider, executionStore, registry } = createProvider({
       config: BOUND_CONFIG,
-      registry: createFakeRegistry({ tasks: [registryTask('1')] }),
+      registry: createFakeRegistry({
+        tasks: [registryTask('1'), registryTask('2', { status: 'deleted' })],
+      }),
     });
-
-    await expect(provider.getDeletedTasks(TEAM)).resolves.toEqual({ backed: true, tasks: [] });
+    executionStore.write(TEAM, '2', {
+      workIntervals: [{ startedAt: '2025-01-01T00:00:00.000Z' }],
+      historyEvents: [
+        {
+          id: 'deleted-event',
+          type: 'status_changed',
+          from: 'completed',
+          to: 'deleted',
+          timestamp: '2026-01-02T03:04:05.000Z',
+        },
+      ],
+    });
+    expect((await provider.getTasks(TEAM)).tasks.map((task) => task.id)).toEqual(['1']);
+    expect((await provider.getDeletedTasks(TEAM)).tasks).toMatchObject([
+      {
+        id: '2',
+        status: 'deleted',
+        deletedAt: '2026-01-02T03:04:05.000Z',
+        workIntervals: [{ startedAt: '2025-01-01T00:00:00.000Z' }],
+      },
+    ]);
+    expect((await provider.getTask(TEAM, '2')).task?.status).toBe('deleted');
+    expect(registry.calls[0].statuses).toContain('deleted');
   });
 
   it('caches registry reads for the TTL and deduplicates in-flight calls', async () => {
@@ -307,7 +352,6 @@ describe('RegistryTaskProvider', () => {
 
     const bound = await provider.getTasks(TEAM, { binding: { project: PROJECT, spec: SPEC } });
     expect(bound.backed && bound.tasks.map((task) => task.id)).toEqual(['1']);
-    await expect(provider.getTasks(TEAM, { binding: null })).resolves.toEqual({ backed: false });
     expect(registry.calls).toHaveLength(1);
     expect(configReads).toBe(0);
   });

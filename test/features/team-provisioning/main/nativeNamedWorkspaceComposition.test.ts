@@ -63,6 +63,7 @@ async function setup(worktree: string, cwd = repo) {
     runtimeRoot: join(root, 'attempts'),
     workspaceRoot: join(root, 'workspaces'),
     teamsRoot,
+    readStartupTasks: async () => [],
     settings: {
       metadata: {
         getMeta: () =>

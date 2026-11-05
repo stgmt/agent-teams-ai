@@ -6,6 +6,9 @@ import type { BoardTaskActivityRecord } from '../../../../src/main/services/team
 import type { BoardTaskExactLogBundleCandidate } from '../../../../src/main/services/team/taskLogs/exact/BoardTaskExactLogTypes';
 import type { ParsedMessage } from '../../../../src/main/types';
 
+
+import type { TeamTask } from '../../../../src/shared/types';
+
 function makeRecord(
   id: string,
   timestamp: string,
@@ -87,6 +90,46 @@ function makeMessage(uuid: string, timestamp: string, text: string): ParsedMessa
 }
 
 describe('BoardTaskLogStreamService', () => {
+  const createTaskReader = async (taskOverrides: Partial<TeamTask> & Pick<TeamTask, 'id'>) => {
+    // Stream tests preserve synthetic IDs from their transcript fixtures; this reader seam
+    // supplies only the normalized task context and does not pretend those IDs are registry IDs.
+    const task: TeamTask = {
+      subject: 'Historical task fixture',
+      status: 'pending',
+      ...taskOverrides,
+    };
+    return {
+      getTasks: async () => task.status === 'deleted' ? [] : [task],
+      getDeletedTasks: async () => task.status === 'deleted' ? [task] : [],
+    };
+  };
+
+  // This normalized fixture task keeps synthetic task-a records off the registry boundary.
+  const defaultTaskReader = {
+    getTasks: async () => [
+      { id: 'task-a', subject: 'Historical task fixture', status: 'pending' as const },
+    ],
+    getDeletedTasks: async () => [],
+  };
+  const createStreamService = (
+    ...args: ConstructorParameters<typeof BoardTaskLogStreamService>
+  ) =>
+    new BoardTaskLogStreamService(
+      args[0],
+      args[1],
+      args[2],
+      args[3],
+      args[4],
+      args[5] ?? (defaultTaskReader as never),
+      args[6],
+      args[7],
+      args[8],
+      args[9],
+      args[10],
+      args[11],
+      args[12],
+    );
+
   afterEach(() => {
     vi.unstubAllEnvs();
   });
@@ -99,7 +142,7 @@ describe('BoardTaskLogStreamService', () => {
       }),
     };
 
-    const service = new BoardTaskLogStreamService(recordSource as never);
+    const service = createStreamService(recordSource as never);
     await expect(service.getTaskLogStream('demo', 'task-a')).resolves.toEqual({
       participants: [],
       defaultFilter: 'all',
@@ -140,7 +183,7 @@ describe('BoardTaskLogStreamService', () => {
       })),
     };
 
-    const service = new BoardTaskLogStreamService(
+    const service = createStreamService(
       {
         getTaskRecords: vi.fn(async () => []),
       } as never,
@@ -218,7 +261,7 @@ describe('BoardTaskLogStreamService', () => {
       getTaskLogStream: vi.fn(() => fallbackPromise),
     };
 
-    const service = new BoardTaskLogStreamService(
+    const service = createStreamService(
       {
         getTaskRecords: vi.fn(async () => []),
       } as never,
@@ -339,10 +382,7 @@ describe('BoardTaskLogStreamService', () => {
         filteredMessages: [makeMessage('c1', '2026-04-12T16:00:00.000Z', 'board update')],
       })),
     };
-    const taskReader = {
-      getTasks: vi.fn(async () => [{ id: 'task-a', owner: 'jack' }]),
-      getDeletedTasks: vi.fn(async () => []),
-    };
+    const taskReader = await createTaskReader({ id: 'task-a', owner: 'jack' });
     const membersMetaStore = {
       getMembers: vi.fn(async () => [{ name: 'jack', role: 'developer', model: 'gpt-5.5' }]),
     };
@@ -354,7 +394,7 @@ describe('BoardTaskLogStreamService', () => {
     };
     const buildBundleChunks = vi.fn((messages: ParsedMessage[]) => [{ id: messages[0]?.uuid }]);
 
-    const service = new BoardTaskLogStreamService(
+    const service = createStreamService(
       recordSource as never,
       summarySelector as never,
       strictParser as never,
@@ -442,7 +482,9 @@ describe('BoardTaskLogStreamService', () => {
         },
       })),
     };
-    const service = new BoardTaskLogStreamService(
+    const taskReader = await createTaskReader({ id: 'task-a', owner: 'jack' });
+
+    const service = createStreamService(
       {
         getTaskRecords: vi.fn(async () => candidate.records),
       } as never,
@@ -465,10 +507,7 @@ describe('BoardTaskLogStreamService', () => {
       {
         buildBundleChunks: vi.fn((messages: ParsedMessage[]) => [{ id: messages[0]?.uuid }]),
       } as never,
-      {
-        getTasks: vi.fn(async () => [{ id: 'task-a', owner: 'jack' }]),
-        getDeletedTasks: vi.fn(async () => []),
-      } as never,
+      taskReader as never,
       undefined as never,
       runtimeFallbackSource as never,
       {
@@ -501,7 +540,9 @@ describe('BoardTaskLogStreamService', () => {
         throw new Error('should not be called');
       }),
     };
-    const service = new BoardTaskLogStreamService(
+    const taskReader = await createTaskReader({ id: 'task-a', owner: 'alice' });
+
+    const service = createStreamService(
       {
         getTaskRecords: vi.fn(async () => candidate.records),
       } as never,
@@ -524,10 +565,7 @@ describe('BoardTaskLogStreamService', () => {
       {
         buildBundleChunks: vi.fn((messages: ParsedMessage[]) => [{ id: messages[0]?.uuid }]),
       } as never,
-      {
-        getTasks: vi.fn(async () => [{ id: 'task-a', owner: 'alice' }]),
-        getDeletedTasks: vi.fn(async () => []),
-      } as never,
+      taskReader as never,
       undefined as never,
       runtimeFallbackSource as never,
       {
@@ -592,7 +630,7 @@ describe('BoardTaskLogStreamService', () => {
     };
     const buildBundleChunks = vi.fn((messages: ParsedMessage[]) => [{ id: messages[0]?.uuid }]);
 
-    const service = new BoardTaskLogStreamService(
+    const service = createStreamService(
       recordSource as never,
       summarySelector as never,
       strictParser as never,
@@ -659,7 +697,7 @@ describe('BoardTaskLogStreamService', () => {
     };
     const buildBundleChunks = vi.fn((messages: ParsedMessage[]) => [{ id: messages[0]?.uuid }]);
 
-    const service = new BoardTaskLogStreamService(
+    const service = createStreamService(
       recordSource as never,
       summarySelector as never,
       strictParser as never,
@@ -709,19 +747,11 @@ describe('BoardTaskLogStreamService', () => {
       })),
     };
     const buildBundleChunks = vi.fn((messages: ParsedMessage[]) => [{ id: messages[0]?.uuid }]);
-    const taskReader = {
-      getTasks: vi.fn(async () => [
-        {
-          id: 'task-a',
-          displayId: 'abcd1234',
-          owner: 'tom',
-          status: 'in_progress',
-          createdAt: '2026-04-12T15:59:00.000Z',
-          updatedAt: '2026-04-12T16:05:00.000Z',
-        },
-      ]),
-      getDeletedTasks: vi.fn(async () => []),
-    };
+    const taskReader = await createTaskReader({
+      id: 'task-a',
+      owner: 'tom',
+      status: 'in_progress',
+    });
     const transcriptSourceLocator = {
       getGeneration: vi.fn(() => 0),
       getContext: vi.fn(async () => ({
@@ -730,7 +760,7 @@ describe('BoardTaskLogStreamService', () => {
       })),
     };
 
-    const service = new BoardTaskLogStreamService(
+    const service = createStreamService(
       recordSource as never,
       summarySelector as never,
       strictParser as never,
@@ -808,7 +838,7 @@ describe('BoardTaskLogStreamService', () => {
     };
     const buildBundleChunks = vi.fn((messages: ParsedMessage[]) => [{ id: messages[0]?.uuid }]);
 
-    const service = new BoardTaskLogStreamService(
+    const service = createStreamService(
       recordSource as never,
       summarySelector as never,
       strictParser as never,
@@ -893,7 +923,7 @@ describe('BoardTaskLogStreamService', () => {
     };
     const buildBundleChunks = vi.fn((messages: ParsedMessage[]) => [{ id: messages[0]?.uuid }]);
 
-    const service = new BoardTaskLogStreamService(
+    const service = createStreamService(
       recordSource as never,
       summarySelector as never,
       strictParser as never,
@@ -987,7 +1017,7 @@ describe('BoardTaskLogStreamService', () => {
     };
     const buildBundleChunks = vi.fn((messages: ParsedMessage[]) => [{ id: messages[0]?.uuid }]);
 
-    const service = new BoardTaskLogStreamService(
+    const service = createStreamService(
       recordSource as never,
       summarySelector as never,
       strictParser as never,
@@ -1040,7 +1070,7 @@ describe('BoardTaskLogStreamService', () => {
     };
     const buildBundleChunks = vi.fn((messages: ParsedMessage[]) => [{ id: messages[0]?.uuid }]);
 
-    const service = new BoardTaskLogStreamService(
+    const service = createStreamService(
       recordSource as never,
       summarySelector as never,
       strictParser as never,
@@ -1122,7 +1152,7 @@ describe('BoardTaskLogStreamService', () => {
     };
     const buildBundleChunks = vi.fn((messages: ParsedMessage[]) => [{ id: messages[0]?.uuid }]);
 
-    const service = new BoardTaskLogStreamService(
+    const service = createStreamService(
       recordSource as never,
       summarySelector as never,
       strictParser as never,
@@ -1169,7 +1199,7 @@ describe('BoardTaskLogStreamService', () => {
     };
     const buildBundleChunks = vi.fn((messages: ParsedMessage[]) => [{ id: messages[0]?.uuid }]);
 
-    const service = new BoardTaskLogStreamService(
+    const service = createStreamService(
       recordSource as never,
       summarySelector as never,
       strictParser as never,
@@ -1262,19 +1292,11 @@ describe('BoardTaskLogStreamService', () => {
         filteredMessages: [makeMessage('alice-read-detail', '2026-04-12T16:00:00.000Z', 'read')],
       })),
     };
-    const taskReader = {
-      getTasks: vi.fn(async () => [
-        {
-          id: 'task-a',
-          displayId: 'abcd1234',
-          owner: 'tom',
-          status: 'in_progress',
-          createdAt: '2026-04-12T15:59:00.000Z',
-          updatedAt: '2026-04-12T16:05:00.000Z',
-        },
-      ]),
-      getDeletedTasks: vi.fn(async () => []),
-    };
+    const taskReader = await createTaskReader({
+      id: 'task-a',
+      owner: 'tom',
+      status: 'in_progress',
+    });
     const transcriptSourceLocator = {
       getContext: vi.fn(async () => ({
         transcriptFiles: ['/tmp/task.jsonl', '/tmp/alice.jsonl'],
@@ -1286,7 +1308,7 @@ describe('BoardTaskLogStreamService', () => {
     };
     const buildBundleChunks = vi.fn((messages: ParsedMessage[]) => [{ id: messages[0]?.uuid }]);
 
-    const service = new BoardTaskLogStreamService(
+    const service = createStreamService(
       recordSource as never,
       summarySelector as never,
       strictParser as never,
@@ -1407,19 +1429,11 @@ describe('BoardTaskLogStreamService', () => {
         ],
       })),
     };
-    const taskReader = {
-      getTasks: vi.fn(async () => [
-        {
-          id: 'task-a',
-          displayId: 'abcd1234',
-          owner: 'alice',
-          status: 'in_progress',
-          createdAt: '2026-04-12T15:59:00.000Z',
-          updatedAt: '2026-04-12T16:05:00.000Z',
-        },
-      ]),
-      getDeletedTasks: vi.fn(async () => []),
-    };
+    const taskReader = await createTaskReader({
+      id: 'task-a',
+      owner: 'alice',
+      status: 'in_progress',
+    });
     const transcriptSourceLocator = {
       getContext: vi.fn(async () => ({
         projectDir,
@@ -1429,7 +1443,7 @@ describe('BoardTaskLogStreamService', () => {
     };
     const buildBundleChunks = vi.fn((messages: ParsedMessage[]) => [{ id: messages[0]?.uuid }]);
 
-    const service = new BoardTaskLogStreamService(
+    const service = createStreamService(
       recordSource as never,
       summarySelector as never,
       strictParser as never,
@@ -1460,19 +1474,11 @@ describe('BoardTaskLogStreamService', () => {
   it('limits historical board MCP recovery parsing to raw-probe candidate files', async () => {
     const hitFile = '/tmp/historical-hit.jsonl';
     const unrelatedFile = '/tmp/historical-unrelated.jsonl';
-    const taskReader = {
-      getTasks: vi.fn(async () => [
-        {
-          id: 'task-a',
-          displayId: 'abcd1234',
-          owner: 'tom',
-          status: 'completed',
-          createdAt: '2026-04-12T16:00:00.000Z',
-          updatedAt: '2026-04-12T16:05:00.000Z',
-        },
-      ]),
-      getDeletedTasks: vi.fn(async () => []),
-    };
+    const taskReader = await createTaskReader({
+      id: 'task-a',
+      owner: 'tom',
+      status: 'completed',
+    });
     const transcriptSourceLocator = {
       getContext: vi.fn(async () => ({
         transcriptFiles: [hitFile, unrelatedFile],
@@ -1498,7 +1504,7 @@ describe('BoardTaskLogStreamService', () => {
       })),
     };
 
-    const service = new BoardTaskLogStreamService(
+    const service = createStreamService(
       { getTaskRecords: vi.fn(async () => []) } as never,
       summarySelector as never,
       strictParser as never,
@@ -1527,19 +1533,11 @@ describe('BoardTaskLogStreamService', () => {
   });
 
   it('does not recover task_get logs from nested task refs in result payloads', async () => {
-    const taskReader = {
-      getTasks: vi.fn(async () => [
-        {
-          id: 'task-a',
-          displayId: 'abcd1234',
-          owner: 'tom',
-          status: 'completed',
-          createdAt: '2026-04-12T16:00:00.000Z',
-          updatedAt: '2026-04-12T16:05:00.000Z',
-        },
-      ]),
-      getDeletedTasks: vi.fn(async () => []),
-    };
+    const taskReader = await createTaskReader({
+      id: 'task-a',
+      owner: 'tom',
+      status: 'completed',
+    });
     const transcriptSourceLocator = {
       getContext: vi.fn(async () => ({
         transcriptFiles: ['/tmp/lead.jsonl'],
@@ -1638,7 +1636,7 @@ describe('BoardTaskLogStreamService', () => {
       getTaskLogStream: vi.fn(async () => null),
     };
 
-    const service = new BoardTaskLogStreamService(
+    const service = createStreamService(
       { getTaskRecords: vi.fn(async () => []) } as never,
       summarySelector as never,
       strictParser as never,
@@ -1727,7 +1725,7 @@ describe('BoardTaskLogStreamService', () => {
     };
     const buildBundleChunks = vi.fn((messages: ParsedMessage[]) => [{ id: messages[0]?.uuid }]);
 
-    const service = new BoardTaskLogStreamService(
+    const service = createStreamService(
       recordSource as never,
       summarySelector as never,
       strictParser as never,
@@ -1871,7 +1869,7 @@ describe('BoardTaskLogStreamService', () => {
     };
     const buildBundleChunks = vi.fn((messages: ParsedMessage[]) => [{ id: messages[0]?.uuid }]);
 
-    const service = new BoardTaskLogStreamService(
+    const service = createStreamService(
       recordSource as never,
       summarySelector as never,
       strictParser as never,
@@ -2002,7 +2000,7 @@ describe('BoardTaskLogStreamService', () => {
     };
     const buildBundleChunks = vi.fn((messages: ParsedMessage[]) => [{ id: messages[0]?.uuid }]);
 
-    const service = new BoardTaskLogStreamService(
+    const service = createStreamService(
       recordSource as never,
       summarySelector as never,
       strictParser as never,
@@ -2121,7 +2119,7 @@ describe('BoardTaskLogStreamService', () => {
       })),
     };
 
-    const service = new BoardTaskLogStreamService(
+    const service = createStreamService(
       recordSource as never,
       summarySelector as never,
       strictParser as never,

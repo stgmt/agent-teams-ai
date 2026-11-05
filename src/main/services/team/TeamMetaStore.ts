@@ -22,6 +22,8 @@ export interface TeamMetaFile {
   version: 1;
   runtimeSelectionVersion?: 1;
   deletedAt?: string;
+  specProject?: string;
+  specSlug?: string;
   displayName?: string;
   description?: string;
   color?: string;
@@ -208,6 +210,8 @@ export class TeamMetaStore {
         version: 1,
         deletedAt: typeof file.deletedAt === 'string' ? file.deletedAt : undefined,
         runtimeSelectionVersion: normalizeRuntimeSelectionVersion(file.runtimeSelectionVersion),
+        specProject: normalizeOptionalString(file.specProject) ?? undefined,
+        specSlug: normalizeOptionalString(file.specSlug) ?? undefined,
         displayName:
           typeof file.displayName === 'string' ? file.displayName.trim() || undefined : undefined,
         description:
@@ -286,6 +290,8 @@ export class TeamMetaStore {
       version: 1,
       deletedAt: data.deletedAt,
       runtimeSelectionVersion: normalizeRuntimeSelectionVersion(data.runtimeSelectionVersion),
+      specProject: normalizeOptionalString(data.specProject) ?? undefined,
+      specSlug: normalizeOptionalString(data.specSlug) ?? undefined,
       displayName: data.displayName?.trim() || undefined,
       description: data.description?.trim() || undefined,
       color: data.color?.trim() || undefined,

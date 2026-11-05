@@ -6,6 +6,8 @@ import { registerTeamRoutes } from '@main/http/teams';
 import { TeamBackupService } from '@main/services/team/TeamBackupService';
 import { TeamConfigReader } from '@main/services/team/TeamConfigReader';
 import { TeamDataService } from '@main/services/team/TeamDataService';
+import { ExecutionTaskStore } from '@main/services/team/execution/ExecutionTaskStore';
+import { RegistryTaskClient } from '@main/services/team/registry/RegistryTaskClient';
 import { TeamMembersMetaStore } from '@main/services/team/TeamMembersMetaStore';
 import { TeamMetaStore } from '@main/services/team/TeamMetaStore';
 import { TeamProvisioningService } from '@main/services/team/TeamProvisioningService';
@@ -29,8 +31,10 @@ import type {
   TeamRuntimeControlCompatibilityApi,
   TeamTaskActivityRepairApi,
 } from '@main/services/team/contracts/TeamProvisioningApis';
+import type { ListRegistryTasksInput, RegistryTask } from '@main/services/team/registry/RegistryTaskClientTypes';
 import type {
   TeamChangeEvent,
+  TeamCreateConfigRequest,
   TeamCreateRequest,
   TeamLaunchRequest,
   TeamLaunchResponse,
@@ -45,6 +49,21 @@ interface RegisteredTool {
 }
 
 type InjectHttpMethod = 'DELETE' | 'GET' | 'HEAD' | 'PATCH' | 'POST' | 'PUT' | 'OPTIONS';
+const TEST_SPEC_BINDING = {
+  specProject: 'sandbox/agent-teams-tests',
+  specSlug: 'sandbox-spec',
+} as const;
+
+function createBoundTeamConfig(
+  teamDataService: TeamDataService,
+  request: Omit<TeamCreateConfigRequest, 'specProject' | 'specSlug'>
+): Promise<void> {
+  return teamDataService.createTeamConfig({
+    ...request,
+    ...TEST_SPEC_BINDING,
+  });
+}
+
 
 function collectTools(): Map<string, RegisteredTool> {
   const tools = new Map<string, RegisteredTool>();
@@ -173,11 +192,28 @@ function installControlApiFetchMock(app: FastifyInstance, baseUrl: string): () =
   };
 }
 
-function createServices(claudeRoot: string): {
+function createServices(
+  claudeRoot: string,
+  registryTasks: readonly RegistryTask[] = []
+): {
   createTeamCalls: TeamCreateRequest[];
   teamDataService: TeamDataService;
   services: HttpServices;
 } {
+  const registryClient = {
+    listTasks: vi.fn(async (input: ListRegistryTasksInput) => {
+      if (
+        input.project !== TEST_SPEC_BINDING.specProject ||
+        input.spec !== TEST_SPEC_BINDING.specSlug
+      ) {
+        throw new Error('Unexpected spec scope in team-management test boundary');
+      }
+      return [...registryTasks];
+    }),
+  };
+  vi.spyOn(RegistryTaskClient, 'create').mockResolvedValue(
+    registryClient as unknown as RegistryTaskClient
+  );
   const teamDataService = new TeamDataService();
   const createTeamCalls: TeamCreateRequest[] = [];
   const aliveTeams = new Set<string>();
@@ -185,6 +221,12 @@ function createServices(claudeRoot: string): {
   const runIdByTeam = new Map<string, string>();
 
   async function persistLaunchedConfig(request: TeamCreateRequest): Promise<void> {
+    if (
+      request.specProject !== TEST_SPEC_BINDING.specProject ||
+      request.specSlug !== TEST_SPEC_BINDING.specSlug
+    ) {
+      throw new Error('Unexpected spec scope in team-management test boundary');
+    }
     const teamDir = path.join(claudeRoot, 'teams', request.teamName);
     await mkdir(teamDir, { recursive: true });
     await writeFile(
@@ -192,6 +234,8 @@ function createServices(claudeRoot: string): {
       JSON.stringify(
         {
           name: request.displayName ?? request.teamName,
+          specProject: request.specProject,
+          specSlug: request.specSlug,
           projectPath: request.cwd,
           members: [
             {
@@ -394,6 +438,32 @@ describe('MCP team tools over the local REST control API', () => {
     return tool!;
   }
 
+  it('rejects team creation without a registry binding as a structured bad request', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'TEST-team-scope-required-'));
+    setClaudeBasePathOverride(root);
+    const app = Fastify();
+    const { services } = createServices(root);
+    registerTeamRoutes(app, services);
+
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/teams',
+        payload: { teamName: 'scope-less-team', members: [] },
+      });
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toEqual({
+        error: expect.stringContaining('requires specProject and specSlug'),
+      });
+    } finally {
+      await app.close();
+      setAppDataBasePath(null);
+      setClaudeBasePathOverride(null);
+      TeamConfigReader.clearCacheForTests();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   // Catches management writes bypassing immutable context/revision, runtime flags being lost,
   // roster removal resurrecting old identities, or draft trash accidentally deleting artifacts.
   it('manages providerless drafts through MCP, preserving saved runtime fields and reversible trash', async () => {
@@ -418,6 +488,7 @@ describe('MCP team tools over the local REST control API', () => {
       const created = parseJsonToolResult(
         await getTool('team_create').execute({
           ...base,
+          ...TEST_SPEC_BINDING,
           runtimeSelectionVersion: 1,
           description: 'Initial',
           prompt: 'Saved lead instructions',
@@ -453,6 +524,7 @@ describe('MCP team tools over the local REST control API', () => {
       );
       const initial = await get();
       expect(initial.savedRequest).toMatchObject({
+        ...TEST_SPEC_BINDING,
         runtimeSelectionVersion: 1,
         prompt: 'Saved lead instructions',
       });
@@ -693,7 +765,7 @@ describe('MCP team tools over the local REST control API', () => {
     const membersPath = path.join(directory, 'members.meta.json');
     const metaPath = path.join(directory, 'team.meta.json');
     try {
-      await teamDataService.createTeamConfig({ teamName, cwd: root, members: [] });
+      await createBoundTeamConfig(teamDataService, { teamName, cwd: root, members: [] });
       const initial = await services.teamPromptManagement!.get(teamName);
       const savedMetadata = await readFile(metaPath);
       await writeFile(membersPath, unreadable);
@@ -787,7 +859,7 @@ describe('MCP team tools over the local REST control API', () => {
       const directory = path.join(root, 'teams', teamName);
       const configPath = path.join(directory, 'config.json');
       try {
-        await teamDataService.createTeamConfig({ teamName, cwd: root, members: [] });
+        await createBoundTeamConfig(teamDataService, { teamName, cwd: root, members: [] });
         const initial = await services.teamPromptManagement!.get(teamName);
         const metaBytes = await readFile(path.join(directory, 'team.meta.json'));
         await writeFile(configPath, unreadable);
@@ -846,11 +918,12 @@ describe('MCP team tools over the local REST control API', () => {
     let operation: Promise<void> | undefined;
     let timeout: ReturnType<typeof setTimeout> | undefined;
     try {
-      await teamDataService.createTeamConfig({ teamName, cwd: root, members: [] });
+      await createBoundTeamConfig(teamDataService, { teamName, cwd: root, members: [] });
       await writeFile(
         path.join(directory, 'config.json'),
         JSON.stringify({
           name: 'Existing live team',
+          ...TEST_SPEC_BINDING,
           projectPath: root,
           members: [{ name: 'builder', agentId: 'existing-builder' }],
         })
@@ -951,7 +1024,7 @@ describe('MCP team tools over the local REST control API', () => {
     const metaPath = path.join(directory, 'team.meta.json');
     const membersPath = path.join(directory, 'members.meta.json');
     try {
-      await teamDataService.createTeamConfig({
+      await createBoundTeamConfig(teamDataService, {
         teamName,
         cwd: root,
         members: [{ name: 'builder', role: 'Engineer' }],
@@ -1038,7 +1111,7 @@ describe('MCP team tools over the local REST control API', () => {
       ];
       let expectedConfigMembers = members;
       try {
-        await teamDataService.createTeamConfig({ teamName, cwd: root, members: [] });
+        await createBoundTeamConfig(teamDataService, { teamName, cwd: root, members: [] });
         await rm(membersPath);
         if (coverage === 'partial')
           await new TeamMembersMetaStore().writeMembers(teamName, [
@@ -1046,7 +1119,12 @@ describe('MCP team tools over the local REST control API', () => {
           ]);
         await writeFile(
           configPath,
-          JSON.stringify({ name: 'Stored roster', projectPath: root, members })
+          JSON.stringify({
+            name: 'Stored roster',
+            ...TEST_SPEC_BINDING,
+            projectPath: root,
+            members,
+          })
         );
         const configBytes = await readFile(configPath);
         const metaBytes = await readFile(metaPath);
@@ -1183,7 +1261,7 @@ describe('MCP team tools over the local REST control API', () => {
       const directory = path.join(root, 'teams', teamName);
       const targetPath = path.join(directory, filename);
       try {
-        await teamDataService.createTeamConfig({ teamName, cwd: root, members: [] });
+        await createBoundTeamConfig(teamDataService, { teamName, cwd: root, members: [] });
         const initial = await services.teamPromptManagement!.get(teamName);
         const original =
           filename === 'config.json'
@@ -1220,13 +1298,27 @@ describe('MCP team tools over the local REST control API', () => {
     }
   );
 
-  // Catches managed GET returning stale open work/review intervals because crash repair is skipped
-  // or occurs only after the snapshot. Uses real persisted sandbox tasks and the existing repair facade.
+  // Uses a scoped RegistryTask fixture and the real local execution store; task structure is never
+  // sourced from the retired `tasks/<team>` files in this management-focused integration test.
   it('repairs crash-stale task intervals before returning a managed team snapshot', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'TEST-team-management-task-repair-'));
     setClaudeBasePathOverride(root);
     const app = Fastify();
-    const { services, teamDataService } = createServices(root);
+    const registryTask: RegistryTask = {
+      canonicalId: `${TEST_SPEC_BINDING.specSlug}:TASK-1`,
+      localId: 'TASK-1',
+      title: 'Sandbox interrupted task',
+      status: 'in-progress',
+      owner: 'builder',
+      tracking: null,
+      requirements: ['FR-1'],
+      dependsOn: [],
+      blocks: [],
+      blockedBy: [],
+      refs: [],
+      contentHash: null,
+    };
+    const { services, teamDataService } = createServices(root, [registryTask]);
     const { lifecycle } = enableManagement(services, teamDataService, root);
     services.teamApis!.taskActivity = {
       repairStaleTaskActivityIntervalsBeforeSnapshot:
@@ -1234,7 +1326,8 @@ describe('MCP team tools over the local REST control API', () => {
     };
     registerTeamRoutes(app, services);
     const teamName = 'managed-task-repair';
-    const taskPath = path.join(root, 'tasks', teamName, '1.json');
+    const taskId = '1';
+    const executionStore = new ExecutionTaskStore();
     const work = { startedAt: '2026-05-08T10:00:00.000Z', completedAt: '2026-05-08T10:00:05.000Z' };
     const review = {
       reviewer: 'reviewer',
@@ -1242,27 +1335,20 @@ describe('MCP team tools over the local REST control API', () => {
       completedAt: '2026-05-08T10:10:05.000Z',
     };
     try {
-      await teamDataService.createTeamConfig({ teamName, cwd: root, members: [] });
+      await createBoundTeamConfig(teamDataService, { teamName, cwd: root, members: [] });
       await writeFile(
         path.join(root, 'teams', teamName, 'config.json'),
         JSON.stringify({
           name: 'Stopped after crash',
+          ...TEST_SPEC_BINDING,
           projectPath: root,
           members: [{ name: 'builder' }],
         })
       );
-      await writeFile(
-        taskPath,
-        JSON.stringify({
-          id: '1',
-          subject: 'Sandbox interrupted task',
-          owner: 'builder',
-          status: 'in_progress',
-          historyEvents: [],
-          workIntervals: [{ startedAt: work.startedAt }],
-          reviewIntervals: [{ reviewer: review.reviewer, startedAt: review.startedAt }],
-        })
-      );
+      executionStore.write(teamName, taskId, {
+        workIntervals: [{ startedAt: work.startedAt }],
+        reviewIntervals: [{ reviewer: review.reviewer, startedAt: review.startedAt }],
+      });
       const before = await services.teamPromptManagement!.get(teamName);
       expect(before).toMatchObject({
         tasks: [
@@ -1280,10 +1366,10 @@ describe('MCP team tools over the local REST control API', () => {
       expect(response.json()).toMatchObject({
         configurationRevision: before.configurationRevision,
         tasks: [
-          expect.objectContaining({ id: '1', workIntervals: [work], reviewIntervals: [review] }),
+          expect.objectContaining({ id: taskId, workIntervals: [work], reviewIntervals: [review] }),
         ],
       });
-      expect(JSON.parse(await readFile(taskPath, 'utf8'))).toMatchObject({
+      expect(executionStore.read(teamName, taskId)).toMatchObject({
         workIntervals: [work],
         reviewIntervals: [review],
       });
@@ -1320,7 +1406,7 @@ describe('MCP team tools over the local REST control API', () => {
         payload: { expectedContext, expectedRevision, metadata },
       });
     try {
-      await teamDataService.createTeamConfig({
+      await createBoundTeamConfig(teamDataService, {
         teamName,
         runtimeSelectionVersion: 1,
         members: [],
@@ -1332,6 +1418,7 @@ describe('MCP team tools over the local REST control API', () => {
         configPath,
         JSON.stringify({
           name: 'Initial',
+          ...TEST_SPEC_BINDING,
           description: 'Initial',
           projectPath: root,
           members: [{ name: 'team-lead', agentType: 'team-lead' }],
@@ -1478,7 +1565,7 @@ describe('MCP team tools over the local REST control API', () => {
       entered = resolve;
     });
     try {
-      await teamDataService.createTeamConfig({
+      await createBoundTeamConfig(teamDataService, {
         teamName,
         cwd: root,
         members: [],
@@ -1489,7 +1576,7 @@ describe('MCP team tools over the local REST control API', () => {
         entered();
         await barrier;
         expect(await teamDataService.permanentlyDeleteTeam(teamName)).toBe(true);
-        await teamDataService.createTeamConfig({
+        await createBoundTeamConfig(teamDataService, {
           teamName,
           cwd: root,
           members: [],
@@ -1582,7 +1669,7 @@ describe('MCP team tools over the local REST control API', () => {
         interleavedCode = edit.json().code;
       });
     try {
-      await teamDataService.createTeamConfig({
+      await createBoundTeamConfig(teamDataService, {
         teamName: source,
         cwd: root,
         members: [],
@@ -1639,6 +1726,7 @@ describe('MCP team tools over the local REST control API', () => {
           claudeDir: claudeRoot,
           controlUrl,
           teamName: 'mcp-e2e-team',
+          ...TEST_SPEC_BINDING,
           displayName: 'MCP E2E Team',
           description: 'Created by MCP integration test',
           color: '#3366ff',
@@ -1689,6 +1777,7 @@ describe('MCP team tools over the local REST control API', () => {
         pendingCreate: true,
         savedRequest: {
           teamName: 'mcp-e2e-team',
+          ...TEST_SPEC_BINDING,
           displayName: 'MCP E2E Team',
           providerId: 'codex',
           providerBackendId: 'codex-native',
@@ -1758,6 +1847,7 @@ describe('MCP team tools over the local REST control API', () => {
       expect(createTeamCalls).toHaveLength(1);
       expect(createTeamCalls[0]).toMatchObject({
         teamName: 'mcp-e2e-team',
+        ...TEST_SPEC_BINDING,
         displayName: 'MCP E2E Team',
         cwd: projectDir,
         prompt: 'Coordinate the test task',
@@ -1866,6 +1956,7 @@ describe('MCP team tools over the local REST control API', () => {
         path.join(teamDir, 'config.json'),
         JSON.stringify({
           name: teamName,
+          ...TEST_SPEC_BINDING,
           projectPath: projectDir,
           members: [{ name: 'team-lead', agentType: 'team-lead' }],
         }),

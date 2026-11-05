@@ -1,4 +1,5 @@
 // @vitest-environment node
+import * as fs from 'node:fs';
 import * as http from 'node:http';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -58,7 +59,8 @@ function baseEnvelope(data: unknown, page: unknown = null): Record<string, unkno
 }
 
 async function startFakeRegistry(
-  handler: (call: RecordedCall) => FakeReply
+  handler: (call: RecordedCall) => FakeReply,
+  supportsExtendedTasks = true
 ): Promise<FakeRegistry> {
   const calls: RecordedCall[] = [];
   const server = http.createServer((request, response) => {
@@ -69,6 +71,51 @@ async function startFakeRegistry(
       const parsed: unknown = JSON.parse(raw);
       if (!isRecord(parsed) || !isRecord(parsed.params)) {
         response.writeHead(400).end('bad rpc request');
+        return;
+      }
+      if (parsed.method === 'tools/list') {
+        response.writeHead(200, { 'Content-Type': 'application/json' });
+        response.end(
+          JSON.stringify({
+            jsonrpc: '2.0',
+            id: parsed.id,
+            result: {
+              tools: [
+                {
+                  name: 'spec_patch',
+                  inputSchema: {
+                    properties: { operations: {} },
+                    oneOf: [
+                      {
+                        properties: {
+                          intent: { enum: ['patch'] },
+                          operations: {
+                            items: {
+                              properties: supportsExtendedTasks
+                                ? {
+                                    description: { type: 'string' },
+                                    creationToken: { type: 'string' },
+                                    owner: { type: ['string', 'null'] },
+                                    status: { enum: ['deleted'] },
+                                    expectedStatus: { enum: ['deleted'] },
+                                  }
+                                : {
+                                    owner: { type: 'string' },
+                                    status: { enum: ['todo'] },
+                                    expectedStatus: { enum: ['todo'] },
+                                  },
+                            },
+                          },
+                        },
+                      },
+                      { properties: { intent: { enum: ['confirmTaskCreation'] } } },
+                    ],
+                  },
+                },
+              ],
+            },
+          })
+        );
         return;
       }
       const call: RecordedCall = {
@@ -128,6 +175,62 @@ function makeClient(registry: FakeRegistry, requestTimeoutMs = 2_000): Promise<R
 }
 
 describe('RegistryTaskClient.listTasks', () => {
+  it('fails closed against old registries before writes or deleted reads', async () => {
+    const registry = await startFakeRegistry(() => ({ envelope: baseEnvelope({}) }), false);
+    const client = await makeClient(registry);
+    const scope = { project: 'stgmt/tokenplan', spec: 'spec-a' };
+    await expect(client.listTasks({ ...scope, statuses: ['deleted'] })).rejects.toThrow('deleted');
+    await expect(
+      client.upsertTask({
+        ...scope,
+        localId: '1',
+        title: 'Task',
+        requirements: ['FR-1'],
+        description: 'text',
+      })
+    ).rejects.toThrow('description');
+    await expect(client.replaceTaskOwner({ ...scope, entity: '1', owner: null })).rejects.toThrow(
+      'clearOwner'
+    );
+    await expect(
+      client.replaceTaskStatus({ ...scope, entity: '1', status: 'deleted', expectedStatus: 'todo' })
+    ).rejects.toThrow('deleted');
+    expect(registry.calls).toEqual([]);
+  });
+
+  it('uses the decoded registry description without reading the raw entity body', async () => {
+    const description = ' first\n## TASK-99: text\n**Status:** done\n';
+    const registry = await startFakeRegistry(() => ({
+      envelope: baseEnvelope({
+        kind: 'tasks',
+        spec: 'spec-a',
+        tasks: [
+          {
+            canonicalId: 'spec-a:TASK-1',
+            localId: 'TASK-1',
+            title: 'Task',
+            status: 'deleted',
+            owner: null,
+            description,
+            requirements: [],
+            dependsOn: [],
+            blocks: [],
+            blockedBy: [],
+            refs: [],
+          },
+        ],
+      }),
+    }));
+    const client = await makeClient(registry);
+    const tasks = await client.listTasks({
+      project: 'stgmt/tokenplan',
+      spec: 'spec-a',
+      includeBodies: true,
+    });
+    expect(tasks[0]).toMatchObject({ status: 'deleted', body: description });
+    expect(registry.calls.map((call) => call.toolName)).toEqual(['spec_tasks']);
+  });
+
   it('reads every task field and forwards the scope to spec_tasks', async () => {
     const registry = await startFakeRegistry(() => ({
       envelope: baseEnvelope({
@@ -240,6 +343,56 @@ describe('RegistryTaskClient.listTasks', () => {
     expect(registry.calls).toHaveLength(2);
     expect(registry.calls[1]?.args.cursor).toBe('page-2');
   });
+
+  it('loads canonical bodies in paginated entity batches', async () => {
+    const registry = await startFakeRegistry((call) => {
+      if (call.toolName === 'spec_tasks')
+        return {
+          envelope: baseEnvelope({
+            kind: 'tasks',
+            spec: 'spec-a',
+            count: 2,
+            tasks: [
+              { canonicalId: 'spec-a:TASK-1', localId: 'TASK-1', title: 'first', status: 'todo' },
+              { canonicalId: 'spec-a:TASK-2', localId: 'TASK-2', title: 'second', status: 'done' },
+            ],
+          }),
+        };
+      const second = call.args.cursor === 'next';
+      return {
+        envelope: baseEnvelope(
+          {
+            nodes: [
+              {
+                canonicalId: `spec-a:TASK-${second ? 2 : 1}`,
+                body: second
+                  ? '- **Status:** done'
+                  : '- **Done When:** Keep commas, semicolons; and text.',
+                attributes: { doneWhen: [] },
+              },
+            ],
+          },
+          { nextCursor: second ? null : 'next' }
+        ),
+      };
+    });
+    const client = await makeClient(registry);
+    const tasks = await client.listTasks({
+      project: 'stgmt/tokenplan',
+      spec: 'spec-a',
+      includeBodies: true,
+    });
+    expect(tasks.map((task) => task.body)).toEqual(['Keep commas, semicolons; and text.', '']);
+    expect(registry.calls[1]).toMatchObject({
+      toolName: 'spec_entities',
+      args: {
+        mode: 'find',
+        projection: 'full',
+        canonicalIds: ['spec-a:TASK-1', 'spec-a:TASK-2'],
+      },
+    });
+    expect(registry.calls[2]?.args.cursor).toBe('next');
+  });
 });
 
 describe('RegistryTaskClient failures', () => {
@@ -289,9 +442,52 @@ describe('RegistryTaskClient failures', () => {
     expect(failure).toBeInstanceOf(RegistryTaskClientConfigError);
     expect((failure as RegistryTaskClientConfigError).code).toBe('MISSING_TOKEN');
   });
+
+  it('uses an explicitly selected token file instead of the host home credential', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'registry-token-file-'));
+    try {
+      const tokenFile = path.join(dir, 'token.txt');
+      fs.writeFileSync(tokenFile, 'isolated-token');
+      const registry = await startFakeRegistry(() => ({
+        envelope: baseEnvelope({ kind: 'tasks', spec: 'spec-a', count: 0, tasks: [] }),
+      }));
+      const client = await RegistryTaskClient.create({
+        url: registry.url,
+        env: { OMP_SPEC_REGISTRY_TOKEN_FILE: tokenFile, OMP_SPEC_REGISTRY_TOKEN: 'stale-token' },
+      });
+      await client.listTasks({ project: 'sandbox/demo', spec: 'spec-a' });
+      expect(registry.calls[0].authorization).toBe('Bearer isolated-token');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
+    }
+  });
 });
 
 describe('RegistryTaskClient writes', () => {
+  it('reads the tasks document preimage and rejects malformed hashes', async () => {
+    const registry = await startFakeRegistry(() => ({
+      envelope: baseEnvelope({ sha256: 'b'.repeat(64) }),
+    }));
+    const client = await makeClient(registry);
+    await expect(
+      client.readTasksDocumentSha({ project: 'stgmt/tokenplan', spec: 'spec-a' })
+    ).resolves.toBe('b'.repeat(64));
+    expect(registry.calls[0]).toMatchObject({
+      toolName: 'spec_documents',
+      args: {
+        action: 'read',
+        project: 'stgmt/tokenplan',
+        spec: 'spec-a',
+        doc: 'TASKS.md',
+      },
+    });
+    const badRegistry = await startFakeRegistry(() => ({ envelope: baseEnvelope({ sha256: '' }) }));
+    const badClient = await makeClient(badRegistry);
+    await expect(
+      badClient.readTasksDocumentSha({ project: 'stgmt/tokenplan', spec: 'spec-a' })
+    ).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
+  });
+
   it('returns APPLIED with the registry transition receipt for upsertTask', async () => {
     const registry = await startFakeRegistry(() => ({
       envelope: {
@@ -324,11 +520,13 @@ describe('RegistryTaskClient writes', () => {
       title: 'Wire the registry task store',
       requirements: ['spec-a:FR-1'],
       body: 'The kanban reflects the registry task.',
+      description: ' first\n## TASK-99\n',
       status: 'todo',
       owner: 'lead',
       tracking: 'agent-teams/alpha/8f1d',
       dependsOn: ['spec-a:TASK-3'],
       refs: ['spec-a:TASK-4'],
+      expectedSha: 'a'.repeat(64),
     });
 
     expect(result).toEqual({
@@ -364,11 +562,13 @@ describe('RegistryTaskClient writes', () => {
         title: 'Wire the registry task store',
         requirements: ['spec-a:FR-1'],
         body: 'The kanban reflects the registry task.',
+        description: ' first\n## TASK-99\n',
         status: 'todo',
         owner: 'lead',
         tracking: 'agent-teams/alpha/8f1d',
         dependsOn: ['spec-a:TASK-3'],
         refs: ['spec-a:TASK-4'],
+        expectedSha: 'a'.repeat(64),
       },
     ]);
   });
@@ -397,6 +597,28 @@ describe('RegistryTaskClient writes', () => {
     expect(result).toEqual({ outcome: 'UNCHANGED', transitions: [], refusal: null });
     expect(registry.calls[0]?.args.operations).toEqual([
       { kind: 'replace_task_owner', document: 'TASKS.md', entity: 'TASK-9', owner: 'lead' },
+    ]);
+  });
+  it('sends null to unassign an owner', async () => {
+    const registry = await startFakeRegistry(() => ({
+      envelope: baseEnvelope({
+        schemaVersion: 'spec-mcp-operations-patch@1',
+        requestId: 'req-clear',
+        dryRun: false,
+        proposalHash: 'hash',
+        outcome: 'APPLIED',
+        transitions: [],
+      }),
+    }));
+    const client = await makeClient(registry);
+    await client.replaceTaskOwner({
+      project: 'stgmt/tokenplan',
+      spec: 'spec-a',
+      entity: 'TASK-1',
+      owner: null,
+    });
+    expect(registry.calls[0]?.args.operations).toEqual([
+      { kind: 'replace_task_owner', document: 'TASKS.md', entity: 'TASK-1', owner: null },
     ]);
   });
 

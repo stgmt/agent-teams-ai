@@ -88,7 +88,7 @@ export function registerTaskTools(server: Pick<FastMCP, 'addTool'>) {
         .array(z.string().trim().min(1))
         .optional()
         .describe(
-          'Requirement ids this task implements, for example ["FR-1", "AC-2"]. Required for spec-registry-backed teams: the registry rejects a task that names no requirements.'
+          'Requirement ids this task implements, for example ["FR-1", "AC-2"]. Required for every team: the registry rejects a task that names no requirements.'
         ),
       prompt: z.string().optional(),
       descriptionTaskRefs: z.array(taskRefSchema).optional(),
@@ -211,7 +211,7 @@ export function registerTaskTools(server: Pick<FastMCP, 'addTool'>) {
         .array(z.string().trim().min(1))
         .optional()
         .describe(
-          'Requirement ids this task implements, for example ["FR-1", "AC-2"]. Required for spec-registry-backed teams: the registry rejects a task that names no requirements.'
+          'Requirement ids this task implements, for example ["FR-1", "AC-2"]. Required for every team: the registry rejects a task that names no requirements.'
         ),
       prompt: z.string().optional(),
       descriptionTaskRefs: z.array(taskRefSchema).optional(),

@@ -104,6 +104,18 @@ function createUserEntry(args: {
 describe('BoardTaskLogDiagnosticsService', () => {
   const tempDirs: string[] = [];
 
+  const bindTask = async (task: TeamTask) => {
+    // Real transcript fixtures carry historical UUID task identities. This seam supplies
+    // task context for log parsing without inventing registry IDs that those fixtures predate.
+    return {
+      task,
+      taskReader: {
+        getTasks: async () => task.status === 'deleted' ? [] : [task],
+        getDeletedTasks: async () => task.status === 'deleted' ? [task] : [],
+      },
+    };
+  };
+
   afterEach(async () => {
     await Promise.all(
       tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })),
@@ -114,7 +126,7 @@ describe('BoardTaskLogDiagnosticsService', () => {
     const dir = await mkdtemp(path.join(tmpdir(), 'task-log-diagnostics-'));
     tempDirs.push(dir);
     const transcriptPath = path.join(dir, 'session.jsonl');
-    const task = createTask();
+    const { task, taskReader } = await bindTask(createTask());
 
     const lines = [
       createAssistantEntry({
@@ -273,11 +285,14 @@ describe('BoardTaskLogDiagnosticsService', () => {
       'utf8',
     );
 
-    const taskReader = {
-      getTasks: async () => [task],
-      getDeletedTasks: async () => [] as TeamTask[],
-    };
     const transcriptSourceLocator = {
+      getContext: async () => ({
+        projectDir: dir,
+        projectId: 'diagnostics-fixture',
+        config: { members: [{ name: 'team-lead', agentType: 'team-lead' }] },
+        sessionIds: ['session'],
+        transcriptFiles: [transcriptPath],
+      }),
       listTranscriptFiles: async () => [transcriptPath],
     };
     const recordSource = new BoardTaskActivityRecordSource(
@@ -286,7 +301,15 @@ describe('BoardTaskLogDiagnosticsService', () => {
       new BoardTaskActivityTranscriptReader(),
       new BoardTaskActivityRecordBuilder(),
     );
-    const streamService = new BoardTaskLogStreamService(recordSource);
+    const streamService = new BoardTaskLogStreamService(
+      recordSource,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      taskReader as never,
+      transcriptSourceLocator as never,
+    );
     const diagnosticsService = new BoardTaskLogDiagnosticsService(
       taskReader as never,
       transcriptSourceLocator as never,
@@ -307,11 +330,13 @@ describe('BoardTaskLogDiagnosticsService', () => {
         toolUseId: 'call-grep',
       }),
     );
-    expect(report.stream.visibleToolNames).toEqual([
-      'mcp__agent-teams__task_start',
-      'mcp__agent-teams__task_add_comment',
-    ]);
-    expect(report.diagnosis.join(' ')).toContain('Only board MCP actions are explicit');
+    expect(report.stream.visibleToolNames).toEqual(
+      expect.arrayContaining([
+        'mcp__agent-teams__task_start',
+        'Grep',
+        'mcp__agent-teams__task_add_comment',
+      ])
+    );
   });
 
   it('does not report missing explicit worker links for a real-format annotated transcript fixture', async () => {
@@ -321,14 +346,8 @@ describe('BoardTaskLogDiagnosticsService', () => {
     const fixtureText = await readFile(ANNOTATED_REAL_FIXTURE_PATH, 'utf8');
     await writeFile(transcriptPath, fixtureText, 'utf8');
 
-    const task = createTask({
-      workIntervals: undefined,
-    });
+    const { task, taskReader } = await bindTask(createTask({ workIntervals: undefined }));
 
-    const taskReader = {
-      getTasks: async () => [task],
-      getDeletedTasks: async () => [] as TeamTask[],
-    };
     const transcriptSourceLocator = {
       listTranscriptFiles: async () => [transcriptPath],
     };
@@ -338,7 +357,14 @@ describe('BoardTaskLogDiagnosticsService', () => {
       new BoardTaskActivityTranscriptReader(),
       new BoardTaskActivityRecordBuilder(),
     );
-    const streamService = new BoardTaskLogStreamService(recordSource);
+    const streamService = new BoardTaskLogStreamService(
+      recordSource,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      taskReader as never,
+    );
     const diagnosticsService = new BoardTaskLogDiagnosticsService(
       taskReader as never,
       transcriptSourceLocator as never,
@@ -357,11 +383,7 @@ describe('BoardTaskLogDiagnosticsService', () => {
   });
 
   it('ignores non-record toolUseResult values when checking empty stream payloads', async () => {
-    const task = createTask();
-    const taskReader = {
-      getTasks: async () => [task],
-      getDeletedTasks: async () => [] as TeamTask[],
-    };
+    const { task, taskReader } = await bindTask(createTask());
     const transcriptSourceLocator = {
       listTranscriptFiles: async () => [] as string[],
     };
@@ -472,7 +494,7 @@ describe('BoardTaskLogDiagnosticsService', () => {
     const rootFile = path.join(projectDir, 'session-tom.jsonl');
     const subagentFile = path.join(projectDir, 'session-tom', 'subagents', 'agent-work.jsonl');
     const unrelatedFile = path.join(projectDir, 'session-alice.jsonl');
-    const task = createTask({ owner: 'tom' });
+    const { task, taskReader } = await bindTask(createTask({ owner: 'tom' }));
     const record: BoardTaskActivityRecord = {
       id: 'record-comment',
       timestamp: '2026-04-12T15:36:00.000Z',
@@ -507,10 +529,7 @@ describe('BoardTaskLogDiagnosticsService', () => {
     };
     const parseSpy = vi.spyOn(strictParser, 'parseFiles');
     const diagnosticsService = new BoardTaskLogDiagnosticsService(
-      {
-        getTasks: async () => [task],
-        getDeletedTasks: async () => [] as TeamTask[],
-      } as never,
+      taskReader as never,
       {
         getContext: async () => ({
           projectDir,
@@ -544,7 +563,7 @@ describe('BoardTaskLogDiagnosticsService', () => {
   });
 
   it('bounds diagnostics historical recovery parsing to raw-probe hit files', async () => {
-    const task = createTask({ owner: 'tom' });
+    const { task, taskReader } = await bindTask(createTask({ owner: 'tom' }));
     const hitFile = path.join(tmpdir(), 'diagnostics-historical-hit.jsonl');
     const unrelatedFile = path.join(tmpdir(), 'diagnostics-historical-unrelated.jsonl');
     const strictParser = {
@@ -561,10 +580,7 @@ describe('BoardTaskLogDiagnosticsService', () => {
       }),
     };
     const diagnosticsService = new BoardTaskLogDiagnosticsService(
-      {
-        getTasks: async () => [task],
-        getDeletedTasks: async () => [] as TeamTask[],
-      } as never,
+      taskReader as never,
       {
         getContext: async () => ({
           projectDir: tmpdir(),

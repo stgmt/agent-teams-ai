@@ -7,8 +7,12 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import { useAppTranslation } from '@features/localization/renderer';
-import { useOverlayOccupancy } from '@renderer/hooks/useOverlayOccupancy';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogTitle,
+} from '@renderer/components/ui/dialog';
 import { AlertTriangle } from 'lucide-react';
 
 interface ConfirmDialogState {
@@ -72,7 +76,6 @@ export async function confirm(opts: {
  * ConfirmDialog component. Mount once at the app root (e.g. in App.tsx).
  */
 export const ConfirmDialog = (): React.JSX.Element | null => {
-  const { t } = useAppTranslation('common');
   const [state, setState] = useState<ConfirmDialogState>(initialState);
   const dialogRef = useRef<HTMLDivElement>(null);
 
@@ -92,49 +95,23 @@ export const ConfirmDialog = (): React.JSX.Element | null => {
     setState(initialState);
   }, []);
 
-  // Escape key closes
-  useEffect(() => {
-    if (!state.isOpen) return;
-    const handleKeyDown = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape') close(false);
-    };
-    document.addEventListener('keydown', handleKeyDown);
-    return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [state.isOpen, close]);
-
-  // Auto-focus confirm button
-  useEffect(() => {
-    if (state.isOpen && dialogRef.current) {
-      const btn = dialogRef.current.querySelector<HTMLButtonElement>('[data-confirm-btn]');
-      btn?.focus();
-    }
-  }, [state.isOpen]);
-
-  useOverlayOccupancy(state.isOpen);
-
   if (!state.isOpen) return null;
 
   const isDanger = state.variant === 'danger';
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
-      {/* Backdrop */}
-      <button
-        className="absolute inset-0 cursor-default"
-        style={{ backgroundColor: 'rgba(0, 0, 0, 0.6)' }}
-        onClick={() => close(false)}
-        aria-label={t('actions.closeDialog')}
-        tabIndex={-1}
-      />
-      <div
+    <Dialog
+      open
+      onOpenChange={(open) => {
+        if (!open) close(false);
+      }}
+    >
+      <DialogContent
         ref={dialogRef}
-        className="relative mx-4 w-full max-w-sm rounded-lg border p-6 shadow-xl"
-        role="dialog"
-        aria-modal="true"
-        aria-label={state.title}
-        style={{
-          backgroundColor: 'var(--color-surface-overlay)',
-          borderColor: 'var(--color-border-emphasis)',
+        className="max-w-sm border-[var(--color-border-emphasis)] bg-[var(--color-surface-overlay)]"
+        onOpenAutoFocus={(event) => {
+          event.preventDefault();
+          dialogRef.current?.querySelector<HTMLButtonElement>('[data-confirm-btn]')?.focus();
         }}
       >
         {/* Icon + Title */}
@@ -145,12 +122,10 @@ export const ConfirmDialog = (): React.JSX.Element | null => {
             </div>
           )}
           <div>
-            <h2 className="text-sm font-semibold" style={{ color: 'var(--color-text)' }}>
-              {state.title}
-            </h2>
-            <p className="mt-1 text-sm" style={{ color: 'var(--color-text-secondary)' }}>
+            <DialogTitle className="text-sm font-semibold">{state.title}</DialogTitle>
+            <DialogDescription className="mt-1 text-sm text-[var(--color-text-secondary)]">
               {state.message}
-            </p>
+            </DialogDescription>
           </div>
         </div>
 
@@ -180,7 +155,7 @@ export const ConfirmDialog = (): React.JSX.Element | null => {
             {state.confirmLabel ?? 'Confirm'}
           </button>
         </div>
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 };

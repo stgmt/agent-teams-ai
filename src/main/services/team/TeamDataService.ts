@@ -16,7 +16,6 @@ import {
 } from '@shared/utils/leadDetection';
 import { createLogger } from '@shared/utils/logger';
 import { migrateProviderBackendId } from '@shared/utils/providerBackend';
-import { getReviewStateFromTask } from '@shared/utils/reviewState';
 import { buildStandaloneSlashCommandMeta } from '@shared/utils/slashCommands';
 import { formatTaskDisplayLabel } from '@shared/utils/taskIdentity';
 import { normalizeTeamMemberMcpPolicy } from '@shared/utils/teamMemberMcpPolicy';
@@ -47,7 +46,6 @@ import {
   RegistryTaskProviderError,
   type RegistryTaskScope,
 } from './registry/RegistryTaskProvider';
-import type { RegistryTaskTransition } from './registry/RegistryTaskClientTypes';
 import {
   RegistryTeamTaskWriteError,
   type RegistryTeamTaskWriter,
@@ -57,8 +55,10 @@ import {
   type RegistryTeamTaskWriterProvider,
 } from './registry/RegistryTeamTaskWriterFactory';
 import {
+  resolveRegistryBindingConfig,
   resolveTeamSpecBinding,
   type TeamSpecBinding,
+  type TeamSpecBindingConfig,
   TeamSpecBindingError,
 } from './registry/TeamSpecBinding';
 import { atomicWriteAsync } from './atomicWrite';
@@ -72,10 +72,6 @@ import {
 } from './permanentTeamDataDeletion';
 import { resolveSyntheticLeadRuntimeSettings } from './syntheticLeadRuntimeSettings';
 import { buildTaskChangePresenceDescriptor } from './taskChangePresenceUtils';
-import {
-  findTasksByCreationIdempotencyKey,
-  isControllerTaskNotFoundError,
-} from './taskCreationIdempotency';
 import {
   assertTaskGroupChatAssociation,
   type TaskGroupChatCatalog,
@@ -100,15 +96,22 @@ import { readTeamMessagesPage } from './TeamMessagePageRead';
 import { TeamMetaStore } from './TeamMetaStore';
 import { applyDistinctRosterColors } from './teamRosterColors';
 import { TeamSentMessagesStore } from './TeamSentMessagesStore';
-import { getTeamTaskWorkflowColumn, selectCurrentActiveTeamTask } from './teamTaskActiveState';
+import { selectCurrentActiveTeamTask } from './teamTaskActiveState';
 import { TeamTaskCommentNotificationJournal } from './TeamTaskCommentNotificationJournal';
 import { TeamTaskReader } from './TeamTaskReader';
+import { resolveTaskKanbanColumn, resolveTaskReviewState } from './TeamTaskWorkflowProjection';
 import { compactTeamTaskForSnapshot } from './teamTaskSnapshotCompaction';
-import { TeamTaskWriter } from './TeamTaskWriter';
 import { TeamTranscriptProjectResolver } from './TeamTranscriptProjectResolver';
+import {
+  TeamGlobalTaskBoardReader,
+  type GlobalBoardTeamFailure,
+} from './TeamGlobalTaskBoardReader';
+export type { GlobalBoardTeamFailure } from './TeamGlobalTaskBoardReader';
 
 import type { PersistedTaskChangePresenceIndex } from './cache/taskChangePresenceCacheTypes';
 import type { TaskChangePresenceRepository } from './cache/TaskChangePresenceRepository';
+import type { ExecutionTaskPatch } from './execution/ExecutionTaskStore';
+import type { RegistryTaskTransition } from './registry/RegistryTaskClientTypes';
 import type { TaskCommentNotificationJournalStore } from './TaskCommentNotificationJournalStore';
 import type { TeamLogSourceTracker } from './TeamLogSourceTracker';
 import type { TeamMetaFile } from './TeamMetaStore';
@@ -158,11 +161,41 @@ const MIN_TEXT_LENGTH = 30;
 const MAX_LEAD_TEXTS = 150;
 const LEAD_SESSION_PARSE_CACHE_SCHEMA_VERSION = 'combined-v2';
 const PROCESS_HEALTH_INTERVAL_MS = 2_000;
-const TASK_MAP_YIELD_EVERY = 250;
 const TASK_COMMENT_NOTIFICATION_SOURCE = 'system_notification';
 const MEMBER_RUNTIME_ADVISORY_SNAPSHOT_BUDGET_MS = 250;
-const GLOBAL_TASK_TEAM_FANOUT_CONCURRENCY = 12;
 
+function isUserDirectedNonUserMessage(request: SendMessageRequest): boolean {
+  const from = request.from?.trim().toLowerCase();
+  const to = request.member.trim() || request.to?.trim() || '';
+  return to.toLowerCase() === 'user' && Boolean(from && from !== 'user');
+}
+
+function isAutomatedCommentNotification(message: InboxMessage): boolean {
+  const summary = typeof message.summary === 'string' ? message.summary : '';
+  if (!/^Comment on #[A-Za-z0-9-]+/.test(summary)) return false;
+
+  const text = typeof message.text === 'string' ? message.text : '';
+  if (!text) return false;
+  return (
+    text.includes('Reply to this comment using:') ||
+    text.startsWith('**Comment on task') ||
+    text.startsWith('New comment from user on your task #')
+  );
+}
+
+function readLinkedTaskRefs(summary: string): Set<string> {
+  const taskRefs = new Set<string>();
+  for (const match of summary.matchAll(/#([A-Za-z0-9-]+)/g)) {
+    taskRefs.add(match[1]);
+  }
+  return taskRefs;
+}
+
+interface TeamArtifactReconcileResult {
+  staleKanbanEntriesRemoved: number;
+  staleColumnOrderRefsRemoved: number;
+  linkedCommentsCreated: number;
+}
 function createNonDurableTaskBoardCommandFacade(): TaskBoardCommandFacade {
   const hasher = new NodeApplicationCommandHasher();
   return new TaskBoardCommandFacade(null, {
@@ -177,16 +210,6 @@ const MIXED_TEAM_LIVE_MUTATION_BLOCK_MESSAGE =
 function toSafeDiagnosticIdentifier(value: string): string {
   return SAFE_DIAGNOSTIC_IDENTIFIER_PATTERN.test(value) ? value : 'redacted';
 }
-
-type RuntimeAgentTeamsController = Omit<
-  AgentTeamsController,
-  'tasks' | 'kanban' | 'review' | 'taskBoard'
-> & {
-  tasks?: Partial<AgentTeamsController['tasks']>;
-  kanban?: Partial<AgentTeamsController['kanban']>;
-  review?: Partial<AgentTeamsController['review']>;
-  taskBoard?: AgentTeamsController['taskBoard'];
-};
 
 interface TeamNotificationContext {
   displayName: string;
@@ -304,8 +327,8 @@ interface TaskCommentNotificationTeamContext {
   deletedAt?: string;
   leadName?: string;
   leadSessionId?: string;
-  /** Known registry binding from the team summary; `null` means file-backed. */
-  specBinding?: RegistryTaskScope | null;
+  /** Known required registry binding from the team summary. */
+  specBinding?: RegistryTaskScope;
 }
 
 interface TaskChangeLogSourceSnapshot {
@@ -318,51 +341,6 @@ interface FileWatchReconcileDiagnostics {
   burstCount: number;
   windowStartedAt: number;
   lastPressureLogAt: number;
-}
-
-interface GlobalTaskTeamInfo {
-  displayName: string;
-  projectPath?: string;
-  deletedAt?: string;
-}
-
-/**
- * One team kept off the global board because its registry-backed task state
- * could not be read. The rest of the board is still served: the file-backed
- * teams and the registry teams that answered stay visible.
- */
-export interface GlobalBoardTeamFailure {
-  teamName: string;
-  /** Registry scope, when the team's binding was readable. */
-  project?: string;
-  spec?: string;
-  /** `RegistryTaskProviderErrorCode`, `TeamSpecBindingErrorCode`, or `UNKNOWN`. */
-  code: string;
-  message: string;
-}
-
-async function mapLimitLocal<T, R>(
-  items: readonly T[],
-  limit: number,
-  mapper: (item: T) => Promise<R>
-): Promise<R[]> {
-  const results = new Array<R>(items.length);
-  let nextIndex = 0;
-  const workerCount = Math.min(Math.max(1, limit), items.length);
-
-  await Promise.all(
-    Array.from({ length: workerCount }, async () => {
-      while (true) {
-        const index = nextIndex++;
-        if (index >= items.length) {
-          return;
-        }
-        results[index] = await mapper(items[index]);
-      }
-    })
-  );
-
-  return results;
 }
 
 function readConfigForUiSnapshot(
@@ -457,12 +435,6 @@ interface FileWatchReconcileTrigger {
   detail?: string;
 }
 
-interface GlobalTeamSpecCensus {
-  teamName: string;
-  specProject?: string;
-  specSlug?: string;
-}
-
 export class TeamDataService {
   private processHealthTimer: ReturnType<typeof setInterval> | null = null;
   private processHealthTeams = new Set<string>();
@@ -487,6 +459,7 @@ export class TeamDataService {
   private taskBoardCommandFacade = createNonDurableTaskBoardCommandFacade();
   private taskGroupChatCatalog: TaskGroupChatCatalog | null = null;
   private readonly registryTaskProvider: RegistryTaskProvider;
+  private readonly globalTaskBoardReader: TeamGlobalTaskBoardReader;
   private readonly registryTaskWriters = new Map<
     string,
     { key: string; writer: Promise<RegistryTeamTaskWriter> }
@@ -497,16 +470,19 @@ export class TeamDataService {
     private readonly taskReader: TeamTaskReader = new TeamTaskReader(),
     private readonly inboxReader: TeamInboxReader = new TeamInboxReader(),
     private readonly inboxWriter: TeamInboxWriter = new TeamInboxWriter(),
-    _taskWriter: TeamTaskWriter = new TeamTaskWriter(),
     private readonly memberResolver: TeamMemberResolver = new TeamMemberResolver(),
     private readonly kanbanManager: TeamKanbanManager = new TeamKanbanManager(),
     _legacyToolsInstaller: unknown = null,
     private readonly membersMetaStore: TeamMembersMetaStore = new TeamMembersMetaStore(),
     private readonly sentMessagesStore: TeamSentMessagesStore = new TeamSentMessagesStore(),
-    private readonly controllerFactory: (teamName: string) => AgentTeamsController = (teamName) =>
+    private readonly controllerFactory: (
+      teamName: string,
+      readOnlyTaskSnapshot?: TeamTask[]
+    ) => AgentTeamsController = (teamName, readOnlyTaskSnapshot) =>
       createController({
         teamName,
         claudeDir: getClaudeBasePath(),
+        ...(readOnlyTaskSnapshot ? { readOnlyTaskSnapshot } : {}),
       }),
     private readonly taskCommentNotificationJournal: TeamTaskCommentNotificationJournal = new TeamTaskCommentNotificationJournal(),
     private readonly teamMetaStore: TeamMetaStore = new TeamMetaStore(),
@@ -521,7 +497,16 @@ export class TeamDataService {
   ) {
     this.registryTaskProvider =
       registryTaskProvider ??
-      new RegistryTaskProvider({ readConfig: (teamName) => this.readSnapshotConfig(teamName) });
+      new RegistryTaskProvider({
+        readConfig: (teamName) => this.readRegistryBindingConfig(teamName),
+      });
+    this.globalTaskBoardReader = new TeamGlobalTaskBoardReader(
+      this.configReader,
+      this.registryTaskProvider,
+      this.kanbanManager,
+      (teamName) => this.readSnapshotConfig(teamName),
+      (teamName) => this.readRegistryBindingConfig(teamName)
+    );
     const getInboxMessagesWindow =
       typeof this.inboxReader.getMessagesWindow === 'function'
         ? (teamName: string, options: Parameters<TeamInboxReader['getMessagesWindow']>[1]) =>
@@ -542,6 +527,13 @@ export class TeamDataService {
     return readConfigForUiSnapshot(this.configReader, teamName);
   }
 
+  private async readRegistryBindingConfig(teamName: string): Promise<TeamSpecBindingConfig | null> {
+    return resolveRegistryBindingConfig(teamName, {
+      readConfig: (name) => this.readSnapshotConfig(name),
+      readMetadata: (name) => this.teamMetaStore.getMeta(name),
+    });
+  }
+
   private getNotificationContextGeneration(teamName: string): number {
     return this.notificationContextGenerationByTeam.get(teamName) ?? 0;
   }
@@ -554,59 +546,8 @@ export class TeamDataService {
     );
   }
 
-  private async readGlobalTaskTeamInfoFromListTeams(): Promise<Map<string, GlobalTaskTeamInfo>> {
-    const teams = await this.configReader.listTeams();
-    const teamInfoMap = new Map<string, GlobalTaskTeamInfo>();
-    for (const team of teams) {
-      teamInfoMap.set(team.teamName, {
-        displayName: team.displayName,
-        projectPath: team.projectPath,
-        deletedAt: team.deletedAt,
-      });
-    }
-    return teamInfoMap;
-  }
-
-  private async readGlobalTaskTeamInfo(
-    rawTasks: readonly (TeamTask & { teamName: string })[]
-  ): Promise<Map<string, GlobalTaskTeamInfo>> {
-    const canReadConfigDirectly =
-      typeof (this.configReader as { getConfigSnapshot?: unknown }).getConfigSnapshot ===
-        'function' ||
-      typeof (this.configReader as { getConfig?: unknown }).getConfig === 'function';
-    if (!canReadConfigDirectly) {
-      return this.readGlobalTaskTeamInfoFromListTeams();
-    }
-
-    const teamNames = [...new Set(rawTasks.map((task) => task.teamName))];
-    const entries = await mapLimitLocal(
-      teamNames,
-      GLOBAL_TASK_TEAM_FANOUT_CONCURRENCY,
-      async (teamName) => {
-        const config = await readConfigForUiSnapshot(this.configReader, teamName).catch(() => null);
-        const displayName = config?.name?.trim();
-        if (!config || !displayName) {
-          return null;
-        }
-        return [
-          teamName,
-          {
-            displayName,
-            projectPath: resolveProjectPathFromConfig(config),
-            deletedAt: typeof config.deletedAt === 'string' ? config.deletedAt : undefined,
-          },
-        ] as const;
-      }
-    );
-
-    if (entries.some((entry) => entry === null)) {
-      return this.readGlobalTaskTeamInfoFromListTeams();
-    }
-
-    return new Map(entries.filter((entry): entry is NonNullable<typeof entry> => entry !== null));
-  }
-
   private invalidateGlobalTaskProjectionCache(): void {
+    this.registryTaskProvider.invalidate();
     TeamTaskReader.invalidateAllTasksCache();
   }
 
@@ -614,65 +555,40 @@ export class TeamDataService {
     teamName: string,
     config?: TeamConfig | null
   ): Promise<readonly TeamTask[]> {
-    const binding = config === undefined ? undefined : resolveTeamSpecBinding(config, teamName);
+    const binding = config == null ? undefined : resolveTeamSpecBinding(config, teamName);
     const registryTasks = await this.registryTaskProvider.getTasks(
       teamName,
       binding === undefined ? {} : { binding }
     );
-    if (registryTasks.backed) {
-      return registryTasks.tasks;
-    }
-    const snapshotReader = this.taskReader as TeamTaskReader & {
-      getTasksProjectionSnapshot?: (teamName: string) => Promise<readonly TeamTask[]>;
-    };
-    return typeof snapshotReader.getTasksProjectionSnapshot === 'function'
-      ? snapshotReader.getTasksProjectionSnapshot(teamName)
-      : this.taskReader.getTasks(teamName);
+    return registryTasks.tasks;
   }
 
-  /**
-   * Canonical task list of the team: the registry when the team config carries
-   * a `specProject`/`specSlug` binding, the local task files otherwise.
-   */
-  private async readTeamTasks(
-    teamName: string,
-    binding?: RegistryTaskScope | null
-  ): Promise<TeamTask[]> {
+  /** Canonical task list, exclusively from the required registry binding. */
+  private async readTeamTasks(teamName: string, binding?: RegistryTaskScope): Promise<TeamTask[]> {
     const registryTasks = await this.registryTaskProvider.getTasks(
       teamName,
       binding === undefined ? {} : { binding }
     );
-    return registryTasks.backed ? registryTasks.tasks : this.taskReader.getTasks(teamName);
+    return registryTasks.tasks;
   }
 
-  /**
-   * Registry binding carried by a team summary, when the summary shape supports
-   * it. `null` means "summary says file-backed", which lets callers that already
-   * hold the team list skip a second config read.
-   */
-  private resolveSummarySpecBinding(summary: TeamSummary): RegistryTaskScope | null {
-    if (!('specProject' in summary) || !('specSlug' in summary)) {
-      return null;
-    }
-    const project = summary.specProject;
-    const spec = summary.specSlug;
-    if (typeof project !== 'string' || typeof spec !== 'string') {
-      return null;
-    }
-    return resolveTeamSpecBinding({ specProject: project, specSlug: spec }, summary.teamName);
+  /** Bypass TTL and in-flight cached reads before Kanban GC evaluates live task IDs. */
+  private async readFreshTeamTasks(teamName: string): Promise<TeamTask[]> {
+    const binding = await this.registryTaskProvider.getScope(teamName);
+    this.registryTaskProvider.invalidate(binding);
+    const registryTasks = await this.registryTaskProvider.getTasks(teamName, { binding });
+    return registryTasks.tasks;
   }
 
-  /**
-   * Canonical writer for a registry-backed team; `null` means the team keeps the
-   * legacy file path. A team that names `specProject` but not `specSlug` throws
-   * a typed binding error instead of silently writing canonical files.
-   */
-  private async resolveRegistryTeamTaskWriter(
-    teamName: string
-  ): Promise<RegistryTeamTaskWriter | null> {
-    const config = await this.readSnapshotConfig(teamName);
+  /** Summary binding avoids a second config read without permitting local mode. */
+  private resolveSummarySpecBinding(summary: TeamSummary): RegistryTaskScope {
+    return resolveTeamSpecBinding(summary, summary.teamName);
+  }
+
+  /** Canonical writer for the team's required registry binding. */
+  private async resolveRegistryTeamTaskWriter(teamName: string): Promise<RegistryTeamTaskWriter> {
+    const config = await this.readRegistryBindingConfig(teamName);
     const binding = resolveTeamSpecBinding(config, teamName);
-    if (!binding) return null;
     const key = `${binding.project}\u0000${binding.spec}`;
     const cached = this.registryTaskWriters.get(teamName);
     if (cached?.key === key) return cached.writer;
@@ -687,45 +603,8 @@ export class TeamDataService {
     return writer;
   }
 
-  /** Fails closed on operations a registry-backed team has no mapping for yet. */
-  private async assertLegacyTaskOperation(
-    teamName: string,
-    taskId: string,
-    operation: string
-  ): Promise<void> {
-    const writer = await this.resolveRegistryTeamTaskWriter(teamName);
-    if (!writer) return;
-    throw new RegistryTeamTaskWriteError(
-      'OPERATION_UNSUPPORTED',
-      `${operation} is not supported for a spec-registry team yet; task canonical state lives in ${writer.binding.project}/${writer.binding.spec}.`,
-      { taskId }
-    );
-  }
-
-  private getController(teamName: string): AgentTeamsController {
-    return this.controllerFactory(teamName);
-  }
-
-  private getTaskBoard(teamName: string): AgentTeamsController['taskBoard'] {
-    const controller = this.getController(teamName) as RuntimeAgentTeamsController;
-    const taskBoard = controller.taskBoard ?? this.buildLegacyTaskBoard(controller);
-    if (!taskBoard) {
-      throw new Error('Agent teams controller taskBoard API is unavailable');
-    }
-    return taskBoard;
-  }
-
-  private buildLegacyTaskBoard(
-    controller: RuntimeAgentTeamsController
-  ): AgentTeamsController['taskBoard'] | null {
-    if (!controller.tasks && !controller.kanban && !controller.review) {
-      return null;
-    }
-    return {
-      ...(controller.tasks ?? {}),
-      ...(controller.kanban ?? {}),
-      ...(controller.review ?? {}),
-    } as AgentTeamsController['taskBoard'];
+  private getController(teamName: string, readOnlyTaskSnapshot?: TeamTask[]): AgentTeamsController {
+    return this.controllerFactory(teamName, readOnlyTaskSnapshot);
   }
 
   private async readTeamLaneMutationContext(teamName: string): Promise<{
@@ -915,48 +794,13 @@ export class TeamDataService {
     return formatTaskDisplayLabel(task);
   }
 
-  private resolveTaskReviewState(
-    task: Pick<TeamTask, 'reviewState' | 'historyEvents' | 'status'>,
-    kanbanTaskState?: KanbanState['tasks'][string]
-  ): 'none' | 'review' | 'needsFix' | 'approved' {
-    const kanbanColumn = kanbanTaskState?.column;
-    const kanbanWorkflowColumn = kanbanColumn
-      ? getTeamTaskWorkflowColumn({
-          status: task.status,
-          reviewState: 'none',
-          kanbanColumn,
-        })
-      : undefined;
-    if (kanbanWorkflowColumn) {
-      return kanbanWorkflowColumn;
-    }
-
-    const reviewState = getReviewStateFromTask({
-      historyEvents: task.historyEvents,
-      reviewState: task.reviewState,
-      status: task.status,
-      ...(kanbanColumn ? { kanbanColumn } : {}),
-    });
-    const workflowColumn = getTeamTaskWorkflowColumn({
-      status: task.status,
-      reviewState,
-      ...(kanbanColumn ? { kanbanColumn } : {}),
-    });
-
-    if (workflowColumn) {
-      return workflowColumn;
-    }
-
-    return reviewState;
-  }
-
   private attachKanbanCompatibility(
     task: TeamTask,
     kanbanTaskState?: KanbanState['tasks'][string]
   ): TeamTaskWithKanban {
-    const reviewState = this.resolveTaskReviewState(task, kanbanTaskState);
+    const reviewState = resolveTaskReviewState(task, kanbanTaskState);
     const reviewer = this.resolveReviewerFromHistory(task, kanbanTaskState, reviewState) ?? null;
-    const kanbanColumn = this.resolveTaskKanbanColumn(task, kanbanTaskState, reviewState);
+    const kanbanColumn = resolveTaskKanbanColumn(task, kanbanTaskState, reviewState);
     return {
       ...task,
       reviewState,
@@ -966,10 +810,9 @@ export class TeamDataService {
   }
 
   /**
-   * Canonical task list of the team. Same routing the renderer snapshot uses:
-   * the spec registry when the team config carries a `specProject`/`specSlug`
-   * binding, the local task files otherwise. HTTP callers (the MCP child) have
-   * no other way to read the board.
+   * Canonical team task list from its bound spec registry. HTTP callers (the
+   * MCP child) use this same source as the renderer; there is no local task
+   * fallback.
    */
   async getTasks(teamName: string): Promise<TeamTask[]> {
     return this.readTeamTasks(teamName);
@@ -977,13 +820,7 @@ export class TeamDataService {
 
   async getTask(teamName: string, taskId: string): Promise<TeamTaskWithKanban | null> {
     const registryTask = await this.registryTaskProvider.getTask(teamName, taskId);
-    let task: TeamTask | null;
-    if (registryTask.backed) {
-      task = registryTask.task;
-    } else {
-      const taskBoard = this.getTaskBoard(teamName);
-      task = (taskBoard.getTask?.(taskId) as TeamTask | null | undefined) ?? null;
-    }
+    const task = registryTask.task;
     if (!task) {
       return null;
     }
@@ -1002,18 +839,6 @@ export class TeamDataService {
     return this.attachKanbanCompatibility(task, kanbanState.tasks[task.id]);
   }
 
-  private resolveTaskKanbanColumn(
-    task: Pick<TeamTask, 'status'>,
-    kanbanTaskState?: KanbanState['tasks'][string],
-    reviewState: 'none' | 'review' | 'needsFix' | 'approved' = 'none'
-  ): 'review' | 'approved' | undefined {
-    return getTeamTaskWorkflowColumn({
-      status: task.status,
-      reviewState,
-      ...(kanbanTaskState?.column ? { kanbanColumn: kanbanTaskState.column } : {}),
-    });
-  }
-
   /**
    * Extract reviewer name from the current review cycle history.
    * For legacy boards that stored reviewer only in kanban state, preserve that
@@ -1022,7 +847,7 @@ export class TeamDataService {
   private resolveReviewerFromHistory(
     task: TeamTask,
     kanbanTaskState?: KanbanState['tasks'][string],
-    reviewState: 'none' | 'review' | 'needsFix' | 'approved' = this.resolveTaskReviewState(
+    reviewState: 'none' | 'review' | 'needsFix' | 'approved' = resolveTaskReviewState(
       task,
       kanbanTaskState
     )
@@ -1199,12 +1024,7 @@ export class TeamDataService {
         : null;
 
     const [tasks, kanbanState, presenceIndex] = await Promise.all([
-      this.readTasksForUiSnapshot(teamName, config).catch((error: unknown) => {
-        if (error instanceof RegistryTaskProviderError) {
-          throw error;
-        }
-        return [] as readonly TeamTask[];
-      }),
+      this.readTasksForUiSnapshot(teamName, config),
       this.kanbanManager
         .getState(teamName)
         .catch(() => ({ teamName, reviewers: [], tasks: {} }) as KanbanState),
@@ -1250,6 +1070,8 @@ export class TeamDataService {
       prompt: meta.prompt,
       savedSettingsFingerprint: fingerprintSavedLaunchSettings(meta),
       runtimeSelectionVersion: meta.runtimeSelectionVersion,
+      specProject: meta.specProject,
+      specSlug: meta.specSlug,
       providerId: resolvedProviderId,
       providerBackendId: migrateProviderBackendId(
         resolvedProviderId,
@@ -1302,261 +1124,16 @@ export class TeamDataService {
     return alive.sort((left, right) => left.localeCompare(right));
   }
 
-  /**
-   * Global board rows for every team. Registry-backed teams contribute their
-   * registry rows; a team whose registry read fails is reported through
-   * {@link getAllTasksWithDiagnostics} instead of blanking the whole board.
-   */
+  /** Global board reads fail rather than presenting a partial board as complete. */
   async getAllTasks(): Promise<GlobalTask[]> {
-    const { tasks, failures } = await this.getAllTasksWithDiagnostics();
-    for (const failure of failures) {
-      logger.warn(
-        `[getAllTasks] registry board unavailable team=${failure.teamName} code=${failure.code}: ${failure.message}`
-      );
-    }
-    return tasks;
+    return this.globalTaskBoardReader.getAllTasks();
   }
 
   async getAllTasksWithDiagnostics(): Promise<{
     tasks: GlobalTask[];
     failures: GlobalBoardTeamFailure[];
   }> {
-    const taskReader = this.taskReader as TeamTaskReader & {
-      getAllTasksProjectionSnapshot?: () => Promise<readonly (TeamTask & { teamName: string })[]>;
-    };
-    const fileTasks =
-      typeof taskReader.getAllTasksProjectionSnapshot === 'function'
-        ? await taskReader.getAllTasksProjectionSnapshot()
-        : await taskReader.getAllTasks();
-
-    // A registry-backed team keeps no task files, so names come from one directory
-    // read; only the teams that actually carry a spec binding are configured, and
-    // the full team summary (worker-driven, expensive) is never built for the board.
-    const census = await this.readTeamSpecCensus();
-    const registry = await this.readRegistryBackedGlobalTasks(census);
-
-    const rawTasks = [
-      // A registry-backed team's canonical state is the registry: stale local
-      // files must not resurface as a second board, and neither may the files
-      // of a team whose registry read just failed look complete.
-      ...fileTasks.filter((task) => !registry.backedTeamNames.has(task.teamName)),
-      ...registry.tasks,
-    ];
-    const teamInfoMap = await this.readGlobalTaskTeamInfo(rawTasks);
-
-    const MAX_GLOBAL_TASKS_EXPORTED = 500;
-    let tasksToExport = rawTasks.filter((task) => teamInfoMap.has(task.teamName));
-    if (tasksToExport.length > MAX_GLOBAL_TASKS_EXPORTED) {
-      // Prefer newest first before reading kanban and building the lightweight IPC projection.
-      tasksToExport = tasksToExport
-        .slice()
-        .sort((a, b) => {
-          const at = Date.parse(a.updatedAt ?? a.createdAt ?? '') || 0;
-          const bt = Date.parse(b.updatedAt ?? b.createdAt ?? '') || 0;
-          return bt - at;
-        })
-        .slice(0, MAX_GLOBAL_TASKS_EXPORTED);
-    }
-
-    const teamNames = [...new Set(tasksToExport.map((task) => task.teamName))];
-    const kanbanByTeam = new Map<string, KanbanState>();
-    await Promise.all(
-      teamNames.map(async (teamName) => {
-        try {
-          const state = await this.kanbanManager.getState(teamName);
-          kanbanByTeam.set(teamName, state);
-        } catch {
-          // ignore
-        }
-      })
-    );
-
-    const out: GlobalTask[] = [];
-    let processed = 0;
-    for (const task of tasksToExport) {
-      const info = teamInfoMap.get(task.teamName)!;
-      const kanbanTaskState = kanbanByTeam.get(task.teamName)?.tasks[task.id];
-      const reviewState = this.resolveTaskReviewState(task, kanbanTaskState);
-      const kanbanColumn = this.resolveTaskKanbanColumn(task, kanbanTaskState, reviewState);
-
-      // IPC payload safety: GlobalTask lists can be enormous (especially comments and large nested fields).
-      // Return a "light" task object and defer heavy details to team/task detail views.
-      const projectPath = task.projectPath ?? info.projectPath;
-      const subject =
-        typeof task.subject === 'string'
-          ? task.subject.slice(0, 300)
-          : String(task.subject).slice(0, 300);
-      out.push({
-        id: task.id,
-        subject,
-        owner: task.owner,
-        status: task.status,
-        createdAt: task.createdAt,
-        updatedAt: task.updatedAt,
-        projectPath,
-        needsClarification: task.needsClarification,
-        deletedAt: task.deletedAt,
-        reviewState,
-        // Keep dependency state in the lightweight snapshot. Otherwise opening a
-        // team hydrates old blockers and the renderer reports them as new.
-        blockedBy: Array.isArray(task.blockedBy)
-          ? task.blockedBy.filter((id): id is string => typeof id === 'string')
-          : undefined,
-        // IMPORTANT: comments MUST be included here (at least lightweight metadata).
-        //
-        // Previously comments were omitted from GlobalTask payload to keep IPC small.
-        // This silently broke task comment notifications in the renderer: the store's
-        // detectTaskCommentNotifications() compares oldTask.comments vs newTask.comments
-        // to find new comments and fire native OS toasts. Without comments in the payload,
-        // both counts were always 0 → newCommentCount <= oldCommentCount → every comment
-        // was silently skipped → "Task comment notifications" toggle had no effect.
-        //
-        // Fix: include lightweight comment metadata (id, author, truncated text for toast
-        // preview, createdAt, type). Full text and attachments are still omitted — those
-        // are loaded on-demand by the task detail view via team:getTask.
-        comments: Array.isArray(task.comments)
-          ? task.comments.map((c) => ({
-              id: c.id,
-              author: c.author,
-              text: c.text.slice(0, 120),
-              createdAt: c.createdAt,
-              type: c.type,
-            }))
-          : undefined,
-        kanbanColumn,
-        teamName: task.teamName,
-        teamDisplayName: info.displayName,
-        teamDeleted: Boolean(info.deletedAt) || undefined,
-      });
-      processed++;
-      if (processed % TASK_MAP_YIELD_EVERY === 0) {
-        await yieldToEventLoop();
-      }
-    }
-
-    return { tasks: out, failures: registry.failures };
-  }
-
-  /**
-   * Registry half of the global board.
-   *
-   * Only teams that carry `specProject` + `specSlug` participate; their rows
-   * are read through {@link RegistryTaskProvider}, whose TTL cache and in-flight
-   * dedupe absorb repeated board renders, so N teams cost at most N registry
-   * reads per TTL window rather than N per render. The read is bounded by the
-   * same concurrency limit the team-config fan-out uses.
-   *
-   * Failures are per team: an unreachable registry drops that team's rows and
-   * lands in `failures`, while every other team is still served.
-   */
-  /**
-   * Names plus the spec binding of each team, without building full summaries.
-   * A team without either binding field is skipped: it cannot be registry-backed.
-   */
-  private async readTeamSpecCensus(): Promise<GlobalTeamSpecCensus[]> {
-    const reader = this.configReader as TeamConfigReader & {
-      listTeamNames?: () => Promise<string[]>;
-    };
-    if (typeof reader.listTeamNames !== 'function') {
-      return [];
-    }
-    let names: string[];
-    try {
-      names = await reader.listTeamNames();
-    } catch {
-      return [];
-    }
-    const out: GlobalTeamSpecCensus[] = [];
-    await Promise.all(
-      names.map(async (teamName) => {
-        try {
-          const config = await readConfigForUiSnapshot(this.configReader, teamName);
-          if (!config) return;
-          if (!config.specProject && !config.specSlug) return;
-          out.push({
-            teamName,
-            ...(config.specProject ? { specProject: config.specProject } : {}),
-            ...(config.specSlug ? { specSlug: config.specSlug } : {}),
-          });
-        } catch {
-          // An unreadable team config is not a board failure by itself.
-        }
-      })
-    );
-    return out;
-  }
-
-  private async readRegistryBackedGlobalTasks(teams: readonly GlobalTeamSpecCensus[]): Promise<{
-    tasks: (TeamTask & { teamName: string })[];
-    backedTeamNames: Set<string>;
-    failures: GlobalBoardTeamFailure[];
-  }> {
-    const failures: GlobalBoardTeamFailure[] = [];
-    const backedTeamNames = new Set<string>();
-    const scopes: { teamName: string; binding: TeamSpecBinding }[] = [];
-
-    for (const team of teams) {
-      let binding: TeamSpecBinding | null;
-      try {
-        binding = resolveTeamSpecBinding(
-          { specProject: team.specProject, specSlug: team.specSlug },
-          team.teamName
-        );
-      } catch (error) {
-        if (!(error instanceof TeamSpecBindingError)) {
-          throw error;
-        }
-        // Half-configured binding: the team is registry-backed, but its scope
-        // cannot be addressed. Reporting it beats showing a file board the
-        // registry does not back.
-        backedTeamNames.add(team.teamName);
-        failures.push({
-          teamName: team.teamName,
-          ...(team.specProject ? { project: team.specProject } : {}),
-          ...(team.specSlug ? { spec: team.specSlug } : {}),
-          code: error.code,
-          message: error.message,
-        });
-        continue;
-      }
-      if (!binding) {
-        continue;
-      }
-      backedTeamNames.add(team.teamName);
-      scopes.push({ teamName: team.teamName, binding });
-    }
-
-    const perTeam = await mapLimitLocal(
-      scopes,
-      GLOBAL_TASK_TEAM_FANOUT_CONCURRENCY,
-      async ({ teamName, binding }) => {
-        try {
-          const result = await this.registryTaskProvider.getTasks(teamName, { binding });
-          return result.backed ? result.tasks.map((task) => ({ ...task, teamName })) : [];
-        } catch (error) {
-          failures.push(
-            error instanceof RegistryTaskProviderError
-              ? {
-                  teamName,
-                  project: error.project ?? binding.project,
-                  spec: error.spec ?? binding.spec,
-                  code: error.code,
-                  message: error.message,
-                }
-              : {
-                  teamName,
-                  project: binding.project,
-                  spec: binding.spec,
-                  code: 'UNKNOWN',
-                  message: error instanceof Error ? error.message : String(error),
-                }
-          );
-          return [];
-        }
-      }
-    );
-
-    return { tasks: perTeam.flat(), backedTeamNames, failures };
+    return this.globalTaskBoardReader.getAllTasksWithDiagnostics();
   }
 
   private configurationGate: (teamName: string, operation: () => Promise<void>) => Promise<void> = (
@@ -1688,7 +1265,6 @@ export class TeamDataService {
       load: () => Promise<T>;
     }): Promise<StepResult<T>> => {
       const { label, createFallback, warningText, load } = options;
-      void label;
       return (async () => {
         try {
           const value = await load();
@@ -1699,7 +1275,7 @@ export class TeamDataService {
         } catch (error) {
           // A registry-backed team must surface its failure: an empty board with
           // a warning would look like "the team has no tasks".
-          if (error instanceof RegistryTaskProviderError) {
+          if (label === 'tasks' || error instanceof RegistryTaskProviderError) {
             throw error;
           }
           return {
@@ -2458,21 +2034,29 @@ export class TeamDataService {
     return (await this.createTaskWithOutcome(teamName, request)).task;
   }
 
-  private async createTaskWithOutcome(
+  async createTaskWithOutcome(
     teamName: string,
-    request: CreateTaskRequest
-  ): Promise<{ task: TeamTask; createdInAttempt: boolean }> {
+    request: CreateTaskRequest & { status?: TeamTaskStatus; actor?: string },
+    executionPatch?: ExecutionTaskPatch
+  ): Promise<{ task: TeamTask; outcome: 'APPLIED' | 'REPLAY' }> {
     const registryWriter = await this.resolveRegistryTeamTaskWriter(teamName);
-    if (registryWriter) {
-      if (request.groupChatId !== undefined) {
-        await assertTaskGroupChatAssociation(
-          teamName,
-          request.groupChatId,
-          undefined,
-          this.taskGroupChatCatalog
-        );
-      }
-      const { task, createdInAttempt } = await registryWriter.createTask({
+    const groupChatId = executionPatch?.groupChatId ?? request.groupChatId;
+    const creationCommand = request.creationCommand ?? executionPatch?.creationCommand ?? undefined;
+    if (
+      (request.command &&
+        creationCommand &&
+        request.command.commandId !== creationCommand.commandId) ||
+      (request.creationCommand &&
+        executionPatch?.creationCommand &&
+        JSON.stringify(request.creationCommand) !== JSON.stringify(executionPatch.creationCommand))
+    ) {
+      throw new RegistryTeamTaskWriteError(
+        'IDEMPOTENCY_CONFLICT',
+        'Task creation command identities do not match.'
+      );
+    }
+    const { task, createdInAttempt } = await registryWriter.createTask(
+      {
         subject: request.subject,
         description: request.description,
         requirements: request.requirements ?? [],
@@ -2481,104 +2065,30 @@ export class TeamDataService {
         blockedBy: request.blockedBy,
         related: request.related,
         startImmediately: request.startImmediately === true,
+        status: request.status,
+        actor: request.actor,
+        executionPatch: { ...executionPatch, ...(creationCommand ? { creationCommand } : {}) },
+        commandId: request.command?.commandId ?? creationCommand?.commandId,
         groupChatId: request.groupChatId,
         descriptionTaskRefs: request.descriptionTaskRefs,
         prompt: request.prompt,
         promptTaskRefs: request.promptTaskRefs,
         projectPath: await this.readTaskCreateProjectPath(teamName),
-        commandIdempotencyKey: request.command?.idempotencyKey,
-      });
-      this.invalidateGlobalTaskProjectionCache();
-      await this.notifyTaskStartBestEffort(teamName, task, request);
-      return { task, createdInAttempt };
-    }
-
-    const taskBoard = this.getTaskBoard(teamName);
-    const blockedBy = [...new Set(request.blockedBy?.filter((id) => id.length > 0) ?? [])].sort();
-    const related = [...new Set(request.related?.filter((id) => id.length > 0) ?? [])].sort();
-
-    const shouldStart = Boolean(request.owner && request.startImmediately === true);
-    const commandPayload: Record<string, unknown> = {
-      subject: request.subject,
-      ...(request.groupChatId !== undefined ? { groupChatId: request.groupChatId } : {}),
-      ...(request.description?.trim() ? { description: request.description.trim() } : {}),
-      ...(request.descriptionTaskRefs?.length
-        ? { descriptionTaskRefs: request.descriptionTaskRefs }
-        : {}),
-      ...(request.owner ? { owner: request.owner } : {}),
-      ...(blockedBy.length > 0 ? { blockedBy } : {}),
-      ...(related.length > 0 ? { related } : {}),
-      createdBy: 'user',
-      ...(request.prompt?.trim() ? { prompt: request.prompt.trim() } : {}),
-      ...(request.promptTaskRefs?.length ? { promptTaskRefs: request.promptTaskRefs } : {}),
-      ...(shouldStart ? { startImmediately: true } : {}),
-    };
-
-    let task: TeamTask;
-    let createdInAttempt = true;
-    if (request.command) {
-      if (
-        typeof taskBoard.getTask !== 'function' ||
-        typeof taskBoard.reconcileTaskCreation !== 'function'
-      ) {
-        throw new Error('Durable task-board commands are unavailable');
-      }
-      const commandResult = await this.taskBoardCommandFacade.createTask({
-        teamName,
-        identity: request.command,
-        payload: commandPayload,
-        destination: {
-          findById: (taskId) => {
-            try {
-              return taskBoard.getTask(taskId) as TeamTask;
-            } catch (error) {
-              if (isControllerTaskNotFoundError(error, taskId)) {
-                return null;
-              }
-              throw error;
-            }
-          },
-          findByIdempotencyKey: (idempotencyKey) =>
-            findTasksByCreationIdempotencyKey(
-              taskBoard.listTasks() as TeamTask[],
-              taskBoard.listDeletedTasks() as TeamTask[],
-              idempotencyKey
-            ),
-          create: async (input) => {
-            await assertTaskGroupChatAssociation(
+        commandIdempotencyKey: request.command?.idempotencyKey ?? creationCommand?.commandId,
+      },
+      groupChatId !== undefined && groupChatId !== null
+        ? () =>
+            assertTaskGroupChatAssociation(
               teamName,
-              input.groupChatId,
+              groupChatId,
               undefined,
               this.taskGroupChatCatalog
-            );
-            const projectPath = await this.readTaskCreateProjectPath(teamName);
-            return taskBoard.createTask({
-              ...input,
-              ...(projectPath ? { projectPath } : {}),
-            }) as TeamTask;
-          },
-          reconcile: (input) => taskBoard.reconcileTaskCreation(input) as TeamTask,
-        },
-      });
-      task = commandResult.task;
-      createdInAttempt = commandResult.createdInAttempt;
-    } else {
-      await assertTaskGroupChatAssociation(
-        teamName,
-        request.groupChatId,
-        undefined,
-        this.taskGroupChatCatalog
-      );
-      const projectPath = await this.readTaskCreateProjectPath(teamName);
-      task = taskBoard.createTask({
-        ...commandPayload,
-        ...(projectPath ? { projectPath } : {}),
-      }) as TeamTask;
-    }
+            )
+        : undefined
+    );
     this.invalidateGlobalTaskProjectionCache();
     await this.notifyTaskStartBestEffort(teamName, task, request);
-
-    return { task, createdInAttempt };
+    return { task, outcome: createdInAttempt ? 'APPLIED' : 'REPLAY' };
   }
 
   /**
@@ -2624,11 +2134,7 @@ export class TeamDataService {
    */
   private async startTaskCanonically(teamName: string, taskId: string): Promise<void> {
     const registryWriter = await this.resolveRegistryTeamTaskWriter(teamName);
-    if (registryWriter) {
-      await registryWriter.replaceStatus({ taskId, to: 'in_progress', actor: 'user' });
-      return;
-    }
-    this.getTaskBoard(teamName).startTask(taskId, 'user');
+    await registryWriter.replaceStatus({ taskId, to: 'in_progress', actor: 'user' });
   }
 
   async startTask(teamName: string, taskId: string): Promise<{ notifiedOwner: boolean }> {
@@ -2781,17 +2287,18 @@ export class TeamDataService {
     teamName: string,
     taskId: string,
     status: TeamTaskStatus,
-    actor?: string
+    actor?: string,
+    expectedStatus?: TeamTaskStatus
   ): Promise<readonly RegistryTaskTransition[]> {
     const registryWriter = await this.resolveRegistryTeamTaskWriter(teamName);
-    if (registryWriter) {
-      const result = await registryWriter.replaceStatus({ taskId, to: status, actor });
-      this.invalidateGlobalTaskProjectionCache();
-      return result.transitions;
-    }
-    this.getTaskBoard(teamName).setTaskStatus(taskId, status, actor);
+    const result = await registryWriter.replaceStatus({
+      taskId,
+      to: status,
+      actor,
+      ...(expectedStatus !== undefined ? { expectedStatus } : {}),
+    });
     this.invalidateGlobalTaskProjectionCache();
-    return [];
+    return result.transitions;
   }
 
   /**
@@ -2850,30 +2357,26 @@ export class TeamDataService {
   }
 
   async softDeleteTask(teamName: string, taskId: string): Promise<void> {
-    await this.assertLegacyTaskOperation(teamName, taskId, 'Deleting a task');
-    this.getTaskBoard(teamName).softDeleteTask(taskId, 'user');
-    this.invalidateGlobalTaskProjectionCache();
+    await this.updateTaskStatus(teamName, taskId, 'deleted', 'user');
   }
 
   async restoreTask(teamName: string, taskId: string): Promise<void> {
-    await this.assertLegacyTaskOperation(teamName, taskId, 'Restoring a task');
-    this.getTaskBoard(teamName).restoreTask(taskId, 'user');
-    this.invalidateGlobalTaskProjectionCache();
+    await this.updateTaskStatusWithReceipt(teamName, taskId, 'pending', 'user', 'deleted');
   }
 
   async getDeletedTasks(teamName: string): Promise<TeamTask[]> {
     const registryTasks = await this.registryTaskProvider.getDeletedTasks(teamName);
-    return registryTasks.backed ? registryTasks.tasks : this.taskReader.getDeletedTasks(teamName);
+    return registryTasks.tasks;
   }
 
-  async updateTaskOwner(teamName: string, taskId: string, owner: string | null): Promise<void> {
+  async updateTaskOwner(
+    teamName: string,
+    taskId: string,
+    owner: string | null,
+    actor?: string
+  ): Promise<void> {
     const registryWriter = await this.resolveRegistryTeamTaskWriter(teamName);
-    if (registryWriter) {
-      await registryWriter.replaceOwner({ taskId, owner });
-      this.invalidateGlobalTaskProjectionCache();
-      return;
-    }
-    this.getTaskBoard(teamName).setTaskOwner(taskId, owner, 'user');
+    await registryWriter.replaceOwner({ taskId, owner, ...(actor !== undefined ? { actor } : {}) });
     this.invalidateGlobalTaskProjectionCache();
   }
 
@@ -2883,32 +2386,23 @@ export class TeamDataService {
     fields: TaskFieldUpdates
   ): Promise<void> {
     const registryWriter = await this.resolveRegistryTeamTaskWriter(teamName);
-    if (registryWriter) {
-      if (fields.groupChatId !== undefined) {
-        throw new RegistryTeamTaskWriteError(
-          'OPERATION_UNSUPPORTED',
-          'Group-chat association on a registry-backed task is not supported yet; the execution store does not own that field.',
-          { taskId }
-        );
-      }
-      await registryWriter.updateCanonicalFields({
-        taskId,
-        subject: fields.subject,
-        description: fields.description,
-      });
-      this.invalidateGlobalTaskProjectionCache();
-      return;
-    }
-    const taskBoard = this.getTaskBoard(teamName);
     if (fields.groupChatId !== undefined && fields.groupChatId !== null) {
+      const task = await this.registryTaskProvider.getTask(teamName, taskId);
       await assertTaskGroupChatAssociation(
         teamName,
         fields.groupChatId,
-        (taskBoard.getTask(taskId) as TeamTask).groupChatId,
+        task.task?.groupChatId,
         this.taskGroupChatCatalog
       );
     }
-    taskBoard.updateTaskFields(taskId, fields);
+    await registryWriter.updateCanonicalFields({
+      taskId,
+      subject: fields.subject,
+      description: fields.description,
+    });
+    if (fields.groupChatId !== undefined) {
+      await registryWriter.applyExecutionPatch(taskId, { groupChatId: fields.groupChatId });
+    }
     this.invalidateGlobalTaskProjectionCache();
   }
 
@@ -2918,15 +2412,7 @@ export class TeamDataService {
     meta: TaskAttachmentMeta
   ): Promise<void> {
     const registryWriter = await this.resolveRegistryTeamTaskWriter(teamName);
-    if (registryWriter) {
-      registryWriter.addAttachment(taskId, meta);
-      this.invalidateGlobalTaskProjectionCache();
-      return;
-    }
-    this.getTaskBoard(teamName).addTaskAttachmentMeta(
-      taskId,
-      meta as unknown as Record<string, unknown>
-    );
+    await registryWriter.addAttachment(taskId, meta);
     this.invalidateGlobalTaskProjectionCache();
   }
 
@@ -2936,12 +2422,7 @@ export class TeamDataService {
     attachmentId: string
   ): Promise<void> {
     const registryWriter = await this.resolveRegistryTeamTaskWriter(teamName);
-    if (registryWriter) {
-      registryWriter.removeAttachment(taskId, attachmentId);
-      this.invalidateGlobalTaskProjectionCache();
-      return;
-    }
-    this.getTaskBoard(teamName).removeTaskAttachment(taskId, attachmentId);
+    await registryWriter.removeAttachment(taskId, attachmentId);
     this.invalidateGlobalTaskProjectionCache();
   }
 
@@ -2951,12 +2432,7 @@ export class TeamDataService {
     value: 'lead' | 'user' | null
   ): Promise<void> {
     const registryWriter = await this.resolveRegistryTeamTaskWriter(teamName);
-    if (registryWriter) {
-      registryWriter.setNeedsClarification(taskId, value);
-      this.invalidateGlobalTaskProjectionCache();
-      return;
-    }
-    this.getTaskBoard(teamName).setNeedsClarification(taskId, value);
+    await registryWriter.setNeedsClarification(taskId, value);
     this.invalidateGlobalTaskProjectionCache();
   }
 
@@ -2967,17 +2443,11 @@ export class TeamDataService {
     type: 'blockedBy' | 'blocks' | 'related'
   ): Promise<void> {
     const registryWriter = await this.resolveRegistryTeamTaskWriter(teamName);
-    if (registryWriter) {
+    try {
       await registryWriter.addLink({ taskId, targetId, type });
+    } finally {
       this.invalidateGlobalTaskProjectionCache();
-      return;
     }
-    this.getTaskBoard(teamName).linkTask(
-      taskId,
-      targetId,
-      type === 'blockedBy' ? 'blocked-by' : type
-    );
-    this.invalidateGlobalTaskProjectionCache();
   }
 
   async removeTaskRelationship(
@@ -2987,17 +2457,11 @@ export class TeamDataService {
     type: 'blockedBy' | 'blocks' | 'related'
   ): Promise<void> {
     const registryWriter = await this.resolveRegistryTeamTaskWriter(teamName);
-    if (registryWriter) {
+    try {
       await registryWriter.removeLink({ taskId, targetId, type });
+    } finally {
       this.invalidateGlobalTaskProjectionCache();
-      return;
     }
-    this.getTaskBoard(teamName).unlinkTask(
-      taskId,
-      targetId,
-      type === 'blockedBy' ? 'blocked-by' : type
-    );
-    this.invalidateGlobalTaskProjectionCache();
   }
 
   async addTaskComment(
@@ -3008,32 +2472,28 @@ export class TeamDataService {
     taskRefs?: TaskRef[]
   ): Promise<TaskComment> {
     const registryWriter = await this.resolveRegistryTeamTaskWriter(teamName);
-    if (registryWriter) {
-      const comment = await registryWriter.appendUserComment(taskId, text, attachments, taskRefs);
-      this.invalidateGlobalTaskProjectionCache();
-      return comment;
-    }
-    const taskBoard = this.getTaskBoard(teamName);
-    const addResult = taskBoard.addTaskComment(taskId, {
-      from: 'user',
-      text,
-      attachments,
-      taskRefs,
-    }) as { task?: TeamTask; comment?: TaskComment };
+    const comment = await registryWriter.appendUserComment(taskId, text, attachments, taskRefs);
     this.invalidateGlobalTaskProjectionCache();
-    const comment =
-      addResult.comment ??
-      ({
-        id: randomUUID(),
-        author: 'user',
-        text,
-        createdAt: new Date().toISOString(),
-        type: 'regular',
-        ...(taskRefs && taskRefs.length > 0 ? { taskRefs } : {}),
-        ...(attachments && attachments.length > 0 ? { attachments } : {}),
-      } as TaskComment);
-
     return comment;
+  }
+
+  async applyTaskExecutionPatch(
+    teamName: string,
+    taskId: string,
+    patch: ExecutionTaskPatch
+  ): Promise<void> {
+    const writer = await this.resolveRegistryTeamTaskWriter(teamName);
+    if (patch.groupChatId !== undefined && patch.groupChatId !== null) {
+      const current = await this.registryTaskProvider.getTask(teamName, taskId);
+      await assertTaskGroupChatAssociation(
+        teamName,
+        patch.groupChatId,
+        current.task?.groupChatId,
+        this.taskGroupChatCatalog
+      );
+    }
+    await writer.applyExecutionPatch(taskId, patch);
+    this.invalidateGlobalTaskProjectionCache();
   }
 
   private async buildEnrichedSendMessageRequest(
@@ -3066,7 +2526,13 @@ export class TeamDataService {
 
   async sendMessage(teamName: string, request: SendMessageRequest): Promise<SendMessageResult> {
     const enrichedRequest = await this.buildEnrichedSendMessageRequest(teamName, request);
-    const result = (await this.getController(teamName).messages.sendMessageAsync({
+    const taskSnapshot = isUserDirectedNonUserMessage(enrichedRequest)
+      ? [...(await this.taskReader.getTasksProjectionSnapshot(teamName))]
+      : undefined;
+    const controller = taskSnapshot
+      ? this.getController(teamName, taskSnapshot)
+      : this.getController(teamName);
+    const result = (await controller.messages.sendMessageAsync({
       member: enrichedRequest.member,
       from: enrichedRequest.from,
       text: enrichedRequest.text,
@@ -3839,51 +3305,7 @@ export class TeamDataService {
   }
 
   async requestReview(teamName: string, taskId: string): Promise<void> {
-    await this.assertLegacyTaskOperation(teamName, taskId, 'Requesting review');
-    const { leadName, leadSessionId } = await this.resolveLeadRuntimeContext(teamName);
-    this.getTaskBoard(teamName).requestReview(taskId, {
-      from: leadName,
-      ...(leadSessionId ? { leadSessionId } : {}),
-    });
-  }
-
-  private getControllerTaskWorkflowColumn(
-    taskBoard: AgentTeamsController['taskBoard'],
-    taskId: string
-  ): 'review' | 'approved' | undefined | null {
-    if (!taskBoard.getTask || !taskBoard.getKanbanState) {
-      return null;
-    }
-
-    const task = taskBoard.getTask(taskId) as TeamTask | null | undefined;
-    if (!task || typeof task.status !== 'string') {
-      return null;
-    }
-
-    const kanbanState = taskBoard.getKanbanState() as KanbanState | null | undefined;
-    const kanbanColumn = kanbanState?.tasks?.[task.id]?.column;
-    const kanbanWorkflowColumn = kanbanColumn
-      ? getTeamTaskWorkflowColumn({
-          status: task.status,
-          reviewState: 'none',
-          kanbanColumn,
-        })
-      : undefined;
-    if (kanbanWorkflowColumn) {
-      return kanbanWorkflowColumn;
-    }
-
-    const reviewState = getReviewStateFromTask({
-      historyEvents: task.historyEvents,
-      reviewState: task.reviewState,
-      status: task.status,
-      ...(kanbanColumn ? { kanbanColumn } : {}),
-    });
-    return getTeamTaskWorkflowColumn({
-      status: task.status,
-      reviewState,
-      ...(kanbanColumn ? { kanbanColumn } : {}),
-    });
+    await this.updateKanban(teamName, taskId, { op: 'set_column', column: 'review' });
   }
 
   createTeamConfig(request: TeamCreateConfigRequest): Promise<void> {
@@ -3909,6 +3331,123 @@ export class TeamDataService {
         await afterRename?.();
       });
     });
+
+  // Keep controller maintenance semantics: only persisted message IDs create linked comments.
+  private async readTaskCommentReconcileMessages(teamName: string): Promise<InboxMessage[]> {
+    const inboxDir = path.join(getTeamsBasePath(), teamName, 'inboxes');
+    let entries: string[];
+    try {
+      entries = await fs.promises.readdir(inboxDir);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+      throw error;
+    }
+
+    const messages: InboxMessage[] = [];
+    for (const entry of entries) {
+      if (!entry.endsWith('.json') || entry.startsWith('.')) continue;
+      const member = entry.slice(0, -'.json'.length);
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(
+          await fs.promises.readFile(path.join(inboxDir, entry), 'utf8')
+        ) as unknown;
+      } catch {
+        continue;
+      }
+      if (!Array.isArray(parsed)) continue;
+
+      for (const value of parsed) {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
+        const row = value as Record<string, unknown>;
+        if (
+          typeof row.from !== 'string' ||
+          typeof row.text !== 'string' ||
+          typeof row.timestamp !== 'string'
+        ) {
+          continue;
+        }
+        messages.push({
+          from: row.from,
+          to: typeof row.to === 'string' ? row.to : member,
+          text: row.text,
+          timestamp: row.timestamp,
+          read: typeof row.read === 'boolean' ? row.read : false,
+          summary: typeof row.summary === 'string' ? row.summary : undefined,
+          messageId: typeof row.messageId === 'string' ? row.messageId : undefined,
+          source:
+            typeof row.source === 'string' ? (row.source as InboxMessage['source']) : undefined,
+        });
+      }
+    }
+
+    messages.sort((a, b) => {
+      const bt = Date.parse(b.timestamp);
+      const at = Date.parse(a.timestamp);
+      if (Number.isNaN(bt) || Number.isNaN(at)) return 0;
+      return bt - at;
+    });
+    return messages;
+  }
+
+  private async syncLinkedTaskComments(
+    teamName: string,
+    tasks: readonly TeamTask[],
+    messages: readonly InboxMessage[]
+  ): Promise<number> {
+    const tasksById = new Map<string, TeamTask>();
+    const commentIdsByTaskId = new Map<string, Set<string>>();
+    for (const task of tasks) {
+      tasksById.set(task.id, task);
+      if (task.displayId) tasksById.set(task.displayId, task);
+      commentIdsByTaskId.set(
+        task.id,
+        new Set((Array.isArray(task.comments) ? task.comments : []).map((comment) => comment.id))
+      );
+    }
+
+    const processedTexts = new Set<string>();
+    let writerPromise: Promise<RegistryTeamTaskWriter> | undefined;
+    let linkedCommentsCreated = 0;
+
+    for (const message of messages) {
+      if (!message.messageId || !message.summary || message.from === 'user') continue;
+      if (message.source === 'lead_session' || message.source === 'lead_process') continue;
+      if (message.source === 'system_notification' || isAutomatedCommentNotification(message))
+        continue;
+
+      const textKey = `${message.from}\0${message.text}`;
+      if (processedTexts.has(textKey)) continue;
+      processedTexts.add(textKey);
+
+      const commentId = `msg-${message.messageId}`;
+      const comment: TaskComment = {
+        id: commentId,
+        author: message.from,
+        text: message.text,
+        createdAt: message.timestamp,
+        type: 'regular',
+      };
+      for (const taskRef of readLinkedTaskRefs(message.summary)) {
+        const task = tasksById.get(taskRef);
+        if (!task) continue;
+        const commentIds = commentIdsByTaskId.get(task.id)!;
+        if (commentIds.has(commentId)) continue;
+
+        try {
+          writerPromise ??= this.resolveRegistryTeamTaskWriter(teamName);
+          const created = await (await writerPromise).appendLinkedMessageComment(task.id, comment);
+          commentIds.add(commentId);
+          if (created) linkedCommentsCreated += 1;
+        } catch {
+          // Keep reconciliation best-effort per linked comment, as the controller maintenance path was.
+        }
+      }
+    }
+
+    if (linkedCommentsCreated > 0) this.invalidateGlobalTaskProjectionCache();
+    return linkedCommentsCreated;
+  }
 
   async reconcileTeamArtifacts(
     teamName: string,
@@ -3946,19 +3485,20 @@ export class TeamDataService {
 
     const startedAt = Date.now();
     try {
-      const rawResult = this.getController(teamName).maintenance.reconcileArtifacts({
-        reason: 'file-watch',
-      }) as
-        | {
-            staleKanbanEntriesRemoved?: number;
-            staleColumnOrderRefsRemoved?: number;
-            linkedCommentsCreated?: number;
-          }
-        | undefined;
-      const result = (rawResult ?? {}) as {
-        staleKanbanEntriesRemoved?: number;
-        staleColumnOrderRefsRemoved?: number;
-        linkedCommentsCreated?: number;
+      let taskSnapshot: TeamTask[] | undefined;
+      const kanbanResult = await this.kanbanManager.garbageCollect(teamName, async () => {
+        const tasks = await this.readFreshTeamTasks(teamName);
+        taskSnapshot = tasks;
+        return new Set(tasks.map((task) => task.id));
+      });
+      if (!taskSnapshot) {
+        throw new Error('Kanban garbage collection did not resolve task IDs');
+      }
+      const tasks = taskSnapshot;
+      const messages = await this.readTaskCommentReconcileMessages(teamName);
+      const result: TeamArtifactReconcileResult = {
+        ...kanbanResult,
+        linkedCommentsCreated: await this.syncLinkedTaskComments(teamName, tasks, messages),
       };
       const durationMs = Date.now() - startedAt;
       if (
@@ -4365,49 +3905,85 @@ export class TeamDataService {
   }
 
   async updateKanban(teamName: string, taskId: string, patch: UpdateKanbanPatch): Promise<void> {
-    await this.assertLegacyTaskOperation(teamName, taskId, 'Review/kanban transitions');
-    const taskBoard = this.getTaskBoard(teamName);
-
+    const task = await this.getTask(teamName, taskId);
+    if (!task) throw new Error(`Task #${taskId} not found`);
+    const writer = await this.resolveRegistryTeamTaskWriter(teamName);
+    const { leadName } = await this.resolveLeadRuntimeContext(teamName);
     if (patch.op === 'remove') {
-      taskBoard.clearKanban(taskId);
-      return;
-    }
-
-    if (patch.op === 'set_column') {
-      if (patch.column === 'review') {
-        const { leadName, leadSessionId } = await this.resolveLeadRuntimeContext(teamName);
-        taskBoard.requestReview(taskId, {
-          from: leadName,
-          ...(leadSessionId ? { leadSessionId } : {}),
-        });
-      } else {
-        const { leadName, leadSessionId } = await this.resolveLeadRuntimeContext(teamName);
-        const workflowColumn = this.getControllerTaskWorkflowColumn(taskBoard, taskId);
-        if (workflowColumn === undefined) {
-          taskBoard.setKanbanColumn(taskId, 'approved', {
-            transition: 'manual_approve',
-          });
-        } else {
-          taskBoard.approveReview(taskId, {
+      await writer.transitionReview({ taskId, action: 'clear', actor: leadName });
+    } else if (patch.op === 'set_column' && patch.column === 'review') {
+      const state = await this.kanbanManager.getState(teamName);
+      const reviewer = state.reviewers[0];
+      await writer.transitionReview({ taskId, action: 'request', actor: leadName, reviewer });
+      if (reviewer) {
+        try {
+          await this.sendMessage(teamName, {
+            member: reviewer,
             from: leadName,
-            suppressTaskComment: true,
-            'notify-owner': true,
-            ...(leadSessionId ? { leadSessionId } : {}),
+            text: `Please review task ${this.getTaskLabel(task)} "${task.subject}".`,
+            summary: `Review request for ${this.getTaskLabel(task)}`,
+            source: 'system_notification',
           });
+        } catch {
+          // Notification is best-effort after the review transition.
         }
       }
-      return;
+    } else if (patch.op === 'set_column') {
+      await writer.transitionReview({
+        taskId,
+        action: 'approve',
+        actor: leadName,
+        manual: task.reviewState !== 'review',
+      });
+      if (task.owner) {
+        try {
+          await this.sendMessage(teamName, {
+            member: task.owner,
+            from: leadName,
+            text: `@${leadName} approved task ${this.getTaskLabel(task)} "${task.subject}".`,
+            summary: `Approved ${this.getTaskLabel(task)}`,
+            source: 'system_notification',
+          });
+        } catch {
+          // Notification is best-effort after the review transition.
+        }
+      }
+    } else {
+      if (!task.owner) throw new Error(`No owner found for task ${taskId}`);
+      if (task.status !== 'completed' || task.reviewState !== 'review') {
+        throw new Error(
+          `Task #${taskId} must be completed and in review before requesting changes`
+        );
+      }
+      const note = patch.comment?.trim() || 'Reviewer requested changes.';
+      await writer.replaceStatus({
+        taskId,
+        to: 'pending',
+        actor: leadName,
+        expectedStatus: 'completed',
+      });
+      await writer.transitionReview({
+        taskId,
+        action: 'changes',
+        actor: leadName,
+        note,
+        taskRefs: patch.taskRefs,
+      });
+      try {
+        await this.sendMessage(teamName, {
+          member: task.owner,
+          from: leadName,
+          text: `@${leadName} requested changes for task ${this.getTaskLabel(task)}.\n\n${note}\n\nThe task has been moved back to pending.`,
+          taskRefs: patch.taskRefs,
+          summary: `Fix request for ${this.getTaskLabel(task)}`,
+          source: 'system_notification',
+        });
+      } catch {
+        // Notification is best-effort after the review transition.
+      }
     }
-
-    const { leadName, leadSessionId } = await this.resolveLeadRuntimeContext(teamName);
-    taskBoard.requestChanges(taskId, {
-      from: leadName,
-      comment: patch.comment?.trim() || 'Reviewer requested changes.',
-      ...(patch.op === 'request_changes' && patch.taskRefs?.length
-        ? { taskRefs: patch.taskRefs }
-        : {}),
-      ...(leadSessionId ? { leadSessionId } : {}),
-    });
+    await this.kanbanManager.updateTask(teamName, taskId, patch);
+    this.invalidateGlobalTaskProjectionCache();
   }
 
   async updateKanbanColumnOrder(
@@ -4415,6 +3991,7 @@ export class TeamDataService {
     columnId: KanbanColumnId,
     orderedTaskIds: string[]
   ): Promise<void> {
-    this.getTaskBoard(teamName).updateColumnOrder(columnId, orderedTaskIds);
+    await this.registryTaskProvider.getScope(teamName);
+    await this.kanbanManager.updateColumnOrder(teamName, columnId, orderedTaskIds);
   }
 }

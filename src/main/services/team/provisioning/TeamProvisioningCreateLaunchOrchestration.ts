@@ -1,5 +1,8 @@
+import { getTeamsBasePath } from '@main/utils/pathDecoder';
 import { createLogger } from '@shared/utils/logger';
 import { randomUUID } from 'crypto';
+import * as fs from 'fs/promises';
+import * as path from 'path';
 
 import {
   type AnthropicApiKeyHelperCleanupRetryOwner,
@@ -52,13 +55,15 @@ export interface TeamProvisioningCreateLaunchOrchestrationServiceHost {
     getResolvableProvisioningRunId(teamName: string): string | null;
   };
   configTaskActivityBoundary: {
+    readConfigSnapshot(teamName: string): Promise<unknown | null>;
     readTaskActivityRepairLaunchSnapshot(
       teamName: string
     ): Promise<PersistedTeamLaunchSnapshot | null>;
     repairStaleTaskActivityIntervalsOnce(
       teamName: string,
-      previousLaunchSnapshot: PersistedTeamLaunchSnapshot | null
-    ): void;
+      previousLaunchSnapshot: PersistedTeamLaunchSnapshot | null,
+      binding?: { specProject?: string; specSlug?: string }
+    ): Promise<boolean>;
   };
   initializeToolApprovalSettingsForLaunch(
     teamName: string,
@@ -139,10 +144,33 @@ export async function createTeamInnerWithService(
   if (service.stopAllTeamsGeneration !== stopAllGenerationAtStart) {
     throw new Error('Team launch cancelled by app shutdown');
   }
-  service.configTaskActivityBoundary.repairStaleTaskActivityIntervalsOnce(
-    request.teamName,
-    previousLaunchSnapshot
+  const existingConfig = await service.configTaskActivityBoundary.readConfigSnapshot(
+    request.teamName
   );
+  if (!existingConfig) {
+    try {
+      await fs.stat(path.join(getTeamsBasePath(), request.teamName, 'config.json'));
+      throw new Error(`Cannot read existing team configuration for ${request.teamName}`);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+  }
+  if (service.stopAllTeamsGeneration !== stopAllGenerationAtStart) {
+    throw new Error('Team launch cancelled by app shutdown');
+  }
+  const repaired = await service.configTaskActivityBoundary.repairStaleTaskActivityIntervalsOnce(
+    request.teamName,
+    previousLaunchSnapshot,
+    existingConfig ? undefined : { specProject: request.specProject, specSlug: request.specSlug }
+  );
+  if (!repaired) {
+    throw new Error(
+      `Task activity interval repair failed before launch for team ${request.teamName}`
+    );
+  }
+  if (service.stopAllTeamsGeneration !== stopAllGenerationAtStart) {
+    throw new Error('Team launch cancelled by app shutdown');
+  }
   assertAppDeterministicBootstrapEnabled();
   service.initializeToolApprovalSettingsForLaunch(request.teamName, request.skipPermissions);
   if (service.shouldRouteOpenCodeToRuntimeAdapter(request)) {

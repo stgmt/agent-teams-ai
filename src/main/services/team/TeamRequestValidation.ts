@@ -1,3 +1,6 @@
+import { resolveTeamSpecBinding, TeamSpecBindingError } from './registry/TeamSpecBinding';
+import type { TeamSpecBinding } from './registry/TeamSpecBinding';
+
 import {
   validateTeammateName,
   validateTeamName,
@@ -306,6 +309,20 @@ export function parseLaunchRequest(teamName: string, body: unknown): TeamLaunchR
   };
 }
 
+function requireTeamSpecBinding(
+  binding: Pick<TeamCreateRequest, 'specProject' | 'specSlug'>,
+  teamName: string
+): TeamSpecBinding {
+  try {
+    return resolveTeamSpecBinding(binding, teamName);
+  } catch (error) {
+    if (error instanceof TeamSpecBindingError) {
+      throw new TeamRequestValidationError(error.message);
+    }
+    throw error;
+  }
+}
+
 export function parseCreateTeamRequest(body: unknown): TeamCreateConfigRequest {
   const payload = body && typeof body === 'object' ? (body as Record<string, unknown>) : {};
   const runtimeSelectionVersion = normalizeRuntimeSelectionVersion(payload.runtimeSelectionVersion);
@@ -317,6 +334,13 @@ export function parseCreateTeamRequest(body: unknown): TeamCreateConfigRequest {
     throw new TeamRequestValidationError('Explicit model/backend requires a provider');
   }
   const teamName = assertProvisioningTeamName(payload.teamName);
+  const binding = requireTeamSpecBinding(
+    {
+      specProject: assertOptionalString(payload.specProject, 'specProject'),
+      specSlug: assertOptionalString(payload.specSlug, 'specSlug'),
+    },
+    teamName
+  );
   const providerId = payload.providerId == null ? undefined : parseProviderId(payload.providerId);
   const providerBackendId = parseLaunchProviderBackendId(providerId, payload.providerBackendId);
   const displayName = assertOptionalString(payload.displayName, 'displayName');
@@ -334,6 +358,8 @@ export function parseCreateTeamRequest(body: unknown): TeamCreateConfigRequest {
 
   const request: TeamCreateConfigRequest = {
     teamName,
+    specProject: binding.project,
+    specSlug: binding.spec,
     runtimeSelectionVersion,
     members: parseCreateMembers(payload.members, providerId ?? 'anthropic'),
     ...(displayName ? { displayName } : {}),
@@ -449,8 +475,12 @@ export function parseDraftLaunchCreateRequest(
     assertOptionalExtraCliArgs(extraCliArgs);
   }
 
+  const binding = requireTeamSpecBinding(savedRequest, teamName);
+
   return {
     teamName,
+    specProject: binding.project,
+    specSlug: binding.spec,
     runtimeSelectionVersion: normalizeRuntimeSelectionVersion(savedRequest.runtimeSelectionVersion),
     displayName: savedRequest.displayName,
     description: savedRequest.description,

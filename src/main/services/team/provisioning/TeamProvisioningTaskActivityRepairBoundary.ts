@@ -48,15 +48,21 @@ export class TeamProvisioningTaskActivityRepairBoundary<
 
   repairStaleTaskActivityIntervalsOnce(
     teamName: string,
-    launchSnapshot?: PersistedTeamLaunchSnapshot | null
-  ): boolean {
-    return repairStaleTaskActivityIntervalsOnce(teamName, launchSnapshot, {
-      taskActivityIntervalService: this.ports.taskActivityIntervalService,
-      tracking: {
-        repairedTeams: this.crashRepairedActivityIntervalsByTeam,
-        pendingSnapshots: this.pendingCrashRepairSnapshotByTeam,
+    launchSnapshot?: PersistedTeamLaunchSnapshot | null,
+    binding?: { specProject?: string; specSlug?: string }
+  ): Promise<boolean> {
+    return repairStaleTaskActivityIntervalsOnce(
+      teamName,
+      launchSnapshot,
+      {
+        taskActivityIntervalService: this.ports.taskActivityIntervalService,
+        tracking: {
+          repairedTeams: this.crashRepairedActivityIntervalsByTeam,
+          pendingSnapshots: this.pendingCrashRepairSnapshotByTeam,
+        },
       },
-    });
+      binding
+    );
   }
 
   readTaskActivityRepairLaunchSnapshot(

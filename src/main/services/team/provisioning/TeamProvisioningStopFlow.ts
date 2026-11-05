@@ -41,7 +41,12 @@ export interface TeamProvisioningStopRun
 export interface TeamProvisioningStopTeamPorts<TRun extends TeamProvisioningStopRun> {
   cancelOpenCodePromptDeliveries(teamName: string): Promise<void>;
   invalidateRuntimeSnapshotCaches(teamName: string): void;
-  pauseActiveIntervalsForTeam(teamName: string): { failed?: boolean } | void;
+  pauseActiveIntervalsForTeam(
+    teamName: string
+  ):
+    | { failed?: boolean; changedTasks?: number }
+    | void
+    | Promise<{ failed?: boolean; changedTasks?: number } | void>;
   stopPersistentTeamMembers(teamName: string): void;
   openCodeRuntimeDeliveryAdvisory: { cancelTeam(teamName: string): void };
   getTrackedRunId(teamName: string): string | null;
@@ -77,7 +82,12 @@ export interface TeamProvisioningStopTeamPorts<TRun extends TeamProvisioningStop
 export interface TeamProvisioningStopAllPorts {
   incrementStopAllTeamsGeneration(): void;
   getShutdownTrackedTeamNames(): string[];
-  pauseActiveIntervalsForTeam(teamName: string): void;
+  pauseActiveIntervalsForTeam(
+    teamName: string
+  ):
+    | { failed?: boolean; changedTasks?: number }
+    | void
+    | Promise<{ failed?: boolean; changedTasks?: number } | void>;
   killTrackedCliProcesses(signal: 'SIGKILL'): void;
   killTransientProbeProcessesForShutdown(): void;
   stopTrackedTeamsForShutdown(label: string): Promise<string[]>;
@@ -104,98 +114,108 @@ async function stopTeamRuntimeFlow<TRun extends TeamProvisioningStopRun>(
   ports.invalidateRuntimeSnapshotCaches(teamName);
   // A task-clock write must never prevent retirement of the owned processes.
   // Runtime callbacks may still resume an interval until teardown drains below.
+  let initialPause: Promise<void>;
   try {
-    ports.pauseActiveIntervalsForTeam(teamName);
+    initialPause = Promise.resolve(ports.pauseActiveIntervalsForTeam(teamName))
+      .then((result) => {
+        if (result?.failed) ports.logger.info('task_activity_interval_pause_deferred_until_stop');
+      })
+      .catch(() => ports.logger.info('task_activity_interval_pause_deferred_until_stop'));
   } catch {
     ports.logger.info('task_activity_interval_pause_deferred_until_stop');
+    initialPause = Promise.resolve();
   }
-  ports.stopPersistentTeamMembers(teamName);
-  ports.openCodeRuntimeDeliveryAdvisory.cancelTeam(teamName);
-  const stopRuntimeLanesForRun = async (targetRunId: string): Promise<void> => {
-    const runtimeRun = ports.runtimeAdapterRunByTeam.get(teamName);
-    const stopPrimaryRuntimeLane =
-      runtimeRun?.runId === targetRunId && runtimeRun.providerId === 'opencode'
-        ? ports.stopOpenCodeRuntimeAdapterTeam(teamName, runtimeRun.runId)
+  try {
+    ports.stopPersistentTeamMembers(teamName);
+    ports.openCodeRuntimeDeliveryAdvisory.cancelTeam(teamName);
+    const stopRuntimeLanesForRun = async (targetRunId: string): Promise<void> => {
+      const runtimeRun = ports.runtimeAdapterRunByTeam.get(teamName);
+      const stopPrimaryRuntimeLane =
+        runtimeRun?.runId === targetRunId && runtimeRun.providerId === 'opencode'
+          ? ports.stopOpenCodeRuntimeAdapterTeam(teamName, runtimeRun.runId)
+          : null;
+      const stopSecondaryRuntimeLanes = ports.hasSecondaryRuntimeRuns(teamName)
+        ? ports.stopMixedSecondaryRuntimeLanes(teamName)
         : null;
-    const stopSecondaryRuntimeLanes = ports.hasSecondaryRuntimeRuns(teamName)
-      ? ports.stopMixedSecondaryRuntimeLanes(teamName)
-      : null;
-    await Promise.all(
-      [stopPrimaryRuntimeLane, stopSecondaryRuntimeLanes].filter(
-        (stop): stop is Promise<void> => stop !== null
-      )
-    );
-  };
+      await Promise.all(
+        [stopPrimaryRuntimeLane, stopSecondaryRuntimeLanes].filter(
+          (stop): stop is Promise<void> => stop !== null
+        )
+      );
+    };
 
-  let runId = ports.getTrackedRunId(teamName);
-  if (!runId) {
-    if (ports.hasSecondaryRuntimeRuns(teamName)) {
-      await ports.stopMixedSecondaryRuntimeLanes(teamName);
-    }
-    return;
-  }
-  let run = ports.runs.get(runId);
-  const aliveRunId = ports.getAliveRunId(teamName);
-  if (!run && aliveRunId && aliveRunId !== runId) {
-    if (ports.provisioningRunByTeam.get(teamName) === runId) {
-      ports.provisioningRunByTeam.delete(teamName);
-    }
-    runId = aliveRunId;
-    run = ports.runs.get(runId);
-  }
-  if (!run) {
-    const runtimeProgress = ports.runtimeAdapterProgressByRunId.get(runId);
-    if (runtimeProgress && ports.isCancellableRuntimeAdapterProgress(runtimeProgress)) {
-      await ports.cancelRuntimeAdapterProvisioning(runId, runtimeProgress);
+    let runId = ports.getTrackedRunId(teamName);
+    if (!runId) {
+      if (ports.hasSecondaryRuntimeRuns(teamName)) {
+        await ports.stopMixedSecondaryRuntimeLanes(teamName);
+      }
       return;
     }
-    const runtimeRun = ports.runtimeAdapterRunByTeam.get(teamName);
-    if (runtimeRun?.runId === runId && runtimeRun.providerId === 'opencode') {
-      await ports.withTeamLock(teamName, async () => {
-        const currentRuntimeRun = ports.runtimeAdapterRunByTeam.get(teamName);
-        if (currentRuntimeRun?.runId === runId && currentRuntimeRun.providerId === 'opencode') {
-          await ports.stopOpenCodeRuntimeAdapterTeam(teamName, runId);
-        }
-      });
+    let run = ports.runs.get(runId);
+    const aliveRunId = ports.getAliveRunId(teamName);
+    if (!run && aliveRunId && aliveRunId !== runId) {
+      if (ports.provisioningRunByTeam.get(teamName) === runId) {
+        ports.provisioningRunByTeam.delete(teamName);
+      }
+      runId = aliveRunId;
+      run = ports.runs.get(runId);
+    }
+    if (!run) {
+      const runtimeProgress = ports.runtimeAdapterProgressByRunId.get(runId);
+      if (runtimeProgress && ports.isCancellableRuntimeAdapterProgress(runtimeProgress)) {
+        await ports.cancelRuntimeAdapterProvisioning(runId, runtimeProgress);
+        return;
+      }
+      const runtimeRun = ports.runtimeAdapterRunByTeam.get(teamName);
+      if (runtimeRun?.runId === runId && runtimeRun.providerId === 'opencode') {
+        await ports.withTeamLock(teamName, async () => {
+          const currentRuntimeRun = ports.runtimeAdapterRunByTeam.get(teamName);
+          if (currentRuntimeRun?.runId === runId && currentRuntimeRun.providerId === 'opencode') {
+            await ports.stopOpenCodeRuntimeAdapterTeam(teamName, runId);
+          }
+        });
+        return;
+      }
+      if (ports.hasSecondaryRuntimeRuns(teamName)) {
+        await ports.stopMixedSecondaryRuntimeLanes(teamName);
+      }
+      if (ports.provisioningRunByTeam.get(teamName) === runId) {
+        ports.provisioningRunByTeam.delete(teamName);
+      }
+      if (ports.getAliveRunId(teamName) === runId) {
+        ports.deleteAliveRunId(teamName);
+      }
       return;
     }
-    if (ports.hasSecondaryRuntimeRuns(teamName)) {
-      await ports.stopMixedSecondaryRuntimeLanes(teamName);
+    cancelRunLeadRelayCapture(run);
+    if (run.processKilled || run.cancelRequested) {
+      await awaitAllOwnedProcessStops([
+        ports.killTeamProcessAndWait(run.child),
+        stopRuntimeLanesForRun(run.runId),
+      ]);
+      await (ports.cleanupRunOwnedAnthropicApiKeyHelper?.(run) ??
+        cleanupRunOwnedAnthropicApiKeyHelper(run));
+      ports.cleanupRun(run);
+      return;
     }
-    if (ports.provisioningRunByTeam.get(teamName) === runId) {
-      ports.provisioningRunByTeam.delete(teamName);
-    }
-    if (ports.getAliveRunId(teamName) === runId) {
-      ports.deleteAliveRunId(teamName);
-    }
-    return;
-  }
-  cancelRunLeadRelayCapture(run);
-  if (run.processKilled || run.cancelRequested) {
-    await awaitAllOwnedProcessStops([
-      ports.killTeamProcessAndWait(run.child),
-      stopRuntimeLanesForRun(run.runId),
-    ]);
+    run.processKilled = true;
+    run.cancelRequested = true;
+    const stopCurrentTeamProcess = ports.killTeamProcessAndWait(run.child);
+    const stopCurrentRuntimeLanes = stopRuntimeLanesForRun(run.runId);
+    await awaitAllOwnedProcessStops([stopCurrentTeamProcess, stopCurrentRuntimeLanes]);
+    const progress = ports.updateProgress(run, 'disconnected', 'Team stopped by user', {
+      disconnect: { kind: 'user_stop' },
+    });
+    run.onProgress(progress);
+    ports.logger.info(`[${teamName}] Process stopped (SIGKILL)`);
     await (ports.cleanupRunOwnedAnthropicApiKeyHelper?.(run) ??
       cleanupRunOwnedAnthropicApiKeyHelper(run));
+    // Secondary lane cleanup revalidates immutable run ownership after async
+    // adapter calls. Keep the owning run tracked until those checks complete.
     ports.cleanupRun(run);
-    return;
+  } finally {
+    await initialPause;
   }
-  run.processKilled = true;
-  run.cancelRequested = true;
-  const stopCurrentTeamProcess = ports.killTeamProcessAndWait(run.child);
-  const stopCurrentRuntimeLanes = stopRuntimeLanesForRun(run.runId);
-  await awaitAllOwnedProcessStops([stopCurrentTeamProcess, stopCurrentRuntimeLanes]);
-  const progress = ports.updateProgress(run, 'disconnected', 'Team stopped by user', {
-    disconnect: { kind: 'user_stop' },
-  });
-  run.onProgress(progress);
-  ports.logger.info(`[${teamName}] Process stopped (SIGKILL)`);
-  await (ports.cleanupRunOwnedAnthropicApiKeyHelper?.(run) ??
-    cleanupRunOwnedAnthropicApiKeyHelper(run));
-  // Secondary lane cleanup revalidates immutable run ownership after async
-  // adapter calls. Keep the owning run tracked until those checks complete.
-  ports.cleanupRun(run);
 }
 
 export async function stopTeamFlow<TRun extends TeamProvisioningStopRun>(
@@ -221,7 +241,7 @@ export async function stopTeamFlow<TRun extends TeamProvisioningStopRun>(
   // can the final persisted clock boundary be published without a late resume.
   let pauseFailed = false;
   try {
-    pauseFailed = ports.pauseActiveIntervalsForTeam(teamName)?.failed === true;
+    pauseFailed = (await ports.pauseActiveIntervalsForTeam(teamName))?.failed === true;
   } catch {
     pauseFailed = true;
   }
@@ -235,9 +255,13 @@ export async function stopTeamFlow<TRun extends TeamProvisioningStopRun>(
 export async function stopAllTeamsFlow(ports: TeamProvisioningStopAllPorts): Promise<void> {
   ports.incrementStopAllTeamsGeneration();
   const initialTracked = ports.getShutdownTrackedTeamNames();
-  for (const teamName of initialTracked) {
-    ports.pauseActiveIntervalsForTeam(teamName);
-  }
+  const initialPauses = initialTracked.map(async (teamName) => {
+    try {
+      await ports.pauseActiveIntervalsForTeam(teamName);
+    } catch {
+      ports.logger.info('task_activity_interval_pause_deferred_until_stop');
+    }
+  });
   ports.killTrackedCliProcesses('SIGKILL');
   ports.killTransientProbeProcessesForShutdown();
 
@@ -248,7 +272,7 @@ export async function stopAllTeamsFlow(ports: TeamProvisioningStopAllPorts): Pro
   // additional microtask delay.
   const pendingAdapterCancellation = ports.cancelPendingRuntimeAdapterLaunchesForShutdown();
   const initialTeamStops = ports.stopTrackedTeamsForShutdown('Shutdown');
-  await Promise.all([pendingAdapterCancellation, initialTeamStops]);
+  await Promise.all([pendingAdapterCancellation, initialTeamStops, ...initialPauses]);
 
   // A create/launch may have been inside a per-team lock before it exposed a run.
   // Wait briefly, then rescan for anything that became visible during shutdown.
@@ -266,9 +290,12 @@ export async function stopAllTeamsFlow(ports: TeamProvisioningStopAllPorts): Pro
       `Cleaning up persisted teammate runtimes on shutdown: ${orphanOnly.join(', ')}`
     );
     for (const teamName of orphanOnly) {
-      ports.pauseActiveIntervalsForTeam(teamName);
+      const pause = Promise.resolve()
+        .then(() => ports.pauseActiveIntervalsForTeam(teamName))
+        .catch(() => ports.logger.info('task_activity_interval_pause_deferred_until_stop'));
       ports.stopPersistentTeamMembers(teamName);
       await ports.cleanupAnthropicApiKeyHelperMaterialForStoppedTeam(teamName);
+      await pause;
     }
   }
 }

@@ -1,17 +1,21 @@
 /**
  * Task routes for the HTTP sidecar.
  *
- * This module is an adapter only: it validates the wire payload, calls the
- * public `TeamDataService` methods that already route a task to the spec
- * registry or to the local task files, and maps typed service failures onto
- * HTTP status codes. It never reads the registry token, never reaches into the
- * registry client, and never builds a second canonical task source.
+ * This module validates wire payloads, calls the public `TeamDataService`
+ * methods that route canonical tasks to the spec registry, and maps typed
+ * service failures onto HTTP status codes. It never reads the registry token.
  *
  * The MCP child process (`agent-teams-controller`) talks to these routes
  * instead of the task files, which is why the payloads carry the controller's
  * own vocabulary (`requirements`, `expectedStatus`) and why responses keep the
  * renderer-facing `TeamTask` shape unchanged.
  */
+import {
+  EXECUTION_TASK_LOCAL_FIELDS,
+  ExecutionTaskStoreError,
+  validateExecutionTaskPatch,
+  type ExecutionTaskPatch,
+} from '@main/services/team/execution/ExecutionTaskStore';
 import { RegistryTaskProviderError } from '@main/services/team/registry/RegistryTaskProvider';
 import { RegistryTeamTaskWriteError } from '@main/services/team/registry/RegistryTeamTaskWriter';
 import { validateTeamName } from '@main/services/team/TeamIdentifierValidation';
@@ -32,8 +36,8 @@ import type { FastifyInstance, FastifyReply } from 'fastify';
 
 const logger = createLogger('HTTP:team-tasks');
 
-/** Writable statuses: `deleted` stays a local soft-delete concept, not an HTTP write. */
-const WRITABLE_TASK_STATUSES = ['pending', 'in_progress', 'completed'] as const;
+/** Status transitions include registry-backed trash and restoration. */
+const WRITABLE_TASK_STATUSES = ['pending', 'in_progress', 'completed', 'deleted'] as const;
 
 const MAX_SUBJECT_LENGTH = 500;
 const MAX_DESCRIPTION_LENGTH = 20_000;
@@ -99,18 +103,19 @@ function asBodyObject(body: unknown): Record<string, unknown> {
 function readOptionalString(
   body: Record<string, unknown>,
   field: string,
-  maxLength: number
+  maxLength: number,
+  preserveWhitespace = false
 ): string | undefined {
   const value = body[field];
   if (value === undefined) return undefined;
   if (typeof value !== 'string') {
     throw badRequest('INVALID_TASK_FIELD', `${field} must be a string`);
   }
-  const trimmed = value.trim();
-  if (trimmed.length > maxLength) {
+  const result = preserveWhitespace ? value : value.trim();
+  if (result.length > maxLength) {
     throw badRequest('INVALID_TASK_FIELD', `${field} must be at most ${maxLength} characters`);
   }
-  return trimmed;
+  return result;
 }
 
 function readRequiredText(body: Record<string, unknown>, field: string, maxLength: number): string {
@@ -185,42 +190,85 @@ function readWritableStatus(value: unknown, field: string): WriteStatus {
   return value as WriteStatus;
 }
 
-function parseCreateTaskBody(body: unknown): CreateTaskRequest {
+function readExecutionPatch(body: Record<string, unknown>): ExecutionTaskPatch {
+  const fields: Record<string, unknown> = {};
+  for (const key of EXECUTION_TASK_LOCAL_FIELDS) {
+    if (Object.hasOwn(body, key)) fields[key] = body[key];
+  }
+  return validateExecutionTaskPatch(fields);
+}
+
+function parseCreateTaskBody(body: unknown): {
+  request: CreateTaskRequest & { status?: TeamTaskStatus; actor?: string };
+  execution: ExecutionTaskPatch;
+} {
   const payload = asBodyObject(body);
   const subject = readRequiredText(payload, 'subject', MAX_SUBJECT_LENGTH);
   const requirements = readRequirements(payload);
-  const description = readOptionalString(payload, 'description', MAX_DESCRIPTION_LENGTH);
+  const description = readOptionalString(payload, 'description', MAX_DESCRIPTION_LENGTH, true);
   const owner = readOptionalString(payload, 'owner', MAX_OWNER_LENGTH);
   const groupChatId = readOptionalString(payload, 'groupChatId', MAX_GROUP_CHAT_ID_LENGTH);
   const prompt = readOptionalString(payload, 'prompt', MAX_PROMPT_LENGTH);
-  // The controller sends `activeForm`/`projectPath`; a registry-backed task has
-  // no canonical field for the former, and main resolves the project path from
-  // the team config rather than trusting the caller. Accepting them keeps the
-  // controller payload compatible; the service remains the authority.
+  const actor = readOptionalString(payload, 'actor', MAX_OWNER_LENGTH);
+  const status =
+    payload.status === undefined ? undefined : readWritableStatus(payload.status, 'status');
+  const tracking = readOptionalString(payload, 'tracking', MAX_PROMPT_LENGTH);
+  const blockedBy = readStringArray(payload, 'blockedBy', {
+    maxCount: MAX_LINKS,
+    maxItemLength: MAX_OWNER_LENGTH,
+  });
+  const related = readStringArray(payload, 'related', {
+    maxCount: MAX_LINKS,
+    maxItemLength: MAX_OWNER_LENGTH,
+  });
+  if (payload.startImmediately !== undefined && typeof payload.startImmediately !== 'boolean') {
+    throw badRequest('INVALID_TASK_FIELD', 'startImmediately must be a boolean');
+  }
+  const execution = readExecutionPatch(payload);
+  // These execution fields have the same bounds as the corresponding UI inputs.
   readOptionalString(payload, 'activeForm', MAX_SUBJECT_LENGTH);
   readOptionalString(payload, 'projectPath', MAX_PROMPT_LENGTH);
 
   return {
-    subject,
-    description,
-    requirements,
-    ...(owner ? { owner } : {}),
-    ...(groupChatId ? { groupChatId } : {}),
-    ...(prompt ? { prompt } : {}),
+    request: {
+      subject,
+      description,
+      requirements,
+      ...(status ? { status } : {}),
+      ...(actor ? { actor } : {}),
+      ...(owner ? { owner } : {}),
+      ...(groupChatId ? { groupChatId } : {}),
+      ...(prompt ? { prompt } : {}),
+      ...(tracking ? { tracking } : {}),
+      ...(blockedBy ? { blockedBy } : {}),
+      ...(related ? { related } : {}),
+      ...(typeof payload.startImmediately === 'boolean'
+        ? { startImmediately: payload.startImmediately }
+        : {}),
+      ...(execution.creationCommand ? { creationCommand: execution.creationCommand } : {}),
+    },
+    execution,
   };
 }
 
-function parseStatusBody(body: unknown): { status: WriteStatus; expectedStatus?: TeamTaskStatus } {
+function parseStatusBody(body: unknown): {
+  status: WriteStatus;
+  expectedStatus?: TeamTaskStatus;
+  actor?: string;
+} {
   const payload = asBodyObject(body);
   const status = readWritableStatus(payload.status, 'status');
   const expectedStatus =
     payload.expectedStatus === undefined
       ? undefined
       : (readWritableStatus(payload.expectedStatus, 'expectedStatus') as TeamTaskStatus);
-  return { status, ...(expectedStatus ? { expectedStatus } : {}) };
+  const actor = readOptionalString(payload, 'actor', MAX_OWNER_LENGTH);
+  return { status, ...(expectedStatus ? { expectedStatus } : {}), ...(actor ? { actor } : {}) };
 }
 
 interface ParsedTaskPatch {
+  actor?: string;
+  execution: ExecutionTaskPatch;
   owner?: string | null;
   blockedBy?: string[];
   related?: string[];
@@ -229,7 +277,11 @@ interface ParsedTaskPatch {
 
 function parsePatchBody(body: unknown): ParsedTaskPatch {
   const payload = asBodyObject(body);
-  const patch: ParsedTaskPatch = { fields: {} };
+  const patch: ParsedTaskPatch = {
+    fields: {},
+    execution: readExecutionPatch(payload),
+    actor: readOptionalString(payload, 'actor', MAX_OWNER_LENGTH),
+  };
 
   if ('owner' in payload) {
     const value = payload.owner;
@@ -259,19 +311,17 @@ function parsePatchBody(body: unknown): ParsedTaskPatch {
     if (!subject) throw badRequest('INVALID_TASK_FIELD', 'subject must not be empty');
     patch.fields.subject = subject;
   }
-  const description = readOptionalString(payload, 'description', MAX_DESCRIPTION_LENGTH);
+  const description = readOptionalString(payload, 'description', MAX_DESCRIPTION_LENGTH, true);
   if (description !== undefined) patch.fields.description = description;
 
   if (
     patch.owner === undefined &&
     patch.blockedBy === undefined &&
     patch.related === undefined &&
+    Object.keys(patch.execution).length === 0 &&
     Object.keys(patch.fields).length === 0
   ) {
-    throw badRequest(
-      'INVALID_TASK_BODY',
-      'Patch must carry at least one of owner, blockedBy, related, subject, description'
-    );
+    throw badRequest('INVALID_TASK_BODY', 'Patch must carry at least one supported task field');
   }
   return patch;
 }
@@ -289,6 +339,10 @@ function isTeamNotFoundMessage(message: string): boolean {
 function mapTaskRouteError(error: unknown): MappedTaskError | null {
   if (error instanceof TeamTaskHttpError) {
     return { statusCode: error.statusCode, body: { code: error.code, message: error.message } };
+  }
+
+  if (error instanceof ExecutionTaskStoreError) {
+    return { statusCode: 400, body: { code: 'INVALID_TASK_FIELD', message: error.message } };
   }
 
   if (error instanceof RegistryTeamTaskWriteError) {
@@ -310,6 +364,10 @@ function mapTaskRouteError(error: unknown): MappedTaskError | null {
       }
       case 'LOCAL_ID_TAKEN':
       case 'LINK_CYCLE':
+      case 'IDEMPOTENCY_CONFLICT':
+      case 'CREATION_OUTCOME_UNKNOWN':
+      case 'RELATIONSHIP_PARTIAL':
+      case 'RELATIONSHIP_OUTCOME_UNKNOWN':
         return { statusCode: 409, body: { code: error.code, message: error.message } };
       case 'REGISTRY_REFUSED': {
         // A client failure inside the writer means the registry did not answer.
@@ -364,7 +422,7 @@ function sendTaskRouteError(reply: FastifyReply, error: unknown, route: string):
 }
 
 export function registerTeamTaskRoutes(app: FastifyInstance, services: HttpServices): void {
-  app.get<{ Params: { teamName: string } }>(
+  app.get<{ Params: { teamName: string }; Querystring: { includeDeleted?: string } }>(
     '/api/teams/:teamName/tasks',
     async (request, reply) => {
       const route = `GET /api/teams/${request.params.teamName}/tasks`;
@@ -372,7 +430,9 @@ export function registerTeamTaskRoutes(app: FastifyInstance, services: HttpServi
         const api = requireTaskApi(services);
         const teamName = requireExactTeamName(request.params.teamName);
         const tasks = await api.getTasks(teamName);
-        return reply.send({ tasks });
+        const deleted =
+          request.query.includeDeleted === 'true' ? await api.getDeletedTasks(teamName) : [];
+        return reply.send({ tasks: [...tasks, ...deleted] });
       } catch (error) {
         return sendTaskRouteError(reply, error, route);
       }
@@ -386,8 +446,9 @@ export function registerTeamTaskRoutes(app: FastifyInstance, services: HttpServi
       try {
         const api = requireTaskApi(services);
         const teamName = requireExactTeamName(request.params.teamName);
-        const task = await api.createTask(teamName, parseCreateTaskBody(request.body));
-        return reply.status(201).send({ task, outcome: 'created' });
+        const { request: input, execution } = parseCreateTaskBody(request.body);
+        const { task, outcome } = await api.createTaskWithOutcome(teamName, input, execution);
+        return reply.status(outcome === 'APPLIED' ? 201 : 200).send({ task, outcome });
       } catch (error) {
         return sendTaskRouteError(reply, error, route);
       }
@@ -403,31 +464,14 @@ export function registerTeamTaskRoutes(app: FastifyInstance, services: HttpServi
         const teamName = requireExactTeamName(request.params.teamName);
         const taskId = request.params.taskId.trim();
         if (!taskId) throw badRequest('TASK_NOT_FOUND', 'Task id is required');
-        const { status, expectedStatus } = parseStatusBody(request.body);
-
-        if (expectedStatus) {
-          // Best-effort precondition: the registry writer re-reads and compares
-          // atomically itself, but a clearly stale caller is refused without a
-          // write attempt.
-          const current = await api.getTask(teamName, taskId);
-          if (!current) {
-            return reply.status(404).send({
-              code: 'TASK_NOT_FOUND',
-              message: `Task "${taskId}" was not found in team "${teamName}"`,
-            });
-          }
-          if (current.status !== expectedStatus) {
-            return reply.status(409).send({
-              code: 'STATUS_CONFLICT',
-              message: `Task "${taskId}" is "${current.status}", not "${expectedStatus}"`,
-              currentStatus: current.status,
-            });
-          }
-        }
-
-        const transitions = api.updateTaskStatusWithReceipt
-          ? await api.updateTaskStatusWithReceipt(teamName, taskId, status)
-          : (await api.updateTaskStatus(teamName, taskId, status), []);
+        const { status, expectedStatus, actor } = parseStatusBody(request.body);
+        const transitions = await api.updateTaskStatusWithReceipt(
+          teamName,
+          taskId,
+          status,
+          actor,
+          expectedStatus
+        );
         const task = await api.getTask(teamName, taskId);
         if (!task) {
           return reply.status(404).send({
@@ -463,10 +507,13 @@ export function registerTeamTaskRoutes(app: FastifyInstance, services: HttpServi
 
         await applyLinkPatch(api, teamName, taskId, current, patch);
         if (patch.owner !== undefined) {
-          await api.updateTaskOwner(teamName, taskId, patch.owner);
+          await api.updateTaskOwner(teamName, taskId, patch.owner, patch.actor);
         }
         if (Object.keys(patch.fields).length > 0) {
           await api.updateTaskFields(teamName, taskId, patch.fields);
+        }
+        if (Object.keys(patch.execution).length > 0) {
+          await api.applyTaskExecutionPatch(teamName, taskId, patch.execution);
         }
 
         const task = await api.getTask(teamName, taskId);

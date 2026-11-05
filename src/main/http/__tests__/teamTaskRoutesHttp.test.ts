@@ -30,9 +30,12 @@ function createTaskApi(overrides: Partial<TeamHttpDataApi> = {}): TeamHttpDataAp
     getTasks: vi.fn().mockResolvedValue([]),
     getTask: vi.fn().mockResolvedValue(task()),
     createTask: vi.fn().mockResolvedValue(task()),
+    createTaskWithOutcome: vi.fn().mockResolvedValue({ task: task(), outcome: 'APPLIED' }),
     updateTaskStatus: vi.fn().mockResolvedValue(undefined),
+    updateTaskStatusWithReceipt: vi.fn().mockResolvedValue([]),
     updateTaskOwner: vi.fn().mockResolvedValue(undefined),
     updateTaskFields: vi.fn().mockResolvedValue(undefined),
+    applyTaskExecutionPatch: vi.fn().mockResolvedValue(undefined),
     addTaskRelationship: vi.fn().mockResolvedValue(undefined),
     removeTaskRelationship: vi.fn().mockResolvedValue(undefined),
     ...overrides,
@@ -87,8 +90,11 @@ describe('team task HTTP routes', () => {
   });
 
   it('POST creates a task and normalizes requirements', async () => {
-    const createTask = vi.fn().mockResolvedValue(task({ owner: 'alice' }));
-    const response = await start(createTaskApi({ createTask })).inject({
+    const createTaskWithOutcome = vi.fn().mockResolvedValue({
+      task: task({ owner: 'alice' }),
+      outcome: 'APPLIED',
+    });
+    const response = await start(createTaskApi({ createTaskWithOutcome })).inject({
       method: 'POST',
       url: '/api/teams/demo-team/tasks',
       payload: {
@@ -102,13 +108,43 @@ describe('team task HTTP routes', () => {
     });
 
     expect(response.statusCode).toBe(201);
-    expect(response.json()).toEqual({ task: task({ owner: 'alice' }), outcome: 'created' });
-    expect(createTask).toHaveBeenCalledWith('demo-team', {
-      subject: 'Wire tasks',
-      description: 'adapter only',
-      requirements: ['FR-1', 'AC-2'],
-      owner: 'alice',
+    expect(response.json()).toEqual({ task: task({ owner: 'alice' }), outcome: 'APPLIED' });
+    expect(createTaskWithOutcome).toHaveBeenCalledWith(
+      'demo-team',
+      {
+        subject: 'Wire tasks',
+        description: 'adapter only',
+        requirements: ['FR-1', 'AC-2'],
+        owner: 'alice',
+      },
+      { activeForm: 'Wiring tasks', projectPath: 'E:/repos/demo' }
+    );
+  });
+
+  it('returns a replayed task without treating it as a new creation', async () => {
+    const existing = task({ status: 'completed' });
+    const response = await start(
+      createTaskApi({
+        createTaskWithOutcome: vi.fn().mockResolvedValue({ task: existing, outcome: 'REPLAY' }),
+      })
+    ).inject({
+      method: 'POST',
+      url: '/api/teams/demo-team/tasks',
+      payload: { subject: 'Already created', requirements: ['FR-1'] },
     });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ task: existing, outcome: 'REPLAY' });
+  });
+
+  it('rejects invalid execution metadata before creating a canonical task', async () => {
+    const api = createTaskApi();
+    const response = await start(api).inject({
+      method: 'POST',
+      url: '/api/teams/demo-team/tasks',
+      payload: { subject: 'Task', requirements: ['FR-1'], comments: 'not-an-array' },
+    });
+    expect(response.statusCode).toBe(400);
+    expect(api.createTaskWithOutcome).not.toHaveBeenCalled();
   });
 
   it('POST without requirements answers 400 REQUIREMENTS_REQUIRED', async () => {
@@ -121,7 +157,7 @@ describe('team task HTTP routes', () => {
 
     expect(response.statusCode).toBe(400);
     expect(response.json()).toMatchObject({ code: 'REQUIREMENTS_REQUIRED' });
-    expect(api.createTask).not.toHaveBeenCalled();
+    expect(api.createTaskWithOutcome).not.toHaveBeenCalled();
   });
 
   it('POST rejects an empty requirements array', async () => {
@@ -134,7 +170,7 @@ describe('team task HTTP routes', () => {
 
     expect(response.statusCode).toBe(400);
     expect(response.json()).toMatchObject({ code: 'REQUIREMENTS_REQUIRED' });
-    expect(api.createTask).not.toHaveBeenCalled();
+    expect(api.createTaskWithOutcome).not.toHaveBeenCalled();
   });
 
   it('POST rejects malformed bodies and field types', async () => {
@@ -173,16 +209,16 @@ describe('team task HTTP routes', () => {
     expect(tooLarge.statusCode).toBe(400);
     expect(tooLarge.json()).toMatchObject({ code: 'INVALID_TASK_FIELD' });
 
-    expect(api.createTask).not.toHaveBeenCalled();
+    expect(api.createTaskWithOutcome).not.toHaveBeenCalled();
   });
 
   it('POST maps a writer REQUIREMENTS_REQUIRED refusal to 400', async () => {
-    const createTask = vi
+    const createTaskWithOutcome = vi
       .fn()
       .mockRejectedValue(
         new RegistryTeamTaskWriteError('REQUIREMENTS_REQUIRED', 'Requirements are required')
       );
-    const response = await start(createTaskApi({ createTask })).inject({
+    const response = await start(createTaskApi({ createTaskWithOutcome })).inject({
       method: 'POST',
       url: '/api/teams/demo-team/tasks',
       payload: { subject: 'Task', requirements: ['FR-1'] },
@@ -195,29 +231,49 @@ describe('team task HTTP routes', () => {
     });
   });
 
-  it('POST status updates the task and returns the refreshed task', async () => {
+  it('POST status returns the registry transition receipt and refreshed task', async () => {
     const updated = task({ status: 'in_progress' });
-    const getTask = vi.fn().mockResolvedValueOnce(task()).mockResolvedValueOnce(updated);
-    const updateTaskStatus = vi.fn().mockResolvedValue(undefined);
-    const response = await start(createTaskApi({ getTask, updateTaskStatus })).inject({
+    const transitions = [
+      {
+        from: 'todo',
+        to: 'in-progress',
+        actor: 'alice',
+        at: '2026-11-05T10:00:00Z',
+        requestId: 'request-1',
+        localId: 'TASK-7',
+      },
+    ];
+    const updateTaskStatusWithReceipt = vi.fn().mockResolvedValue(transitions);
+    const response = await start(
+      createTaskApi({
+        getTask: vi.fn().mockResolvedValue(updated),
+        updateTaskStatusWithReceipt,
+      })
+    ).inject({
       method: 'POST',
       url: '/api/teams/demo-team/tasks/7/status',
-      payload: { status: 'in_progress', expectedStatus: 'pending' },
+      payload: { status: 'in_progress', expectedStatus: 'pending', actor: 'alice' },
     });
 
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toEqual({ task: updated, transitions: [] });
-    expect(updateTaskStatus).toHaveBeenCalledWith('demo-team', '7', 'in_progress');
+    expect(response.json()).toEqual({ task: updated, transitions });
+    expect(updateTaskStatusWithReceipt).toHaveBeenCalledWith(
+      'demo-team',
+      '7',
+      'in_progress',
+      'alice',
+      'pending'
+    );
   });
 
   it('status answers 409 STATUS_CONFLICT with the registry current status', async () => {
-    const updateTaskStatus = vi.fn().mockRejectedValue(
+    const updateTaskStatusWithReceipt = vi.fn().mockRejectedValue(
       new RegistryTeamTaskWriteError('STATUS_CONFLICT', 'Task changed in the spec registry', {
         taskId: '7',
         details: { currentStatus: 'done', expectedStatus: 'in-progress' },
       })
     );
-    const response = await start(createTaskApi({ updateTaskStatus })).inject({
+    const response = await start(createTaskApi({ updateTaskStatusWithReceipt })).inject({
       method: 'POST',
       url: '/api/teams/demo-team/tasks/7/status',
       payload: { status: 'in_progress' },
@@ -231,37 +287,48 @@ describe('team task HTTP routes', () => {
     });
   });
 
-  it('status refuses a stale expectedStatus before writing', async () => {
-    const updateTaskStatus = vi.fn();
-    const response = await start(
-      createTaskApi({
-        getTask: vi.fn().mockResolvedValue(task({ status: 'completed' })),
-        updateTaskStatus,
+  it('passes the stale status precondition to the authoritative writer', async () => {
+    const updateTaskStatusWithReceipt = vi.fn().mockRejectedValue(
+      new RegistryTeamTaskWriteError('STATUS_CONFLICT', 'Task changed', {
+        taskId: '7',
+        details: { currentStatus: 'completed' },
       })
-    ).inject({
+    );
+    const response = await start(createTaskApi({ updateTaskStatusWithReceipt })).inject({
       method: 'POST',
       url: '/api/teams/demo-team/tasks/7/status',
       payload: { status: 'in_progress', expectedStatus: 'pending' },
     });
-
     expect(response.statusCode).toBe(409);
     expect(response.json()).toMatchObject({ code: 'STATUS_CONFLICT', currentStatus: 'completed' });
-    expect(updateTaskStatus).not.toHaveBeenCalled();
+    expect(updateTaskStatusWithReceipt).toHaveBeenCalledWith(
+      'demo-team',
+      '7',
+      'in_progress',
+      undefined,
+      'pending'
+    );
   });
 
-  it('status rejects an unsupported status value', async () => {
-    const response = await start(createTaskApi()).inject({
+  it('status rejects a status outside the writable registry vocabulary', async () => {
+    const updateTaskStatusWithReceipt = vi.fn();
+    const response = await start(createTaskApi({ updateTaskStatusWithReceipt })).inject({
       method: 'POST',
       url: '/api/teams/demo-team/tasks/7/status',
-      payload: { status: 'deleted' },
+      payload: { status: 'archived' },
     });
 
     expect(response.statusCode).toBe(400);
     expect(response.json()).toMatchObject({ code: 'INVALID_TASK_STATUS' });
+    expect(updateTaskStatusWithReceipt).not.toHaveBeenCalled();
   });
 
   it('status answers 404 when the task vanished', async () => {
-    const api = createTaskApi({ getTask: vi.fn().mockResolvedValue(null) });
+    const api = createTaskApi({
+      updateTaskStatusWithReceipt: vi
+        .fn()
+        .mockRejectedValue(new RegistryTeamTaskWriteError('TASK_NOT_FOUND', 'Task was removed')),
+    });
     const response = await start(api).inject({
       method: 'POST',
       url: '/api/teams/demo-team/tasks/7/status',
@@ -270,7 +337,7 @@ describe('team task HTTP routes', () => {
 
     expect(response.statusCode).toBe(404);
     expect(response.json()).toMatchObject({ code: 'TASK_NOT_FOUND' });
-    expect(api.updateTaskStatus).not.toHaveBeenCalled();
+    expect(api.getTask).not.toHaveBeenCalled();
   });
 
   it('PATCH applies owner, fields and a diffed relationship set', async () => {
@@ -298,11 +365,22 @@ describe('team task HTTP routes', () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({ task: updated });
-    expect(updateTaskOwner).toHaveBeenCalledWith('demo-team', '7', 'bob');
+    expect(updateTaskOwner).toHaveBeenCalledWith('demo-team', '7', 'bob', undefined);
     expect(updateTaskFields).toHaveBeenCalledWith('demo-team', '7', { subject: 'Renamed' });
     expect(removeTaskRelationship).toHaveBeenCalledWith('demo-team', '7', '1', 'blockedBy');
     expect(addTaskRelationship).toHaveBeenCalledWith('demo-team', '7', '4', 'blockedBy');
     expect(removeTaskRelationship).toHaveBeenCalledWith('demo-team', '7', '3', 'related');
+  });
+
+  it('rejects malformed execution metadata before applying canonical updates', async () => {
+    const api = createTaskApi();
+    const response = await start(api).inject({
+      method: 'PATCH',
+      url: '/api/teams/demo-team/tasks/7',
+      payload: { subject: 'Must not be written', workIntervals: 'invalid' },
+    });
+    expect(response.statusCode).toBe(400);
+    expect(api.updateTaskFields).not.toHaveBeenCalled();
   });
 
   it('PATCH rejects an empty patch and an unknown task', async () => {
@@ -352,13 +430,13 @@ describe('team task HTTP routes', () => {
   });
 
   it('maps an unconfirmed registry write to 503', async () => {
-    const updateTaskStatus = vi.fn().mockRejectedValue(
+    const updateTaskStatusWithReceipt = vi.fn().mockRejectedValue(
       new RegistryTeamTaskWriteError('REGISTRY_REFUSED', 'The spec registry did not confirm', {
         taskId: '7',
         details: { clientCode: 'TIMEOUT', retryable: true },
       })
     );
-    const response = await start(createTaskApi({ updateTaskStatus })).inject({
+    const response = await start(createTaskApi({ updateTaskStatusWithReceipt })).inject({
       method: 'POST',
       url: '/api/teams/demo-team/tasks/7/status',
       payload: { status: 'completed' },

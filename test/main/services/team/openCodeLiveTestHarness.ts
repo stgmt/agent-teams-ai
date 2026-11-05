@@ -92,7 +92,7 @@ export async function createOpenCodeLiveHarness(input: {
   svc.setControlApiBaseUrlResolver(async () => controlApi.baseUrl);
 
   const mcpLaunchSpec = await resolveAgentTeamsMcpLaunchSpec();
-  const stableBridgeEnv = createStableBridgeEnv();
+  const stableBridgeEnv = createStableBridgeEnv(input.tempDir);
   const bridgeEnv: NodeJS.ProcessEnv = {
     ...stableBridgeEnv,
     PATH: withBunOnPath(process.env.PATH ?? '', sourceLauncherBunDir),
@@ -561,12 +561,11 @@ function withBunOnPath(
     : `${bunDir}${path.delimiter}${pathValue}`;
 }
 
-function createStableBridgeEnv(): NodeJS.ProcessEnv {
-  const realHome = os.userInfo().homedir;
+function createStableBridgeEnv(tempDir: string): NodeJS.ProcessEnv {
   const env = applyOpenCodeAutoUpdatePolicy({ ...process.env });
   return {
     ...env,
-    HOME: realHome,
-    USERPROFILE: realHome,
+    HOME: tempDir,
+    USERPROFILE: tempDir,
   };
 }

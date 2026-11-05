@@ -45,6 +45,10 @@ export interface UseCreateTeamDraftResult {
   ) => void;
   teamName: string;
   setTeamName: (v: string) => void;
+  specProject: string;
+  setSpecProject: (v: string) => void;
+  specSlug: string;
+  setSpecSlug: (v: string) => void;
   members: MemberDraft[];
   setMembers: (v: MemberDraft[]) => void;
   syncModelsWithLead: boolean;
@@ -146,6 +150,8 @@ export function useCreateTeamDraft(): UseCreateTeamDraftResult {
   }>({});
   const runtimeSelectionRef = useRef(runtimeSelection);
   const [teamName, setTeamNameState] = useState('');
+  const [specProject, setSpecProjectState] = useState('');
+  const [specSlug, setSpecSlugState] = useState('');
   const [members, setMembersState] = useState<MemberDraft[]>([]);
   const [syncModelsWithLead, setSyncModelsWithLeadState] = useState(storedSyncModelsWithLead);
   const [teammateWorktreeDefault, setTeammateWorktreeDefaultState] = useState(false);
@@ -159,6 +165,8 @@ export function useCreateTeamDraft(): UseCreateTeamDraftResult {
 
   // ── Refs (latest values for debounced callbacks) ───────────────────────
   const teamNameRef = useRef('');
+  const specProjectRef = useRef('');
+  const specSlugRef = useRef('');
   const membersRef = useRef<MemberDraft[]>([]);
   const syncModelsWithLeadRef = useRef(storedSyncModelsWithLead);
   const teammateWorktreeDefaultRef = useRef(false);
@@ -186,6 +194,8 @@ export function useCreateTeamDraft(): UseCreateTeamDraftResult {
     return {
       version: 1,
       teamName: teamNameRef.current,
+      specProject: specProjectRef.current,
+      specSlug: specSlugRef.current,
       runtimeSelectionVersion: runtimeSelectionRef.current.version,
       runtimeProviderId: runtimeSelectionRef.current.providerId,
       runtimeModel: runtimeSelectionRef.current.model,
@@ -212,7 +222,11 @@ export function useCreateTeamDraft(): UseCreateTeamDraftResult {
     if (pendingRef.current != null) {
       const pending = pendingRef.current;
       pendingRef.current = null;
-      const isEmpty = pending.teamName === '' && pending.members.length === 0;
+      const isEmpty =
+        pending.teamName === '' &&
+        pending.members.length === 0 &&
+        !pending.specProject &&
+        !pending.specSlug;
       if (isEmpty) {
         void createTeamDraftStorage.deleteSnapshot();
       } else {
@@ -235,7 +249,11 @@ export function useCreateTeamDraft(): UseCreateTeamDraftResult {
       pendingRef.current = null;
       if (pending == null) return;
 
-      const isEmpty = pending.teamName === '' && pending.members.length === 0;
+      const isEmpty =
+        pending.teamName === '' &&
+        pending.members.length === 0 &&
+        !pending.specProject &&
+        !pending.specSlug;
       if (isEmpty) {
         void createTeamDraftStorage.deleteSnapshot();
       } else {
@@ -263,6 +281,8 @@ export function useCreateTeamDraft(): UseCreateTeamDraftResult {
     };
     setRuntimeSelectionState(runtimeSelectionRef.current);
     teamNameRef.current = snap.teamName;
+    specProjectRef.current = snap.specProject ?? '';
+    specSlugRef.current = snap.specSlug ?? '';
     membersRef.current = deserialized;
     syncModelsWithLeadRef.current = nextSyncModelsWithLead;
     teammateWorktreeDefaultRef.current = snap.teammateWorktreeDefault === true;
@@ -274,6 +294,8 @@ export function useCreateTeamDraft(): UseCreateTeamDraftResult {
     teamColorRef.current = snap.teamColor;
 
     setTeamNameState(snap.teamName);
+    setSpecProjectState(specProjectRef.current);
+    setSpecSlugState(specSlugRef.current);
     setMembersState(deserialized);
     setSyncModelsWithLeadState(nextSyncModelsWithLead);
     setTeammateWorktreeDefaultState(snap.teammateWorktreeDefault === true);
@@ -340,6 +362,26 @@ export function useCreateTeamDraft(): UseCreateTeamDraftResult {
       userTouchedRef.current = true;
       teamNameRef.current = v;
       setTeamNameState(v);
+      scheduleSave();
+    },
+    [scheduleSave]
+  );
+
+  const setSpecProject = useCallback(
+    (v: string) => {
+      userTouchedRef.current = true;
+      specProjectRef.current = v;
+      setSpecProjectState(v);
+      scheduleSave();
+    },
+    [scheduleSave]
+  );
+
+  const setSpecSlug = useCallback(
+    (v: string) => {
+      userTouchedRef.current = true;
+      specSlugRef.current = v;
+      setSpecSlugState(v);
       scheduleSave();
     },
     [scheduleSave]
@@ -454,6 +496,8 @@ export function useCreateTeamDraft(): UseCreateTeamDraftResult {
     runtimeSelectionRef.current = {};
     setRuntimeSelectionState({});
     teamNameRef.current = '';
+    specProjectRef.current = '';
+    specSlugRef.current = '';
     membersRef.current = [];
     syncModelsWithLeadRef.current = nextStoredSyncModelsWithLead;
     teammateWorktreeDefaultRef.current = false;
@@ -465,6 +509,8 @@ export function useCreateTeamDraft(): UseCreateTeamDraftResult {
     teamColorRef.current = '';
 
     setTeamNameState('');
+    setSpecProjectState('');
+    setSpecSlugState('');
     setMembersState([]);
     setSyncModelsWithLeadState(nextStoredSyncModelsWithLead);
     setTeammateWorktreeDefaultState(false);
@@ -485,6 +531,10 @@ export function useCreateTeamDraft(): UseCreateTeamDraftResult {
     setRuntimeSelection,
     teamName,
     setTeamName,
+    specProject,
+    setSpecProject,
+    specSlug,
+    setSpecSlug,
     members,
     setMembers,
     syncModelsWithLead,

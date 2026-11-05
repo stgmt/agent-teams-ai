@@ -220,6 +220,8 @@ export function buildEditTeamSourceSnapshot(params: {
   name: string;
   description: string;
   color: string;
+  specProject?: string;
+  specSlug?: string;
   members: readonly ResolvedTeamMember[];
 }): string {
   const members = JSON.parse(buildEditTeamMemberRosterSnapshot(params.members)) as unknown;
@@ -228,6 +230,8 @@ export function buildEditTeamSourceSnapshot(params: {
     name: params.name.trim(),
     description: params.description.trim(),
     color: params.color.trim(),
+    specProject: params.specProject?.trim() ?? '',
+    specSlug: params.specSlug?.trim() ?? '',
     members,
   });
 }

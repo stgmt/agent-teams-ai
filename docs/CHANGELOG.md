@@ -9,6 +9,20 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 ### Added
 
 - GPT-5.6 Sol, Terra, and Luna fallback selection for Codex teams, dynamic future-model efforts, and in-app Codex CLI updates.
+- Teams can discover and bind a specification registry project, with task boards and teammate tools using the registry as the canonical task store.
+
+### Fixed
+
+- Lead-report task reads now use an operation-scoped async registry snapshot instead of blocking app-control calls.
+- Kanban reconciliation refreshes registry task IDs under the shared board lock and propagates inbox directory permission errors.
+- Native member startup handovers read fresh registry-only snapshots after exact-generation connection confirmation, use idempotent async inbox writes, and retry transient failures with cancellable exponential backoff capped at 30 seconds.
+- Locally routed team models can be launched even when they are absent from the Anthropic catalog.
+- Confirmation actions remain inside their dialog when nested dialogs are open.
+
+### Removed
+
+- Retired the unused controller-local `reconcileArtifacts` API and implementation.
+
 
 ## [1.2.0] - 2026-03-31
 

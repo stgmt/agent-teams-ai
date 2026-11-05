@@ -36,6 +36,8 @@ export function resolveCreateTaskCommand(
     request: {
       subject: request.subject,
       description: request.description,
+      requirements: normalizeRelationshipIds(request.requirements),
+      tracking: request.tracking,
       descriptionTaskRefs: request.descriptionTaskRefs,
       owner: request.owner,
       groupChatId: request.groupChatId,

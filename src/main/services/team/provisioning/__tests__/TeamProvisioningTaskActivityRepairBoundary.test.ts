@@ -94,7 +94,7 @@ function createBoundary(
 } {
   const ports: TeamProvisioningTaskActivityRepairBoundaryPorts<LaunchFailureArtifactPackRun> = {
     taskActivityIntervalService: {
-      repairStaleIntervalsAfterCrash: vi.fn(() => ({ failed: false })),
+      repairStaleIntervalsAfterCrash: vi.fn(async () => ({ failed: false })),
     },
     runTracking: {
       getTrackedRunId: vi.fn(() => null),
@@ -126,22 +126,29 @@ describe('TeamProvisioningTaskActivityRepairBoundary', () => {
     const newerSnapshot = snapshot('team-a', '2026-01-01T00:01:00.000Z');
     const repairStaleIntervalsAfterCrash = vi
       .fn()
-      .mockReturnValueOnce({ failed: true })
-      .mockReturnValueOnce({ failed: false });
+      .mockResolvedValueOnce({ failed: true })
+      .mockResolvedValueOnce({ failed: false });
     const { boundary, ports } = createBoundary({
       taskActivityIntervalService: { repairStaleIntervalsAfterCrash },
       readLaunchState: vi.fn(async () => newerSnapshot),
     });
 
-    expect(boundary.repairStaleTaskActivityIntervalsOnce('team-a', firstSnapshot)).toBe(false);
+    expect(await boundary.repairStaleTaskActivityIntervalsOnce('team-a', firstSnapshot)).toBe(
+      false
+    );
     await boundary.repairStaleTaskActivityIntervalsBeforeSnapshot('team-a');
 
     expect(ports.readLaunchState).toHaveBeenCalledWith('team-a');
-    expect(repairStaleIntervalsAfterCrash).toHaveBeenNthCalledWith(2, 'team-a', firstSnapshot);
+    expect(repairStaleIntervalsAfterCrash).toHaveBeenNthCalledWith(
+      2,
+      'team-a',
+      firstSnapshot,
+      undefined
+    );
   });
 
   it('skips before-snapshot repair while the tracked run is still live', async () => {
-    const repairStaleIntervalsAfterCrash = vi.fn(() => ({ failed: false }));
+    const repairStaleIntervalsAfterCrash = vi.fn(async () => ({ failed: false }));
     const readLaunchState = vi.fn(async () => snapshot('team-a', '2026-01-01T00:00:00.000Z'));
     const { boundary } = createBoundary({
       taskActivityIntervalService: { repairStaleIntervalsAfterCrash },

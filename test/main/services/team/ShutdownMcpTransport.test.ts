@@ -515,6 +515,7 @@ describe('shutdown MCP transport authority', () => {
       rendererRecoveryController: null,
       openCodePromptDeliveryContinuityScan: { stop: stopContinuityScan },
       stopPeriodicOpenCodeHostStartupLockPurge: null,
+      provisioningLateBindings: { observeLeadFailure: noOp },
       teamRuntimeRecoveryFeature: null,
       teamProvisioningService: { setRuntimeRecoveryFailureObserver: noOp, stopAllTeams: stop },
       cleanupOpenCodeHostsForLifecycle: stop,

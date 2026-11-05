@@ -6,6 +6,7 @@ import { NodeLeadReportDelivery } from '../adapters/output/NodeLeadReportDeliver
 import { NodeLeadReportSources } from '../adapters/output/NodeLeadReportSources';
 import { LeadRequestReporting } from '../application/LeadRequestReporting';
 
+import { TeamTaskReader } from '@main/services/team/TeamTaskReader';
 import type { DeliveredLeadReport, LeadReportRunIdentity } from '../../contracts';
 import type { TeamLifecycleSnapshot } from '@features/team-provisioning/contracts';
 import type { TeamMembersMetaStore } from '@main/services/team/TeamMembersMetaStore';
@@ -13,6 +14,7 @@ import type { TaskChangeSetV2, TeamTask } from '@shared/types';
 
 interface Dependencies {
   teamsRoot: string;
+  taskReader?: Pick<TeamTaskReader, 'getTasks'>;
   members: Pick<TeamMembersMetaStore, 'getMeta'>;
   resolveLead(credential: string): LeadReportRunIdentity;
   lifecycle(run: LeadReportRunIdentity): Promise<Readonly<TeamLifecycleSnapshot> | null>;
@@ -43,15 +45,18 @@ export function createNodeLeadReporting(deps: Dependencies): NodeLeadReporting {
   const now = (): string => new Date().toISOString();
   // One source budget stays below the controller's HTTP timeout (30s) with headroom.
   const maxSourceWaitMs = 10_000;
+  const taskReader = deps.taskReader ?? new TeamTaskReader();
   const sources = new NodeLeadReportSources({
     teamsRoot: deps.teamsRoot,
     members: deps.members,
+    taskReader,
     lifecycle: (run) => deps.lifecycle(run),
     taskChanges: (input) => deps.taskChanges(input),
     now,
   });
   const delivery = new NodeLeadReportDelivery({
     teamsRoot: deps.teamsRoot,
+    taskReader,
     leadName: (run) => deps.leadName(run),
     assertCurrentRun: async (run) => {
       const snapshot = await deps.lifecycle(run);

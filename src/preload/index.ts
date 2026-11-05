@@ -163,6 +163,7 @@ import {
   TEAM_DELETE_DRAFT,
   TEAM_DELETE_TASK_ATTACHMENT,
   TEAM_DELETE_TEAM,
+  TEAM_DISCOVER_SPEC_REGISTRY,
   TEAM_DISCARD_QUEUED_USER_MESSAGES,
   TEAM_FORCE_STOP,
   TEAM_GET_AGENT_RUNTIME,
@@ -370,6 +371,7 @@ import type {
   SessionsByIdsOptions,
   SessionsPaginationOptions,
   SnippetDiff,
+  SpecRegistryDiscovery,
   SshConfigHostEntry,
   SshConnectionConfig,
   SshConnectionStatus,
@@ -921,6 +923,9 @@ const electronAPI: ElectronAPI = {
     readRecovery: createTeamReadRecoveryBridge((channel, ...args) =>
       ipcRenderer.invoke(channel, ...args)
     ),
+    discoverSpecRegistry: async () => {
+      return invokeIpcWithResult<SpecRegistryDiscovery>(TEAM_DISCOVER_SPEC_REGISTRY);
+    },
     list: async () => {
       return invokeIpcWithResult<TeamSummary[]>(TEAM_LIST);
     },
@@ -1193,7 +1198,7 @@ const electronAPI: ElectronAPI = {
       return invokeIpcWithResult<GlobalTask[]>(TEAM_GET_ALL_TASKS);
     },
     updateConfig: async (teamName: string, updates: TeamUpdateConfigRequest) => {
-      return invokeIpcWithResult<TeamConfig>(TEAM_UPDATE_CONFIG, teamName, updates);
+      return invokeIpcWithResult<TeamConfig | null>(TEAM_UPDATE_CONFIG, teamName, updates);
     },
     addTaskComment: async (teamName: string, taskId: string, request: AddTaskCommentRequest) => {
       return invokeIpcWithResult<TaskComment>(TEAM_ADD_TASK_COMMENT, teamName, taskId, request);

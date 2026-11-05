@@ -17,6 +17,7 @@ export const REGISTRY_TASK_STATUSES = [
   'in-progress',
   'blocked',
   'done',
+  'deleted',
   'deferred',
   'unknown',
 ] as const;
@@ -42,6 +43,12 @@ export interface RegistryTask {
   /** Non-task node refs the task links to (team "related" links live here). */
   refs: string[];
   contentHash: string | null;
+  /** Decoded description supplied by registries supporting lossless descriptions. */
+  description?: string | null;
+  /** Opaque payload-bound marker recorded atomically with task creation. */
+  creationToken?: string | null;
+  /** Canonical task body fetched through spec_entities when requested. */
+  body?: string;
 }
 
 /** How a structured task write landed, as the registry reports it. */
@@ -95,6 +102,7 @@ export interface RegistryTaskScope {
 export interface ListRegistryTasksInput extends RegistryTaskScope {
   statuses?: readonly RegistryTaskStatus[];
   signal?: AbortSignal;
+  includeBodies?: boolean;
 }
 
 export interface UpsertRegistryTaskInput extends RegistryTaskScope {
@@ -104,11 +112,15 @@ export interface UpsertRegistryTaskInput extends RegistryTaskScope {
   /** FR/NFR/AC ids that must exist in the same spec. */
   requirements: readonly string[];
   body?: string;
+  description?: string;
+  creationToken?: string;
   status?: RegistryTaskStatus;
   owner?: string;
   tracking?: string;
   dependsOn?: readonly string[];
   refs?: readonly string[];
+  /** Preimage of TASKS.md, required by callers creating a new numeric id. */
+  expectedSha?: string;
   signal?: AbortSignal;
 }
 
@@ -123,7 +135,7 @@ export interface ReplaceRegistryTaskStatusInput extends RegistryTaskScope {
 
 export interface ReplaceRegistryTaskOwnerInput extends RegistryTaskScope {
   entity: string;
-  owner: string;
+  owner: string | null;
   signal?: AbortSignal;
 }
 
@@ -132,6 +144,7 @@ export interface ReplaceRegistryTaskLinksInput extends RegistryTaskScope {
   requirements?: readonly string[];
   dependsOn?: readonly string[];
   refs?: readonly string[];
+  expectedSha?: string;
   signal?: AbortSignal;
 }
 

@@ -57,6 +57,35 @@ export class RegistryMcpTransport {
     operation: string,
     signal?: AbortSignal
   ): Promise<RegistryToolEnvelope<unknown>> {
+    const result = await this.#callRpc(
+      'tools/call',
+      { name: toolName, arguments: toolArguments },
+      operation,
+      signal
+    );
+    const envelope = this.#readEnvelope(result, operation);
+    if (!envelope.ok) {
+      const failure = envelope.error;
+      throw new RegistryTaskRequestFailedError(
+        operation,
+        failure?.code ?? 'UNKNOWN',
+        failure?.message ?? `registry refused ${operation}`,
+        failure?.retryable ?? false
+      );
+    }
+    return envelope;
+  }
+
+  async listTools(signal?: AbortSignal): Promise<Record<string, unknown>> {
+    return this.#callRpc('tools/list', {}, 'listTools', signal);
+  }
+
+  async #callRpc(
+    method: string,
+    params: Record<string, unknown>,
+    operation: string,
+    signal?: AbortSignal
+  ): Promise<Record<string, unknown>> {
     if (signal?.aborted) {
       throw new RegistryTaskAbortedError(operation);
     }
@@ -75,8 +104,8 @@ export class RegistryMcpTransport {
         body: JSON.stringify({
           jsonrpc: '2.0',
           id: rpcId,
-          method: 'tools/call',
-          params: { name: toolName, arguments: toolArguments },
+          method,
+          params,
         }),
         signal: scope.signal,
       });
@@ -110,18 +139,7 @@ export class RegistryMcpTransport {
     if (!isRecord(result)) {
       throw new RegistryTaskProtocolError(operation, 'registry returned no JSON-RPC result');
     }
-
-    const envelope = this.#readEnvelope(result, operation);
-    if (!envelope.ok) {
-      const failure = envelope.error;
-      throw new RegistryTaskRequestFailedError(
-        operation,
-        failure?.code ?? 'UNKNOWN',
-        failure?.message ?? `registry refused ${operation}`,
-        failure?.retryable ?? false
-      );
-    }
-    return envelope;
+    return result;
   }
 
   #readEnvelope(result: Record<string, unknown>, operation: string): RegistryToolEnvelope<unknown> {

@@ -1,3 +1,6 @@
+import * as fs from 'fs/promises';
+import * as os from 'os';
+import * as path from 'path';
 import { describe, expect, it, vi } from 'vitest';
 
 const deterministicMocks = vi.hoisted(() => ({
@@ -14,6 +17,8 @@ vi.mock('../TeamProvisioningCreateDeterministicRunFlow', async (importOriginal) 
   ...(await importOriginal<typeof import('../TeamProvisioningCreateDeterministicRunFlow')>()),
   runDeterministicCreateRunFlow: deterministicMocks.runCreate,
 }));
+
+import { setClaudeBasePathOverride } from '@main/utils/pathDecoder';
 
 import {
   createAnthropicApiKeyHelperCleanupRetryOwner,
@@ -73,8 +78,9 @@ function createHost(
       getResolvableProvisioningRunId: vi.fn(() => null),
     },
     configTaskActivityBoundary: {
+      readConfigSnapshot: vi.fn(async () => ({})),
       readTaskActivityRepairLaunchSnapshot: vi.fn(async () => null),
-      repairStaleTaskActivityIntervalsOnce: vi.fn(),
+      repairStaleTaskActivityIntervalsOnce: vi.fn(async () => true),
     },
     initializeToolApprovalSettingsForLaunch: vi.fn(),
     stopAllTeamsGeneration: 7,
@@ -201,7 +207,7 @@ describe('TeamProvisioningCreateLaunchOrchestration', () => {
     ).toHaveBeenCalledWith('alpha');
     expect(
       host.configTaskActivityBoundary.repairStaleTaskActivityIntervalsOnce
-    ).toHaveBeenCalledWith('alpha', null);
+    ).toHaveBeenCalledWith('alpha', null, undefined);
     expect(host.initializeToolApprovalSettingsForLaunch).toHaveBeenCalledWith('alpha', false);
     expect(
       vi.mocked(host.initializeToolApprovalSettingsForLaunch).mock.invocationCallOrder[0]
@@ -212,6 +218,28 @@ describe('TeamProvisioningCreateLaunchOrchestration', () => {
       onProgress
     );
     expect(host.provisioningRunByTeam.has('alpha')).toBe(false);
+  });
+
+  it('starts a new registry-bound team before its config file exists', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'team-create-binding-'));
+    setClaudeBasePathOverride(root);
+    try {
+      const host = createHost();
+      vi.mocked(host.configTaskActivityBoundary.readConfigSnapshot).mockResolvedValue(null);
+      vi.mocked(
+        host.configTaskActivityBoundary.repairStaleTaskActivityIntervalsOnce
+      ).mockImplementation(
+        async (_name, _snapshot, binding) =>
+          binding?.specProject === 'owner/project' && binding.specSlug === 'feature'
+      );
+      const request = { ...createRequest, specProject: 'owner/project', specSlug: 'feature' };
+      await expect(createTeamInnerWithService(host, request, vi.fn())).resolves.toEqual({
+        runId: 'opencode-create-run',
+      });
+    } finally {
+      setClaudeBasePathOverride(null);
+      await fs.rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
+    }
   });
 
   it('retries an explicitly retained setup owner before production orchestration continues', async () => {
@@ -300,8 +328,9 @@ describe('TeamProvisioningCreateLaunchOrchestration', () => {
     const snapshotRead = deferred<null>();
     const host = createHost({
       configTaskActivityBoundary: {
+        readConfigSnapshot: vi.fn(async () => ({})),
         readTaskActivityRepairLaunchSnapshot: vi.fn(() => snapshotRead.promise),
-        repairStaleTaskActivityIntervalsOnce: vi.fn(),
+        repairStaleTaskActivityIntervalsOnce: vi.fn(async () => true),
       },
     });
     const onProgress = vi.fn<(progress: TeamProvisioningProgress) => void>();
