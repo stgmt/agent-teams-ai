@@ -31,6 +31,7 @@ import type {
   RegistryTaskTransition,
   UpsertRegistryTaskInput,
 } from './RegistryTaskClientTypes';
+import { REGISTRY_TASK_STATUSES } from './RegistryTaskClientTypes';
 import type { TeamSpecBinding } from './TeamSpecBinding';
 import type {
   TaskAttachmentMeta,
@@ -261,9 +262,12 @@ export class RegistryTeamTaskWriter {
     if (!force && this.#listingCache && now - this.#listingCache.at <= this.#statusCacheTtlMs) {
       return this.#listingCache.tasks;
     }
+    // Allocation and lookups must see finished tasks too: an active-only list
+    // would hand out the id of a `done` task and the registry would refuse it.
     const tasks = await this.#client.listTasks({
       project: this.#binding.project,
       spec: this.#binding.spec,
+      statuses: [...REGISTRY_TASK_STATUSES],
     });
     this.#listingCache = { at: now, tasks };
     return tasks;
@@ -399,11 +403,7 @@ export class RegistryTeamTaskWriter {
   }
 
   /** Status transition through `replace_task_status` with the last read as `expectedStatus`. */
-  async replaceStatus(input: {
-    taskId: string;
-    to: TeamTaskStatus;
-    actor?: string;
-  }): Promise<{
+  async replaceStatus(input: { taskId: string; to: TeamTaskStatus; actor?: string }): Promise<{
     outcome: 'APPLIED' | 'UNCHANGED';
     transitions: readonly RegistryTaskTransition[];
   }> {
