@@ -40,6 +40,8 @@ vi.mock('@renderer/components/ui/dialog', () => ({
     React.createElement('h2', null, children),
 }));
 
+import { setPendingTemplateMutation } from '../hooks/pendingTemplateMutation';
+
 import { DuplicateCustomTemplateDialog } from './DuplicateCustomTemplateDialog';
 
 import type {
@@ -117,6 +119,7 @@ beforeEach(() => {
 
 afterEach(() => {
   act(() => root.unmount());
+  setPendingTemplateMutation(null);
   host.remove();
   vi.restoreAllMocks();
 });
@@ -156,9 +159,9 @@ describe('DuplicateCustomTemplateDialog', () => {
     expect(duplicateTemplate).toHaveBeenCalledTimes(1);
     expect(host.querySelector('[data-testid="duplicate-template-name-conflict"]')).toBeNull();
 
-    // The entered name stays available for recovery.
+    // The entered name stays visible, but no second write can be sent.
     expect(nameInput().value).toBe('customTemplates.duplicate.defaultName|name=Release Pipeline');
-    expect(nameInput().disabled).toBe(false);
+    expect(nameInput().disabled).toBe(true);
   });
 
   it('keeps a known name conflict distinct from an unknown outcome', async () => {

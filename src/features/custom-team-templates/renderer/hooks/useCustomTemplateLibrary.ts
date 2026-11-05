@@ -38,38 +38,40 @@ export type TemplateLibraryState =
  */
 export function useCustomTemplateLibrary(open: boolean): {
   state: TemplateLibraryState;
-  reload: () => Promise<void>;
+  /** True only when a complete, current read succeeded. */
+  reload: () => Promise<boolean>;
 } {
   const [state, setState] = useState<TemplateLibraryState>({ status: 'idle' });
   const requestIdRef = useRef(0);
 
-  const reload = useCallback(async (): Promise<void> => {
+  const reload = useCallback(async (): Promise<boolean> => {
     const requestId = ++requestIdRef.current;
     setState({ status: 'loading' });
     try {
       const result = await api.customTeamTemplates.listTemplates();
-      if (requestId !== requestIdRef.current) return;
+      if (requestId !== requestIdRef.current) return false;
       switch (result.status) {
         case 'empty':
           setState({ status: 'empty' });
-          return;
+          return true;
         case 'ready':
           setState({ status: 'ready', templates: result.templates });
-          return;
+          return true;
         case 'hasUnreadableRecords':
           setState({
             status: 'partial',
             templates: result.templates,
             unreadableRecords: result.unreadableRecords,
           });
-          return;
+          return false;
         case 'storageUnavailable':
           setState({ status: 'storageUnavailable' });
-          return;
+          return false;
       }
     } catch {
-      if (requestId !== requestIdRef.current) return;
+      if (requestId !== requestIdRef.current) return false;
       setState({ status: 'requestFailed' });
+      return false;
     }
   }, []);
 

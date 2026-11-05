@@ -35,7 +35,7 @@ export const DeleteCustomTemplateDialog = ({
 }: DeleteCustomTemplateDialogProps): React.JSX.Element | null => {
   const { t } = useAppTranslation('team');
   const { t: tCommon } = useAppTranslation('common');
-  const { deleteTemplate, busy } = useTemplateManagement();
+  const { deleteTemplate, busy, blockedByUnknown } = useTemplateManagement();
 
   const [expectedRevision, setExpectedRevision] = useState(
     template ? resolveTemplateRevision(template) : 1
@@ -61,7 +61,7 @@ export const DeleteCustomTemplateDialog = ({
   if (!template) return null;
 
   const handleDelete = async () => {
-    if (busy || revisionConflict) return;
+    if (busy || blockedByUnknown || revisionConflict) return;
     setErrorState(null);
 
     try {
@@ -217,7 +217,7 @@ export const DeleteCustomTemplateDialog = ({
           </Button>
           <Button
             variant="destructive"
-            disabled={busy || revisionConflict !== null}
+            disabled={busy || blockedByUnknown || revisionConflict !== null}
             aria-busy={busy}
             onClick={() => void handleDelete()}
           >

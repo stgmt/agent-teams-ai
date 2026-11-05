@@ -8,6 +8,10 @@ const saveTemplate = vi.hoisted(() => vi.fn());
 const recheckSave = vi.hoisted(() => vi.fn());
 const listTemplates = vi.hoisted(() => vi.fn());
 const importTemplate = vi.hoisted(() => vi.fn());
+const updateTemplate = vi.hoisted(() => vi.fn());
+const duplicateTemplate = vi.hoisted(() => vi.fn());
+const deleteTemplate = vi.hoisted(() => vi.fn());
+const copyBuiltinTemplate = vi.hoisted(() => vi.fn());
 const browserFile = vi.hoisted(() => ({ importFromFile: vi.fn(), exportToFile: vi.fn() }));
 const desktopFile = vi.hoisted(() => ({ importFromFile: vi.fn(), exportToFile: vi.fn() }));
 
@@ -20,6 +24,10 @@ vi.mock('@renderer/api', () => ({
       recheckSave,
       listTemplates,
       importTemplate,
+      updateTemplate,
+      duplicateTemplate,
+      deleteTemplate,
+      copyBuiltinTemplate,
     },
   },
 }));
@@ -81,6 +89,8 @@ vi.mock('../hooks/useTemplateImport', () => ({
 }));
 
 import { TEAM_TEMPLATES } from '@features/team-templates';
+
+import { setPendingTemplateMutation } from '../hooks/pendingTemplateMutation';
 
 import { MyTemplatesDialog } from './MyTemplatesDialog';
 
@@ -153,6 +163,10 @@ beforeEach(() => {
   recheckSave.mockReset();
   listTemplates.mockReset();
   importTemplate.mockReset();
+  updateTemplate.mockReset();
+  duplicateTemplate.mockReset();
+  deleteTemplate.mockReset();
+  copyBuiltinTemplate.mockReset();
   browserFile.importFromFile.mockReset();
   browserFile.exportToFile.mockReset();
   desktopFile.importFromFile.mockReset();
@@ -166,11 +180,203 @@ beforeEach(() => {
 
 afterEach(() => {
   act(() => root.unmount());
+  setPendingTemplateMutation(null);
   host.remove();
   vi.restoreAllMocks();
 });
 
 describe('MyTemplatesDialog', () => {
+  it.each(['duplicate', 'delete', 'copyBuiltin'] as const)(
+    're-reads the library and blocks another %s after an unknown outcome',
+    async (operation) => {
+      const mutation =
+        operation === 'duplicate'
+          ? duplicateTemplate
+          : operation === 'delete'
+            ? deleteTemplate
+            : copyBuiltinTemplate;
+      mutation.mockResolvedValueOnce({
+        status: 'unresolvedWriteOutcome',
+        templateId: 'unknown-id',
+      });
+      await render();
+      if (operation === 'copyBuiltin') {
+        await selectTab('customTemplates.library.tabs.builtIn');
+        await act(async () =>
+          host.querySelector<HTMLButtonElement>('[data-testid="copy-builtin-open"]')?.click()
+        );
+      } else {
+        await act(async () =>
+          host
+            .querySelector<HTMLButtonElement>(`[data-testid="${operation}-template-template-1"]`)
+            ?.click()
+        );
+      }
+      const action =
+        operation === 'duplicate'
+          ? 'customTemplates.duplicate.action'
+          : operation === 'delete'
+            ? 'customTemplates.delete.confirm'
+            : 'customTemplates.copyBuiltin.action';
+      await act(async () => button(action).click());
+      expect(mutation).toHaveBeenCalledTimes(1);
+      expect(button(action).disabled).toBe(true);
+      await act(async () => button(action).click());
+      expect(mutation).toHaveBeenCalledTimes(1);
+
+      const updated = [
+        ...templates,
+        { ...templates[0], templateId: 'new-template', name: 'Fresh' },
+      ];
+      listTemplates.mockResolvedValueOnce({ status: 'ready', templates: updated });
+      await act(async () => button('actions.cancel').click());
+      expect(listTemplates).toHaveBeenCalledTimes(2);
+      expect(host.querySelector('[data-testid="template-library-unresolved"]')).not.toBeNull();
+      if (operation === 'copyBuiltin') await selectTab('customTemplates.library.tabs.myTemplates');
+      expect(host.textContent).toContain('Fresh');
+      expect(
+        host.querySelector<HTMLButtonElement>('[data-testid="duplicate-template-template-1"]')
+          ?.disabled
+      ).toBe(true);
+    }
+  );
+
+  it('keeps an unknown outcome after a read until the user explicitly accepts uncertainty', async () => {
+    duplicateTemplate.mockResolvedValueOnce({ status: 'unresolvedWriteOutcome', templateId: '' });
+    await render();
+    await act(async () =>
+      host
+        .querySelector<HTMLButtonElement>('[data-testid="duplicate-template-template-1"]')
+        ?.click()
+    );
+    await act(async () => button('customTemplates.duplicate.action').click());
+    await act(async () => button('actions.cancel').click());
+    await act(async () => root.unmount());
+    root = createRoot(host);
+    await render();
+    expect(host.querySelector('[data-testid="template-library-unresolved"]')).not.toBeNull();
+    expect(
+      host.querySelector<HTMLButtonElement>('[data-testid="duplicate-template-template-1"]')
+        ?.disabled
+    ).toBe(true);
+
+    listTemplates.mockResolvedValueOnce({ status: 'storageUnavailable' });
+    await act(async () => button('customTemplates.actions.recheck').click());
+    expect(host.querySelector('[data-testid="template-library-unresolved"]')).not.toBeNull();
+    listTemplates.mockResolvedValueOnce({ status: 'ready', templates });
+    await act(async () => button('customTemplates.actions.recheck').click());
+    expect(host.querySelector('[data-testid="template-library-unresolved"]')).not.toBeNull();
+    expect(host.textContent).toContain('customTemplates.states.snapshotWarning');
+    expect(
+      host.querySelector<HTMLButtonElement>('[data-testid="duplicate-template-template-1"]')
+        ?.disabled
+    ).toBe(true);
+    expect(duplicateTemplate).toHaveBeenCalledTimes(1);
+    await act(async () => button('customTemplates.actions.allowNewChanges').click());
+    expect(host.querySelector('[data-testid="template-library-unresolved"]')).toBeNull();
+    expect(
+      host.querySelector<HTMLButtonElement>('[data-testid="duplicate-template-template-1"]')
+        ?.disabled
+    ).toBe(false);
+    expect(duplicateTemplate).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows every pending operation in this profile and keeps newer markers after a read', async () => {
+    await render();
+    await act(async () => {
+      setPendingTemplateMutation({ kind: 'duplicate', label: 'First copy' });
+      setPendingTemplateMutation({ kind: 'delete', label: 'Second item' });
+    });
+    expect(host.textContent).toContain('First copy');
+    expect(host.textContent).toContain('Second item');
+    await act(async () => button('customTemplates.actions.recheck').click());
+    expect(host.textContent).toContain('customTemplates.actions.allowNewChanges');
+    await act(async () => {
+      localStorage.setItem(
+        'agent-teams:custom-template-pending-mutation:other-window',
+        JSON.stringify({ kind: 'edit', label: 'Third item' })
+      );
+      window.dispatchEvent(
+        new StorageEvent('storage', {
+          key: 'agent-teams:custom-template-pending-mutation:other-window',
+        })
+      );
+    });
+    expect(host.textContent).toContain('Third item');
+    expect(host.textContent).not.toContain('customTemplates.actions.allowNewChanges');
+    await act(async () => button('customTemplates.actions.recheck').click());
+    await act(async () => button('customTemplates.actions.allowNewChanges').click());
+    expect(host.querySelector('[data-testid="template-library-unresolved"]')).toBeNull();
+  });
+
+  it('keeps an unknown import blocked after its dialog closes', async () => {
+    browserFile.importFromFile.mockResolvedValueOnce({
+      status: 'unresolvedWriteOutcome',
+      templateId: '',
+    });
+    await render();
+    await act(async () =>
+      host.querySelector<HTMLButtonElement>('[data-testid="import-template-button"]')?.click()
+    );
+    const input = host.querySelector<HTMLInputElement>('#import-file-input')!;
+    Object.defineProperty(input, 'files', {
+      value: [new File(['{}'], 'unknown.json')],
+      configurable: true,
+    });
+    await act(async () => input.dispatchEvent(new Event('change', { bubbles: true })));
+    expect(browserFile.importFromFile).toHaveBeenCalledTimes(1);
+    const closeButtons = Array.from(host.querySelectorAll('button')).filter((item) =>
+      item.textContent?.includes('actions.close')
+    );
+    await act(async () => closeButtons[closeButtons.length - 1].click());
+    expect(host.textContent).toContain('unknown.json');
+    expect(
+      host.querySelector<HTMLButtonElement>('[data-testid="import-template-button"]')?.disabled
+    ).toBe(true);
+    expect(host.querySelector('[data-testid="template-library-unresolved"]')).not.toBeNull();
+  });
+
+  it('keeps an unknown edit blocked after its dialog closes', async () => {
+    updateTemplate.mockResolvedValueOnce({
+      status: 'unresolvedWriteOutcome',
+      templateId: 'template-1',
+    });
+    await render();
+    await act(async () =>
+      host.querySelector<HTMLButtonElement>('[data-testid="edit-template-template-1"]')?.click()
+    );
+    await act(async () => button('customTemplates.edit.save').click());
+    expect(updateTemplate).toHaveBeenCalledTimes(1);
+    await act(async () => button('actions.cancel').click());
+    expect(
+      host.querySelector<HTMLButtonElement>('[data-testid="edit-template-template-1"]')?.disabled
+    ).toBe(true);
+    expect(host.querySelector('[data-testid="template-library-unresolved"]')).not.toBeNull();
+  });
+
+  it('blocks changes and explains when local recovery storage is unavailable', async () => {
+    const realStorage = localStorage;
+    vi.stubGlobal('localStorage', {
+      get length() {
+        return realStorage.length;
+      },
+      key: realStorage.key.bind(realStorage),
+      getItem: realStorage.getItem.bind(realStorage),
+      removeItem: realStorage.removeItem.bind(realStorage),
+      setItem: () => {
+        throw new Error('storage denied');
+      },
+    });
+    await render();
+    expect(host.textContent).toContain('customTemplates.states.mutationStorageUnavailable');
+    expect(
+      host.querySelector<HTMLButtonElement>('[data-testid="duplicate-template-template-1"]')
+        ?.disabled
+    ).toBe(true);
+    expect(duplicateTemplate).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
+
   it('renders the stored templates read-only', async () => {
     await render();
     expect(listTemplates).toHaveBeenCalledTimes(1);

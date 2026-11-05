@@ -40,6 +40,8 @@ vi.mock('@renderer/components/ui/dialog', () => ({
     React.createElement('h2', null, children),
 }));
 
+import { setPendingTemplateMutation } from '../hooks/pendingTemplateMutation';
+
 import { DeleteCustomTemplateDialog } from './DeleteCustomTemplateDialog';
 
 import type {
@@ -107,6 +109,7 @@ beforeEach(() => {
 
 afterEach(() => {
   act(() => root.unmount());
+  setPendingTemplateMutation(null);
   host.remove();
   vi.restoreAllMocks();
 });

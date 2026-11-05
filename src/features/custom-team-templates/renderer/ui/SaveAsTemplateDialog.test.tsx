@@ -61,6 +61,8 @@ vi.mock('@renderer/components/ui/dialog', () => ({
     React.createElement('h2', null, children),
 }));
 
+import { setPendingTemplateMutation } from '../hooks/pendingTemplateMutation';
+
 import { SaveAsTemplateDialog } from './SaveAsTemplateDialog';
 
 import type {
@@ -171,6 +173,7 @@ beforeEach(() => {
 
 afterEach(() => {
   act(() => root.unmount());
+  setPendingTemplateMutation(null);
   host.remove();
   vi.restoreAllMocks();
 });
@@ -279,6 +282,15 @@ describe('SaveAsTemplateDialog preview', () => {
 });
 
 describe('SaveAsTemplateDialog save', () => {
+  it('blocks a new save while a library write still needs user re-check', async () => {
+    setPendingTemplateMutation({ kind: 'duplicate', label: 'Uncertain copy' });
+    await render();
+    expect(host.querySelector('[data-testid="template-library-unresolved"]')).not.toBeNull();
+    expect(saveButton().disabled).toBe(true);
+    await act(async () => saveButton().click());
+    expect(saveTemplate).not.toHaveBeenCalled();
+  });
+
   it('submits only the editable name and description', async () => {
     await render();
     setText('#custom-template-name', 'Beta');
@@ -406,6 +418,78 @@ describe('SaveAsTemplateDialog save', () => {
     expect(recheckSave).toHaveBeenCalledWith({ previewToken: 'token-1' });
   });
 
+  it.each(['unresolved', 'transport failure'] as const)(
+    'preserves an %s outcome when the open dialog receives a new initial name',
+    async (outcome) => {
+      await render();
+      if (outcome === 'unresolved') {
+        await saveUntilUnresolved();
+      } else {
+        saveTemplate.mockRejectedValueOnce(new Error('response lost'));
+        await act(async () => saveButton().click());
+      }
+
+      await render({ initialName: 'Updated team name' });
+      expect(preparePreview).toHaveBeenCalledTimes(1);
+      expect(saveTemplate).toHaveBeenCalledTimes(1);
+      expect(saveButton().disabled).toBe(true);
+      expect(host.querySelector('[data-testid="custom-template-state"]')).not.toBeNull();
+
+      await act(async () => button('customTemplates.actions.recheck').click());
+      expect(recheckSave).toHaveBeenCalledTimes(1);
+      expect(recheckSave).toHaveBeenCalledWith({ previewToken: 'token-1' });
+      expect(saveTemplate).toHaveBeenCalledTimes(1);
+    }
+  );
+
+  it('keeps an in-flight save and its original team when dialog props change', async () => {
+    await render();
+    let resolveSave!: (value: ConfirmCustomTeamTemplateSaveResult) => void;
+    saveTemplate.mockReturnValueOnce(
+      new Promise<ConfirmCustomTeamTemplateSaveResult>((resolve) => (resolveSave = resolve))
+    );
+    await act(async () => saveButton().click());
+    await render({ initialName: 'Other', sourceTeamName: 'other-team' });
+    expect(preparePreview).toHaveBeenCalledTimes(1);
+    expect(button('customTemplates.states.saving').disabled).toBe(true);
+
+    await act(async () => {
+      resolveSave({ status: 'unresolvedWriteOutcome', templateId: 'template-1' });
+    });
+    expect(saveButton().disabled).toBe(true);
+    await act(async () => button('customTemplates.actions.recheck').click());
+    expect(recheckSave).toHaveBeenCalledWith({ previewToken: 'token-1' });
+    expect(saveTemplate).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps a previous unknown save blocked when the dialog is reopened', async () => {
+    await render();
+    await saveUntilUnresolved();
+    await render({ open: false });
+    await render({ open: true, initialName: 'Other' });
+    expect(host.querySelector('[data-testid="template-library-unresolved"]')).not.toBeNull();
+    expect(saveButton().disabled).toBe(true);
+    await act(async () => saveButton().click());
+    expect(saveTemplate).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses the latest team and name when the dialog is explicitly closed and reopened', async () => {
+    await render();
+    await render({ open: false, sourceTeamName: 'other-team', initialName: 'Other' });
+    preparePreview.mockResolvedValueOnce({
+      status: 'previewReady',
+      preview: { ...preview, sourceTeamName: 'other-team', previewToken: 'token-2' },
+    } satisfies PrepareCustomTeamTemplatePreviewResult);
+    await render({ open: true, sourceTeamName: 'other-team', initialName: 'Other' });
+    expect(preparePreview).toHaveBeenCalledTimes(2);
+    expect(preparePreview).toHaveBeenLastCalledWith({
+      sourceTeamName: 'other-team',
+      name: 'Other',
+      description: '',
+    });
+    expect(host.textContent).toContain('other-team');
+  });
+
   it('blocks dismissal only while a save is in flight', async () => {
     await render();
     expect(host.querySelector('[data-close-disabled]')?.getAttribute('data-close-disabled')).toBe(
@@ -446,6 +530,20 @@ describe('SaveAsTemplateDialog save', () => {
 });
 
 describe('SaveAsTemplateDialog re-check', () => {
+  it('keeps the unknown outcome if a re-check reports an invalid token', async () => {
+    recheckSave.mockResolvedValue({
+      status: 'validationFailed',
+      issues: [{ code: 'previewTokenUnknown', field: 'previewToken' }],
+    } satisfies RecheckCustomTeamTemplateSaveResult);
+    await render();
+    await saveUntilUnresolved();
+    await act(async () => button('customTemplates.actions.recheck').click());
+    expect(preparePreview).toHaveBeenCalledTimes(1);
+    expect(saveTemplate).toHaveBeenCalledTimes(1);
+    expect(saveButton().disabled).toBe(true);
+    expect(buttons().some((candidate) => candidate.textContent?.includes('recheck'))).toBe(true);
+  });
+
   it('maps a confirmed save to the success state', async () => {
     recheckSave.mockResolvedValue({
       status: 'saved',
@@ -462,7 +560,7 @@ describe('SaveAsTemplateDialog re-check', () => {
     );
   });
 
-  it('re-enables saving after a confirmed absence', async () => {
+  it('does not retry when an older server reports absence after an unknown save', async () => {
     recheckSave.mockResolvedValue({
       status: 'notSaved',
       templateId: 'template-1',
@@ -473,13 +571,13 @@ describe('SaveAsTemplateDialog re-check', () => {
       button('customTemplates.actions.recheck').click();
     });
     expect(host.querySelector('[data-testid="custom-template-state"]')?.textContent).toContain(
-      'customTemplates.states.notSaved'
+      'customTemplates.states.unresolvedTitle'
     );
-    expect(saveButton().disabled).toBe(false);
+    expect(saveButton().disabled).toBe(true);
     await act(async () => {
       saveButton().click();
     });
-    expect(saveTemplate).toHaveBeenCalledTimes(2);
+    expect(saveTemplate).toHaveBeenCalledTimes(1);
   });
 
   it('reports a conflicting template id distinctly and stops saving', async () => {

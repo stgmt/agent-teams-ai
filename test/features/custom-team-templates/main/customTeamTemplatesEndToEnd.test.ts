@@ -367,23 +367,13 @@ describe('custom team templates end to end', () => {
     expect(library.rows.size).toBe(0);
   });
 
-  it('rechecks an unknown save before a separate user-confirmed attempt', async () => {
+  it('keeps an absent recheck unresolved until the original delayed writer commits', async () => {
     await writeTeam([{ name: 'alice', role: 'reviewer', workflow: 'Review.' }]);
     const library = fakeLibrary();
-    let failCreate = true;
-    const create = vi.fn<CustomTeamTemplateStorageGateway['customTeamTemplateCreate']>(
-      (request) => {
-        if (failCreate) {
-          return Promise.reject(
-            new CustomTeamTemplateStorageInterruptedError(
-              'worker died',
-              'unknown',
-              Promise.resolve()
-            )
-          );
-        }
-        return library.gateway.customTeamTemplateCreate(request);
-      }
+    const create = vi.fn<CustomTeamTemplateStorageGateway['customTeamTemplateCreate']>(() =>
+      Promise.reject(
+        new CustomTeamTemplateStorageInterruptedError('worker died', 'unknown', Promise.resolve())
+      )
     );
     const gateway: CustomTeamTemplateStorageGateway = {
       ...library.gateway,
@@ -409,24 +399,25 @@ describe('custom team templates end to end', () => {
     // Nothing reached the store, and the retained operation keeps its identity.
     expect(library.requests).toEqual([]);
 
-    const notSaved = await app.recheckSave.execute({ previewToken: token });
-    expect(notSaved).toEqual({
-      status: 'notSaved',
+    const uncertain = await app.recheckSave.execute({ previewToken: token });
+    expect(uncertain).toEqual({
+      status: 'unresolved',
       templateId: expect.any(String),
     });
-    if (notSaved.status !== 'notSaved') return;
-    const { templateId } = notSaved;
-    // A re-check never writes: the confirmed-absence read is the whole action.
+    if (uncertain.status !== 'unresolved') return;
+    const { templateId } = uncertain;
+    // A re-check never writes, and an absent snapshot does not permit a retry.
     expect(library.requests).toEqual([]);
     expect(create).toHaveBeenCalledTimes(1);
-
-    // The write turns out to have been possible after all: it lands once, and the
-    // re-check then confirms the very same operation instead of writing again.
-    failCreate = false;
-    await expect(app.saveTemplate.execute({ previewToken: token })).resolves.toMatchObject({
-      status: 'created',
+    await expect(app.saveTemplate.execute({ previewToken: token })).resolves.toEqual({
+      status: 'unresolvedWriteOutcome',
+      templateId,
     });
-    expect(create).toHaveBeenCalledTimes(2);
+    expect(create).toHaveBeenCalledTimes(1);
+
+    // Simulate the previously dispatched writer committing after the snapshot.
+    await library.gateway.customTeamTemplateCreate(create.mock.calls[0][0]);
+    expect(create).toHaveBeenCalledTimes(1);
     expect(library.rows.size).toBe(1);
     await expect(app.recheckSave.execute({ previewToken: token })).resolves.toEqual({
       status: 'saved',

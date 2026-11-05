@@ -145,11 +145,11 @@ describe('RecheckCustomTeamTemplateSaveUseCase', () => {
     expect(fixture.create).not.toHaveBeenCalled();
   });
 
-  it('reports confirmed absence as a safely retryable state', async () => {
+  it('keeps an absent snapshot unresolved because a writer may still commit', async () => {
     const fixture = operation({ read: { status: 'notFound' } });
 
     await expect(fixture.useCase.execute({ previewToken: fixture.token })).resolves.toEqual({
-      status: 'notSaved',
+      status: 'unresolved',
       templateId: TEMPLATE_ID,
     });
   });
@@ -328,10 +328,9 @@ describe('RecheckCustomTeamTemplateSaveUseCase', () => {
       previewStore: store,
     });
 
-    // Nothing was persisted for this token, so a re-check honestly reports that
-    // rather than inventing a success or an error.
+    // An absent snapshot cannot prove a writer has finished.
     await expect(useCase.execute({ previewToken: state.token })).resolves.toEqual({
-      status: 'notSaved',
+      status: 'unresolved',
       templateId: TEMPLATE_ID,
     });
   });

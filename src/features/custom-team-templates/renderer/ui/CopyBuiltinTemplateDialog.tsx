@@ -38,7 +38,7 @@ export const CopyBuiltinTemplateDialog = ({
 }: CopyBuiltinTemplateDialogProps): React.JSX.Element | null => {
   const { t } = useAppTranslation('team');
   const { t: tCommon } = useAppTranslation('common');
-  const { copyBuiltinTemplate, busy } = useTemplateManagement();
+  const { copyBuiltinTemplate, busy, blockedByUnknown } = useTemplateManagement();
 
   const [selectedId, setSelectedId] = useState<BuiltinTeamTemplateId>('software-product');
   const [name, setName] = useState('');
@@ -84,7 +84,7 @@ export const CopyBuiltinTemplateDialog = ({
   };
 
   const handleCopy = async () => {
-    if (busy || !name.trim()) return;
+    if (busy || blockedByUnknown || !name.trim()) return;
     setNameConflict(false);
     setErrorState(null);
     setIssues([]);
@@ -233,7 +233,7 @@ export const CopyBuiltinTemplateDialog = ({
                     key={tpl.id}
                     type="button"
                     variant="ghost"
-                    disabled={busy}
+                    disabled={busy || blockedByUnknown}
                     aria-pressed={isSelected}
                     data-testid={`builtin-template-${tpl.id}`}
                     className={`h-auto flex-col items-stretch justify-start whitespace-normal rounded-md border p-3 text-left transition-colors ${
@@ -271,7 +271,7 @@ export const CopyBuiltinTemplateDialog = ({
             <Input
               id="copy-builtin-name"
               value={name}
-              disabled={busy}
+              disabled={busy || blockedByUnknown}
               aria-invalid={nameIssues.length > 0 || undefined}
               aria-describedby={nameIssues.length > 0 ? 'copy-builtin-name-error' : undefined}
               onChange={(e) => {
@@ -320,7 +320,7 @@ export const CopyBuiltinTemplateDialog = ({
             {tCommon('actions.cancel')}
           </Button>
           <Button
-            disabled={busy || !name.trim()}
+            disabled={busy || blockedByUnknown || !name.trim()}
             aria-busy={busy}
             onClick={() => void handleCopy()}
           >

@@ -65,6 +65,8 @@ vi.mock('@renderer/components/ui/dialog', () => ({
 import ruTeam from '@features/localization/renderer/locales/ru/team.json';
 import { TEAM_TEMPLATES } from '@features/team-templates';
 
+import { setPendingTemplateMutation } from '../hooks/pendingTemplateMutation';
+
 import { CopyBuiltinTemplateDialog } from './CopyBuiltinTemplateDialog';
 
 import type { CopyBuiltinTemplateResult } from '@features/custom-team-templates/contracts';
@@ -143,6 +145,7 @@ beforeEach(() => {
 
 afterEach(() => {
   act(() => root.unmount());
+  setPendingTemplateMutation(null);
   host.remove();
   vi.restoreAllMocks();
 });

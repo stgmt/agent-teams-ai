@@ -36,7 +36,7 @@ export const DuplicateCustomTemplateDialog = ({
 }: DuplicateCustomTemplateDialogProps): React.JSX.Element | null => {
   const { t } = useAppTranslation('team');
   const { t: tCommon } = useAppTranslation('common');
-  const { duplicateTemplate, busy } = useTemplateManagement();
+  const { duplicateTemplate, busy, blockedByUnknown } = useTemplateManagement();
 
   const defaultProposedName = template
     ? t('customTemplates.duplicate.defaultName', { name: template.name })
@@ -66,7 +66,7 @@ export const DuplicateCustomTemplateDialog = ({
   if (!template) return null;
 
   const handleDuplicate = async () => {
-    if (busy || !name.trim()) return;
+    if (busy || blockedByUnknown || !name.trim()) return;
     setNameConflict(false);
     setErrorState(null);
     setIssues([]);
@@ -224,7 +224,7 @@ export const DuplicateCustomTemplateDialog = ({
             <Input
               id="duplicate-template-name"
               value={name}
-              disabled={busy}
+              disabled={busy || blockedByUnknown}
               aria-invalid={nameIssues.length > 0 || undefined}
               aria-describedby={nameIssues.length > 0 ? 'duplicate-name-error' : undefined}
               onChange={(e) => {
@@ -246,7 +246,7 @@ export const DuplicateCustomTemplateDialog = ({
             {tCommon('actions.cancel')}
           </Button>
           <Button
-            disabled={busy || !name.trim()}
+            disabled={busy || blockedByUnknown || !name.trim()}
             aria-busy={busy}
             onClick={() => void handleDuplicate()}
           >

@@ -10,6 +10,13 @@ import {
 } from '@features/custom-team-templates/contracts';
 import { api } from '@renderer/api';
 
+import {
+  beginTemplateMutation,
+  finishTemplateMutation,
+  getPendingTemplateMutation,
+  usePendingTemplateMutation,
+} from './pendingTemplateMutation';
+
 export type TemplateManagementOperation = 'delete' | 'duplicate' | 'copyBuiltin' | null;
 
 export interface UseTemplateManagementInput {
@@ -18,6 +25,7 @@ export interface UseTemplateManagementInput {
 
 export interface UseTemplateManagementResult {
   busy: boolean;
+  blockedByUnknown: boolean;
   activeOperation: TemplateManagementOperation;
   deleteTemplate: (
     target: CustomTeamTemplateV1 | { templateId: string; expectedRevision: number }
@@ -45,12 +53,18 @@ export function useTemplateManagement({
   const [busy, setBusy] = useState(false);
   const [activeOperation, setActiveOperation] = useState<TemplateManagementOperation>(null);
   const inFlightRef = useRef(false);
+  const blockedByUnknown = usePendingTemplateMutation() !== null;
 
   const deleteTemplate = useCallback(
     async (
       target: CustomTeamTemplateV1 | { templateId: string; expectedRevision: number }
     ): Promise<DeleteCustomTeamTemplateResult> => {
       if (inFlightRef.current) return { status: 'storageUnavailable' };
+      if (getPendingTemplateMutation()) {
+        return { status: 'unresolvedWriteOutcome', templateId: target.templateId };
+      }
+      const operation = beginTemplateMutation({ kind: 'delete', label: target.templateId });
+      if (!operation) return { status: 'storageUnavailable' };
       inFlightRef.current = true;
       setBusy(true);
       setActiveOperation('delete');
@@ -66,6 +80,8 @@ export function useTemplateManagement({
         if (result.status === 'deleted') {
           await onSuccess?.();
         }
+
+        if (result.status !== 'unresolvedWriteOutcome') finishTemplateMutation(operation);
 
         return result;
       } catch {
@@ -84,6 +100,11 @@ export function useTemplateManagement({
   const duplicateTemplate = useCallback(
     async (sourceTemplateId: string, name: string): Promise<DuplicateCustomTeamTemplateResult> => {
       if (inFlightRef.current) return { status: 'storageUnavailable' };
+      if (getPendingTemplateMutation()) {
+        return { status: 'unresolvedWriteOutcome', templateId: '' };
+      }
+      const operation = beginTemplateMutation({ kind: 'duplicate', label: name });
+      if (!operation) return { status: 'storageUnavailable' };
       inFlightRef.current = true;
       setBusy(true);
       setActiveOperation('duplicate');
@@ -97,6 +118,8 @@ export function useTemplateManagement({
         if (result.status === 'duplicated') {
           await onSuccess?.();
         }
+
+        if (result.status !== 'unresolvedWriteOutcome') finishTemplateMutation(operation);
 
         return result;
       } catch {
@@ -119,6 +142,11 @@ export function useTemplateManagement({
       name: string
     ): Promise<CopyBuiltinTemplateResult> => {
       if (inFlightRef.current) return { status: 'storageUnavailable' };
+      if (getPendingTemplateMutation()) {
+        return { status: 'unresolvedWriteOutcome', templateId: '' };
+      }
+      const operation = beginTemplateMutation({ kind: 'copyBuiltin', label: name });
+      if (!operation) return { status: 'storageUnavailable' };
       inFlightRef.current = true;
       setBusy(true);
       setActiveOperation('copyBuiltin');
@@ -132,6 +160,8 @@ export function useTemplateManagement({
         if (result.status === 'copied') {
           await onSuccess?.();
         }
+
+        if (result.status !== 'unresolvedWriteOutcome') finishTemplateMutation(operation);
 
         return result;
       } catch {
@@ -149,6 +179,7 @@ export function useTemplateManagement({
 
   return {
     busy,
+    blockedByUnknown,
     activeOperation,
     deleteTemplate,
     duplicateTemplate,

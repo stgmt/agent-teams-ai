@@ -1102,11 +1102,11 @@ describe('SaveCustomTeamTemplateUseCase', () => {
         hasher,
         previewStore: preview.store,
       }).execute({ previewToken: preview.token })
-    ).resolves.toEqual({ status: 'notSaved', templateId: preview.stateTemplateId });
+    ).resolves.toEqual({ status: 'unresolved', templateId: preview.stateTemplateId });
     expect(read).toHaveBeenCalledWith({ templateId: preview.stateTemplateId });
   });
 
-  it('requires a recheck and a separate user save after an uncertain write', async () => {
+  it('does not retry the original save after an uncertain write and an absent read', async () => {
     const fixture = gatewayFixture({
       create: [
         new CustomTeamTemplateStorageInterruptedError('worker died', 'unknown', Promise.resolve()),
@@ -1136,15 +1136,15 @@ describe('SaveCustomTeamTemplateUseCase', () => {
         hasher,
         previewStore: preview.store,
       }).execute({ previewToken: preview.token })
-    ).resolves.toEqual({ status: 'notSaved', templateId: preview.stateTemplateId });
+    ).resolves.toEqual({ status: 'unresolved', templateId: preview.stateTemplateId });
     expect(fixture.create).toHaveBeenCalledTimes(1);
 
-    // Only a separate user-confirmed save after rechecking starts a new write.
+    // An absent snapshot cannot prove the previous writer has stopped.
     await expect(save.execute({ previewToken: preview.token })).resolves.toEqual({
-      status: 'created',
-      template: storedTemplate(PREVIEW_ID),
+      status: 'unresolvedWriteOutcome',
+      templateId: preview.stateTemplateId,
     });
-    expect(fixture.create).toHaveBeenCalledTimes(2);
+    expect(fixture.create).toHaveBeenCalledTimes(1);
     expect(
       fixture.requests.every((request) => request.template.templateId === preview.stateTemplateId)
     ).toBe(true);

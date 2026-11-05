@@ -4006,6 +4006,7 @@ export default interface Resources {
         "duplicate": "Duplicate",
         "edit": "Edit",
         "export": "Export",
+        "allowNewChanges": "I understand; allow new changes",
         "myTemplates": "My Templates",
         "recheck": "Re-check outcome",
         "removeMember": "Remove member",
@@ -4218,6 +4219,9 @@ export default interface Resources {
         "unresolvedDeleteBody": "The deletion could not be confirmed, so nothing was retried automatically. Check My Templates before trying again — the template may already be gone.",
         "unresolvedImportBody": "The import could not be confirmed, so nothing was retried automatically. Check My Templates before trying again — the template may already have been imported.",
         "unresolvedMutationBody": "The change could not be confirmed, so nothing was retried automatically. Check My Templates before trying again — the change may already have been applied.",
+        "pendingProfileBody": "These changes in this browser or app profile may still be running or have an unconfirmed outcome. Nothing was retried automatically. Other profiles have separate records.",
+        "mutationStorageUnavailable": "New changes are blocked because this profile cannot store the recovery record. Enable local storage and reopen the library.",
+        "snapshotWarning": "This list is a snapshot. The previous change could still complete later. Continue only if you accept this uncertainty.",
         "unresolvedTitle": "Outcome not confirmed"
       },
       "warnings": {

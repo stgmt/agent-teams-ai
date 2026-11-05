@@ -9,6 +9,7 @@ const transport = vi.hoisted(() => ({
   copyBuiltinTemplate: vi.fn(),
 }));
 vi.mock('@renderer/api', () => ({ api: { customTeamTemplates: transport } }));
+import { setPendingTemplateMutation } from './pendingTemplateMutation';
 import { useTemplateManagement } from './useTemplateManagement';
 
 import type { CustomTeamTemplateV1 } from '../../contracts';
@@ -39,6 +40,7 @@ beforeEach(async () => {
 });
 afterEach(() => {
   act(() => root.unmount());
+  setPendingTemplateMutation(null);
   vi.unstubAllGlobals();
 });
 

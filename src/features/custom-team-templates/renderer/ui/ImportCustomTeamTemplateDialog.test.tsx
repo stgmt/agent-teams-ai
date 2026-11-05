@@ -3,6 +3,8 @@ import { createRoot } from 'react-dom/client';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { setPendingTemplateMutation } from '../hooks/pendingTemplateMutation';
+
 const importTemplate = vi.hoisted(() => vi.fn());
 const browserFile = vi.hoisted(() => ({ importFromFile: vi.fn() }));
 const desktopFile = vi.hoisted(() => ({ importFromFile: vi.fn() }));
@@ -148,6 +150,7 @@ beforeEach(() => {
 
 afterEach(() => {
   act(() => root.unmount());
+  setPendingTemplateMutation(null);
   host.remove();
   vi.restoreAllMocks();
 });

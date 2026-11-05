@@ -31,12 +31,9 @@ function parsePreviewToken(payload: unknown): string | null {
  * a digest or a successful write. The read is by that stable id, which means a
  * re-check can only ever describe the operation it was issued for.
  *
- * Every answer stays honest. `notSaved` is confirmed absence (no record exists
- * for the id, so retrying the same operation is safe) and is never returned when
- * a record exists but cannot be reconstructed; `unresolved` covers exactly that
- * case, so a damaged row can never be read as a missing one. No write is
- * attempted at all, so re-checking cannot create a second row or replace a
- * conflicting one.
+ * An absent record is only a snapshot: a previously dispatched writer might
+ * still commit later. Keep the outcome unresolved and do not retry it. No
+ * write is attempted by this read-only re-check.
  */
 export class RecheckCustomTeamTemplateSaveUseCase {
   constructor(private readonly deps: RecheckCustomTeamTemplateSaveUseCaseDeps) {}
@@ -88,8 +85,7 @@ export class RecheckCustomTeamTemplateSaveUseCase {
         this.deps.previewStore.clearUnresolvedWrite(token);
         return { status: 'templateIdConflict', templateId: check.templateId };
       case 'absent':
-        this.deps.previewStore.clearUnresolvedWrite(token);
-        return { status: 'notSaved', templateId: check.templateId };
+        return { status: 'unresolved', templateId: check.templateId };
       case 'unresolved':
         return { status: 'unresolved', templateId: check.templateId };
     }

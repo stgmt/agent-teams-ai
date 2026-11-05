@@ -9,6 +9,13 @@ import {
 } from '@features/custom-team-templates/contracts';
 import { api } from '@renderer/api';
 
+import {
+  beginTemplateMutation,
+  finishTemplateMutation,
+  getPendingTemplateMutation,
+  usePendingTemplateMutations,
+} from './pendingTemplateMutation';
+
 export type EditTemplateStatus =
   | 'idle'
   | 'saving'
@@ -111,6 +118,7 @@ export function useEditTemplate({
   template,
   onSaved,
 }: UseEditTemplateInput): UseEditTemplateResult {
+  const { operations: pendingMutations, storageAvailable } = usePendingTemplateMutations();
   const [name, setNameState] = useState(template?.name ?? '');
   const [description, setDescriptionState] = useState(template?.description ?? '');
   const [teamPrompt, setTeamPromptState] = useState(template?.teamPrompt ?? '');
@@ -236,7 +244,8 @@ export function useEditTemplate({
   }, [revisionConflict]);
 
   const save = useCallback(async (): Promise<boolean> => {
-    if (busy || !template || status === 'unresolvedWriteOutcome') return false;
+    if (busy || !template || status === 'unresolvedWriteOutcome' || getPendingTemplateMutation())
+      return false;
 
     // Normalize the team prompt with the established trim() policy before
     // validation, hashing, and writing. A valid string keeps its internal
@@ -257,6 +266,11 @@ export function useEditTemplate({
       })),
     };
     const pending: PendingUpdate = { expectedRevision, fields };
+    const operation = beginTemplateMutation({ kind: 'edit', label: template.name });
+    if (!operation) {
+      setStatus('storageUnavailable');
+      return false;
+    }
 
     const requestId = ++requestIdRef.current;
     pendingUpdateRef.current = pending;
@@ -283,6 +297,7 @@ export function useEditTemplate({
         'message' in error &&
         String((error as { message: string }).message).includes('HTTP 413');
       if (isHttp413) {
+        finishTemplateMutation(operation);
         setStatus('requestSizeValidationFailed');
         return false;
       }
@@ -297,6 +312,7 @@ export function useEditTemplate({
       }
     }
 
+    if (result.status !== 'unresolvedWriteOutcome') finishTemplateMutation(operation);
     if (requestId !== requestIdRef.current) return false;
 
     // Only result processing runs here: an exception from onSaved or any other
@@ -379,7 +395,12 @@ export function useEditTemplate({
     return true;
   }, [busy, onSaved, status, template]);
 
-  const canSave = !busy && name.trim().length > 0 && status !== 'unresolvedWriteOutcome';
+  const canSave =
+    !busy &&
+    name.trim().length > 0 &&
+    status !== 'unresolvedWriteOutcome' &&
+    pendingMutations.length === 0 &&
+    storageAvailable;
   const canRecheck =
     !busy && status === 'unresolvedWriteOutcome' && pendingUpdateRef.current !== null;
 
