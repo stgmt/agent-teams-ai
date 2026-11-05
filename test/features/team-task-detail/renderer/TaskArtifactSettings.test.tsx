@@ -289,4 +289,83 @@ describe('task artifact settings', () => {
       await act(async () => root.unmount());
     }
   );
+
+  it('does not reattach a file when its committed write loses the response', async () => {
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+    const mutate = vi.fn(async () => {
+      throw new Error('response lost after commit');
+    });
+    const check = vi.fn(async () => undefined);
+    const View = (): React.JSX.Element => {
+      const [unknown, setUnknown] = useState(false);
+      const [checked, setChecked] = useState(false);
+      return (
+        <TaskArtifactSettings
+          outcomeUnknown={unknown}
+          outcomeChecked={checked}
+          onOutcomeUnknown={() => setUnknown(true)}
+          onCheckOutcome={async () => {
+            await check();
+            setChecked(true);
+          }}
+          onConfirmOutcome={() => setUnknown(false)}
+          onUpdate={mutate}
+          onDownload={async () => null}
+          canMutate={() => true}
+          completed={false}
+          requirement={{ required: true, expectedFilename: 'result.txt' }}
+        />
+      );
+    };
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    await act(async () => {
+      root.render(<View />);
+    });
+    const picker = host.querySelector<HTMLInputElement>('input[type="file"]')!;
+    const transfer = new DataTransfer();
+    transfer.items.add(new File(['abc'], 'result.txt', { type: 'text/plain' }));
+    picker.files = transfer.files;
+    let finishRead!: () => void;
+    const readFinished = new Promise<void>((resolve) => {
+      finishRead = resolve;
+    });
+    const readAsDataURL = FileReader.prototype.readAsDataURL;
+    vi.spyOn(FileReader.prototype, 'readAsDataURL').mockImplementation(function (
+      this: FileReader,
+      selected
+    ) {
+      this.addEventListener('loadend', finishRead, { once: true });
+      readAsDataURL.call(this, selected);
+    });
+    await act(async () => {
+      picker.dispatchEvent(new Event('change', { bubbles: true }));
+      await readFinished;
+    });
+    expect(mutate).toHaveBeenCalledTimes(1);
+    expect(host.textContent).toContain('artifact.unknown');
+    const attachButton = Array.from(host.querySelectorAll('button')).find(
+      (item) => item.textContent === 'artifact.attach'
+    )!;
+    expect(attachButton.disabled).toBe(true);
+    const checkButton = Array.from(host.querySelectorAll('button')).find(
+      (item) => item.textContent === 'artifact.checkOutcome'
+    )!;
+    await act(async () => {
+      checkButton.click();
+    });
+    expect(check).toHaveBeenCalledTimes(1);
+    expect(mutate).toHaveBeenCalledTimes(1);
+    expect(attachButton.disabled).toBe(true);
+    const confirmButton = Array.from(host.querySelectorAll('button')).find(
+      (item) => item.textContent === 'artifact.confirmOutcome'
+    )!;
+    await act(async () => {
+      confirmButton.click();
+    });
+    expect(mutate).toHaveBeenCalledTimes(1);
+    expect(attachButton.disabled).toBe(false);
+    await act(async () => root.unmount());
+  });
 });
