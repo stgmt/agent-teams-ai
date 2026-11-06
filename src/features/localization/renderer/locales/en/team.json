@@ -43,6 +43,31 @@
       "availability_blocked": "The member has a runtime warning or failure."
     }
   },
+  "verifiedAction": {
+    "title": "Verified artifact queue",
+    "description": "Prepare a local manifest for the verified artifact. The file is not copied, published, or sent externally; verify it again before use.",
+    "prepare": "Prepare for approval",
+    "approval": "Check the artifact above, then approve adding a manifest for it to the local queue.",
+    "approve": "Approve and queue",
+    "question": "The result is unknown. After checking, what should happen?",
+    "completed": "I checked: it was done",
+    "retry": "I checked: not done; retry once",
+    "unresolved": "Leave unresolved",
+    "manual": "Unresolved; handle manually. No automatic retry will occur.",
+    "stale": "The artifact changed before approval. Prepare a new action for the current artifact.",
+    "attested": "Marked complete based on your confirmation.",
+    "queued": "Artifact manifest added to the local queue.",
+    "running": "Checking action status…",
+    "refresh": "Refresh status",
+    "refreshFailed": "Status could not be read. Refresh before taking another action.",
+    "resultUnknown": "The result could not be confirmed. Refresh status before taking another action; it will not be retried automatically.",
+    "guardBlocked": "Another task change is in progress, unresolved, or its safety storage is unavailable.",
+    "guardUnavailable": "The task safety guard could not start this change. No new action was sent.",
+    "guardUnknown": "The previous manifest action may have completed or may still complete. Check the current status before deciding.",
+    "guardCheck": "Check current status",
+    "guardChecked": "This is a snapshot; the previous action may still complete later.",
+    "guardAllow": "I checked; allow changes"
+  },
   "activity": {
     "chatVisualization": {
       "description": "Full visualization view",

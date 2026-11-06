@@ -373,6 +373,7 @@ export function retireTaskDetailSessionWork(
           taskWriteGuardReason: null,
           taskWriteMarkerId: null,
           taskWriteOperation: null,
+          taskWriteDecision: null,
           taskWriteHydrationId: null,
           taskWriteRootFingerprint: null,
           taskWriteExpectedContext: null,
