@@ -70,6 +70,29 @@ describe('team agent runtime snapshot stabilization', () => {
     expect(stabilized.members.alice?.updatedAt).toBe('2026-01-01T00:00:20.000Z');
   });
 
+  it('does not hide a confirmed lifecycle stop while still smoothing an ordinary lookup miss', () => {
+    const live = makeSnapshot(
+      '2026-01-01T00:00:00.000Z',
+      makeEntry({ updatedAt: '2026-01-01T00:00:00.000Z' })
+    );
+    const absent = makeSnapshot(
+      '2026-01-01T00:00:05.000Z',
+      makeEntry({ alive: false, livenessKind: 'not_found', updatedAt: '2026-01-01T00:00:05.000Z' })
+    );
+    const confirmed = {
+      ...absent,
+      members: { alice: { ...absent.members.alice, authoritativeStopped: true as const } },
+    };
+    const now = Date.parse('2026-01-01T00:00:05.000Z');
+    expect(stabilizeTeamAgentRuntimeSnapshot(live, absent, now).members.alice).toBe(
+      live.members.alice
+    );
+    expect(stabilizeTeamAgentRuntimeSnapshot(live, confirmed, now).members.alice).toBe(
+      confirmed.members.alice
+    );
+    expect(areTeamAgentRuntimeSnapshotsEqual(absent, confirmed)).toBe(false);
+  });
+
   it('keeps next snapshot metadata visible when transient offline entries are stabilized', () => {
     const live = makeSnapshot(
       '2026-01-01T00:00:00.000Z',

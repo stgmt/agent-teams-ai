@@ -44,6 +44,7 @@ function hasStrongLiveRuntimeEvidence(entry: TeamAgentRuntimeEntry | undefined):
 function isTransientRuntimeOfflineEntry(entry: TeamAgentRuntimeEntry | undefined): boolean {
   return Boolean(
     entry?.alive === false &&
+    entry.authoritativeStopped !== true &&
     entry.runtimeDiagnosticSeverity !== 'error' &&
     entry.livenessKind != null &&
     TRANSIENT_RUNTIME_OFFLINE_KINDS.has(entry.livenessKind)

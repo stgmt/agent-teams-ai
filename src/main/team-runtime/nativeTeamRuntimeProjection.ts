@@ -95,7 +95,12 @@ export function toTeamAgentRuntimeSnapshot(
     if (member.membership !== 'configured') continue;
     const alive = memberIsLive(member);
     const lane = member.lane;
-    const kind = livenessKind(member);
+    // A terminal lifecycle phase with no live process is authoritative stopped
+    // evidence. Starting, permission-blocked and still-live members stay distinct.
+    const observedKind = livenessKind(member);
+    const authoritativeStopped =
+      observedKind === null && !alive && (member.phase === 'stopped' || member.phase === 'exited');
+    const kind = observedKind ?? (authoritativeStopped ? 'not_found' : null);
     members[member.memberName] = {
       memberName: member.memberName,
       alive,
@@ -113,8 +118,12 @@ export function toTeamAgentRuntimeSnapshot(
           }
         : {}),
       ...(kind ? { livenessKind: kind } : {}),
-      ...(member.phase === 'failed' && member.error
-        ? { runtimeDiagnostic: member.error, runtimeDiagnosticSeverity: 'error' as const }
+      ...(authoritativeStopped ? { authoritativeStopped: true as const } : {}),
+      ...(member.phase === 'failed'
+        ? {
+            ...(member.error ? { runtimeDiagnostic: member.error } : {}),
+            runtimeDiagnosticSeverity: 'error' as const,
+          }
         : {}),
       ...(member.phase === 'unresponsive'
         ? {

@@ -121,6 +121,7 @@ export function areTeamAgentRuntimeEntriesEqual(
     left.runtimeLoadScope === right.runtimeLoadScope &&
     left.runtimeLoadTruncated === right.runtimeLoadTruncated &&
     left.livenessKind === right.livenessKind &&
+    left.authoritativeStopped === right.authoritativeStopped &&
     left.pidSource === right.pidSource &&
     left.processCommand === right.processCommand &&
     left.paneId === right.paneId &&
