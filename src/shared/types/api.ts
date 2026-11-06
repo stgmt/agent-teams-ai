@@ -154,6 +154,7 @@ import type {
 } from '@features/team-read-recovery/contracts';
 import type { TerminalWorkspaceElectronApi } from '@features/terminal-workspace/contracts';
 import type { TokenUsageElectronApi } from '@features/token-usage/contracts';
+import type { VerifiedActionElectronApi } from '@features/verified-action/preload';
 import type { WorkspaceTrustElectronApi } from '@features/workspace-trust/contracts';
 import type {
   ConversationGroup,
@@ -877,6 +878,7 @@ export interface ElectronAPI
   appCloseCoordination?: AppCloseCoordinationElectronApi;
   workspaceTrust?: WorkspaceTrustElectronApi['workspaceTrust'];
   telemetry: TelemetryAPI;
+  verifiedAction?: VerifiedActionElectronApi;
   getAppVersion: () => Promise<string>;
   getWindowsElevationStatus: () => Promise<WindowsElevationStatus>;
   getProjects: () => Promise<Project[]>;

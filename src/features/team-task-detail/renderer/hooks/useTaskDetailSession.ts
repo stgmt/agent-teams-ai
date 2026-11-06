@@ -32,6 +32,7 @@ import type {
   TaskDetailReplyDraft,
   TaskDetailSavePart,
   TaskDetailSession,
+  TaskWriteDecision,
   TaskWriteOperation,
 } from '../../contracts';
 import type { AppConnectionContext } from '@features/external-agent-connection/contracts';
@@ -60,20 +61,45 @@ export interface TaskDetailSessionController {
     checked: boolean;
     expectedContext: AppConnectionContext | null;
     expectedRootFingerprint: string | null;
+    decision: TaskWriteDecision | null;
   };
-  beginGuardedTaskWrite: (
-    operation: TaskWriteOperation
-  ) => Promise<{
+  beginGuardedTaskWrite: (operation: TaskWriteOperation) => Promise<{
     token: string;
     expectedContext: AppConnectionContext;
     expectedRootFingerprint: string;
   }>;
+  beginGuardedTaskDecision: (
+    actionId: string,
+    decision: TaskWriteDecision['decision']
+  ) => Promise<{
+    token: string;
+    decision: TaskWriteDecision;
+    expectedContext: AppConnectionContext;
+    expectedRootFingerprint: string;
+  }>;
+  markGuardedDecisionFenceSent: (
+    token: string,
+    rootFingerprint: string,
+    decision: TaskWriteDecision
+  ) => Promise<string | null>;
+  releaseUnadmittedDecisionFence: (
+    token: string,
+    rootFingerprint: string,
+    decision: TaskWriteDecision,
+    claimId: string
+  ) => Promise<boolean>;
+  readGuardedTaskDecisionIds: () => Promise<string[]>;
   settleGuardedTaskWrite: (
     token: string,
     operation: TaskWriteOperation,
     outcome: 'confirmed' | 'unknown'
   ) => Promise<boolean>;
-  checkGuardedTaskWriteOutcome: (operation: TaskWriteOperation) => Promise<void>;
+  checkGuardedTaskWriteOutcome: (operation: TaskWriteOperation) => Promise<{
+    expectedContext: AppConnectionContext;
+    expectedRootFingerprint: string;
+    manifest?: { markerId: string; decision: TaskWriteDecision | null; resolved?: true };
+    resolution?: 'confirmed' | 'cancelled' | 'explicit';
+  }>;
   confirmGuardedTaskWriteOutcome: (token: string, operation: TaskWriteOperation) => Promise<void>;
   isOriginCurrent: () => boolean;
   canSubmit: boolean;

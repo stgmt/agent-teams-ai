@@ -34,11 +34,6 @@ export function createIpcContextCallbacks(input: {
         assertTaskWriteRootFingerprint(input.getTaskWriteRoot(), expectedRootFingerprint);
         return operation();
       }),
-    withLocalAdmission: async <T>(operation: () => Promise<T>): Promise<T> => {
-      const current = connection();
-      const expected = (await current.getConnectionInfo()).context;
-      return current.withExpectedContext(expected, operation);
-    },
     onAgentLanguageUpdated: (language: string): void => {
       void input.notifyLanguageChange(language);
     },
