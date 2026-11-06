@@ -7347,6 +7347,31 @@ export default interface Resources {
         "wait": "Wait forever"
       }
     },
+    "verifiedAction": {
+      "approval": "Check the artifact above, then approve adding a manifest for it to the local queue.",
+      "approve": "Approve and queue",
+      "attested": "Marked complete based on your confirmation.",
+      "completed": "I checked: it was done",
+      "description": "Prepare a local manifest for the verified artifact. The file is not copied, published, or sent externally; verify it again before use.",
+      "guardAllow": "I checked; allow changes",
+      "guardBlocked": "Another task change is in progress, unresolved, or its safety storage is unavailable.",
+      "guardCheck": "Check current status",
+      "guardChecked": "This is a snapshot; the previous action may still complete later.",
+      "guardUnavailable": "The task safety guard could not start this change. No new action was sent.",
+      "guardUnknown": "The previous manifest action may have completed or may still complete. Check the current status before deciding.",
+      "manual": "Unresolved; handle manually. No automatic retry will occur.",
+      "prepare": "Prepare for approval",
+      "question": "The result is unknown. After checking, what should happen?",
+      "queued": "Artifact manifest added to the local queue.",
+      "refresh": "Refresh status",
+      "refreshFailed": "Status could not be read. Refresh before taking another action.",
+      "resultUnknown": "The result could not be confirmed. Refresh status before taking another action; it will not be retried automatically.",
+      "retry": "I checked: not done; retry once",
+      "running": "Checking action status…",
+      "stale": "The artifact changed before approval. Prepare a new action for the current artifact.",
+      "title": "Verified artifact queue",
+      "unresolved": "Leave unresolved"
+    },
     "worktreeGitReadiness": {
       "checking": "Checking Git repository status for teammate worktrees...",
       "createInitialCommit": "Create initial commit",
