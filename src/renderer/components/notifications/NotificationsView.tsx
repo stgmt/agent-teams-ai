@@ -7,6 +7,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { useAppTranslation } from '@features/localization/renderer';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@renderer/components/ui/dialog';
 import { useStore } from '@renderer/store';
 import { getTriggerColorDef } from '@shared/constants/triggerColors';
 import { useVirtualizer } from '@tanstack/react-virtual';
@@ -32,6 +39,7 @@ interface FilterChip {
 
 export const NotificationsView = (): React.JSX.Element => {
   const { t } = useAppTranslation('common');
+  const { t: teamT } = useAppTranslation('team');
   const {
     notifications,
     unreadCount,
@@ -41,6 +49,8 @@ export const NotificationsView = (): React.JSX.Element => {
     deleteNotification,
     clearNotifications,
     navigateToError,
+    pendingNotificationDetail,
+    takePendingNotificationDetail,
   } = useStore(
     useShallow((s) => ({
       notifications: s.notifications,
@@ -51,6 +61,8 @@ export const NotificationsView = (): React.JSX.Element => {
       deleteNotification: s.deleteNotification,
       clearNotifications: s.clearNotifications,
       navigateToError: s.navigateToError,
+      pendingNotificationDetail: s.pendingNotificationDetail,
+      takePendingNotificationDetail: s.takePendingNotificationDetail,
     }))
   );
 
@@ -58,6 +70,7 @@ export const NotificationsView = (): React.JSX.Element => {
   const [isLoading, setIsLoading] = useState(true);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
   const [activeFilter, setActiveFilter] = useState<string | null>(null);
+  const [warningDetail, setWarningDetail] = useState<DetectedError | null>(null);
 
   // Fetch notifications on mount
   useEffect(() => {
@@ -71,6 +84,15 @@ export const NotificationsView = (): React.JSX.Element => {
     };
     void loadNotifications();
   }, [fetchNotifications]);
+
+  useEffect(() => {
+    if (isLoading || !pendingNotificationDetail) return;
+    if (!takePendingNotificationDetail(pendingNotificationDetail)) return;
+    setWarningDetail(pendingNotificationDetail);
+    if (!pendingNotificationDetail.isRead) {
+      void markNotificationRead(pendingNotificationDetail.id);
+    }
+  }, [isLoading, pendingNotificationDetail, takePendingNotificationDetail, markNotificationRead]);
 
   // Sort notifications by timestamp (most recent first)
   const sortedNotifications = useMemo(() => {
@@ -165,6 +187,11 @@ export const NotificationsView = (): React.JSX.Element => {
 
   // Handle row click - navigate to error
   const handleRowClick = (error: DetectedError): void => {
+    if (error.requiresAcknowledgement) {
+      setWarningDetail(error);
+      if (!error.isRead) void markNotificationRead(error.id);
+      return;
+    }
     // Mark as read when navigating
     if (!error.isRead) {
       void markNotificationRead(error.id);
@@ -380,6 +407,31 @@ export const NotificationsView = (): React.JSX.Element => {
           </div>
         )}
       </div>
+      <Dialog
+        open={warningDetail !== null}
+        onOpenChange={(open) => !open && setWarningDetail(null)}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{warningDetail?.triggerName ?? warningDetail?.source}</DialogTitle>
+            <DialogDescription className="whitespace-pre-wrap break-words pt-2 leading-6">
+              {warningDetail?.message}
+            </DialogDescription>
+          </DialogHeader>
+          {warningDetail?.target?.kind === 'team' && (
+            <button
+              type="button"
+              className="justify-self-start rounded-md border px-3 py-2 text-sm"
+              onClick={() => {
+                navigateToError({ ...warningDetail, requiresAcknowledgement: false });
+                setWarningDetail(null);
+              }}
+            >
+              {teamT('dialogs.actions.openTeam')}
+            </button>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };

@@ -1,5 +1,7 @@
 import { createLogger } from '@shared/utils/logger';
 
+import { isInternalStorageRecoveryRequiredError } from '../infrastructure/internalStorageRecoveryState';
+
 import type {
   InternalStorageBackendInfo,
   InternalStorageBackendKind,
@@ -12,18 +14,21 @@ const logger = createLogger('Feature:InternalStorage');
  * shares that decision across every store in the feature so state never
  * splits between backends.
  *
- * If the initial ping fails (worker bundle missing, native module ABI
- * mismatch, unrecoverable database corruption) the session permanently falls
- * back to the legacy JSON stores, so the app keeps working with degraded
- * storage. After a successful ping there is no mid-session switch: a later
- * error propagates to the caller instead of silently changing backends.
+ * A recovery marker or unverifiable worker blocks both backends. JSON fallback
+ * is allowed only when the caller can prove that backend switching is isolated.
+ * After a successful ping a later error never silently changes backends.
  */
 export class InternalStorageBackendSelector {
   private decision: Promise<InternalStorageBackendKind> | null = null;
   private backendKind: InternalStorageBackendKind = 'sqlite';
   private backendInfo: InternalStorageBackendInfo | null = null;
 
-  constructor(private readonly ping: () => Promise<InternalStorageBackendInfo>) {}
+  constructor(
+    private readonly ping: () => Promise<InternalStorageBackendInfo>,
+    private readonly recoveryRequired: () => boolean = () => false,
+    private readonly fallbackMayDiverge: () => boolean = () => true,
+    private readonly onUnavailable?: (kind: 'recovery-required' | 'verification-required') => void
+  ) {}
 
   /**
    * Reports the decided backend. Until the first store access resolves the
@@ -31,7 +36,22 @@ export class InternalStorageBackendSelector {
    * a synchronization primitive.
    */
   getBackendKind(): InternalStorageBackendKind {
+    if (this.backendKind === 'recovery-required') return this.backendKind;
+    const marker = this.inspectRecoveryMarker();
+    if (marker === 'present') this.backendKind = 'recovery-required';
+    else if (marker === 'unknown') this.backendKind = 'verification-required';
+    else if (this.backendKind === 'json-fallback' && this.fallbackMayDiverge())
+      this.backendKind = 'verification-required';
     return this.backendKind;
+  }
+
+  private inspectRecoveryMarker(): 'present' | 'absent' | 'unknown' {
+    try {
+      return this.recoveryRequired() ? 'present' : 'absent';
+    } catch {
+      // An unreadable marker must never make a fallback look safe.
+      return 'unknown';
+    }
   }
 
   getBackendInfo(): InternalStorageBackendInfo | null {
@@ -39,8 +59,38 @@ export class InternalStorageBackendSelector {
   }
 
   async select<T>(sqliteBackend: T, jsonBackend: T): Promise<T> {
-    const kind = await this.resolve();
+    const kind = await this.probe();
+    if (kind === 'recovery-required') throw new Error('Internal storage requires manual recovery');
+    if (kind === 'verification-required')
+      throw new Error(
+        'Internal storage cannot be verified; JSON fallback is disabled while the worker is unavailable'
+      );
     return kind === 'sqlite' ? sqliteBackend : jsonBackend;
+  }
+
+  /** Refuses both backends once recovery is observed, including after fallback. */
+  async probe(): Promise<InternalStorageBackendKind> {
+    const safety = this.getBackendKind();
+    if (safety === 'recovery-required' || safety === 'verification-required') {
+      return this.reportUnavailable(safety);
+    }
+    const kind = await this.resolve();
+    const current = this.getBackendKind();
+    if (current === 'recovery-required' || current === 'verification-required') {
+      return this.reportUnavailable(current);
+    }
+    return kind;
+  }
+
+  private reportUnavailable(
+    kind: 'recovery-required' | 'verification-required'
+  ): 'recovery-required' | 'verification-required' {
+    try {
+      this.onUnavailable?.(kind);
+    } catch {
+      // Reporting must not change the storage decision.
+    }
+    return kind;
   }
 
   private resolve(): Promise<InternalStorageBackendKind> {
@@ -57,6 +107,23 @@ export class InternalStorageBackendSelector {
           return 'sqlite';
         })
         .catch((error: unknown): InternalStorageBackendKind => {
+          const marker = this.inspectRecoveryMarker();
+          if (isInternalStorageRecoveryRequiredError(error) || marker === 'present') {
+            this.backendKind = 'recovery-required';
+            logger.error(
+              'internal-storage requires manual recovery; both SQLite and JSON are blocked',
+              error
+            );
+            return this.backendKind;
+          }
+          if (marker === 'unknown' || this.fallbackMayDiverge()) {
+            this.backendKind = 'verification-required';
+            logger.error(
+              'internal-storage worker unavailable or database unverifiable; JSON fallback is disabled',
+              error
+            );
+            return this.backendKind;
+          }
           this.backendKind = 'json-fallback';
           logger.error(
             'internal-storage sqlite backend unavailable; falling back to JSON stores for this session',

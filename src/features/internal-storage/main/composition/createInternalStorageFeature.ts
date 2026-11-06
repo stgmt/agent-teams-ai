@@ -24,6 +24,11 @@ import {
   resolveStallJournalRecordConflict,
 } from '../adapters/output/stallJournalEntryRecordMapper';
 import { StallJournalLegacyJsonSource } from '../adapters/output/StallJournalLegacyJsonSource';
+import {
+  getInternalStorageRecoveryDetails,
+  internalStorageRecoveryPaths,
+  mightHaveInternalStorageFiles,
+} from '../infrastructure/internalStorageRecoveryState';
 import { InternalStorageWorkerClient } from '../infrastructure/InternalStorageWorkerClient';
 
 import { BackendSelectingTaskCommentNotificationJournalStore } from './BackendSelectingTaskCommentNotificationJournalStore';
@@ -33,6 +38,10 @@ import { InternalStorageBackendSelector } from './InternalStorageBackendSelector
 import type { InternalStorageBackendKind } from '../../contracts/internalStorageContracts';
 import type { MemberWorkSyncStorageGateway } from '../../core/application/ports';
 import type { ApplicationCommandLedgerStorageGateway } from '@features/application-command-ledger';
+import type {
+  CustomTeamTemplateStorageGateway,
+  ListCustomTeamTemplatesResult,
+} from '@features/custom-team-templates/contracts';
 import type { TaskStallJournalStore } from '@main/services/team/stallMonitor/TaskStallJournalStore';
 import type { TaskCommentNotificationJournalStore } from '@main/services/team/TaskCommentNotificationJournalStore';
 
@@ -41,6 +50,12 @@ const logger = createLogger('Feature:InternalStorage');
 export interface InternalStorageFeatureDeps {
   /** Usually app.getPath('userData'); the SQLite file lives in a subfolder. */
   userDataPath: string;
+  /** Report comment journal failures without changing their result or retrying delivery. */
+  onCommentJournalFailure?: (teamName: string, error: unknown) => void;
+  /** A successful mutation allows a later storage outage to be reported separately. */
+  onCommentJournalMutationSuccess?: (teamName: string) => void;
+  /** Report a backend decision that blocks all internal-storage features. */
+  onInternalStorageUnavailable?: (kind: 'recovery-required' | 'verification-required') => void;
 }
 
 export interface InternalStorageMemberWorkSyncBackend {
@@ -54,14 +69,23 @@ export interface InternalStorageApplicationCommandLedgerBackend {
   selector: InternalStorageBackendSelector;
 }
 
+export interface InternalStorageCustomTeamTemplatesBackend {
+  /**
+   * Worker-backed SQLite gateway, or null if the worker is unavailable.
+   * Template data has no JSON fallback; diagnostics remain available.
+   */
+  gateway: CustomTeamTemplateStorageGateway | null;
+  /** Safe, read-only diagnosis even when no worker gateway can be created. */
+  diagnoseStorage?: (storageReadFailed?: boolean) => Promise<ListCustomTeamTemplatesResult | null>;
+}
+
 export interface InternalStorageFeature {
   taskStallJournalStore: TaskStallJournalStore;
   taskCommentNotificationJournalStore: TaskCommentNotificationJournalStore;
   /**
    * Raw SQLite backend handle for the member-work-sync feature, which builds
-   * its own store on top (its ports live in that feature). The selector may
-   * force JSON fallback when the worker bundle is unavailable so compatibility
-   * replicas are still hydrated instead of bypassing the backend wrapper.
+   * its own store on top (its ports live in that feature). The selector fails
+   * closed when the worker is unavailable instead of selecting JSON.
    */
   memberWorkSyncBackend: InternalStorageMemberWorkSyncBackend | null;
   /**
@@ -69,6 +93,8 @@ export interface InternalStorageFeature {
    * worker bundle is unavailable, so callers must leave durable commands off.
    */
   applicationCommandLedgerBackend: InternalStorageApplicationCommandLedgerBackend | null;
+  /** Worker gateway when available, plus diagnostics when it is unavailable. */
+  customTeamTemplatesBackend: InternalStorageCustomTeamTemplatesBackend;
   /** Forces the lazy backend decision for startup diagnostics and packaged smoke checks. */
   probeBackend(): Promise<InternalStorageBackendKind>;
   getBackendKind(): InternalStorageBackendKind;
@@ -85,8 +111,8 @@ export function createInternalStorageFeature(
   const databasePath = getInternalStorageDatabasePath(deps.userDataPath);
   // Replica ownership is per team/store. A missing replica means that store was
   // never touched through SQLite; a dirty replica fails closed on its own.
-  // App-wide database existence cannot be used here because a healthy database
-  // may contain other teams/stores while this one is legitimately fresh.
+  // The selector blocks JSON if the worker is unavailable because JSON and
+  // SQLite clients cannot prove exclusive backend ownership.
   const fallbackRequiresReplica = false;
   const client = new InternalStorageWorkerClient({ databasePath });
   const workerAvailable = client.isAvailable();
@@ -95,16 +121,22 @@ export function createInternalStorageFeature(
 
   if (!workerAvailable) {
     logger.warn(
-      `internal-storage worker bundle not found; using JSON stores. expectedOneOf=${client
+      `internal-storage worker bundle not found; JSON fallback is disabled. expectedOneOf=${client
         .getWorkerPathCandidatesForDiagnostics()
         .join(',')}`
     );
   }
 
-  const selector = new InternalStorageBackendSelector(() =>
-    workerAvailable
-      ? client.ping()
-      : Promise.reject(new Error('internal-storage worker bundle is unavailable'))
+  const selector = new InternalStorageBackendSelector(
+    () =>
+      workerAvailable
+        ? client.ping()
+        : Promise.reject(new Error('internal-storage worker bundle is unavailable')),
+    () => getInternalStorageRecoveryDetails(databasePath) !== null,
+    // JSON writers and SQLite clients do not share a lock spanning their
+    // entire operations. Even an absent database can appear after selection.
+    () => true,
+    deps.onInternalStorageUnavailable
   );
 
   const stallImporter = new ImportLegacyJsonStoreUseCase({
@@ -154,11 +186,54 @@ export function createInternalStorageFeature(
       selector,
       sqliteCommentStore,
       jsonCommentStore,
-      { fallbackRequiresReplica, logger }
+      {
+        fallbackRequiresReplica,
+        logger,
+        onFailure: deps.onCommentJournalFailure,
+        onMutationSuccess: deps.onCommentJournalMutationSuccess,
+      }
     ),
     memberWorkSyncBackend: { gateway: client, selector, fallbackRequiresReplica },
     applicationCommandLedgerBackend: workerAvailable ? { gateway: client, selector } : null,
-    probeBackend: () => selector.select('sqlite', 'json-fallback'),
+    customTeamTemplatesBackend: {
+      gateway: workerAvailable ? client : null,
+      diagnoseStorage: async (storageReadFailed = false) => {
+        const kind = await selector.probe();
+        if (kind === 'recovery-required') {
+          try {
+            const recovery = getInternalStorageRecoveryDetails(databasePath);
+            if (recovery) {
+              const { kind: recoveryKind, ...paths } = recovery;
+              return {
+                status: recoveryKind === 'interrupted' ? 'recoveryInterrupted' : 'recoveryRequired',
+                ...paths,
+              };
+            }
+          } catch {
+            // Marker access can itself fail; preserve the known recovery state.
+          }
+          // A typed corruption error without a readable marker is still known
+          // damage, but the marker's publication cannot be confirmed.
+          return {
+            status: 'recoveryRequired',
+            ...internalStorageRecoveryPaths(databasePath),
+            markerWriteFailed: true,
+          };
+        }
+        if (kind === 'verification-required' || storageReadFailed) {
+          const resolved = path.resolve(databasePath);
+          return {
+            status: mightHaveInternalStorageFiles(databasePath)
+              ? 'storageVerificationRequired'
+              : 'storageSafetyUnavailable',
+            storageDirectory: path.dirname(resolved),
+            databasePath: resolved,
+          };
+        }
+        return null;
+      },
+    },
+    probeBackend: () => selector.probe(),
     getBackendKind: () => selector.getBackendKind(),
     dispose: () => client.close(),
   };

@@ -70,10 +70,7 @@ import {
   registerMemberWorkSyncIpc,
   removeMemberWorkSyncIpc,
 } from '@features/member-work-sync/main';
-import {
-  createInternalStorageFeature,
-  type InternalStorageFeature,
-} from '@features/internal-storage/main';
+import { type InternalStorageFeature } from '@features/internal-storage/main';
 import {
   createOrganizationsFeature,
   type OrganizationsFeatureFacade,
@@ -265,6 +262,8 @@ import { isTeamInternalControlMessageEnvelope } from '@shared/utils/teamInternal
 import { mkdirSync } from 'node:fs';
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
 import { AnnouncementsLifecycle } from './announcementsLifecycle';
+import { startCustomTeamTemplatesFeature } from './startCustomTeamTemplatesFeature';
+import { startInternalStorage } from './startInternalStorage';
 import {
   bindMemberWorkSyncProvisioningRuntime,
   createDeferredWorkSyncStallObservation,
@@ -998,6 +997,7 @@ let codexAccountFeature: CodexAccountFeatureFacade | null = null;
 let codexModelCatalogFeature: CodexModelCatalogFeatureFacade | null = null;
 let recentProjectsFeature: RecentProjectsFeatureFacade;
 let teamGroupChatsFeature: TeamGroupChatsFeature;
+let customTeamTemplatesFeature: ReturnType<typeof startCustomTeamTemplatesFeature>;
 let teamImportFeature: TeamImportFeatureFacade;
 let organizationsFeature: OrganizationsFeatureFacade;
 let runtimeProviderManagementFeature: RuntimeProviderManagementFeatureFacade;
@@ -1951,12 +1951,8 @@ async function initializeServices(): Promise<void> {
   const teamMemberRuntimeAdvisoryService = new TeamMemberRuntimeAdvisoryService(
     teamMemberLogsFinder
   );
-  internalStorageFeature = createInternalStorageFeature({
-    userDataPath: app.getPath('userData'),
-  });
-  if (process.env.AGENT_TEAMS_PACKAGED_SMOKE?.trim() === '1') {
-    void internalStorageFeature.probeBackend();
-  }
+  internalStorageFeature = startInternalStorage();
+  customTeamTemplatesFeature = startCustomTeamTemplatesFeature(internalStorageFeature);
   teamDataService = new TeamDataService();
   void teamDataService
     .listTeams()
@@ -3407,6 +3403,7 @@ async function startHttpServer(
         dataCache: activeContext.dataCache,
         recentProjectsFeature,
         teamGroupChatsFeature,
+        customTeamTemplatesFeature,
         organizationsFeature,
         workspaceTrust: workspaceTrustStatus,
         tokenUsageFeature: tokenUsageFeature ?? undefined,
@@ -3592,6 +3589,7 @@ async function shutdownServices(): Promise<void> {
       removeIpcHandlers();
       removeCodexAccountIpc(ipcMain);
       removeRecentProjectsIpc(ipcMain);
+      customTeamTemplatesFeature?.dispose();
       workspaceTrustFeature.removeWorkspaceTrustIpc(ipcMain);
       projectFolderFeature.removeProjectFolderIpc(ipcMain);
       removeTeamImportIpc(ipcMain);

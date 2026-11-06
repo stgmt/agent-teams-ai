@@ -385,6 +385,22 @@ describe('notificationSlice', () => {
       ...overrides,
     });
 
+    it('opens warning details in notifications without marking them read early', () => {
+      const error = createMockError({
+        source: 'internal-storage',
+        sessionId: 'internal-storage',
+        projectId: 'internal-storage',
+        requiresAcknowledgement: true,
+      });
+      store.getState().navigateToError(error);
+      expect(mockAPI.notifications.markRead).not.toHaveBeenCalled();
+      expect(store.getState().pendingNotificationDetail).toEqual(error);
+      expect(store.getState().openTabs).toHaveLength(1);
+      expect(store.getState().openTabs[0].type).toBe('notifications');
+      expect(store.getState().takePendingNotificationDetail(error)).toBe(true);
+      expect(store.getState().takePendingNotificationDetail(error)).toBe(false);
+    });
+
     describe('flat mode (viewMode !== grouped)', () => {
       beforeEach(() => {
         store.setState({

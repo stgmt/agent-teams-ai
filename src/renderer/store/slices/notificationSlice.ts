@@ -119,6 +119,7 @@ export interface NotificationSlice {
   unreadCount: number;
   notificationsLoading: boolean;
   notificationsError: string | null;
+  pendingNotificationDetail: DetectedError | null;
 
   // Actions
   fetchNotifications: () => Promise<void>;
@@ -129,6 +130,7 @@ export interface NotificationSlice {
   clearNotifications: (triggerName?: string) => Promise<void>;
   navigateToError: (error: DetectedError) => void;
   openNotificationsTab: () => void;
+  takePendingNotificationDetail: (expected: DetectedError) => boolean;
 }
 
 // =============================================================================
@@ -144,6 +146,12 @@ export const createNotificationSlice: StateCreator<AppState, [], [], Notificatio
   unreadCount: 0,
   notificationsLoading: false,
   notificationsError: null,
+  pendingNotificationDetail: null,
+  takePendingNotificationDetail: (expected) => {
+    if (get().pendingNotificationDetail !== expected) return false;
+    set({ pendingNotificationDetail: null });
+    return true;
+  },
 
   // Fetch all notifications from main process
   fetchNotifications: async () => {
@@ -313,8 +321,18 @@ export const createNotificationSlice: StateCreator<AppState, [], [], Notificatio
   navigateToError: (error: DetectedError) => {
     const state = get();
 
+    // Native warning clicks need the complete message, not a team/session deep link.
+    if (error.requiresAcknowledgement) {
+      set({ pendingNotificationDetail: error });
+      state.openNotificationsTab();
+      return;
+    }
+
     // Mark the notification as read
     void state.markNotificationRead(error.id);
+
+    // Global storage warnings have no session or team to navigate to.
+    if (error.source === 'internal-storage' && !error.target) return;
 
     // Team notifications use structured targets when available.
     if (error.sessionId.startsWith('team:')) {

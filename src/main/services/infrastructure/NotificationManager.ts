@@ -1208,6 +1208,7 @@ export class NotificationManager extends EventEmitter {
     const storedNotification: StoredNotification = {
       ...error,
       isRead:
+        error.requiresAcknowledgement !== true &&
         this.viewedTeamName != null &&
         this.isViewedTeamWindowFocused() &&
         notificationBelongsToTeam(error, this.viewedTeamName),
@@ -1360,6 +1361,7 @@ export class NotificationManager extends EventEmitter {
     let changed = 0;
     for (const notification of this.notifications) {
       if (notification.isRead) continue;
+      if (notification.requiresAcknowledgement) continue;
       if (!notificationBelongsToTeam(notification, name)) continue;
       notification.isRead = true;
       changed += 1;

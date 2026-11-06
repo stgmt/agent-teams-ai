@@ -17,8 +17,8 @@ import {
   resolveCodexFastMode,
   resolveCodexRuntimeSelection,
 } from '@features/codex-runtime-profile/renderer';
+import { CreateTeamTemplatePicker } from '@features/custom-team-templates/renderer';
 import { useAppTranslation } from '@features/localization/renderer';
-import { TeamTemplatePicker } from '@features/team-templates/renderer';
 import {
   useWorkspaceTrustStatus,
   WorkspaceTrustLaunchNotice,
@@ -47,7 +47,6 @@ import {
 } from '@renderer/components/ui/dialog';
 import { Input } from '@renderer/components/ui/input';
 import { Label } from '@renderer/components/ui/label';
-import { MentionableTextarea } from '@renderer/components/ui/MentionableTextarea';
 import {
   Select,
   SelectContent,
@@ -84,6 +83,7 @@ import {
 } from '@renderer/services/createTeamPreferences';
 import { useStore } from '@renderer/store';
 import { createLoadingMultimodelCliStatus } from '@renderer/store/slices/cliInstallerSlice';
+import { serializePromptChips } from '@renderer/types/inlineChip';
 import { resolveAnthropicProviderRuntimeSelection } from '@renderer/utils/anthropicRuntimeSelection';
 import { isGeminiUiFrozen } from '@renderer/utils/geminiUiFreeze';
 import { normalizePath } from '@renderer/utils/pathNormalize';
@@ -109,6 +109,7 @@ import {
   getOrganizationPlacementUnitOptions,
   getOrganizationUnitLabel,
 } from './createTeamOrganizationPlacement';
+import { CreateTeamPromptField } from './CreateTeamPromptField';
 import { sanitizeTeamName, validateRequest } from './createTeamSubmissionValidation';
 import {
   buildProviderModelChecksMap,
@@ -182,6 +183,7 @@ import {
 import { TeammateRuntimeCompatibilityNotice } from './TeammateRuntimeCompatibilityNotice';
 import { computeEffectiveTeamModel } from './TeamModelSelector';
 import { getNextSuggestedTeamName } from './teamNameSets';
+import { useCreateTeamTemplateSelection } from './useCreateTeamTemplateSelection';
 import { useCustomProjectFolder } from './useCustomProjectFolder';
 import { useDialogMemberModelScope } from './useDialogMemberModelScope';
 import { useMemberWorkspaceInfo } from './useMemberWorkspaceInfo';
@@ -367,6 +369,8 @@ export const CreateTeamDialog = ({
   const descriptionDraft = useDraftPersistence({ key: 'createTeam:description' });
   const promptDraft = useDraftPersistence({ key: 'createTeam:prompt' });
   const promptChipDraft = useChipDraftPersistence('createTeam:prompt:chips');
+  const templateSelection = useCreateTeamTemplateSelection({ initialData: Boolean(initialData) });
+  const { templateSelectionDraft } = templateSelection;
   const [projects, setProjects] = useState<ProjectPathProject[]>([]);
   const [projectsLoading, setProjectsLoading] = useState(false);
   const [projectsError, setProjectsError] = useState<string | null>(null);
@@ -552,6 +556,7 @@ export const CreateTeamDialog = ({
     descriptionDraft.clearDraft();
     promptDraft.clearDraft();
     promptChipDraft.clearChipDraft();
+    templateSelection.clearTemplateSelection();
     resetUIState();
   };
 
@@ -1600,9 +1605,8 @@ export const CreateTeamDialog = ({
   const { suggestions: teamMentionSuggestions } = useTeamSuggestions(null, {
     enabled: workflowMentionSuggestionsEnabled,
   });
-
   const description = descriptionDraft.value;
-  const prompt = promptDraft.value;
+  const prompt = serializePromptChips(promptDraft.value, promptChipDraft.chips);
   const memberColorMap = useMemo(() => buildMemberDraftColorMap(members), [members]);
 
   const mentionSuggestions = useMemo(
@@ -2458,14 +2462,24 @@ export const CreateTeamDialog = ({
           </div>
 
           <div className="space-y-4 md:col-span-2">
-            <TeamTemplatePicker
-              onApply={(draft) => {
-                setRuntimeSelection(1);
-                setLaunchTeam(false);
-                setSoloTeam(false);
-                setSyncModelsWithLead(true, { persistStoredPreference: false });
+            <CreateTeamTemplatePicker
+              open={open}
+              initialSelection={initialData ? '' : templateSelection.storedTemplateSelection.value}
+              initialSelectionReady={Boolean(initialData) || templateSelectionDraft.isLoaded}
+              onApply={(draft, source, selectionValue) => {
+                templateSelection.setAppliedTemplateSource(source);
+                templateSelectionDraft.setValue(
+                  JSON.stringify({ source, value: selectionValue ?? '' })
+                );
+                if (source !== 'none') {
+                  setRuntimeSelection(1);
+                  setLaunchTeam(false);
+                  setSoloTeam(false);
+                  setSyncModelsWithLead(true, { persistStoredPreference: false });
+                }
                 descriptionDraft.setValue(draft.description ?? '');
                 promptDraft.setValue(draft.prompt ?? '');
+                promptChipDraft.clearChipDraft();
                 setMembers(
                   buildInitialRosterMemberDrafts({
                     copiedMembers: draft.members,
@@ -2565,6 +2579,21 @@ export const CreateTeamDialog = ({
               </div>
             </div>
 
+            {launchTeam || templateSelection.appliedTemplateSource !== 'none' ? (
+              <div className="mt-4">
+                <CreateTeamPromptField
+                  promptDraft={promptDraft}
+                  chipDraft={promptChipDraft}
+                  soloTeam={soloTeam}
+                  mentionSuggestions={mentionSuggestions}
+                  teamSuggestions={teamMentionSuggestions}
+                  taskSuggestions={taskSuggestions}
+                  projectPath={effectiveCwd || null}
+                  onSuggestionsNeeded={enableWorkflowMentionSuggestions}
+                />
+              </div>
+            ) : null}
+
             {launchTeam ? (
               <div className="mt-4 space-y-4">
                 <ProjectPathSelector
@@ -2633,35 +2662,6 @@ export const CreateTeamDialog = ({
                         ) : null}
                       </div>
                     ) : null}
-
-                    <div className="space-y-1.5">
-                      <Label htmlFor="team-prompt" className="label-optional">
-                        {t('create.fields.prompt')}
-                      </Label>
-                      <MentionableTextarea
-                        id="team-prompt"
-                        className="text-xs"
-                        minRows={3}
-                        maxRows={12}
-                        value={prompt}
-                        onValueChange={promptDraft.setValue}
-                        suggestions={soloTeam ? [] : mentionSuggestions}
-                        teamSuggestions={teamMentionSuggestions}
-                        taskSuggestions={taskSuggestions}
-                        projectPath={effectiveCwd || null}
-                        chips={promptChipDraft.chips}
-                        onChipRemove={promptChipDraft.removeChip}
-                        onFileChipInsert={promptChipDraft.addChip}
-                        placeholder={t('create.placeholders.prompt')}
-                        footerRight={
-                          promptDraft.isSaved ? (
-                            <span className="text-[10px] text-[var(--color-text-muted)]">
-                              {t('create.saved')}
-                            </span>
-                          ) : null
-                        }
-                      />
-                    </div>
 
                     <SkipPermissionsCheckbox
                       id="create-skip-permissions"

@@ -5,7 +5,11 @@ export const STALL_JOURNAL_STORE_ID = 'stall-monitor-journal';
 export const COMMENT_JOURNAL_STORE_ID = 'comment-notification-journal';
 export const MEMBER_WORK_SYNC_STORE_ID = 'member-work-sync';
 
-export type InternalStorageBackendKind = 'sqlite' | 'json-fallback';
+export type InternalStorageBackendKind =
+  | 'sqlite'
+  | 'json-fallback'
+  | 'recovery-required'
+  | 'verification-required';
 
 /**
  * Wire-safe row shape for stall journal entries. Only primitives cross the

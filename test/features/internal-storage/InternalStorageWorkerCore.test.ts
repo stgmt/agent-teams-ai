@@ -1,3 +1,5 @@
+import * as syncFs from 'node:fs';
+
 import { INTERNAL_STORAGE_SCHEMA_VERSION } from '@features/internal-storage/main/infrastructure/worker/internalStorageMigrations';
 import * as schema from '@features/internal-storage/main/infrastructure/worker/internalStorageSchema';
 import { InternalStorageWorkerCore } from '@features/internal-storage/main/infrastructure/worker/InternalStorageWorkerCore';
@@ -60,7 +62,13 @@ describe('InternalStorageWorkerCore', () => {
       }
     }
     if (tmpDir) {
-      await fs.rm(tmpDir, { recursive: true, force: true });
+      const parent = await fs.realpath(os.tmpdir());
+      const target = await fs.realpath(tmpDir);
+      const relative = path.relative(parent, target);
+      if (!relative.startsWith('internal-storage-') || relative.includes(path.sep)) {
+        throw new Error('Refusing to remove a path outside the test scratch parent');
+      }
+      await fs.rm(target, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
       tmpDir = null;
     }
   });
@@ -71,14 +79,38 @@ describe('InternalStorageWorkerCore', () => {
     seed.handle('ping', {});
     seed.close();
     const raw = new Database(dbPath);
-    raw.exec("ALTER TABLE member_work_sync_report_intents DROP COLUMN journal_json; PRAGMA user_version = 4;");
-    raw.prepare('INSERT INTO member_work_sync_report_intents (team_name,id,member_key,member_name,status,reason,recorded_at,request_json) VALUES (?,?,?,?,?,?,?,?)').run('sandbox','legacy','alice','alice','pending','fallback','2026-09-10T00:00:00Z','{}');
+    raw.exec(
+      'ALTER TABLE member_work_sync_report_intents DROP COLUMN journal_json; ' +
+        'ALTER TABLE custom_team_templates DROP COLUMN revision; ' +
+        'PRAGMA user_version = 4;'
+    );
+    raw
+      .prepare(
+        'INSERT INTO member_work_sync_report_intents (team_name,id,member_key,member_name,status,reason,recorded_at,request_json) VALUES (?,?,?,?,?,?,?,?)'
+      )
+      .run(
+        'sandbox',
+        'legacy',
+        'alice',
+        'alice',
+        'pending',
+        'fallback',
+        '2026-09-10T00:00:00Z',
+        '{}'
+      );
     raw.close();
     const upgraded = track(makeCore(dbPath));
-    expect((upgraded.handle('ping', {}) as InternalStorageBackendInfo).schemaVersion).toBe(INTERNAL_STORAGE_SCHEMA_VERSION);
-    const check = new Database(dbPath, {readonly: true});
-    try { expect(check.prepare('SELECT id,journal_json FROM member_work_sync_report_intents').get()).toEqual({id:'legacy',journal_json:null}); }
-    finally { check.close(); }
+    expect((upgraded.handle('ping', {}) as InternalStorageBackendInfo).schemaVersion).toBe(
+      INTERNAL_STORAGE_SCHEMA_VERSION
+    );
+    const check = new Database(dbPath, { readonly: true });
+    try {
+      expect(
+        check.prepare('SELECT id,journal_json FROM member_work_sync_report_intents').get()
+      ).toEqual({ id: 'legacy', journal_json: null });
+    } finally {
+      check.close();
+    }
   });
 
   it('ping opens the database, migrates schema and reports backend info', async () => {
@@ -249,20 +281,61 @@ describe('InternalStorageWorkerCore', () => {
     expect(reopened.handle('stallJournal.load', { teamName: 'demo' })).toHaveLength(1);
   });
 
-  it('backs up a corrupt database file and recreates a working one', async () => {
+  it('leaves a corrupt database untouched and blocks storage until manual recovery', async () => {
     const dbPath = await makeTmpDbPath();
     await fs.mkdir(path.dirname(dbPath), { recursive: true });
     await fs.writeFile(dbPath, 'this is definitely not a sqlite file', 'utf8');
 
     const core = track(makeCore(dbPath));
-    const info = core.handle('ping', {}) as InternalStorageBackendInfo;
-
-    expect(info.integrity).toBe('recovered');
-    core.handle('stallJournal.replace', { teamName: 'demo', entries: [makeRecord()] });
-    expect(core.handle('stallJournal.load', { teamName: 'demo' })).toHaveLength(1);
+    expect(() => core.handle('ping', {})).toThrow(/manual recovery/);
+    expect(() =>
+      core.handle('stallJournal.replace', { teamName: 'demo', entries: [makeRecord()] })
+    ).toThrow(/manual recovery/);
+    expect(await fs.readFile(dbPath, 'utf8')).toBe('this is definitely not a sqlite file');
 
     const siblings = await fs.readdir(path.dirname(dbPath));
-    expect(siblings.some((name) => name.includes('.corrupt-'))).toBe(true);
+    expect(siblings.some((name) => name.includes('.corrupt-'))).toBe(false);
+    expect(siblings).toContain('app.db.templates-recovery-required');
+  });
+
+  it('fails closed if an earlier recovery was interrupted before the database was recreated', async () => {
+    const dbPath = await makeTmpDbPath();
+    await fs.mkdir(path.dirname(dbPath), { recursive: true });
+    await fs.writeFile(`${dbPath}.recovery-in-progress`, 'interrupted');
+    const core = track(makeCore(dbPath));
+    expect(() => core.handle('ping', {})).toThrow(/manual recovery/);
+    await expect(fs.stat(dbPath)).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(await fs.readFile(`${dbPath}.recovery-in-progress`, 'utf8')).toBe('interrupted');
+  });
+
+  it('classifies confirmed corruption even if its recovery marker cannot be created', async () => {
+    const dbPath = await makeTmpDbPath();
+    const storageDir = path.dirname(dbPath);
+    const displacedDir = `${storageDir}-displaced`;
+    const core = track(
+      new InternalStorageWorkerCore({
+        databasePath: dbPath,
+        createDatabase: () => {
+          // Move only this test's empty scratch directory to make marker creation fail.
+          syncFs.renameSync(storageDir, displacedDir);
+          const error = new Error('corrupt');
+          (error as Error & { code: string }).code = 'SQLITE_CORRUPT';
+          throw error;
+        },
+      })
+    );
+    try {
+      core.handle('ping', {});
+      throw new Error('expected failure');
+    } catch (error) {
+      expect(error).toMatchObject({
+        code: 'INTERNAL_STORAGE_RECOVERY_REQUIRED',
+        message: expect.stringContaining('marker could not be created'),
+      });
+    }
+    await expect(fs.stat(`${dbPath}.templates-recovery-required`)).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
   });
 
   it('records store imports idempotently (upsert by store + team)', async () => {

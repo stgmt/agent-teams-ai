@@ -107,6 +107,8 @@ export interface DetectedError {
   target?: NotificationTarget;
   /** Explicit key for storage deduplication. Two notifications with the same dedupeKey won't be stored twice. */
   dedupeKey?: string;
+  /** Keep this notification unread until it is explicitly marked read. */
+  requiresAcknowledgement?: boolean;
   /** Additional context */
   context: {
     /** Display name of the project */

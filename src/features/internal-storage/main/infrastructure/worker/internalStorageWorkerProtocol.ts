@@ -37,6 +37,9 @@ export type InternalStorageWorkerRequest =
   // the worker-side dispatcher (memberWorkSyncWorkerOps) own the payloads.
   | { id: string; op: `appCommandLedger.${string}`; payload: unknown }
   | { id: string; op: `mws.${string}`; payload: unknown }
+  // Custom-team-template ops follow the same rule: the dispatcher
+  // (customTeamTemplatesWorkerOps) validates and owns their payloads.
+  | { id: string; op: `customTemplate.${string}`; payload: unknown }
   | { id: string; op: 'close'; payload: Record<string, never> };
 
 export type InternalStorageWorkerOp = InternalStorageWorkerRequest['op'];
@@ -84,4 +87,4 @@ export function parseJournalReplacePayload<TOp extends keyof JournalReplacePaylo
 
 export type InternalStorageWorkerResponse =
   | { id: string; ok: true; result: unknown }
-  | { id: string; ok: false; error: string };
+  | { id: string; ok: false; error: string; errorCode?: string };
