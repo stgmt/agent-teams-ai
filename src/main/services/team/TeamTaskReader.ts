@@ -8,6 +8,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { estimateCachedValueBytes } from './cacheMemoryEstimate';
+import { listTaskTeamNames } from './consistentTaskSnapshot';
 import { getTeamFsWorkerClient } from './TeamFsWorkerClient';
 import { compactTeamTaskForSnapshot } from './teamTaskSnapshotCompaction';
 
@@ -314,13 +315,18 @@ export class TeamTaskReader {
     return cloneTasks(tasks);
   }
 
-  async getTasksProjectionSnapshot(teamName: string): Promise<readonly TeamTask[]> {
-    return this.readTasksSnapshot(teamName, { compactForSnapshot: true });
+  listTaskTeamNames = listTaskTeamNames;
+
+  async getTasksProjectionSnapshot(
+    teamName: string,
+    options: { fresh?: boolean } = {}
+  ): Promise<readonly TeamTask[]> {
+    return this.readTasksSnapshot(teamName, { compactForSnapshot: true, fresh: options.fresh });
   }
 
   private async readTasksSnapshot(
     teamName: string,
-    options: { compactForSnapshot: boolean }
+    options: { compactForSnapshot: boolean; fresh?: boolean }
   ): Promise<readonly TeamTask[]> {
     const tasksDir = path.join(getTasksBasePath(), teamName);
 
@@ -350,6 +356,7 @@ export class TeamTaskReader {
       try {
         const fileStat = await fs.promises.stat(taskPath);
         if (!fileStat.isFile() || fileStat.size > MAX_TASK_FILE_BYTES) {
+          if (options.fresh) throw new Error(`Task file is unavailable or too large: ${taskPath}`);
           logger.debug(`Skipping suspicious task file: ${taskPath}`);
           TeamTaskReader.deleteCachedTaskFile(taskPath);
           TeamTaskReader.deleteCachedTeamTasks(teamName);
@@ -361,7 +368,8 @@ export class TeamTaskReader {
           taskPath,
           signature: buildTaskFileSignature(fileStat),
         });
-      } catch {
+      } catch (error) {
+        if (options.fresh) throw error;
         TeamTaskReader.deleteCachedTaskFile(taskPath);
         TeamTaskReader.deleteCachedTeamTasks(teamName);
         canCacheTeamSnapshot = false;
@@ -369,7 +377,7 @@ export class TeamTaskReader {
       }
     }
 
-    const canUseProjectionCache = options.compactForSnapshot;
+    const canUseProjectionCache = options.compactForSnapshot && !options.fresh;
     const cachedTeamTasks = canUseProjectionCache
       ? TeamTaskReader.getCachedTeamTasks(teamName, scannedFiles)
       : null;
@@ -503,6 +511,7 @@ export class TeamTaskReader {
           createdAt,
           updatedAt,
           projectPath: typeof parsed.projectPath === 'string' ? parsed.projectPath : undefined,
+          artifactRequirement: parsed.artifactRequirement as TeamTask['artifactRequirement'],
           comments: Array.isArray(parsed.comments)
             ? (parsed.comments as TaskComment[])
                 .filter(
@@ -619,7 +628,8 @@ export class TeamTaskReader {
           TeamTaskReader.setCachedTaskFile(taskPath, signature, task);
         }
         tasks.push(task);
-      } catch {
+      } catch (error) {
+        if (options.fresh) throw error;
         if (canUseProjectionCache) {
           TeamTaskReader.deleteCachedTaskFile(taskPath);
           TeamTaskReader.deleteCachedTeamTasks(teamName);

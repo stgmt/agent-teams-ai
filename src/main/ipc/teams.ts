@@ -200,7 +200,10 @@ import { TeamMetaStore } from '../services/team/TeamMetaStore';
 import { TeamTaskAttachmentStore } from '../services/team/TeamTaskAttachmentStore';
 import { TeamWorktreeGitService } from '../services/team/TeamWorktreeGitService';
 
+import * as artifactWrite from './teams/artifactBoundAdmission';
+import { isKanbanRecoveryPatch } from './teams/kanbanRecoveryValidation';
 import { waitForOpenCodeRuntimeRelayForUi } from './teams/openCodeRuntimeDeliveryRelayUi';
+import { validateTaskArtifactFields } from './teams/taskArtifactFields';
 import { teamMessageNotificationScanner } from './teams/teamMessageNotificationScanner';
 import { createMessagesPageHandler } from './teams/teamMessagesPageHandler';
 import { TeamPermanentDeletionTransactionCoordinator } from './teams/TeamPermanentDeletionTransactionCoordinator';
@@ -627,8 +630,10 @@ export function initializeTeamHandlers(
   },
   scopedResourceReleaser?: TeamScopedResourceReleaser,
   inputDeclarationResolver?: ResolveOpenCodeInputDeclaration,
-  retireGatewayBindings?: (teamName: string) => Promise<void>
+  retireGatewayBindings?: (teamName: string) => Promise<void>,
+  artifactAdmission?: artifactWrite.ArtifactAdmission
 ): void {
+  artifactWrite.configureArtifactAdmission(artifactAdmission);
   teamDataService = service;
   resolveOpenCodeInputDeclaration = inputDeclarationResolver;
   teamProvisioningStartApi = teamHandlerApis.provisioningStart;
@@ -2612,6 +2617,7 @@ function isUpdateKanbanPatch(value: unknown): value is UpdateKanbanPatch {
   }
 
   const patch = value as Partial<UpdateKanbanPatch> & { op?: unknown; column?: unknown };
+  if (isKanbanRecoveryPatch(patch)) return true;
   if (patch.op === 'remove') {
     return true;
   }
@@ -3326,7 +3332,7 @@ async function handleUpdateKanban(
   teamName: unknown,
   taskId: unknown,
   patch: unknown
-): Promise<IpcResult<void>> {
+): Promise<IpcResult<unknown>> {
   const validatedTeamName = validateTeamName(teamName);
   if (!validatedTeamName.valid) {
     return { success: false, error: validatedTeamName.error ?? 'Invalid teamName' };
@@ -3341,13 +3347,9 @@ async function handleUpdateKanban(
     return { success: false, error: 'Invalid kanban patch' };
   }
 
-  return wrapTeamHandler('updateKanban', async () => {
-    await getTeamDataService().updateKanban(
-      validatedTeamName.value!,
-      validatedTaskId.value!,
-      patch
-    );
-  });
+  return wrapTeamHandler('updateKanban', () =>
+    getTeamDataService().updateKanban(validatedTeamName.value!, validatedTaskId.value!, patch)
+  );
 }
 
 function validateKanbanColumnId(
@@ -3989,7 +3991,8 @@ async function handleStopTeam(
     // and expects the team to be stopped, so the force-stop cleanup takes over
     // when the regular stop does not confirm within its budget.
     const result = await stopTeamWithEscalation(tn, {
-      stopTeam: (name) => getTeamRuntimeApi().stopTeam(name),
+      stopTeam: (name, expectedRunId) => getTeamRuntimeApi().stopTeam(name, expectedRunId),
+      getStopTargetRunId: (name) => getTeamRuntimeApi().getStopTargetRunId(name),
       observeOwnedRuntimeRunIds: (name) =>
         readOwnedOpenCodeRuntimeRunIdsForTeam({ teamName: name }),
       observeOwnedRuntimeLaneIds: (name) =>
@@ -4031,14 +4034,8 @@ async function handleStopTeam(
             releaseLoopbackRuntimesReservedByTeam(getTeamsBasePath(), name),
         }),
     });
-    if (result.stopOutcome === 'runtime_already_down') {
-      logger.info(
-        `[${tn}] Runtime hosts were already down; finished the stop without the orchestrator acknowledgement (killed ${result.killedRuntimePids.length} runtime pid(s), cancelled ${result.clearedPendingDeliveries} pending deliveries)`
-      );
-    } else if (result.stopOutcome !== 'stopped') {
-      logger.warn(
-        `[${tn}] Regular stop ${result.stopOutcome}; escalated to force stop (killed ${result.killedRuntimePids.length} runtime pid(s), cancelled ${result.clearedPendingDeliveries} pending deliveries)`
-      );
+    if (result.stopOutcome !== 'stopped') {
+      logger.warn(`[${tn}] Regular stop ${result.stopOutcome}; outcome is unconfirmed`);
     }
     assertEscalatedStopConfirmed(result);
   });
@@ -4056,7 +4053,8 @@ async function handleForceStopTeam(
     const tn = validated.value!;
     addMainBreadcrumb('team', 'forceStop', { teamName: tn });
     return runTeamForceStopFlow(tn, {
-      stopTeam: (name) => getTeamRuntimeApi().stopTeam(name),
+      stopTeam: (name, expectedRunId) => getTeamRuntimeApi().stopTeam(name, expectedRunId),
+      getStopTargetRunId: (name) => getTeamRuntimeApi().getStopTargetRunId(name),
       observeOwnedRuntimeRunIds: (name) =>
         readOwnedOpenCodeRuntimeRunIdsForTeam({ teamName: name }),
       observeOwnedRuntimeLaneIds: (name) =>
@@ -4752,30 +4750,31 @@ async function handleUpdateTaskFields(
   if (description !== undefined && typeof description !== 'string') {
     return { success: false, error: 'description must be a string' };
   }
-
   if (groupChatId !== undefined && groupChatId !== null && typeof groupChatId !== 'string') {
     return { success: false, error: 'groupChatId must be a UUID string or null' };
   }
-  const validFields: TaskFieldUpdates = {};
+  const artifactFields = validateTaskArtifactFields(fields as Record<string, unknown>);
+  if (!artifactFields.valid) return { success: false, error: artifactFields.error };
+  const validFields: TaskFieldUpdates = { ...artifactFields.value };
   if (typeof subject === 'string') validFields.subject = subject.trim();
   if (typeof description === 'string') validFields.description = description;
   if (groupChatId === null || typeof groupChatId === 'string')
     validFields.groupChatId = groupChatId;
-
   if (Object.keys(validFields).length === 0) {
     return { success: false, error: 'At least one field must be provided' };
   }
-
   return wrapTeamHandler('updateTaskFields', async () => {
     const tn = vTeam.value!;
-    await getTeamDataService().updateTaskFields(tn, tid, validFields);
-
+    await artifactWrite.runArtifactBoundUpdate(validFields, artifactFields, () =>
+      getTeamDataService().updateTaskFields(tn, tid, validFields)
+    );
     // Notify the lead about updated task fields
     if (getTeamRuntimeApi().isTeamAlive(tn)) {
       const changedParts: string[] = [];
       if (validFields.subject) changedParts.push('title');
       if (validFields.description !== undefined) changedParts.push('description');
       if (validFields.groupChatId !== undefined) changedParts.push('group chat');
+      if (artifactWrite.hasArtifactFields(validFields)) changedParts.push('artifact requirement');
       const message =
         `Task #${tid} has been updated by the user (changed: ${changedParts.join(', ')}). ` +
         `New title: "${validFields.subject ?? '(unchanged)'}".`;
@@ -5204,9 +5203,12 @@ async function handleGetTaskAttachment(
     return { success: false, error: 'Invalid attachmentId' };
   }
 
-  return wrapTeamHandler('getTaskAttachment', () =>
-    taskAttachmentStore.getAttachment(vTeam.value!, vTask.value!, safeAttId, mimeType.trim())
-  );
+  const team = vTeam.value!;
+  const task = vTask.value!;
+  return wrapTeamHandler('getTaskAttachment', async () => {
+    const artifact = await getTeamDataService().readTaskArtifactData(team, task, safeAttId);
+    return artifact ?? taskAttachmentStore.getAttachment(team, task, safeAttId, mimeType.trim());
+  });
 }
 
 async function handleDeleteTaskAttachment(

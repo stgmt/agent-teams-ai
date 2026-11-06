@@ -1,5 +1,7 @@
+import type { KanbanRecoveryPatch } from './kanbanRecovery';
 import type { NotificationTarget, TeamEventType } from './notifications';
 import type { OpenCodeStopHandshakeFailureFacts } from './openCodeStopHandshakeFailure';
+import type { TaskArtifactFile, TaskArtifactRequirement, TaskAttachmentMeta } from './taskArtifact';
 import type { TaskRef } from './teamBoardTask';
 import type * as TeamProvisioningTypes from './teamProvisioning';
 import type { UserReplyLinkFields } from './userReplyLink';
@@ -10,9 +12,11 @@ import type {
   NativeAttachmentDeliveryEnvelope,
   NativeMemberCapability,
 } from '@features/agent-attachments/contracts';
+import type { AppConnectionContext } from '@features/external-agent-connection/contracts';
 import type { GroupChatEnvelope } from '@features/team-group-chats/contracts';
 import type { TeamManagementCommittedChange } from '@features/team-prompt-management/contracts';
 
+export type * from './taskArtifact';
 export type * from './teamBoardTask';
 export type * from './teamProvisioning';
 export type * from './userReplyLink';
@@ -353,6 +357,7 @@ export interface TeamTask {
   deletedAt?: string;
   /** Attachments associated with this task. Metadata only — actual files stored on disk. */
   attachments?: TaskAttachmentMeta[];
+  artifactRequirement?: TaskArtifactRequirement;
   /** Derived review state — computed from historyEvents, not persisted as authority. */
   reviewState?: TeamReviewState;
   /** Exact messageId of the user message this task was created from. */
@@ -371,22 +376,6 @@ export interface TeamTaskWithKanban extends TeamTask {
   reviewer?: string | null;
   /** Cheap persisted change-presence state for kanban rendering. */
   changePresence?: TaskChangePresenceState;
-}
-
-/** Metadata for an attachment associated with a task or comment. */
-export interface TaskAttachmentMeta {
-  /** Unique attachment ID (uuid). */
-  id: string;
-  /** Original filename (e.g. "screenshot.png"). */
-  filename: string;
-  /** MIME type. */
-  mimeType: AttachmentMediaType;
-  /** File size in bytes. */
-  size: number;
-  /** ISO timestamp when the attachment was added. */
-  addedAt: string;
-  /** Absolute path to the file on disk. Null/absent for metadata-only references. */
-  filePath?: string | null;
 }
 
 /** Payload for uploading an attachment with base64 data (renderer → main). */
@@ -689,6 +678,8 @@ export type KanbanColumnId = 'todo' | 'in_progress' | 'done' | 'review' | 'appro
 
 export interface KanbanTaskState {
   column: Extract<KanbanColumnId, 'review' | 'approved'>;
+  /** Identifies the committed task transition that produced this entry. */
+  transitionId?: string;
   reviewer?: string | null;
   errorDescription?: string;
   movedAt: string;
@@ -696,6 +687,7 @@ export interface KanbanTaskState {
 
 export interface KanbanState {
   teamName: string;
+  revision?: string;
   reviewers: string[];
   tasks: Record<string, KanbanTaskState>;
   /** Порядок id задач по колонкам для отображения на канбан-доске (drag-and-drop). */
@@ -703,6 +695,7 @@ export interface KanbanState {
 }
 
 export type UpdateKanbanPatch =
+  | KanbanRecoveryPatch
   | { op: 'set_column'; column: Extract<KanbanColumnId, 'review' | 'approved'> }
   | { op: 'remove' }
   | { op: 'request_changes'; comment?: string; taskRefs?: TaskRef[] };
@@ -921,6 +914,11 @@ export interface TaskFieldUpdates {
   subject?: string;
   description?: string;
   groupChatId?: string | null;
+  artifactRequired?: boolean;
+  artifactExpectedFilename?: string;
+  artifactFile?: TaskArtifactFile;
+  artifactExpectedContext?: AppConnectionContext;
+  artifactExpectedRootFingerprint?: string;
 }
 
 export interface CreateTaskRequest {

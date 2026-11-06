@@ -86,7 +86,14 @@ describe('force stop shares one flow between the IPC handler and the HTTP route'
   async function callThroughIpc(): Promise<void> {
     initializeTeamHandlers(
       { getTeamData: vi.fn(async () => ({ members: [] })) } as never,
-      { runtime: { stopTeam, getAliveTeams, isTeamAlive: () => true } } as never
+      {
+        runtime: {
+          stopTeam,
+          getAliveTeams,
+          isTeamAlive: () => true,
+          getStopTargetRunId: () => 'run-observed',
+        },
+      } as never
     );
     registerTeamHandlers(ipcMain as never);
     await expect(handlers.get(TEAM_FORCE_STOP)!({} as never, 'fixteam')).resolves.toMatchObject({
@@ -97,7 +104,14 @@ describe('force stop shares one flow between the IPC handler and the HTTP route'
   async function callThroughHttp(): Promise<void> {
     const app = Fastify();
     const services = {
-      teamApis: { runtime: { stopTeam, getAliveTeams, getRuntimeState: vi.fn() } },
+      teamApis: {
+        runtime: {
+          stopTeam,
+          getAliveTeams,
+          getRuntimeState: vi.fn(),
+          getStopTargetRunId: () => 'run-observed',
+        },
+      },
     } as unknown as HttpServices;
     registerTeamRoutes(app, services);
     await app.ready();
@@ -119,7 +133,8 @@ describe('force stop shares one flow between the IPC handler and the HTTP route'
     expect(httpCall[0]).toBe('fixteam');
 
     for (const [, ports] of [ipcCall, httpCall]) {
-      await ports.stopTeam('fixteam');
+      expect(ports.getStopTargetRunId?.('fixteam')).toBe('run-observed');
+      await ports.stopTeam('fixteam', 'run-observed');
       await ports.observeOwnedRuntimeRunIds('fixteam');
       await ports.killRetainedRuntimeProcesses('fixteam', {
         requestedAtMs: 1_700_000_000_000,
@@ -131,8 +146,8 @@ describe('force stop shares one flow between the IPC handler and the HTTP route'
     }
 
     expect(stopTeam).toHaveBeenCalledTimes(2);
-    expect(stopTeam).toHaveBeenNthCalledWith(1, 'fixteam');
-    expect(stopTeam).toHaveBeenNthCalledWith(2, 'fixteam');
+    expect(stopTeam).toHaveBeenNthCalledWith(1, 'fixteam', 'run-observed');
+    expect(stopTeam).toHaveBeenNthCalledWith(2, 'fixteam', 'run-observed');
     // The team being stopped is never one of its own "other alive teams".
     expect(forceStopFlowMocks.killRetainedOpenCodeRuntimeProcessesForTeam.mock.calls).toEqual([
       [

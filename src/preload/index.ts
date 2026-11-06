@@ -456,6 +456,7 @@ import type {
   SkillUpsertRequest,
   SkillWatcherEvent,
 } from '@shared/types/extensions';
+import type { PendingKanbanTransitionSnapshot } from '@shared/types/kanbanRecovery';
 import type { PtySpawnOptions } from '@shared/types/terminal';
 import type { CliArgsValidationResult } from '@shared/utils/cliArgsParser';
 
@@ -1050,6 +1051,22 @@ const electronAPI: ElectronAPI = {
     updateKanban: async (teamName: string, taskId: string, patch: UpdateKanbanPatch) => {
       return invokeIpcWithResult<void>(TEAM_UPDATE_KANBAN, teamName, taskId, patch);
     },
+    inspectPendingKanbanTransition: async (teamName: string, taskId: string) =>
+      invokeIpcWithResult<PendingKanbanTransitionSnapshot>(TEAM_UPDATE_KANBAN, teamName, taskId, {
+        op: 'inspect_pending',
+      }),
+    resolvePendingKanbanTransition: async (
+      teamName: string,
+      taskId: string,
+      snapshot: PendingKanbanTransitionSnapshot
+    ) =>
+      invokeIpcWithResult<void>(TEAM_UPDATE_KANBAN, teamName, taskId, {
+        op: 'resolve_pending',
+        transitionId: snapshot.transitionId,
+        snapshotHash: snapshot.snapshotHash,
+        mode: snapshot.mode,
+        contextHash: snapshot.contextHash,
+      }),
     updateKanbanColumnOrder: async (
       teamName: string,
       columnId: KanbanColumnId,

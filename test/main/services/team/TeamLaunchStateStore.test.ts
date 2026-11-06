@@ -16,7 +16,7 @@ import type { PersistedTeamLaunchSnapshot } from '@shared/types';
 
 const mocks = vi.hoisted(() => ({
   atomicWriteAsync: vi.fn(),
-  teamsBasePath: `${process.cwd()}/.team-launch-state-store-tests`,
+  teamsBasePath: `${process.env.HOME}/.claude/teams`,
 }));
 
 vi.mock('@main/utils/pathDecoder', () => ({
@@ -56,12 +56,22 @@ function writeStopMarkerOnDisk(teamName: string): void {
 describe('TeamLaunchStateStore', () => {
   beforeEach(() => {
     mocks.atomicWriteAsync.mockReset();
-    fs.rmSync(mocks.teamsBasePath, { recursive: true, force: true });
+    fs.rmSync(mocks.teamsBasePath, {
+      recursive: true,
+      force: true,
+      maxRetries: 20,
+      retryDelay: 250,
+    });
     fs.mkdirSync(path.join(mocks.teamsBasePath, 'demo'), { recursive: true });
   });
 
   afterEach(() => {
-    fs.rmSync(mocks.teamsBasePath, { recursive: true, force: true });
+    fs.rmSync(mocks.teamsBasePath, {
+      recursive: true,
+      force: true,
+      maxRetries: 20,
+      retryDelay: 250,
+    });
   });
 
   it('keeps Stop final while rejecting oversized or incomplete optional historical identity', () => {
@@ -126,7 +136,7 @@ describe('TeamLaunchStateStore', () => {
     ]);
     // The runtime lane and live publication can disappear before markStopped runs.
     fs.rmSync(getTeamLaunchStatePath('demo'));
-    await store.markStopped('demo', admitted);
+    expect(await store.markStopped('demo', admitted)).toBe(true);
     expect(JSON.parse(fs.readFileSync(freshnessPath, 'utf8'))).toMatchObject({
       kind: 'stop',
       stoppedRunId: 'app-publication',
@@ -144,7 +154,7 @@ describe('TeamLaunchStateStore', () => {
       kind: 'launch',
       runId: 'successor-app',
     });
-    await store.markStopped('demo', admitted);
+    expect(await store.markStopped('demo', admitted)).toBe(false);
     expect(JSON.parse(fs.readFileSync(freshnessPath, 'utf8')).kind).toBe('launch');
   });
 
@@ -498,7 +508,7 @@ describe('TeamLaunchStateStore', () => {
     }
   });
 
-  it('keeps the stop marker as a compatible no-op when the team directory disappeared', async () => {
+  it('reports no publication when the team directory disappeared', async () => {
     const markerPath = getTeamLaunchStoppedMarkerPath('removed-team');
     const missingDirectoryError = Object.assign(new Error('directory removed'), {
       code: 'ENOENT',
@@ -507,7 +517,7 @@ describe('TeamLaunchStateStore', () => {
     });
     mocks.atomicWriteAsync.mockRejectedValueOnce(missingDirectoryError);
 
-    await expect(new TeamLaunchStateStore().markStopped('removed-team')).resolves.toBeUndefined();
+    await expect(new TeamLaunchStateStore().markStopped('removed-team')).resolves.toBe(false);
   });
 
   it('records the stop marker and still reports a publication that survived the stop', async () => {

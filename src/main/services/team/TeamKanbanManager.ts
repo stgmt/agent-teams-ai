@@ -1,11 +1,15 @@
+import { randomUUID } from 'node:crypto';
+
+import { atomicWriteSync } from '@main/utils/atomicWrite';
 import { FileReadTimeoutError, readFileUtf8WithTimeout } from '@main/utils/fsRead';
 import { getTeamsBasePath } from '@main/utils/pathDecoder';
 import { KANBAN_COLUMN_IDS } from '@shared/constants/kanban';
 import { createLogger } from '@shared/utils/logger';
+import { createController } from 'agent-teams-controller';
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { atomicWriteAsync } from './atomicWrite';
+import { withTeamBoardLockForSyncOperation } from './boardLock';
 
 import type { KanbanColumnId, KanbanState, UpdateKanbanPatch } from '@shared/types';
 
@@ -49,6 +53,7 @@ function validateSafetyState(value: unknown, teamName: string): void {
     throw new Error('Kanban safety state is corrupt');
   };
   if (!record(value) || !record(value.tasks)) return invalid();
+  if (value.revision !== undefined && typeof value.revision !== 'string') return invalid();
   if (
     value.teamName !== undefined &&
     (typeof value.teamName !== 'string' ||
@@ -75,6 +80,44 @@ function validateSafetyState(value: unknown, teamName: string): void {
 }
 
 export class TeamKanbanManager {
+  private async checkedState(
+    teamName: string,
+    state: KanbanState,
+    observedRaw: string | null | undefined
+  ): Promise<KanbanState> {
+    const teamDir = path.join(getTeamsBasePath(), teamName);
+    return withTeamBoardLockForSyncOperation(
+      { teamDir, claudeDir: path.dirname(getTeamsBasePath()) },
+      () => {
+        createController({
+          teamName,
+          claudeDir: path.dirname(getTeamsBasePath()),
+        }).kanban.assertKanbanStateConsistent(state);
+        if (observedRaw !== undefined) {
+          let currentRaw: string | null;
+          try {
+            currentRaw = fs.readFileSync(this.getStatePath(teamName), 'utf8');
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+            currentRaw = null;
+          }
+          if (currentRaw !== observedRaw) {
+            throw Object.assign(
+              new Error(
+                'KANBAN_SNAPSHOT_CHANGED: Kanban changed while being read; open the team again.'
+              ),
+              {
+                code: 'KANBAN_SNAPSHOT_CHANGED',
+              }
+            );
+          }
+        }
+        return state;
+      },
+      { createParent: false }
+    );
+  }
+
   async getState(teamName: string, options: { strict?: boolean } = {}): Promise<KanbanState> {
     const statePath = this.getStatePath(teamName);
 
@@ -85,16 +128,17 @@ export class TeamKanbanManager {
       observed = true;
       if (!stat.isFile() || stat.size > MAX_KANBAN_STATE_BYTES) {
         if (options.strict) throw new Error('Kanban safety state is unavailable');
-        return createDefaultState(teamName);
+        return this.checkedState(teamName, createDefaultState(teamName), undefined);
       }
       raw = await readFileUtf8WithTimeout(statePath, 5_000);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT' && (!options.strict || !observed)) {
-        return createDefaultState(teamName);
+        return this.checkedState(teamName, createDefaultState(teamName), null);
       }
       if (error instanceof FileReadTimeoutError && !options.strict) {
-        return createDefaultState(teamName);
+        return this.checkedState(teamName, createDefaultState(teamName), undefined);
       }
+      await this.checkedState(teamName, createDefaultState(teamName), undefined);
       throw error;
     }
 
@@ -103,7 +147,7 @@ export class TeamKanbanManager {
       parsed = JSON.parse(raw) as Partial<KanbanState>;
     } catch {
       if (options.strict) throw new Error('Kanban safety state is corrupt');
-      return createDefaultState(teamName);
+      return this.checkedState(teamName, createDefaultState(teamName), raw);
     }
     if (options.strict) validateSafetyState(parsed, teamName);
     const sanitizedTasks: KanbanState['tasks'] = {};
@@ -121,6 +165,8 @@ export class TeamKanbanManager {
         sanitizedTasks[taskId] = {
           column: candidate.column,
           movedAt: candidate.movedAt,
+          transitionId:
+            typeof candidate.transitionId === 'string' ? candidate.transitionId : undefined,
           reviewer:
             typeof candidate.reviewer === 'string' || candidate.reviewer === null
               ? candidate.reviewer
@@ -131,14 +177,21 @@ export class TeamKanbanManager {
       }
     }
 
-    return {
+    return this.checkedState(
       teamName,
-      reviewers: Array.isArray(parsed.reviewers)
-        ? parsed.reviewers.filter((r): r is string => typeof r === 'string' && r.trim().length > 0)
-        : [],
-      tasks: sanitizedTasks,
-      columnOrder: sanitizeColumnOrder(parsed.columnOrder),
-    };
+      {
+        teamName,
+        ...(typeof parsed.revision === 'string' ? { revision: parsed.revision } : {}),
+        reviewers: Array.isArray(parsed.reviewers)
+          ? parsed.reviewers.filter(
+              (r): r is string => typeof r === 'string' && r.trim().length > 0
+            )
+          : [],
+        tasks: sanitizedTasks,
+        columnOrder: sanitizeColumnOrder(parsed.columnOrder),
+      },
+      raw
+    );
   }
 
   async updateColumnOrder(
@@ -146,90 +199,120 @@ export class TeamKanbanManager {
     columnId: KanbanColumnId,
     orderedTaskIds: string[]
   ): Promise<void> {
-    const state = await this.getState(teamName);
-    const columnOrder = { ...state.columnOrder };
-    if (orderedTaskIds.length > 0) {
-      columnOrder[columnId] = orderedTaskIds;
-    } else {
-      delete columnOrder[columnId];
-    }
-    await this.writeState(teamName, { ...state, columnOrder });
+    await this.mutateState(teamName, (state) => {
+      const columnOrder = { ...state.columnOrder };
+      if (orderedTaskIds.length > 0) columnOrder[columnId] = orderedTaskIds;
+      else delete columnOrder[columnId];
+      state.columnOrder = columnOrder;
+      return true;
+    });
   }
 
   async updateTask(teamName: string, taskId: string, patch: UpdateKanbanPatch): Promise<void> {
-    const state = await this.getState(teamName);
-
-    if (patch.op === 'remove' || patch.op === 'request_changes') {
-      delete state.tasks[taskId];
-    } else if (patch.column === 'review') {
-      state.tasks[taskId] = {
-        column: 'review',
-        reviewer: null,
-        movedAt: new Date().toISOString(),
-      };
-    } else {
-      state.tasks[taskId] = {
-        column: 'approved',
-        movedAt: new Date().toISOString(),
-      };
+    if (patch.op === 'inspect_pending' || patch.op === 'resolve_pending') {
+      throw new Error('Kanban recovery must use the controller');
     }
-
-    await this.writeState(teamName, state);
+    await this.mutateState(teamName, (state) => {
+      if (patch.op === 'remove' || patch.op === 'request_changes') {
+        delete state.tasks[taskId];
+      } else if (patch.column === 'review') {
+        state.tasks[taskId] = {
+          column: 'review',
+          reviewer: null,
+          movedAt: new Date().toISOString(),
+        };
+      } else {
+        state.tasks[taskId] = { column: 'approved', movedAt: new Date().toISOString() };
+      }
+      return true;
+    });
   }
 
   async garbageCollect(teamName: string, validTaskIds: Set<string>): Promise<void> {
-    const state = await this.getState(teamName);
-    const before = Object.keys(state.tasks).length;
+    await this.mutateState(teamName, (state) => {
+      const before = Object.keys(state.tasks).length;
 
-    for (const taskId of Object.keys(state.tasks)) {
-      if (!validTaskIds.has(taskId)) {
-        delete state.tasks[taskId];
-      }
-    }
-
-    let columnOrderChanged = false;
-    if (state.columnOrder) {
-      const cleaned: NonNullable<KanbanState['columnOrder']> = {};
-      for (const [colId, ids] of Object.entries(state.columnOrder)) {
-        const valid = ids.filter((id) => validTaskIds.has(id));
-        if (valid.length > 0) {
-          cleaned[colId as KanbanColumnId] = valid;
-        }
-        if (valid.length !== ids.length) {
-          columnOrderChanged = true;
+      for (const taskId of Object.keys(state.tasks)) {
+        if (!validTaskIds.has(taskId)) {
+          delete state.tasks[taskId];
         }
       }
-      if (columnOrderChanged) {
-        state.columnOrder = Object.keys(cleaned).length > 0 ? cleaned : undefined;
+
+      let columnOrderChanged = false;
+      if (state.columnOrder) {
+        const cleaned: NonNullable<KanbanState['columnOrder']> = {};
+        for (const [colId, ids] of Object.entries(state.columnOrder)) {
+          const valid = ids.filter((id) => validTaskIds.has(id));
+          if (valid.length > 0) {
+            cleaned[colId as KanbanColumnId] = valid;
+          }
+          if (valid.length !== ids.length) {
+            columnOrderChanged = true;
+          }
+        }
+        if (columnOrderChanged) {
+          state.columnOrder = Object.keys(cleaned).length > 0 ? cleaned : undefined;
+        }
       }
-    }
 
-    const after = Object.keys(state.tasks).length;
-    const tasksChanged = before !== after;
-    if (!tasksChanged && !columnOrderChanged) {
-      return;
-    }
+      const after = Object.keys(state.tasks).length;
+      const tasksChanged = before !== after;
+      if (!tasksChanged && !columnOrderChanged) {
+        return false;
+      }
 
-    if (tasksChanged) {
-      logger.debug(`Removed ${before - after} stale kanban entries for team ${teamName}`);
-    }
-    await this.writeState(teamName, state);
+      if (tasksChanged) {
+        logger.debug(`Removed ${before - after} stale kanban entries for team ${teamName}`);
+      }
+      return true;
+    });
   }
 
   private getStatePath(teamName: string): string {
     return path.join(getTeamsBasePath(), teamName, 'kanban-state.json');
   }
 
-  private async writeState(teamName: string, state: KanbanState): Promise<void> {
+  private async mutateState(
+    teamName: string,
+    update: (state: KanbanState) => boolean
+  ): Promise<void> {
+    const teamDir = path.join(getTeamsBasePath(), teamName);
+    await withTeamBoardLockForSyncOperation(
+      { teamDir, claudeDir: path.dirname(getTeamsBasePath()) },
+      () => {
+        const statePath = this.getStatePath(teamName);
+        let raw: string;
+        try {
+          raw = fs.readFileSync(statePath, 'utf8');
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+          raw = JSON.stringify(createDefaultState(teamName));
+        }
+        if (Buffer.byteLength(raw, 'utf8') > MAX_KANBAN_STATE_BYTES) {
+          throw new Error('Kanban safety state is unavailable');
+        }
+        const parsed: unknown = JSON.parse(raw);
+        validateSafetyState(parsed, teamName);
+        const state = createController({
+          teamName,
+          claudeDir: path.dirname(getTeamsBasePath()),
+        }).kanban.readKanbanStateAlreadyLocked() as KanbanState;
+        if (update(state)) this.writeState(teamName, state);
+      }
+    );
+  }
+
+  private writeState(teamName: string, state: KanbanState): void {
     const statePath = this.getStatePath(teamName);
     const payload: KanbanState = {
       teamName,
+      revision: randomUUID(),
       reviewers: state.reviewers,
       tasks: state.tasks,
       ...(state.columnOrder && Object.keys(state.columnOrder).length > 0
         ? { columnOrder: state.columnOrder }
         : {}),
     };
-    await atomicWriteAsync(statePath, JSON.stringify(payload, null, 2));
+    atomicWriteSync(statePath, JSON.stringify(payload, null, 2));
   }
 }

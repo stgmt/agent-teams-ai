@@ -114,16 +114,18 @@ export type TeamRuntimeControlCompatibilityApi = OpenCodeRuntimeControlApi;
 
 export interface TeamRuntimeApi {
   getRuntimeState(teamName: string): Promise<TeamRuntimeState>;
-  stopTeam(teamName: string): Promise<void>;
+  stopTeam(teamName: string, expectedRunId?: string | null): Promise<void>;
   isTeamAlive(teamName: string): boolean;
   getAliveTeams(): string[];
   getCurrentRunId(teamName: string): string | null;
+  getStopTargetRunId(teamName: string): string | null;
 }
 
 export interface TeamHttpRuntimeApi {
   getRuntimeState(teamName: string): Promise<TeamRuntimeState>;
-  stopTeam(teamName: string): Promise<void>;
+  stopTeam(teamName: string, expectedRunId?: string | null): Promise<void>;
   getAliveTeams(): string[];
+  getStopTargetRunId(teamName: string): string | null;
 }
 
 export interface TeamHttpDataApi {
@@ -534,6 +536,7 @@ export function bindTeamRuntimeApi(source: TeamRuntimeApi): TeamRuntimeApi {
     isTeamAlive: source.isTeamAlive.bind(source),
     getAliveTeams: source.getAliveTeams.bind(source),
     getCurrentRunId: source.getCurrentRunId.bind(source),
+    getStopTargetRunId: source.getStopTargetRunId.bind(source),
   };
 }
 
@@ -542,6 +545,7 @@ export function bindTeamHttpRuntimeApi(source: TeamHttpRuntimeApi): TeamHttpRunt
     getRuntimeState: source.getRuntimeState.bind(source),
     stopTeam: source.stopTeam.bind(source),
     getAliveTeams: source.getAliveTeams.bind(source),
+    getStopTargetRunId: source.getStopTargetRunId.bind(source),
   };
 }
 

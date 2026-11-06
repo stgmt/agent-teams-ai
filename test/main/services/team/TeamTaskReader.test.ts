@@ -39,7 +39,7 @@ describe('TeamTaskReader', () => {
     TeamTaskReader.invalidateAllTasksCache();
     setClaudeBasePathOverride(null);
     if (tmpDir) {
-      await fsp.rm(tmpDir, { recursive: true, force: true });
+      await fsp.rm(tmpDir, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
       tmpDir = null;
     }
   });
@@ -131,6 +131,22 @@ describe('TeamTaskReader', () => {
         groupChatId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
       },
     ]);
+  });
+
+  it('projects a required artifact and its attachment to the task detail', async () => {
+    await setupTasksRoot();
+    const artifactRequirement = {
+      required: true,
+      proof: { attachmentId: 'artifact-1', sha256: 'a'.repeat(64), size: 8 },
+      expectedFilename: 'result.mp4',
+    };
+    await writeTaskFile('atlas-hq', {
+      id: 'artifact-task', subject: 'Artifact task', status: 'pending',
+      artifactRequirement,
+      attachments: [{ id: 'artifact-1', filename: 'result.mp4', mimeType: 'application/octet-stream', size: 8, addedAt: '2026-05-02T12:00:00.000Z' }],
+    });
+    const tasks = await new TeamTaskReader().getTasks('atlas-hq');
+    expect(tasks[0]).toMatchObject({ artifactRequirement, attachments: [{ id: 'artifact-1' }] });
   });
 
   it('does not retain full parsed task payloads in the projection cache', async () => {

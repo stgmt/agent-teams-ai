@@ -12,6 +12,8 @@ export interface ConnectionInfoV1 {
   context: AppConnectionContext;
   appVersion: string;
   profileFingerprint: string;
+  /** Physical data-root identity for durable task write guards; null when unavailable. */
+  taskWriteRootFingerprint?: string | null;
   observedAt: string;
   mcp: {
     status: ConnectionStatus;

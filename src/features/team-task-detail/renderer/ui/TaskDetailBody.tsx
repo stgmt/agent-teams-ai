@@ -34,6 +34,7 @@ import {
   X,
 } from 'lucide-react';
 
+import { TaskArtifactSettings } from './TaskArtifactSettings';
 import { TaskDetailCommentImages } from './TaskDetailCommentImages';
 import {
   TaskImplementationDurationBadge,
@@ -203,7 +204,7 @@ export const TaskDetailBody = ({
         badge={attachmentCount}
         contentClassName="pl-2.5"
         headerClassName={TASK_SECTION_HEADER_CLASS}
-        defaultOpen={attachmentCount > 0}
+        defaultOpen={attachmentCount > 0 || currentTask.artifactRequirement?.required === true}
       >
         {currentTask.sourceMessageId && currentTask.sourceMessage ? (
           <SourceMessageAttachments
@@ -212,10 +213,43 @@ export const TaskDetailBody = ({
             sourceMessage={currentTask.sourceMessage}
           />
         ) : null}
+        <TaskArtifactSettings
+          key={JSON.stringify([
+            teamName,
+            currentTask.id,
+            currentTask.artifactRequirement?.expectedFilename,
+          ])}
+          requirement={currentTask.artifactRequirement}
+          completed={currentTask.status === 'completed'}
+          canMutate={sessionController.canEditNow}
+          onUpdate={actions.updateTaskArtifact}
+          outcomeUnknown={sessionController.session.artifactOutcomeUnknown === true}
+          outcomeChecked={sessionController.session.artifactOutcomeChecked === true}
+          writeInFlight={Boolean(sessionController.session.artifactWriteId)}
+          guardStatus={sessionController.taskWriteGuard.status}
+          guardReason={sessionController.taskWriteGuard.reason}
+          otherOperation={Boolean(
+            sessionController.taskWriteGuard.operation &&
+            sessionController.taskWriteGuard.operation !== 'artifact'
+          )}
+          onOutcomeUnknown={sessionController.markArtifactOutcomeUnknown}
+          onCheckOutcome={sessionController.checkArtifactOutcome}
+          onConfirmOutcome={sessionController.confirmArtifactOutcome}
+          onDownload={(attachmentId) =>
+            actions.getTaskAttachmentData(
+              teamName,
+              currentTask.id,
+              attachmentId,
+              'application/octet-stream'
+            )
+          }
+        />
         <TaskAttachments
           teamName={teamName}
           taskId={currentTask.id}
-          attachments={currentTask.attachments ?? []}
+          attachments={(currentTask.attachments ?? []).filter(
+            (item) => item.id !== currentTask.artifactRequirement?.proof?.attachmentId
+          )}
           canMutate={sessionController.canEditNow}
         />
         {commentImageAttachments.length > 0 ? (

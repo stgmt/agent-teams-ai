@@ -53,6 +53,7 @@ export function createNativeTeamHttpApis(
       getRuntimeState: surface.runtime.getRuntimeState,
       stopTeam: surface.runtime.stopTeam,
       getAliveTeams: surface.runtime.getAliveTeams,
+      getStopTargetRunId: surface.runtime.getStopTargetRunId,
     },
     runtimeControl: deps.runtimeControl,
     memberDiagnostics: {

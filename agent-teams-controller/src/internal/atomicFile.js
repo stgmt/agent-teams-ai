@@ -22,8 +22,9 @@ function fsyncFileBestEffort(filePath) {
   try {
     fd = fs.openSync(filePath, 'r+');
     fs.fsyncSync(fd);
-  } catch {
-    // Best effort only. Some filesystems do not support fsync for these files.
+  } catch (error) {
+    // Unsupported sync is distinct from a storage failure such as EIO.
+    if (!['EINVAL', 'ENOTSUP', 'ENOSYS'].includes(error && error.code)) throw error;
   } finally {
     if (fd !== null) {
       try {
@@ -41,16 +42,6 @@ function renameWithRetrySync(tempPath, filePath) {
       fs.renameSync(tempPath, filePath);
       return;
     } catch (error) {
-      if (error && error.code === 'EXDEV') {
-        fs.copyFileSync(tempPath, filePath);
-        try {
-          fs.rmSync(tempPath, { force: true });
-        } catch {
-          // Best effort cleanup after cross-device fallback.
-        }
-        return;
-      }
-
       if (error && RETRYABLE_RENAME_CODES.has(error.code) && attempt < RENAME_MAX_ATTEMPTS) {
         sleepSync(getRenameRetryDelayMs(attempt));
         continue;

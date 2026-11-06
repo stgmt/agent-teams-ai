@@ -1,7 +1,9 @@
 import { useAppTranslation } from '@features/localization/renderer';
 import { KanbanTaskCard } from '@renderer/components/team/kanban/KanbanTaskCard';
+import { TeamReviewActionError } from '@renderer/components/team/TeamReviewActionError';
 import { Badge } from '@renderer/components/ui/badge';
 import { Button } from '@renderer/components/ui/button';
+import { formatTaskDisplayLabel } from '@shared/utils/taskIdentity';
 import { getTeamTaskWorkflowColumn } from '@shared/utils/teamTaskState';
 import { Activity, ChevronDown, ChevronRight, ExternalLink, Network, Users, X } from 'lucide-react';
 
@@ -64,6 +66,7 @@ export const OrgInspector = ({
   onClose,
 }: OrgInspectorProps): React.JSX.Element | null => {
   const { t } = useAppTranslation('team');
+  const { t: tCommon } = useAppTranslation('common');
   const teamName = node?.team?.teamName ?? '';
   const inspectorTasks = useOrganizationInspectorTasks(teamName);
 
@@ -181,6 +184,33 @@ export const OrgInspector = ({
           </Button>
         </div>
       </div>
+
+      {inspectorTasks.actionErrors.length > 0 ? (
+        <div className="sticky top-0 z-10 max-h-[50%] overflow-y-auto bg-[var(--color-surface)] pt-2">
+          {inspectorTasks.actionErrors.map((error) => {
+            const task = inspectorTasks.taskMap.get(error.taskId);
+            return (
+              <div key={error.taskId}>
+                <div className="mx-4 mb-1 flex items-center justify-between text-xs font-semibold text-[var(--color-text)]">
+                  <span>
+                    {team.teamName} · {formatTaskDisplayLabel(task ?? { id: error.taskId })}
+                  </span>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="size-7 p-0"
+                    aria-label={tCommon('actions.close')}
+                    onClick={() => inspectorTasks.dismissTaskActionError(error.taskId)}
+                  >
+                    <X size={14} />
+                  </Button>
+                </div>
+                <TeamReviewActionError error={error.message} />
+              </div>
+            );
+          })}
+        </div>
+      ) : null}
 
       <div className="mt-4 grid grid-cols-3 gap-2 text-center text-xs">
         <div className="rounded-md border border-[var(--color-border)] bg-[var(--color-surface-overlay)] p-2">

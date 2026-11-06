@@ -169,6 +169,65 @@
       "description": "Expanded message view"
     }
   },
+  "artifact": {
+    "actionMissing": "Attach the required artifact to the task before continuing.",
+    "actionInvalid": "The required artifact cannot be verified. Attach the correct file again.",
+    "recoveryIntro": "The task action may have completed. No action was repeated. Check the current task and board before deciding what to do.",
+    "recoveryActionHint": "The result is unknown. Reopen the team page and choose Check current state; do not repeat the action.",
+    "recoveryReadChanged": "The board changed while it was being read. Load it again before making a decision.",
+    "recoveryReload": "Reload board",
+    "recoveryCheck": "Check current state",
+    "recoverySummary": "Task: {{task}}. Saved action: {{target}}. Board currently: {{current}}.",
+    "recoveryReview": "review",
+    "recoveryApproved": "approved",
+    "recoveryNone": "no review column",
+    "recoveryConflict": "The task or board changed. Stop the team, preserve its files, and ask your administrator to inspect this task and its backup. Do not repeat the action.",
+    "recoveryArtifactConflict": "The required file is missing or changed. Restore its original copy from backup or ask your administrator for help. Do not repeat the action.",
+    "recoveryConfirm": "Confirm checked state",
+    "recoveryConfirmMessage": "Apply the checked state to this task? The original action will not be repeated. No notifications will be sent; notify the reviewer yourself if needed.",
+    "recoveryFailed": "The result may be unknown. Do not repeat the action. Check the current state again before deciding.",
+    "recoveryStatusSummary": "Task: {{task}}. Requested status: {{status}}. Board currently: {{current}}.",
+    "recoveryStatusPending": "pending",
+    "recoveryStatusInProgress": "in progress",
+    "recoveryStatusCompleted": "completed",
+    "recoveryStatusDeleted": "deleted",
+    "recoveryStatusUnknown": "unknown",
+    "recoveryStatusCancel": "The status change was not applied. Confirming removes only the unfinished marker; the original action will not be repeated. Check comments and messages manually.",
+    "recoveryClearSummary": "Task: {{task}}. Status: {{status}}. Board currently: {{current}}.",
+    "recoveryClearCancel": "The board-card removal was not applied. Confirming removes only the unfinished marker; the original action will not be repeated. Check comments and messages manually.",
+    "recoveryStatusPublish": "The task update was saved, but its board card still needs removal. Confirming removes that card without repeating the original action or sending notifications. Check comments and messages manually.",
+    "recoveryStatusClear": "The task and board updates are already present. Confirming removes only the unfinished marker; no action or notification is repeated. Check comments and messages manually.",
+    "recoveryRequestChangesNote": "This was a request for changes. Its comment may already have been saved; check comments and messages manually.",
+    "recoveryInspectFailed": "The unfinished transition could not be inspected. Reload the team and check the task, board, comments and messages manually. Do not repeat the original action.",
+    "recoveryDecisionPending": "Another window has already asked about this transition, or its result is unknown. Do not repeat it; check the task, board and messages manually.",
+    "recoveryDecisionDeclined": "The earlier decision did not authorize recovery. The app will not ask again for this transition; check the task and board manually.",
+    "recoveryDecisionNotSent": "The recovery request was not sent because the context changed. The app will not ask again for this transition; check the task and board manually.",
+    "recoveryDecisionConfirmed": "A confirmed response for this exact recovery was recorded. Reload the team to read its current state.",
+    "recoveryDecisionUnavailable": "The recovery decision cannot be safely recorded. This attempt sent no new recovery request; check the task and board manually.",
+    "require": "Require a task artifact",
+    "hint": "Choose a file up to 20 MiB. A copy is stored with the task. For a larger video, you can attach a small manifest with its location and expected hash; only the manifest is checked.",
+    "reopen": "Reopen the completed task before changing its artifact.",
+    "name": "Required filename",
+    "setName": "Set name",
+    "anyName": "No filename is set: any filename is accepted. The check does not assess content quality.",
+    "download": "Download artifact",
+    "unknown": "The action may have succeeded. Check the current task before changing it again; a delayed action could still finish later. No action will be repeated automatically.",
+    "checkOutcome": "Check current task",
+    "confirmMessage": "The task was read. This is only a snapshot; a delayed earlier request could still finish later. Allow new changes?",
+    "confirmOutcome": "Allow new changes",
+    "saving": "An artifact update is still in progress.",
+    "notStarted": "No update was sent; check the current task or wait for the ongoing update.",
+    "guardLoading": "Checking task write safety state…",
+    "guardUnavailable": "Task write safety storage is unavailable. Changes are disabled; reopen the app when storage is working.",
+    "guardUnsupported": "Artifact editing and downloads are available only in the local desktop app.",
+    "otherOperation": "Another task operation needs attention in its own section.",
+    "attach": "Attach file",
+    "missing": "No required artifact attached yet.",
+    "tooLarge": "The selected file exceeds 20 MiB.",
+    "invalidName": "Enter a filename without a directory or special path characters.",
+    "nameMismatch": "Choose the required file: {{expected}}.",
+    "failed": "Could not update the task artifact."
+  },
   "create": {
     "actions": {
       "create": "Create",
@@ -479,12 +538,24 @@
       "title": "Team not launched yet"
     },
     "stopFailed": {
-      "title": "Unable to stop team",
-      "message": "The team is still running. Check its state and press Stop again."
+      "title": "Team is still running",
+      "message": "The team processes are still running, and the outcome of the stop request is unknown. Check the team state and do not repeat Stop while the previous request may still be running."
+    },
+    "stopActivityPending": {
+      "title": "Check the review transition after Stop",
+      "message": "Stop for the previous run completed, but task timers could not be confirmed. Check whether a new run has started. Open the team and inspect the pending review transition on the board. Resolve it if that option is available, then check the task timer. Do not repeat Stop."
+    },
+    "stopActivityUnknown": {
+      "title": "Check task timers after Stop",
+      "message": "Stop for the previous run completed, but task timers could not be confirmed. Check whether a new run has started, then inspect the team tasks and timers. Do not repeat Stop while the outcome remains uncertain."
+    },
+    "stopActivityCleanupUnknown": {
+      "title": "Check the stop result and task timers",
+      "message": "Stop for the previous run completed, but the recorded stop state or cleanup and the task timers could not be confirmed. Check whether a new run has started, inspect the team tasks, any pending review transition and the task timers. Do not repeat Stop while the outcome remains uncertain."
     },
     "stopUnknown": {
       "title": "Unable to confirm stop",
-      "message": "The runtime response was not received. Refresh the team state before retrying."
+      "message": "The outcome of the stop request is unknown. Check the team state and task timers. Do not repeat Stop while the previous request may still be running."
     },
     "invalidTab": "Invalid team tab",
     "kanbanSafeData": "Failed to fully load kanban. Displaying safe data.",

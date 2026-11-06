@@ -245,7 +245,7 @@ function compareTasksByFreshness(left, right) {
 
 function buildBoardState(paths, teamName) {
   const taskRows = taskStore.listTaskRows(paths);
-  const kanbanState = kanbanStore.readKanbanState(paths, teamName);
+  const kanbanState = kanbanStore.readKanbanState(paths, teamName, { allowMalformedTasks: true });
   const roster = buildQueueRoster(paths);
   const tasksById = new Map(taskRows.tasks.map((task) => [task.id, task]));
   const anomalies = [];

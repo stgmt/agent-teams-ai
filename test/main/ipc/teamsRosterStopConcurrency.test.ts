@@ -1,4 +1,9 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import * as fs from 'node:fs/promises';
+import * as os from 'node:os';
+import * as path from 'node:path';
+
+import { setClaudeBasePathOverride } from '@main/utils/pathDecoder';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import * as stopFlows from '../../../src/main/services/team/lifecycle/teamForceStopFlow';
 import { projectOpenCodeStateChangingFailure } from '../../../src/main/services/team/opencode/bridge/OpenCodeStateChangingCausalFailure';
@@ -32,6 +37,7 @@ import {
   registerTeamHandlers,
   removeTeamHandlers,
 } from '../../../src/main/ipc/teams';
+import { TeamLaunchStateStore } from '../../../src/main/services/team/TeamLaunchStateStore';
 import { TeamProvisioningService } from '../../../src/main/services/team/TeamProvisioningService';
 import { TEAM_ADD_MEMBER, TEAM_STOP } from '../../../src/preload/constants/ipcChannels';
 
@@ -53,11 +59,25 @@ describe('team IPC roster mutation and stop concurrency', () => {
       handlers.delete(channel);
     }),
   };
+  let fixture = '';
 
-  afterEach(() => {
+  beforeEach(async () => {
+    const scratch = await fs.mkdtemp(path.join(os.tmpdir(), 'TEST-roster-stop-'));
+    fixture = await fs.realpath(scratch);
+    const relative = path.relative(await fs.realpath(os.tmpdir()), fixture);
+    if (!relative.startsWith('TEST-roster-stop-') || relative.includes(path.sep)) {
+      throw new Error('Refusing to remove a test fixture outside its scratch parent');
+    }
+    setClaudeBasePathOverride(path.join(fixture, 'claude'));
+    await fs.mkdir(path.join(fixture, 'claude', 'teams', 'ipc-lock-team'), { recursive: true });
+  });
+
+  afterEach(async () => {
     removeTeamHandlers(ipcMain as never);
     handlers.clear();
     vi.restoreAllMocks();
+    setClaudeBasePathOverride(null);
+    await fs.rm(fixture, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
   });
 
   it('returns the original finite stop cause through the real stop handler without a false acknowledgement', async () => {
@@ -90,6 +110,7 @@ describe('team IPC roster mutation and stop concurrency', () => {
           },
           isTeamAlive: () => false,
           getAliveTeams: () => [],
+          getStopTargetRunId: () => 'test-run',
         },
       } as never
     );
@@ -106,6 +127,10 @@ describe('team IPC roster mutation and stop concurrency', () => {
 
   it('keeps an IPC stop behind the complete live roster transaction', async () => {
     const lifecycleService = new TeamProvisioningService();
+    vi.spyOn(lifecycleService, 'getStopTargetRunId').mockReturnValue('test-run');
+    expect(
+      await new TeamLaunchStateStore().beginLaunch('ipc-lock-team', 'test-run', [], () => true)
+    ).toBe(true);
     const attachStarted = deferred();
     const releaseAttach = deferred();
     const stopFlow = vi.fn(async () => undefined);
@@ -141,6 +166,7 @@ describe('team IPC roster mutation and stop concurrency', () => {
           stopTeam: lifecycleService.stopTeam.bind(lifecycleService),
           isTeamAlive: () => true,
           getAliveTeams: () => [],
+          getStopTargetRunId: lifecycleService.getStopTargetRunId.bind(lifecycleService),
         },
         memberLifecycle: {
           runLiveRosterMutation: lifecycleService.runLiveRosterMutation.bind(lifecycleService),

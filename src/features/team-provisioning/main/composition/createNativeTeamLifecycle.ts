@@ -18,6 +18,7 @@ import {
 } from '../adapters/output/NativeClaudeToolApprovals';
 import { NativeConfiguredProvider } from '../adapters/output/NativeConfiguredProvider';
 import { NativeCrossTeamReplyLedger } from '../adapters/output/NativeCrossTeamReplyLedger';
+import { NativeLaunchPublication } from '../adapters/output/NativeLaunchPublication';
 import { NativeLeadInboxRelay } from '../adapters/output/NativeLeadInboxRelay';
 import { NativeLeadLiveMessageStore } from '../adapters/output/NativeLeadLiveMessageStore';
 import { NativeLeadOutputStream } from '../adapters/output/NativeLeadOutputStream';
@@ -281,6 +282,7 @@ export function createNativeTeamLifecycle(
   let memberRelayRef: NativeMemberInboxRelay | null = null;
   let promptDelivery: NativeOpenCodePromptDeliverySupervisor | null = null;
   const configuredProvidersByRun = new Map<string, ReadonlyMap<string, string>>();
+  const launchPublication = new NativeLaunchPublication(deps.teamsRoot);
   const lifecycle = createMemberLifecycle({
     owner: deps.owner,
     ...(deps.registry ? { registry: deps.registry } : {}),
@@ -297,6 +299,11 @@ export function createNativeTeamLifecycle(
         await settings.prepareWorkspace(run, workspace, signal);
         await config.prepare(run, signal);
         const configured = await settings.runtimeConfiguration(run);
+        await launchPublication.begin(
+          run,
+          configured.members.map(({ launch }) => launch.memberName),
+          signal
+        );
         configuredProvidersByRun.set(
           run.runId,
           new Map(configured.members.map(({ launch }) => [launch.memberName, launch.providerId]))
@@ -316,6 +323,7 @@ export function createNativeTeamLifecycle(
         crossTeamReplies.reset(run.teamName);
         await config.release(run);
         settings.release(run);
+        await launchPublication.retire(run);
         logs.retainLast(run.teamName, run.runId);
         approvals.clearRun(run.runId);
       },

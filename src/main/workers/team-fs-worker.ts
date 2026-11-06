@@ -4,14 +4,12 @@ import * as path from 'node:path';
 import { parentPort } from 'node:worker_threads';
 
 import { estimateCachedValueBytes } from '@main/services/team/cacheMemoryEstimate';
-import { readBootstrapLaunchSnapshot } from '@main/services/team/TeamBootstrapStateReader';
-import { normalizePersistedLaunchSnapshot } from '@main/services/team/TeamLaunchStateEvaluator';
 import {
   choosePreferredLaunchStateSummary,
-  normalizePersistedLaunchSummaryProjection,
   shouldSuppressLegacyLaunchArtifactHeuristic,
   TEAM_LAUNCH_SUMMARY_FILE,
 } from '@main/services/team/TeamLaunchSummaryProjection';
+import { readLaunchStateForWorker as readLaunchState } from '@main/services/team/TeamLaunchSummaryReader';
 import { compactTeamTaskForSnapshot } from '@main/services/team/teamTaskSnapshotCompaction';
 import { atomicWriteAsync } from '@main/utils/atomicWrite';
 import { isLeadMember } from '@shared/utils/leadDetection';
@@ -122,7 +120,6 @@ interface TaskReadDiag {
   persistentCacheWriteFailures: number;
 }
 
-const MAX_LAUNCH_STATE_BYTES = 32 * 1024;
 const TEAM_LAUNCH_STATE_FILE = 'launch-state.json';
 const REVIEW_LIFECYCLE_EVENTS = new Set([
   'review_requested',
@@ -192,11 +189,6 @@ let taskFileCacheBytes = 0;
 interface TeamSummaryDependencyFingerprint {
   value: string;
   cacheSafe: boolean;
-}
-
-interface LaunchStateSummaryRead {
-  summary: ReturnType<typeof choosePreferredLaunchStateSummary> | null;
-  cacheable: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -532,6 +524,7 @@ async function buildTeamSummaryFingerprint(
     statPathFingerprint(path.join(teamDir, BOOTSTRAP_JOURNAL_FILE)),
   ]);
   const inbox = await readInboxNamesFingerprint(path.join(teamDir, 'inboxes'));
+  const launchFreshness = await statPathFingerprint(path.join(teamDir, 'launch-freshness.json'));
 
   const dependencyFingerprint = {
     version: 1,
@@ -541,6 +534,7 @@ async function buildTeamSummaryFingerprint(
     membersMeta,
     launchState,
     launchSummary,
+    launchFreshness,
     bootstrapState,
     bootstrapJournal,
     inbox,
@@ -555,6 +549,7 @@ async function buildTeamSummaryFingerprint(
         membersMeta,
         launchState,
         launchSummary,
+        launchFreshness,
         bootstrapState,
         bootstrapJournal,
       ].every(isCacheSafeFingerprint) && inbox.cacheSafe,
@@ -1096,60 +1091,6 @@ function dropCliProvisionerMembers(
       memberMap.delete(key);
     }
   }
-}
-
-async function readLaunchState(
-  teamsDir: string,
-  teamName: string
-): Promise<LaunchStateSummaryRead> {
-  const bootstrapSnapshot = await readBootstrapLaunchSnapshot(teamName);
-  const launchStatePath = path.join(teamsDir, teamName, TEAM_LAUNCH_STATE_FILE);
-  const launchSummaryPath = path.join(teamsDir, teamName, TEAM_LAUNCH_SUMMARY_FILE);
-  const [launchSnapshot, launchSummaryProjection] = await Promise.all([
-    (async () => {
-      try {
-        const stat = await fs.promises.stat(launchStatePath);
-        if (!stat.isFile() || stat.size > MAX_LAUNCH_STATE_BYTES) {
-          return null;
-        }
-        const raw = await fs.promises.readFile(launchStatePath, 'utf8');
-        return normalizePersistedLaunchSnapshot(teamName, JSON.parse(raw));
-      } catch {
-        return null;
-      }
-    })(),
-    (async () => {
-      try {
-        const stat = await fs.promises.stat(launchSummaryPath);
-        if (!stat.isFile() || stat.size > MAX_LAUNCH_STATE_BYTES) {
-          return null;
-        }
-        const raw = await fs.promises.readFile(launchSummaryPath, 'utf8');
-        return normalizePersistedLaunchSummaryProjection(teamName, JSON.parse(raw));
-      } catch {
-        return null;
-      }
-    })(),
-  ]);
-
-  const summary = choosePreferredLaunchStateSummary({
-    bootstrapSnapshot,
-    launchSnapshot,
-    launchSummaryProjection,
-  });
-  if (launchSnapshot) {
-    return { summary, cacheable: true };
-  }
-  if (!bootstrapSnapshot) {
-    return { summary, cacheable: true };
-  }
-  if (
-    bootstrapSnapshot.launchPhase === 'finished' &&
-    bootstrapSnapshot.teamLaunchState !== 'partial_pending'
-  ) {
-    return { summary, cacheable: true };
-  }
-  return { summary, cacheable: false };
 }
 
 /**

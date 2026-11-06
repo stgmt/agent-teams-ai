@@ -9,9 +9,14 @@ import * as path from 'path';
 import { getAdmittedTeamPublicationAuthority } from './provisioning/TeamProvisioningRequestAdmissionContext';
 import { atomicWriteAsync } from './atomicWrite';
 import {
+  resolveLaunchPublicationRoot,
+  withLaunchPublicationFileLock,
+} from './launchPublicationLock';
+import {
   captureOpenCodeTranscriptBindings,
   getTeamLaunchFreshnessPath,
   readTeamLaunchFreshness,
+  readTeamLaunchFreshnessSync,
 } from './TeamLaunchFreshness';
 import {
   createPersistedLaunchSnapshot,
@@ -31,26 +36,63 @@ const MAX_LAUNCH_STATE_BYTES = 256 * 1024;
 const stopIntentByTeam = new Map<string, number>();
 const publicationQueueByTeam = new Map<string, Promise<unknown>>();
 
+function publicationScopeKey(teamName: string, teamsRoot?: string): string {
+  let physicalRoot = resolveLaunchPublicationRoot(teamsRoot);
+  if (process.platform === 'win32') physicalRoot = physicalRoot.toLowerCase();
+  return JSON.stringify([physicalRoot, teamName.normalize('NFC').toLowerCase()]);
+}
+
 /** Capture before any caller queue/await; a later Stop revokes this request. */
-export function captureTeamLaunchPublicationAuthority(teamName: string): () => boolean {
-  const intent = stopIntentByTeam.get(teamName);
+export function captureTeamLaunchPublicationAuthority(
+  teamName: string,
+  teamsRoot?: string
+): () => boolean {
+  const key = publicationScopeKey(teamName, teamsRoot);
+  const intent = stopIntentByTeam.get(key);
   const admitted = getAdmittedTeamPublicationAuthority(teamName);
-  return () => admitted?.() !== false && stopIntentByTeam.get(teamName) === intent;
+  return () =>
+    admitted?.() !== false &&
+    publicationScopeKey(teamName, teamsRoot) === key &&
+    stopIntentByTeam.get(key) === intent;
+}
+
+/** A native owner may clean up its own publication only until a Stop is admitted. */
+export function captureTeamStopIntent(teamName: string, teamsRoot?: string): () => boolean {
+  const key = publicationScopeKey(teamName, teamsRoot);
+  const intent = stopIntentByTeam.get(key);
+  return () =>
+    publicationScopeKey(teamName, teamsRoot) === key && stopIntentByTeam.get(key) === intent;
 }
 
 export interface TeamLaunchStopAuthority {
   teamName: string;
   stopIntent: number;
+  scopeKey?: string;
   freshness: TeamLaunchFreshness | null;
   transcriptBindings?: OpenCodeTranscriptBindingIdentity[];
 }
 
-export function getTeamLaunchStatePath(teamName: string): string {
-  return path.join(getTeamsBasePath(), teamName, TEAM_LAUNCH_STATE_FILE);
+function matchesStopAuthority(
+  teamName: string,
+  authority: TeamLaunchStopAuthority,
+  freshness: TeamLaunchFreshness | null,
+  teamsRoot?: string
+): boolean {
+  const key = publicationScopeKey(teamName, teamsRoot);
+  return (
+    authority.teamName === teamName &&
+    (authority.scopeKey === undefined || authority.scopeKey === key) &&
+    authority.stopIntent === stopIntentByTeam.get(key) &&
+    JSON.stringify(freshness) === JSON.stringify(authority.freshness)
+  );
 }
 
-export function getTeamLaunchSummaryPath(teamName: string): string {
-  return path.join(getTeamsBasePath(), teamName, TEAM_LAUNCH_SUMMARY_FILE);
+export function getTeamLaunchStatePath(teamName: string, teamsRoot = getTeamsBasePath()): string {
+  return path.join(teamsRoot, teamName, TEAM_LAUNCH_STATE_FILE);
+}
+
+export function getTeamLaunchSummaryPath(teamName: string, teamsRoot = getTeamsBasePath()): string {
+  return path.join(teamsRoot, teamName, TEAM_LAUNCH_SUMMARY_FILE);
 }
 
 /**
@@ -63,8 +105,11 @@ export function getTeamLaunchSummaryPath(teamName: string): string {
  */
 export const TEAM_LAUNCH_STOPPED_MARKER_FILE = 'launch-stopped.json';
 
-export function getTeamLaunchStoppedMarkerPath(teamName: string): string {
-  return path.join(getTeamsBasePath(), teamName, TEAM_LAUNCH_STOPPED_MARKER_FILE);
+export function getTeamLaunchStoppedMarkerPath(
+  teamName: string,
+  teamsRoot = getTeamsBasePath()
+): string {
+  return path.join(teamsRoot, teamName, TEAM_LAUNCH_STOPPED_MARKER_FILE);
 }
 
 /**
@@ -122,8 +167,8 @@ export interface TeamLaunchStatePublicationOptions {
   authorizesNewRun?: () => boolean;
 }
 
-async function removeStoppedMarkerIfPresent(teamName: string): Promise<void> {
-  const markerPath = getTeamLaunchStoppedMarkerPath(teamName);
+async function removeStoppedMarkerIfPresent(teamName: string, teamsRoot?: string): Promise<void> {
+  const markerPath = getTeamLaunchStoppedMarkerPath(teamName, teamsRoot);
   if (!fs.existsSync(markerPath)) return;
   await fs.promises.rm(markerPath, { force: true });
 }
@@ -161,13 +206,20 @@ function throwPublicationRevocationFailure(
   }
 }
 
-function enqueuePublication<T>(teamName: string, operation: () => Promise<T>): Promise<T> {
-  const previous = publicationQueueByTeam.get(teamName);
-  const queued = (previous ?? Promise.resolve()).catch(() => undefined).then(operation);
-  publicationQueueByTeam.set(teamName, queued);
+function enqueuePublication<T>(
+  teamName: string,
+  operation: () => Promise<T>,
+  teamsRoot?: string
+): Promise<T> {
+  const key = publicationScopeKey(teamName, teamsRoot);
+  const previous = publicationQueueByTeam.get(key);
+  const queued = (previous ?? Promise.resolve())
+    .catch(() => undefined)
+    .then(() => withLaunchPublicationFileLock(teamName, operation, teamsRoot));
+  publicationQueueByTeam.set(key, queued);
   return queued.finally(() => {
-    if (publicationQueueByTeam.get(teamName) === queued) {
-      publicationQueueByTeam.delete(teamName);
+    if (publicationQueueByTeam.get(key) === queued) {
+      publicationQueueByTeam.delete(key);
     }
   });
 }
@@ -204,6 +256,7 @@ function describeReadFailure(error: unknown): string {
 }
 
 export class TeamLaunchStateStore {
+  constructor(private readonly teamsRoot?: string) {}
   /**
    * The launch snapshot, or `null` when there is none to be had. It cannot say
    * why: a team that never launched and a launch state this app could not read
@@ -222,7 +275,16 @@ export class TeamLaunchStateStore {
    * empty snapshot reports a probe that answered nothing as a definite zero.
    */
   async readResult(teamName: string): Promise<TeamLaunchStateReadResult> {
-    const targetPath = getTeamLaunchStatePath(teamName);
+    let freshness: TeamLaunchFreshness | null;
+    try {
+      freshness = await readTeamLaunchFreshness(teamName, this.teamsRoot);
+      if (freshness?.kind === 'stop' && freshness.native) {
+        return { status: 'unreadable', reason: 'native launch status is not persisted' };
+      }
+    } catch (error) {
+      return { status: 'unreadable', reason: describeReadFailure(error) };
+    }
+    const targetPath = getTeamLaunchStatePath(teamName, this.teamsRoot);
     let raw: string;
     try {
       const stat = await fs.promises.stat(targetPath);
@@ -237,7 +299,9 @@ export class TeamLaunchStateStore {
       // Only a missing file is an answer; every other failure leaves the
       // question open.
       return (error as NodeJS.ErrnoException).code === 'ENOENT'
-        ? { status: 'absent' }
+        ? freshness?.native
+          ? { status: 'unreadable', reason: 'native launch status is not persisted' }
+          : { status: 'absent' }
         : { status: 'unreadable', reason: describeReadFailure(error) };
     }
     let parsed: unknown;
@@ -264,6 +328,19 @@ export class TeamLaunchStateStore {
       typeof parsed.publicationRunId === 'string'
     )
       snapshot.publicationRunId = parsed.publicationRunId;
+    try {
+      const current = await readTeamLaunchFreshness(teamName, this.teamsRoot);
+      if (JSON.stringify(current) !== JSON.stringify(freshness))
+        return { status: 'unreadable', reason: 'launch authority changed while reading' };
+      if (
+        freshness?.kind === 'launch' &&
+        freshness.native &&
+        snapshot?.publicationRunId !== freshness.runId
+      )
+        return { status: 'unreadable', reason: 'native launch status is not persisted' };
+    } catch (error) {
+      return { status: 'unreadable', reason: describeReadFailure(error) };
+    }
     return snapshot
       ? { status: 'snapshot', snapshot }
       : { status: 'unreadable', reason: 'launch state did not describe a launch' };
@@ -276,22 +353,66 @@ export class TeamLaunchStateStore {
     isAuthorized: () => boolean
   ): Promise<boolean> {
     if (!runId.trim()) throw new Error('Launch publication requires a run identity');
-    const publicationIsCurrent = captureTeamLaunchPublicationAuthority(teamName);
-    return enqueuePublication(teamName, () =>
-      this.writeNow(
-        teamName,
-        createPersistedLaunchSnapshot({
+    const publicationIsCurrent = captureTeamLaunchPublicationAuthority(teamName, this.teamsRoot);
+    return enqueuePublication(
+      teamName,
+      () =>
+        this.writeNow(
           teamName,
-          expectedMembers,
-          launchPhase: 'active',
-          members: {},
-        }),
-        {
-          runId,
-          isAuthorized: () => isAuthorized() && publicationIsCurrent(),
-        },
-        true
-      )
+          createPersistedLaunchSnapshot({
+            teamName,
+            expectedMembers,
+            launchPhase: 'active',
+            members: {},
+          }),
+          {
+            runId,
+            isAuthorized: () => isAuthorized() && publicationIsCurrent(),
+          },
+          true
+        ),
+      this.teamsRoot
+    );
+  }
+
+  /** Native lifecycle owns its live status; publish ownership without inventing a status snapshot. */
+  async beginNativeLaunch(
+    teamName: string,
+    runId: string,
+    isAuthorized: () => boolean
+  ): Promise<boolean> {
+    if (!runId.trim()) throw new Error('Launch publication requires a run identity');
+    const publicationIsCurrent = captureTeamLaunchPublicationAuthority(teamName, this.teamsRoot);
+    const authorized = (): boolean => isAuthorized() && publicationIsCurrent();
+    return enqueuePublication(
+      teamName,
+      async () => {
+        if (!authorized()) return false;
+        const directory = path.dirname(getTeamLaunchStatePath(teamName, this.teamsRoot));
+        const initial = await fs.promises.stat(directory).catch(() => null);
+        if (!initial) return false;
+        const beforeCommit = async (): Promise<void> => {
+          const current = await fs.promises.stat(directory).catch(() => null);
+          if (
+            !authorized() ||
+            !current ||
+            !isSameDurablePathIdentity(
+              getDurablePathIdentity(current),
+              getDurablePathIdentity(initial)
+            )
+          )
+            throw new Error('Native launch publication authorization changed');
+        };
+        // Native runtime owns its live status. Preserve prior snapshots and fence
+        // their readers with this single atomically published authority record.
+        await atomicWriteAsync(
+          getTeamLaunchFreshnessPath(teamName, this.teamsRoot),
+          JSON.stringify({ version: 1, teamName, kind: 'launch', runId, native: true }),
+          { beforeCommit, durability: 'strict', syncDirectory: true }
+        );
+        return authorized();
+      },
+      this.teamsRoot
     );
   }
 
@@ -300,13 +421,16 @@ export class TeamLaunchStateStore {
     snapshot: PersistedTeamLaunchSnapshot,
     options?: TeamLaunchStatePublicationOptions
   ): Promise<boolean> {
-    const publicationIsCurrent = captureTeamLaunchPublicationAuthority(teamName);
-    return enqueuePublication(teamName, () =>
-      this.writeNow(teamName, snapshot, {
-        ...options,
-        runId: options?.runId ?? snapshot.publicationRunId,
-        isAuthorized: () => options?.isAuthorized?.() !== false && publicationIsCurrent(),
-      })
+    const publicationIsCurrent = captureTeamLaunchPublicationAuthority(teamName, this.teamsRoot);
+    return enqueuePublication(
+      teamName,
+      () =>
+        this.writeNow(teamName, snapshot, {
+          ...options,
+          runId: options?.runId ?? snapshot.publicationRunId,
+          isAuthorized: () => options?.isAuthorized?.() !== false && publicationIsCurrent(),
+        }),
+      this.teamsRoot
     );
   }
 
@@ -317,7 +441,7 @@ export class TeamLaunchStateStore {
     beginsLaunch = false
   ): Promise<boolean> {
     if (options.isAuthorized?.() === false) return false;
-    const freshness = await readTeamLaunchFreshness(teamName);
+    const freshness = await readTeamLaunchFreshness(teamName, this.teamsRoot);
     if (options.isAuthorized?.() === false) return false;
     // Existing native launch flows publish their first active snapshot through the
     // boundary. Only their current, explicitly checked new run can begin here.
@@ -331,7 +455,7 @@ export class TeamLaunchStateStore {
     if (!beginsLaunch && (await this.isStopped(teamName))) return false;
     if (!beginsLaunch && freshness?.kind === 'launch' && options.runId !== freshness.runId)
       return false;
-    const statePath = getTeamLaunchStatePath(teamName);
+    const statePath = getTeamLaunchStatePath(teamName, this.teamsRoot);
     const directory = path.dirname(statePath);
     const directoryIdentity = await fs.promises.stat(directory).catch(() => null);
     if (!directoryIdentity) return false;
@@ -350,13 +474,13 @@ export class TeamLaunchStateStore {
         throw new Error('Launch publication authorization changed');
       }
     };
-    const summaryPath = getTeamLaunchSummaryPath(teamName);
+    const summaryPath = getTeamLaunchSummaryPath(teamName, this.teamsRoot);
     const paths = beginsLaunch
       ? [
           statePath,
           summaryPath,
-          getTeamLaunchFreshnessPath(teamName),
-          getTeamLaunchStoppedMarkerPath(teamName),
+          getTeamLaunchFreshnessPath(teamName, this.teamsRoot),
+          getTeamLaunchStoppedMarkerPath(teamName, this.teamsRoot),
         ]
       : [statePath, summaryPath];
     const previous = await Promise.all(
@@ -393,7 +517,7 @@ export class TeamLaunchStateStore {
       );
       if (beginsLaunch) {
         await atomicWriteAsync(
-          getTeamLaunchFreshnessPath(teamName),
+          getTeamLaunchFreshnessPath(teamName, this.teamsRoot),
           JSON.stringify({
             version: 1,
             teamName,
@@ -402,7 +526,8 @@ export class TeamLaunchStateStore {
           }),
           { beforeCommit, durability: 'strict', syncDirectory: true }
         );
-        if (options.isAuthorized?.() !== false) await removeStoppedMarkerIfPresent(teamName);
+        if (options.isAuthorized?.() !== false)
+          await removeStoppedMarkerIfPresent(teamName, this.teamsRoot);
       }
       if (options.isAuthorized?.() === false) {
         await rollback();
@@ -421,83 +546,164 @@ export class TeamLaunchStateStore {
   }
 
   /** Admit before runtime/cleanup awaits, revoking pending earlier publications. */
-  beginStop(teamName: string): Promise<TeamLaunchStopAuthority> {
-    const stopIntent = (stopIntentByTeam.get(teamName) ?? 0) + 1;
-    stopIntentByTeam.set(teamName, stopIntent);
-    return enqueuePublication(teamName, async () => {
-      const freshness = await readTeamLaunchFreshness(teamName);
-      const publication = freshness?.kind === 'launch' ? await this.readResult(teamName) : null;
-      const transcriptBindings =
-        freshness?.kind === 'stop'
-          ? freshness.transcriptBindings
-          : publication?.status === 'snapshot' &&
-              publication.snapshot.publicationRunId === freshness?.runId
-            ? captureOpenCodeTranscriptBindings(publication.snapshot)
-            : [];
-      return { teamName, stopIntent, freshness, transcriptBindings };
-    });
+  async beginStop(
+    teamName: string,
+    expectedRunId?: string | null
+  ): Promise<TeamLaunchStopAuthority> {
+    const scopeKey = publicationScopeKey(teamName, this.teamsRoot);
+    const observed = readTeamLaunchFreshnessSync(teamName, this.teamsRoot);
+    if (
+      expectedRunId !== undefined &&
+      (expectedRunId === null ||
+        (observed?.kind === 'launch' ? observed.runId : observed?.stoppedRunId) !== expectedRunId)
+    ) {
+      throw new Error('Stop publication authority was superseded by a different run');
+    }
+    const stopIntent = (stopIntentByTeam.get(scopeKey) ?? 0) + 1;
+    stopIntentByTeam.set(scopeKey, stopIntent);
+    return await enqueuePublication(
+      teamName,
+      async () => {
+        if (publicationScopeKey(teamName, this.teamsRoot) !== scopeKey) {
+          throw new Error('Stop publication root was superseded');
+        }
+        const freshness = await readTeamLaunchFreshness(teamName, this.teamsRoot);
+        if (
+          JSON.stringify(freshness) !== JSON.stringify(observed) ||
+          (expectedRunId !== undefined &&
+            (expectedRunId === null ||
+              (freshness?.kind === 'launch' ? freshness.runId : freshness?.stoppedRunId) !==
+                expectedRunId))
+        ) {
+          throw new Error('Stop publication authority was superseded by a different run');
+        }
+        const publication = freshness?.kind === 'launch' ? await this.readResult(teamName) : null;
+        const transcriptBindings =
+          freshness?.kind === 'stop'
+            ? freshness.transcriptBindings
+            : publication?.status === 'snapshot' &&
+                publication.snapshot.publicationRunId === freshness?.runId
+              ? captureOpenCodeTranscriptBindings(publication.snapshot)
+              : [];
+        return { teamName, stopIntent, scopeKey, freshness, transcriptBindings };
+      },
+      this.teamsRoot
+    );
+  }
+
+  /** Serialize cleanup with updated launch publishers and reject stale stop ownership. */
+  async withStopAuthority<T>(
+    teamName: string,
+    authority: TeamLaunchStopAuthority,
+    operation: () => Promise<T>
+  ): Promise<{ current: false } | { current: true; value: T }> {
+    return await enqueuePublication(
+      teamName,
+      async () => {
+        const freshness = await readTeamLaunchFreshness(teamName, this.teamsRoot);
+        if (!matchesStopAuthority(teamName, authority, freshness, this.teamsRoot))
+          return { current: false };
+        return { current: true, value: await operation() };
+      },
+      this.teamsRoot
+    );
   }
 
   /** A cleanup tail retains its admission; it cannot stop a successor publication. */
-  async markStopped(teamName: string, authority?: TeamLaunchStopAuthority): Promise<void> {
-    const stopIntent = authority?.stopIntent ?? (stopIntentByTeam.get(teamName) ?? 0) + 1;
-    if (!authority) stopIntentByTeam.set(teamName, stopIntent);
-    await enqueuePublication(teamName, async () => {
-      const previous = await readTeamLaunchFreshness(teamName);
-      const admitted: TeamLaunchStopAuthority = authority ?? {
-        teamName,
-        stopIntent,
-        freshness: previous,
-      };
-      if (
-        admitted.teamName !== teamName ||
-        admitted.stopIntent !== stopIntentByTeam.get(teamName) ||
-        JSON.stringify(previous) !== JSON.stringify(admitted.freshness)
-      )
-        return;
-      const revocations = await Promise.allSettled([
-        fs.promises.rm(getTeamLaunchStatePath(teamName), { force: true }),
-        fs.promises.rm(getTeamLaunchSummaryPath(teamName), { force: true }),
-      ]);
-      const markerPath = getTeamLaunchStoppedMarkerPath(teamName);
-      const stopId = randomUUID();
-      try {
-        await atomicWriteAsync(
-          getTeamLaunchFreshnessPath(teamName),
-          JSON.stringify({
-            version: 1,
-            teamName,
-            kind: 'stop',
-            stopId,
-            stoppedRunId: previous?.kind === 'launch' ? previous.runId : previous?.stoppedRunId,
-            transcriptBindings:
-              previous?.kind === 'stop' ? previous.transcriptBindings : admitted.transcriptBindings,
-          }),
-          { durability: 'strict', syncDirectory: true }
-        );
-        await atomicWriteAsync(
-          markerPath,
-          `${JSON.stringify({ version: 1, teamName, stopId, stoppedAt: new Date().toISOString() }, null, 2)}\n`
-        );
-      } catch (error) {
-        if (await isMissingTeamDirectoryWriteRace(markerPath, error)) {
-          return;
-        }
-        throw error;
-      }
-      // The marker comes first even when a publication file survives, because
-      // a stop the user asked for must stay final for reconciliation. What
-      // must not stay silent is the survivor: read() answers from the launch
-      // state and not from the marker, so a snapshot that could not be removed
-      // is still served to the UI. The caller reports it as a stop diagnostic.
-      throwPublicationRevocationFailure(teamName, revocations);
-    });
+  async markStopped(teamName: string, authority?: TeamLaunchStopAuthority): Promise<boolean> {
+    const scopeKey = publicationScopeKey(teamName, this.teamsRoot);
+    const stopIntent = authority?.stopIntent ?? (stopIntentByTeam.get(scopeKey) ?? 0) + 1;
+    if (!authority) stopIntentByTeam.set(scopeKey, stopIntent);
+    return await enqueuePublication(
+      teamName,
+      async () => {
+        const previous = await readTeamLaunchFreshness(teamName, this.teamsRoot);
+        const admitted: TeamLaunchStopAuthority = authority ?? {
+          teamName,
+          stopIntent,
+          scopeKey,
+          freshness: previous,
+        };
+        if (!matchesStopAuthority(teamName, admitted, previous, this.teamsRoot)) return false;
+        return this.writeStopped(teamName, previous, admitted.transcriptBindings);
+      },
+      this.teamsRoot
+    );
+  }
+
+  /** Retire only this native run; an admitted Stop or successor retains ownership. */
+  async retireNativeLaunch(
+    teamName: string,
+    runId: string,
+    isAuthorized: () => boolean
+  ): Promise<boolean> {
+    return await enqueuePublication(
+      teamName,
+      async () => {
+        if (!isAuthorized()) return false;
+        const freshness = await readTeamLaunchFreshness(teamName, this.teamsRoot);
+        if (!isAuthorized() || freshness?.kind !== 'launch' || freshness.runId !== runId)
+          return false;
+        return this.writeStopped(teamName, freshness, undefined, isAuthorized);
+      },
+      this.teamsRoot
+    );
+  }
+
+  private async writeStopped(
+    teamName: string,
+    previous: TeamLaunchFreshness | null,
+    transcriptBindings?: OpenCodeTranscriptBindingIdentity[],
+    isAuthorized?: () => boolean
+  ): Promise<boolean> {
+    if (isAuthorized?.() === false) return false;
+    // Native ownership is separate from the legacy status files. They are
+    // historical evidence and must not be partially deleted on stop failure.
+    const revocations = previous?.native
+      ? []
+      : await Promise.allSettled([
+          fs.promises.rm(getTeamLaunchStatePath(teamName, this.teamsRoot), { force: true }),
+          fs.promises.rm(getTeamLaunchSummaryPath(teamName, this.teamsRoot), { force: true }),
+        ]);
+    const markerPath = getTeamLaunchStoppedMarkerPath(teamName, this.teamsRoot);
+    const stopId = randomUUID();
+    const beforeCommit = async (): Promise<void> => {
+      if (isAuthorized?.() === false) throw new Error('Native launch retirement was superseded');
+    };
+    try {
+      await atomicWriteAsync(
+        getTeamLaunchFreshnessPath(teamName, this.teamsRoot),
+        JSON.stringify({
+          version: 1,
+          teamName,
+          kind: 'stop',
+          stopId,
+          ...(previous?.native ? { native: true } : {}),
+          stoppedRunId: previous?.kind === 'launch' ? previous.runId : previous?.stoppedRunId,
+          transcriptBindings:
+            previous?.kind === 'stop' ? previous.transcriptBindings : transcriptBindings,
+        }),
+        { durability: 'strict', syncDirectory: true, beforeCommit }
+      );
+      await atomicWriteAsync(
+        markerPath,
+        `${JSON.stringify({ version: 1, teamName, stopId, stoppedAt: new Date().toISOString() }, null, 2)}\n`,
+        { beforeCommit }
+      );
+    } catch (error) {
+      if (await isMissingTeamDirectoryWriteRace(markerPath, error)) return false;
+      throw error;
+    }
+    throwPublicationRevocationFailure(teamName, revocations);
+    return true;
   }
 
   async isStopped(teamName: string): Promise<boolean> {
+    const freshness = await readTeamLaunchFreshness(teamName, this.teamsRoot);
+    if (freshness?.kind === 'launch' && freshness.native) return false;
     return (
-      fs.existsSync(getTeamLaunchStoppedMarkerPath(teamName)) ||
-      (await readTeamLaunchFreshness(teamName))?.kind === 'stop'
+      fs.existsSync(getTeamLaunchStoppedMarkerPath(teamName, this.teamsRoot)) ||
+      freshness?.kind === 'stop'
     );
   }
 
@@ -513,26 +719,30 @@ export class TeamLaunchStateStore {
     isAuthorized?: () => boolean,
     persistedRunId?: string
   ): Promise<void> {
-    await enqueuePublication(teamName, async () => {
-      if (isAuthorized?.() === false) return;
-      if (persistedRunId !== undefined) {
-        const current = await this.read(teamName);
-        const freshness = await readTeamLaunchFreshness(teamName);
-        if (
-          current?.publicationRunId !== persistedRunId ||
-          (freshness !== null &&
-            (freshness.kind !== 'launch' || freshness.runId !== persistedRunId)) ||
-          isAuthorized?.() === false
-        )
-          return;
-      }
-      throwPublicationRevocationFailure(
-        teamName,
-        await Promise.allSettled([
-          fs.promises.rm(getTeamLaunchStatePath(teamName), { force: true }),
-          fs.promises.rm(getTeamLaunchSummaryPath(teamName), { force: true }),
-        ])
-      );
-    });
+    await enqueuePublication(
+      teamName,
+      async () => {
+        if (isAuthorized?.() === false) return;
+        if (persistedRunId !== undefined) {
+          const current = await this.read(teamName);
+          const freshness = await readTeamLaunchFreshness(teamName, this.teamsRoot);
+          if (
+            current?.publicationRunId !== persistedRunId ||
+            (freshness !== null &&
+              (freshness.kind !== 'launch' || freshness.runId !== persistedRunId)) ||
+            isAuthorized?.() === false
+          )
+            return;
+        }
+        throwPublicationRevocationFailure(
+          teamName,
+          await Promise.allSettled([
+            fs.promises.rm(getTeamLaunchStatePath(teamName, this.teamsRoot), { force: true }),
+            fs.promises.rm(getTeamLaunchSummaryPath(teamName, this.teamsRoot), { force: true }),
+          ])
+        );
+      },
+      this.teamsRoot
+    );
   }
 }

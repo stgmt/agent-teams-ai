@@ -773,6 +773,8 @@ module.exports = {
   resolveTaskCommentAuthorName,
   resolveTeamMembers,
   getCurrentRuntimeMemberIdentity,
+  getTaskAttachmentsDir,
+  getStoredAttachmentPath,
   resolveCanonicalLeadSessionId,
   resolveLeadSessionId,
   saveTaskAttachmentFile,

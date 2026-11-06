@@ -23,7 +23,12 @@ import { getTeamTaskWorkflowColumn } from '@shared/utils/teamTaskState';
 import { useTaskDetailChanges } from './useTaskDetailChanges';
 
 import type { TaskDetailCommentImage } from '../ui/TaskDetailCommentImages';
-import type { KanbanTaskState, ResolvedTeamMember, TeamTaskWithKanban } from '@shared/types';
+import type {
+  KanbanTaskState,
+  ResolvedTeamMember,
+  TaskFieldUpdates,
+  TeamTaskWithKanban,
+} from '@shared/types';
 
 const EMPTY_UNREAD_COMMENT_IDS: ReadonlySet<string> = new Set();
 
@@ -91,6 +96,7 @@ export interface TaskDetailPresentationActions {
   setExecutionPreviewOnline: (online: boolean) => void;
   setLogsRefreshing: (refreshing: boolean) => void;
   setLogsSectionOpen: (open: boolean) => void;
+  updateTaskArtifact: (fields: TaskFieldUpdates) => Promise<void>;
 }
 
 export interface TaskDetailPresentationInput {
@@ -322,6 +328,7 @@ export function useTaskDetailPresentation(input: TaskDetailPresentationInput): {
       },
       flushCommentRead: viewport.flush,
       getTaskAttachmentData,
+      updateTaskArtifact: sessionController.updateTaskArtifact,
       handleDependencyClick,
       handleReply: (author, text) =>
         sessionController.setReply({ taskId: currentTask.id, author, text }),

@@ -13,6 +13,7 @@ import {
 } from './bootstrapUserDataMigration';
 import { earlyAnnouncementsProfile } from './bootstrapAnnouncementsProfile';
 import './sentryBootstrap';
+import { createIpcContextCallbacks } from '@main/createIpcContextCallbacks';
 import { composeGatewayProviderRuntime } from '@main/services/gateway/composeGatewayProviderRuntime';
 import { cleanupOrphanedDeterministicBootstrapSpecs } from '@main/services/team/provisioning/TeamProvisioningBootstrapSpec';
 
@@ -3286,15 +3287,13 @@ async function initializeServices(): Promise<void> {
     teammateToolTracker ?? undefined,
     teamLogSourceTracker,
     branchStatusService ?? undefined,
-    {
+    createIpcContextCallbacks({
       rewire: rewireContextEvents,
       full: onContextSwitched,
-      updateClaudeRoot: (applyConfig) => externalAgentConnection!.updateRoot(applyConfig),
-      changeContext: (operation) => externalAgentConnection!.changeContext(operation),
-      onAgentLanguageUpdated: (newLangCode: string) => {
-        void teamProvisioningService.notifyLanguageChange(newLangCode);
-      },
-    },
+      connection: () => externalAgentConnection,
+      getTaskWriteRoot: getClaudeBasePath,
+      notifyLanguageChange: (language) => teamProvisioningService.notifyLanguageChange(language),
+    }),
     {
       httpServer,
       startHttpServer: () => startHttpServer(handleModeSwitch),

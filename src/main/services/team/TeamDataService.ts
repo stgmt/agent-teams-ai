@@ -43,6 +43,7 @@ import {
   type LeadSessionParseCacheKey,
 } from './cache/LeadSessionParseCache';
 import { atomicWriteAsync } from './atomicWrite';
+import { readConsistentTaskSnapshot } from './consistentTaskSnapshot';
 import { createDraftTeamConfig } from './createDraftTeamConfig';
 import { assertDraftRenameDestinationAvailable, renameDraftTeamDirectory } from './draftTeamRename';
 import { extractLeadSessionMessagesFromJsonl } from './leadSessionMessageExtractor';
@@ -129,11 +130,23 @@ import type {
   ToolCallMeta,
   UpdateKanbanPatch,
 } from '@shared/types';
+import type { PendingKanbanTransitionSnapshot } from '@shared/types/kanbanRecovery';
 import type { AgentTeamsController } from 'agent-teams-controller';
 
 const { createController } = agentTeamsControllerModule;
 
 const logger = createLogger('Service:TeamDataService');
+
+function throwIfKanbanOutcomeUnknown(error: unknown): void {
+  if (
+    error &&
+    typeof error === 'object' &&
+    'code' in error &&
+    (error.code === 'KANBAN_TRANSITION_UNCERTAIN' || error.code === 'KANBAN_SNAPSHOT_CHANGED')
+  ) {
+    throw error;
+  }
+}
 
 const MIN_TEXT_LENGTH = 30;
 const MAX_LEAD_TEXTS = 150;
@@ -560,10 +573,13 @@ export class TeamDataService {
 
   private async readTasksForUiSnapshot(teamName: string): Promise<readonly TeamTask[]> {
     const snapshotReader = this.taskReader as TeamTaskReader & {
-      getTasksProjectionSnapshot?: (teamName: string) => Promise<readonly TeamTask[]>;
+      getTasksProjectionSnapshot?: (
+        teamName: string,
+        options?: { fresh?: boolean }
+      ) => Promise<readonly TeamTask[]>;
     };
     return typeof snapshotReader.getTasksProjectionSnapshot === 'function'
-      ? snapshotReader.getTasksProjectionSnapshot(teamName)
+      ? snapshotReader.getTasksProjectionSnapshot(teamName, { fresh: true })
       : this.taskReader.getTasks(teamName);
   }
 
@@ -832,22 +848,14 @@ export class TeamDataService {
 
   async getTask(teamName: string, taskId: string): Promise<TeamTaskWithKanban | null> {
     const taskBoard = this.getTaskBoard(teamName);
-    const task = taskBoard.getTask?.(taskId) as TeamTask | null | undefined;
+    const { tasks: task, kanbanState } = await readConsistentTaskSnapshot(
+      this.kanbanManager,
+      teamName,
+      async () => taskBoard.getTask?.(taskId) as TeamTask | null | undefined
+    );
     if (!task) {
       return null;
     }
-
-    let kanbanState: KanbanState = {
-      teamName,
-      reviewers: [],
-      tasks: {},
-    };
-    try {
-      kanbanState = await this.kanbanManager.getState(teamName);
-    } catch {
-      // Task detail must still open if kanban state is temporarily unreadable.
-    }
-
     return this.attachKanbanCompatibility(task, kanbanState.tasks[task.id]);
   }
 
@@ -1047,11 +1055,10 @@ export class TeamDataService {
           ).getSnapshot(teamName) ?? null)
         : null;
 
-    const [tasks, kanbanState, presenceIndex] = await Promise.all([
-      this.readTasksForUiSnapshot(teamName).catch(() => [] as readonly TeamTask[]),
-      this.kanbanManager
-        .getState(teamName)
-        .catch(() => ({ teamName, reviewers: [], tasks: {} }) as KanbanState),
+    const [snapshot, presenceIndex] = await Promise.all([
+      readConsistentTaskSnapshot(this.kanbanManager, teamName, () =>
+        this.readTasksForUiSnapshot(teamName)
+      ),
       changePresenceEnabled &&
       logSourceSnapshot?.projectFingerprint &&
       logSourceSnapshot.logSourceGeneration
@@ -1059,8 +1066,8 @@ export class TeamDataService {
         : Promise.resolve(null),
     ]);
 
-    const tasksWithKanbanBase: TeamTaskWithKanban[] = tasks.map((task) =>
-      this.attachKanbanCompatibility(task, kanbanState.tasks[task.id])
+    const tasksWithKanbanBase: TeamTaskWithKanban[] = snapshot.tasks.map((task) =>
+      this.attachKanbanCompatibility(task, snapshot.kanbanState.tasks[task.id])
     );
 
     return this.resolveTaskChangePresenceMap(
@@ -1149,11 +1156,41 @@ export class TeamDataService {
   async getAllTasks(): Promise<GlobalTask[]> {
     const taskReader = this.taskReader as TeamTaskReader & {
       getAllTasksProjectionSnapshot?: () => Promise<readonly (TeamTask & { teamName: string })[]>;
+      listTaskTeamNames?: () => Promise<string[]>;
     };
-    const rawTasks =
-      typeof taskReader.getAllTasksProjectionSnapshot === 'function'
-        ? await taskReader.getAllTasksProjectionSnapshot()
-        : await taskReader.getAllTasks();
+    const kanbanByTeam = new Map<string, KanbanState>();
+    let rawTasks: readonly (TeamTask & { teamName: string })[];
+    if (typeof taskReader.listTaskTeamNames === 'function') {
+      const taskNames = await taskReader.listTaskTeamNames();
+      const candidates = await mapLimitLocal(taskNames, 2, async (teamName) => {
+        try {
+          const config = await fs.promises.stat(
+            path.join(getTeamsBasePath(), teamName, 'config.json')
+          );
+          return config.isFile() ? teamName : null;
+        } catch (error) {
+          if (['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? ''))
+            return null;
+          throw error;
+        }
+      });
+      const names = candidates.filter((name): name is string => name !== null);
+      const snapshots = await mapLimitLocal(names, 2, async (teamName) => {
+        const snapshot = await readConsistentTaskSnapshot(this.kanbanManager, teamName, () =>
+          this.readTasksForUiSnapshot(teamName)
+        );
+        return { teamName, ...snapshot };
+      });
+      rawTasks = snapshots.flatMap(({ teamName, tasks, kanbanState }) => {
+        kanbanByTeam.set(teamName, kanbanState);
+        return tasks.map((task) => ({ ...task, teamName }));
+      });
+    } else {
+      rawTasks =
+        typeof taskReader.getAllTasksProjectionSnapshot === 'function'
+          ? await taskReader.getAllTasksProjectionSnapshot()
+          : await taskReader.getAllTasks();
+    }
     const teamInfoMap = await this.readGlobalTaskTeamInfo(rawTasks);
 
     const MAX_GLOBAL_TASKS_EXPORTED = 500;
@@ -1171,13 +1208,14 @@ export class TeamDataService {
     }
 
     const teamNames = [...new Set(tasksToExport.map((task) => task.teamName))];
-    const kanbanByTeam = new Map<string, KanbanState>();
     await Promise.all(
       teamNames.map(async (teamName) => {
+        if (kanbanByTeam.has(teamName)) return;
         try {
           const state = await this.kanbanManager.getState(teamName);
           kanbanByTeam.set(teamName, state);
-        } catch {
+        } catch (error) {
+          throwIfKanbanOutcomeUnknown(error);
           // ignore
         }
       })
@@ -1380,7 +1418,8 @@ export class TeamDataService {
             value,
             completedAt: Date.now(),
           };
-        } catch {
+        } catch (error) {
+          throwIfKanbanOutcomeUnknown(error);
           return {
             value: createFallback(),
             warning: warningText,
@@ -1465,66 +1504,58 @@ export class TeamDataService {
         return choosePreferredLaunchSnapshot(bootstrapSnapshot, launchSnapshot);
       },
     });
-    const kanbanStateStep = startReadStep({
-      label: 'kanbanState',
-      createFallback: (): KanbanState => ({
-        teamName,
-        reviewers: [],
-        tasks: {},
-      }),
-      warningText: 'Kanban state failed to load',
-      load: () => this.kanbanManager.getState(teamName),
-    });
-    const tasksStep = runWithConcurrencyLimit(() =>
+    const taskBoardStep = runWithConcurrencyLimit(() =>
       startReadStep({
         label: 'tasks',
-        createFallback: () => [],
+        createFallback: () => ({
+          tasks: [] as readonly TeamTask[],
+          kanbanState: { teamName, reviewers: [], tasks: {} } as KanbanState,
+        }),
         warningText: 'Tasks failed to load',
-        load: () => this.readTasksForUiSnapshot(teamName),
+        load: () =>
+          readConsistentTaskSnapshot(this.kanbanManager, teamName, () =>
+            this.readTasksForUiSnapshot(teamName)
+          ),
       })
     );
     const [
-      tasksStepResult,
+      taskBoardStepResult,
       inboxNamesStepResult,
       metaMembersStepResult,
       teamMetaStepResult,
       launchStateStepResult,
-      kanbanStateStepResult,
     ] = await Promise.all([
-      tasksStep,
+      taskBoardStep,
       inboxNamesStep,
       metaMembersStep,
       teamMetaStep,
       launchStateStep,
-      kanbanStateStep,
     ]);
 
     // After parallelizing the top read phase, these marks no longer represent
     // serial stage boundaries. They now capture the actual completion time for
     // each async read relative to getTeamData() start, which keeps slow-log
     // diagnostics useful without mutating marks from concurrent branches.
-    marks.tasks = tasksStepResult.completedAt;
+    marks.tasks = taskBoardStepResult.completedAt;
     marks.inboxNames = inboxNamesStepResult.completedAt;
     marks.metaMembers = metaMembersStepResult.completedAt;
     marks.teamMeta = teamMetaStepResult.completedAt;
     marks.launchState = launchStateStepResult.completedAt;
-    marks.kanbanState = kanbanStateStepResult.completedAt;
+    marks.kanbanState = taskBoardStepResult.completedAt;
 
-    if (tasksStepResult.warning) warnings.push(tasksStepResult.warning);
+    if (taskBoardStepResult.warning) warnings.push(taskBoardStepResult.warning);
     if (inboxNamesStepResult.warning) warnings.push(inboxNamesStepResult.warning);
     if (metaMembersStepResult.warning) warnings.push(metaMembersStepResult.warning);
     if (teamMetaStepResult.warning) warnings.push(teamMetaStepResult.warning);
     if (launchStateStepResult.warning) warnings.push(launchStateStepResult.warning);
-    if (kanbanStateStepResult.warning) warnings.push(kanbanStateStepResult.warning);
-
-    const tasks: readonly TeamTask[] = tasksStepResult.value;
+    const tasks: readonly TeamTask[] = taskBoardStepResult.value.tasks;
     const inboxNames: string[] = inboxNamesStepResult.value;
     mark('postStart');
 
     const metaMembers: TeamConfig['members'] = metaMembersStepResult.value;
     const teamMeta: TeamMetaFile | null = teamMetaStepResult.value;
     const launchSnapshot = launchStateStepResult.value;
-    const kanbanState: KanbanState = kanbanStateStepResult.value;
+    const kanbanState: KanbanState = taskBoardStepResult.value.kanbanState;
 
     mark('kanbanGc');
 
@@ -2473,6 +2504,14 @@ export class TeamDataService {
   async updateTaskOwner(teamName: string, taskId: string, owner: string | null): Promise<void> {
     this.getTaskBoard(teamName).setTaskOwner(taskId, owner, 'user');
     this.invalidateGlobalTaskProjectionCache();
+  }
+
+  async readTaskArtifactData(
+    teamName: string,
+    taskId: string,
+    attachmentId: string
+  ): Promise<string | null> {
+    return this.getTaskBoard(teamName).readTaskArtifactData(taskId, attachmentId);
   }
 
   async updateTaskFields(
@@ -3907,8 +3946,29 @@ export class TeamDataService {
     return texts.length > MAX_LEAD_TEXTS ? texts.slice(-MAX_LEAD_TEXTS) : texts;
   }
 
-  async updateKanban(teamName: string, taskId: string, patch: UpdateKanbanPatch): Promise<void> {
+  async updateKanban(
+    teamName: string,
+    taskId: string,
+    patch: UpdateKanbanPatch
+  ): Promise<void | PendingKanbanTransitionSnapshot> {
     const taskBoard = this.getTaskBoard(teamName);
+
+    if (patch.op === 'inspect_pending') {
+      return this.getController(teamName).kanban.inspectPendingTransition(
+        taskId
+      ) as PendingKanbanTransitionSnapshot;
+    }
+    if (patch.op === 'resolve_pending') {
+      this.getController(teamName).kanban.resolvePendingTransition(
+        taskId,
+        patch.transitionId,
+        patch.snapshotHash,
+        patch.mode,
+        patch.contextHash
+      );
+      this.invalidateGlobalTaskProjectionCache();
+      return;
+    }
 
     if (patch.op === 'remove') {
       taskBoard.clearKanban(taskId);

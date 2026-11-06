@@ -20,6 +20,7 @@ import {
 import { OpenCodeAggregatePrimaryProgressPublisher } from './OpenCodeAggregatePrimaryProgressPublisher';
 import {
   beginAggregatePrimaryRestart,
+  cancelMatchingAggregateRestart,
   clearCancelledAggregateRestartState,
   clearPersistedAggregateLaunchStateIfOwned,
   finalizeAggregatePrimaryRestart,
@@ -702,15 +703,13 @@ export abstract class TeamProvisioningOpenCodeAggregatePrimaryFacade extends Tea
     );
   }
 
-  override async stopTeam(teamName: string): Promise<void> {
+  override async stopTeam(teamName: string, expectedRunId?: string | null): Promise<void> {
     const teamKey = teamName.trim().toLowerCase();
-    const aggregateRestart = this.openCodeAggregatePrimaryRestartByTeam.get(teamKey);
-    if (aggregateRestart) {
-      aggregateRestart.cancelRequested = true;
-    }
+    const restart = this.openCodeAggregatePrimaryRestartByTeam.get(teamKey);
+    cancelMatchingAggregateRestart(restart, expectedRunId);
     const primaryStopInFlight = this.openCodeRuntimeAdapterStopInFlightByTeam.get(teamKey)?.promise;
     try {
-      await super.stopTeam(teamName);
+      await super.stopTeam(teamName, expectedRunId);
     } finally {
       await primaryStopInFlight;
     }

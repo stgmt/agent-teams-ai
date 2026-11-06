@@ -1,6 +1,7 @@
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 
+import { TaskActivityStopError } from '@shared/utils/teamStopErrors';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { TeamStopControl } from '@renderer/components/team/useTeamStopControl';
@@ -131,6 +132,41 @@ describe('useTeamStopControl', () => {
     expect(onOutcome).toHaveBeenCalledTimes(2);
     expect(mocks.confirm).toHaveBeenCalledTimes(2);
   });
+
+  it.each([
+    [true, false, 'detail.stopActivityPending', 'stopped_activity_review_pending'],
+    [false, false, 'detail.stopActivityUnknown', 'stopped_activity_unconfirmed'],
+    [true, true, 'detail.stopActivityCleanupUnknown', 'activity_and_cleanup_unconfirmed'],
+    [false, true, 'detail.stopActivityCleanupUnknown', 'activity_and_cleanup_unconfirmed'],
+  ] as const)(
+    'shows one clock warning when pending review is %s and cleanup is unconfirmed %s',
+    async (pending, cleanupUnconfirmed, key, expected) => {
+      const error = new TaskActivityStopError(pending, cleanupUnconfirmed);
+      mocks.stop.mockRejectedValueOnce(new Error(error.message));
+      const onOutcome = vi.fn();
+      const refresh = vi.fn().mockResolvedValue(undefined);
+
+      await act(async () => {
+        await controls.first.stopTeam('demo-team', { refresh, onOutcome });
+      });
+
+      expect(mocks.stop).toHaveBeenCalledTimes(1);
+      expect(mocks.processAlive).not.toHaveBeenCalled();
+      expect(mocks.confirm).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          mode: 'info',
+          title: `${key}.title`,
+          message: `${key}.message`,
+        })
+      );
+      expect(onOutcome).toHaveBeenCalledWith(
+        expected,
+        expect.objectContaining({ message: error.message })
+      );
+      expect(refresh).toHaveBeenCalledTimes(1);
+      vi.mocked(console.error).mockClear();
+    }
+  );
 
   it('releases a pending stop safely after all consumers unmount', async () => {
     let resolveStop!: () => void;

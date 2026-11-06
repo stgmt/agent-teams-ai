@@ -7,6 +7,7 @@ const { withFileLock, withFileLockSync } = require('./fileLock.js');
 const { looksLikeIdleAckOnlyText } = require('./idleAckText.js');
 const runtimeHelpers = require('./runtimeHelpers.js');
 const taskStore = require('./taskStore.js');
+const { readConsistentCompletionTasks } = require('./completionProof.js');
 const { isTaskOpen } = require('./taskLifecycle.js');
 const {
   RUNTIME_DELIVERY_DUPLICATE_NOTICE,
@@ -281,12 +282,7 @@ const POST_COMPLETION_MESSAGE_NOTICE_SUFFIX =
  * message the user.
  */
 function readBoardCompletionEpoch(paths) {
-  let tasks;
-  try {
-    tasks = taskStore.listTasks(paths);
-  } catch {
-    return null;
-  }
+  const tasks = readConsistentCompletionTasks(paths);
   if (!Array.isArray(tasks) || tasks.length === 0) return null;
   if (!tasks.every((task) => task && !isTaskOpen(task))) return null;
   let lastBoardEventMs = 0;

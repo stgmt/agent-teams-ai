@@ -45,6 +45,7 @@ function createServiceDouble(): TeamProvisioningService {
     }),
     stopTeam: async () => undefined,
     getAliveTeams: () => ['team'],
+    getStopTargetRunId: () => 'run',
     recordOpenCodeRuntimeBootstrapCheckin: ack,
     deliverOpenCodeRuntimeMessage: ack,
     recordOpenCodeRuntimeTaskEvent: ack,

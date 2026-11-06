@@ -29,7 +29,7 @@ describe('atomic file writes', () => {
 
   afterEach(() => {
     for (const dir of tempDirs.splice(0)) {
-      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
     }
   });
 
@@ -80,6 +80,58 @@ describe('atomic file writes', () => {
     expect(attempts).toBe(1);
     expect(fs.existsSync(filePath)).toBe(false);
     expect(listTempFiles(dir)).toEqual([]);
+  });
+
+  it('does not copy over existing data when same-directory rename reports EXDEV', () => {
+    const dir = makeTempDir();
+    const filePath = path.join(dir, 'state.json');
+    const before = '{"history":[1,2,3]}';
+    fs.writeFileSync(filePath, before);
+    const copy = vi.spyOn(fs, 'copyFileSync');
+    try {
+      withMockedRenameSync(
+        () => {
+          throw Object.assign(new Error('cross-device'), { code: 'EXDEV' });
+        },
+        () => expect(() => writeJsonFileSync(filePath, { changed: true })).toThrow('cross-device')
+      );
+    } finally {
+      copy.mockRestore();
+    }
+    expect(copy).not.toHaveBeenCalled();
+    expect(fs.readFileSync(filePath, 'utf8')).toBe(before);
+    expect(listTempFiles(dir)).toEqual([]);
+  });
+
+  it('does not publish when fsync reports a storage EIO', () => {
+    const dir = makeTempDir();
+    const filePath = path.join(dir, 'state.json');
+    const before = '{"history":[1,2,3]}';
+    fs.writeFileSync(filePath, before);
+    const sync = vi.spyOn(fs, 'fsyncSync').mockImplementation(() => {
+      throw Object.assign(new Error('fsync EIO'), { code: 'EIO' });
+    });
+    try {
+      expect(() => writeJsonFileSync(filePath, { changed: true })).toThrow(/fsync EIO/);
+    } finally {
+      sync.mockRestore();
+    }
+    expect(fs.readFileSync(filePath, 'utf8')).toBe(before);
+    expect(listTempFiles(dir)).toEqual([]);
+  });
+
+  it('allows filesystems that explicitly do not support fsync', () => {
+    const dir = makeTempDir();
+    const filePath = path.join(dir, 'state.json');
+    const sync = vi.spyOn(fs, 'fsyncSync').mockImplementation(() => {
+      throw Object.assign(new Error('fsync unsupported'), { code: 'EINVAL' });
+    });
+    try {
+      writeJsonFileSync(filePath, { saved: true });
+    } finally {
+      sync.mockRestore();
+    }
+    expect(JSON.parse(fs.readFileSync(filePath, 'utf8'))).toEqual({ saved: true });
   });
 
   it('removes the temp file after retryable rename failures are exhausted', () => {

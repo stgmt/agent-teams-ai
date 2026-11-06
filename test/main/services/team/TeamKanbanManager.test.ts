@@ -28,16 +28,27 @@ const hoisted = vi.hoisted(() => {
     }
     return data;
   });
-  const atomicWrite = vi.fn(async (filePath: string, data: string) => {
+  const readFileSync = vi.fn((filePath: string) => {
+    const data = files.get(norm(filePath));
+    if (data === undefined) {
+      const error = new Error('ENOENT') as NodeJS.ErrnoException;
+      error.code = 'ENOENT';
+      throw error;
+    }
+    return data;
+  });
+  const atomicWrite = vi.fn((filePath: string, data: string) => {
     files.set(norm(filePath), data);
   });
-  return { files, stat, readFile, atomicWrite };
+  const assertConsistent = vi.fn();
+  return { files, stat, readFile, readFileSync, atomicWrite, assertConsistent };
 });
 
 vi.mock('fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('fs')>();
   return {
     ...actual,
+    readFileSync: hoisted.readFileSync,
     promises: {
       ...actual.promises,
       stat: hoisted.stat,
@@ -50,8 +61,33 @@ vi.mock('../../../../src/main/utils/pathDecoder', () => ({
   getTeamsBasePath: () => '/mock/teams',
 }));
 
-vi.mock('../../../../src/main/services/team/atomicWrite', () => ({
-  atomicWriteAsync: hoisted.atomicWrite,
+vi.mock('@main/utils/atomicWrite', () => ({
+  atomicWriteSync: hoisted.atomicWrite,
+}));
+
+vi.mock('../../../../src/main/services/team/fileLock', () => ({
+  withFileLockForSyncOperation: async (_path: string, operation: () => void) => operation(),
+}));
+
+vi.mock('agent-teams-controller', () => ({
+  boardLocks: { tryWithTeamBoardLock: (_paths: unknown, operation: () => unknown) => operation() },
+  createController: ({ teamName }: { teamName: string }) => ({
+    kanban: {
+      assertKanbanStateConsistent: hoisted.assertConsistent,
+      getKanbanState: () => {
+        const raw = hoisted.files.get(`/mock/teams/${teamName}/kanban-state.json`);
+        const state = raw ? JSON.parse(raw) : { teamName, reviewers: [], tasks: {} };
+        hoisted.assertConsistent(state);
+        return state;
+      },
+      readKanbanStateAlreadyLocked: () => {
+        const raw = hoisted.files.get(`/mock/teams/${teamName}/kanban-state.json`);
+        const state = raw ? JSON.parse(raw) : { teamName, reviewers: [], tasks: {} };
+        hoisted.assertConsistent(state);
+        return state;
+      },
+    },
+  }),
 }));
 
 import { TeamKanbanManager } from '../../../../src/main/services/team/TeamKanbanManager';
@@ -64,6 +100,7 @@ describe('TeamKanbanManager', () => {
     hoisted.files.clear();
     hoisted.readFile.mockClear();
     hoisted.atomicWrite.mockClear();
+    hoisted.assertConsistent.mockReset();
   });
 
   it('returns default state on ENOENT', async () => {
