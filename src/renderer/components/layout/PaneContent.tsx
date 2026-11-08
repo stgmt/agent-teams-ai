@@ -15,6 +15,7 @@ import { nameColorSet } from '@renderer/utils/projectColor';
 import { useShallow } from 'zustand/react/shallow';
 
 import { DashboardView } from '../dashboard/DashboardView';
+import { TeamListSkeleton } from '../team/TeamListSkeleton';
 import { TeamLoadingSkeleton } from '../team/TeamLoadingSkeleton';
 
 import type { Pane } from '@renderer/types/panes';
@@ -139,6 +140,7 @@ const TeamPaneLazyFallback = ({
 };
 
 const PaneTabSlot = ({ tab, isActive, isPaneFocused }: PaneTabSlotProps): React.JSX.Element => {
+  const { t } = useAppTranslation('team');
   const [hasActivated, setHasActivated] = useState(isActive);
   const shouldRenderContent = hasActivated && (tab.type !== 'teams' || isActive);
 
@@ -155,6 +157,10 @@ const PaneTabSlot = ({ tab, isActive, isPaneFocused }: PaneTabSlotProps): React.
         isActive={isActive}
         isPaneFocused={isPaneFocused}
       />
+    ) : tab.type === 'teams' ? (
+      <div className="flex-1 overflow-auto p-4">
+        <TeamListSkeleton label={t('list.loading')} />
+      </div>
     ) : (
       <PaneLazyFallback />
     );
@@ -165,7 +171,7 @@ const PaneTabSlot = ({ tab, isActive, isPaneFocused }: PaneTabSlotProps): React.
         <Suspense fallback={fallback}>
           {tab.type === 'dashboard' && <DashboardView isActive={isActive} />}
           {tab.type === 'notifications' && <NotificationsView />}
-          {tab.type === 'settings' && <SettingsView />}
+          {tab.type === 'settings' && <SettingsView isActive={isActive} />}
           {tab.type === 'teams' && <TeamListView />}
           {tab.type === 'organizations' && (
             <TabUIProvider tabId={tab.id}>

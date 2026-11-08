@@ -57,6 +57,7 @@ function createSource() {
       })
     ),
     stopTeam: vi.fn(() => Promise.resolve()),
+    clearStoppedLaneStopBackoff: vi.fn(),
     isTeamAlive: vi.fn(() => false),
     getAliveTeams: vi.fn(() => []),
     getCurrentRunId: vi.fn(() => null),
@@ -127,6 +128,7 @@ function createSource() {
     relayLeadInboxMessages: vi.fn(() => Promise.resolve(0)),
     getOpenCodeRuntimeDeliveryStatus: vi.fn(() => Promise.resolve(null)),
     resolveRuntimeRecipientProviderId: vi.fn(() => Promise.resolve(undefined)),
+    resolveRuntimeRecipientProviderIdForUserSend: vi.fn(() => Promise.resolve(undefined)),
     getLiveLeadProcessMessages: vi.fn(() => []),
     getCurrentLeadSessionId: vi.fn(() => null),
     pushLiveLeadProcessMessage: vi.fn(),
@@ -188,6 +190,7 @@ describe('bindTeamIpcHandlerApis', () => {
       'repairStaleTaskActivityIntervalsBeforeSnapshot',
     ]);
     expect(sortedKeys(api.runtime)).toEqual([
+      'clearStoppedLaneStopBackoff',
       'getAliveTeams',
       'getCurrentRunId',
       'getRuntimeState',
@@ -218,6 +221,7 @@ describe('bindTeamIpcHandlerApis', () => {
       'relayLeadInboxMessages',
       'relayOpenCodeMemberInboxMessages',
       'resolveRuntimeRecipientProviderId',
+      'resolveRuntimeRecipientProviderIdForUserSend',
       'sendMessageToTeam',
     ]);
     expect(sortedKeys(api.toolApproval)).toEqual([

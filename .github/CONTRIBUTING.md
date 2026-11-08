@@ -11,7 +11,7 @@ This is a fork of [777genius/agent-teams-ai](https://github.com/777genius/agent-
 You keep copyright in what you write. Pull requests to this fork are accepted under AGPL-3.0, the license of the repository. The upstream Contributor License Agreement ([CLA.md](CLA.md)) belongs to the upstream project and does not apply to this fork.
 
 ## Prerequisites
-- Node.js 26.11.1 Current (recommended for source builds) or Node.js 24.16.0 LTS
+- Node.js 26.12.1 Current (recommended for source builds) or Node.js 24.22.1 LTS
 - pnpm 11.22.0
 - macOS, Windows, or Linux
 

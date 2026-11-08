@@ -4,6 +4,8 @@ import { api } from '@renderer/api';
 
 import {
   getRuntimeProviderDirectoryCacheSnapshot,
+  getRuntimeProviderDirectoryReadToken,
+  observeRuntimeProviderDirectoryRevision,
   publishRuntimeProviderDirectoryCache,
 } from '../runtimeProviderDirectoryCache';
 
@@ -39,11 +41,13 @@ export function useRuntimeProviderQuickConnect({
   runtimeRevision,
 }: UseRuntimeProviderQuickConnectOptions): RuntimeProviderQuickConnectDirectoryState {
   const currentProjectScope = projectPath?.trim() ?? '';
-  const initialDirectoryCache = getRuntimeProviderDirectoryCacheSnapshot(projectPath);
+  const initialDirectoryCache = getRuntimeProviderDirectoryCacheSnapshot(projectPath, runtimeRevision);
+  const cacheSeenOnMount = useRef(initialDirectoryCache);
   const requestSequence = useRef(0);
   const previousRefreshKey = useRef(refreshKey);
   const previousRefreshRequestSequence = useRef(0);
   const previousProjectScope = useRef(projectPath?.trim() ?? '');
+  const previousRuntimeRevision = useRef(runtimeRevision);
   const hasStartedLoad = useRef(false);
   const [entries, setEntries] = useState<readonly RuntimeProviderDirectoryEntryDto[]>(
     initialDirectoryCache?.entries ?? []
@@ -75,6 +79,24 @@ export function useRuntimeProviderQuickConnect({
   }, []);
 
   useEffect(() => {
+    if (runtimeRevision !== null) {
+      observeRuntimeProviderDirectoryRevision(runtimeRevision);
+      if (
+        (previousRuntimeRevision.current !== null &&
+          runtimeRevision !== previousRuntimeRevision.current) ||
+        (cacheSeenOnMount.current &&
+          cacheSeenOnMount.current.runtimeRevision !== runtimeRevision)
+      ) {
+        setEntries([]);
+        setLoaded(false);
+        setAuthoritativeLoaded(false);
+      }
+      cacheSeenOnMount.current = null;
+      previousRuntimeRevision.current = runtimeRevision;
+    }
+  }, [runtimeRevision]);
+
+  useEffect(() => {
     if (!enabled) {
       setLoading(false);
       return;
@@ -82,6 +104,7 @@ export function useRuntimeProviderQuickConnect({
 
     const requestId = requestSequence.current + 1;
     requestSequence.current = requestId;
+    const requestRuntimeRevision = previousRuntimeRevision.current;
     const refreshRequested =
       refreshRequestSequence !== previousRefreshRequestSequence.current ||
       refreshKey !== previousRefreshKey.current;
@@ -90,7 +113,11 @@ export function useRuntimeProviderQuickConnect({
     const projectScopeChanged = previousProjectScope.current !== projectScope;
     previousProjectScope.current = projectScope;
     if (projectScopeChanged) {
-      const cachedDirectory = getRuntimeProviderDirectoryCacheSnapshot(projectPath);
+      const cachedDirectory = getRuntimeProviderDirectoryCacheSnapshot(
+        projectPath,
+        requestRuntimeRevision
+      );
+      cacheSeenOnMount.current = cachedDirectory;
       setDirectoryProjectScope(projectScope);
       setEntries(cachedDirectory?.entries ?? []);
       setLoaded(Boolean(cachedDirectory));
@@ -100,6 +127,7 @@ export function useRuntimeProviderQuickConnect({
     setAuthoritativePending(true);
 
     const loadDirectory = async (): Promise<void> => {
+      const readToken = getRuntimeProviderDirectoryReadToken(projectPath);
       setLoading(true);
       setError(null);
 
@@ -131,6 +159,8 @@ export function useRuntimeProviderQuickConnect({
           entries: response.directory.entries,
           fetchedAt: response.directory.fetchedAt,
           authoritative: false,
+          runtimeRevision: requestRuntimeRevision,
+          readToken,
         });
         setError(null);
         setLoaded(true);
@@ -169,23 +199,28 @@ export function useRuntimeProviderQuickConnect({
   }, [enabled, projectPath, refreshKey, refreshRequestSequence]);
 
   // Passive effects run after React commits. Gate the returned snapshot during
-  // that short transition so a project-only provider can never flash in the
-  // picker for a different project.
-  const transitionDirectoryCache =
-    directoryProjectScope === currentProjectScope
-      ? null
-      : getRuntimeProviderDirectoryCacheSnapshot(projectPath);
-  const isProjectScopeTransition = directoryProjectScope !== currentProjectScope;
+  // that short transition so providers from the previous project or runtime
+  // cannot appear in the picker for its replacement.
+  const isScopeTransition =
+    directoryProjectScope !== currentProjectScope ||
+    (runtimeRevision !== null &&
+      ((previousRuntimeRevision.current !== null &&
+        previousRuntimeRevision.current !== runtimeRevision) ||
+        (cacheSeenOnMount.current !== null &&
+          cacheSeenOnMount.current.runtimeRevision !== runtimeRevision)));
+  const transitionDirectoryCache = isScopeTransition
+    ? getRuntimeProviderDirectoryCacheSnapshot(projectPath, runtimeRevision)
+    : null;
 
   return {
-    entries: isProjectScopeTransition ? (transitionDirectoryCache?.entries ?? []) : entries,
-    loading: isProjectScopeTransition ? enabled : loading,
-    loaded: isProjectScopeTransition ? Boolean(transitionDirectoryCache) : loaded,
-    authoritativeLoaded: isProjectScopeTransition
+    entries: isScopeTransition ? (transitionDirectoryCache?.entries ?? []) : entries,
+    loading: isScopeTransition ? enabled : loading,
+    loaded: isScopeTransition ? Boolean(transitionDirectoryCache) : loaded,
+    authoritativeLoaded: isScopeTransition
       ? (transitionDirectoryCache?.authoritative ?? false)
       : authoritativeLoaded,
-    authoritativePending: isProjectScopeTransition ? true : authoritativePending,
-    error: isProjectScopeTransition ? null : error,
+    authoritativePending: isScopeTransition ? true : authoritativePending,
+    error: isScopeTransition ? null : error,
     refresh,
   };
 }

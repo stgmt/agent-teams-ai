@@ -70,9 +70,12 @@ import { useShallow } from 'zustand/react/shallow';
 import { LaunchTeamDialogLoadingFallback } from './dialogs/LaunchTeamDialogLoadingFallback';
 import { executeTeamRelaunch } from './dialogs/teamRelaunchFlow';
 import { buildCopiedTeamMembers } from './teamCopyData';
+import { TeamDeleteButton } from './TeamDeleteButton';
 import { showTeamDeleteError } from './teamDeleteErrorDialog';
+import { runTeamDeleteOnce } from './teamDeleteProgress';
 import { TeamEmptyState } from './TeamEmptyState';
 import { EMPTY_TEAM_FILTER, TeamListFilterPopover } from './TeamListFilterPopover';
+import { TeamListSkeleton } from './TeamListSkeleton';
 import { TeamManagementNotice } from './TeamManagementNotice';
 import {
   findTeamProjectSelectionTarget,
@@ -408,15 +411,12 @@ const ActiveTeamCard = ({
                 </button>
               ) : null}
               <SaveAsTemplateAction team={team} />
-              <button
-                type="button"
-                className="shrink-0 rounded p-1 text-[var(--color-text-muted)] opacity-0 transition-opacity hover:bg-red-500/10 hover:text-red-300 group-hover:opacity-100"
+              <TeamDeleteButton
+                teamName={team.teamName}
+                placement="card"
+                label={deleteTitle}
                 onClick={(event) => onDeleteTeam(team.teamName, !!team.pendingCreate, event)}
-                aria-label={deleteTitle}
-                title={deleteTitle}
-              >
-                <Trash2 size={14} />
-              </button>
+              />
             </div>
           </div>
         </div>
@@ -814,7 +814,9 @@ export const TeamListView = memo(function TeamListView(): React.JSX.Element {
           variant: 'danger',
         });
         if (confirmed) {
-          await deleteTeam(teamName).catch((error: unknown) => showTeamDeleteError(t, error));
+          await runTeamDeleteOnce(teamName, () => deleteTeam(teamName)).catch((error: unknown) =>
+            showTeamDeleteError(t, error)
+          );
         }
       })();
     },
@@ -868,6 +870,8 @@ export const TeamListView = memo(function TeamListView(): React.JSX.Element {
             setCopyData({
               teamName: uniqueName,
               runtimeSelectionVersion: savedRequest.runtimeSelectionVersion,
+              specProject: savedRequest.specProject,
+              specSlug: savedRequest.specSlug,
               description: savedRequest.description,
               color: savedRequest.color,
               cwd: savedRequest.cwd,
@@ -890,6 +894,8 @@ export const TeamListView = memo(function TeamListView(): React.JSX.Element {
           });
           setCopyData({
             teamName: uniqueName,
+            specProject: data.config.specProject,
+            specSlug: data.config.specSlug,
             description: data.config.description,
             color: data.config.color,
             cwd: data.config.projectPath,
@@ -1265,14 +1271,6 @@ export const TeamListView = memo(function TeamListView(): React.JSX.Element {
   );
 
   const renderContent = (): React.JSX.Element => {
-    if (teamsLoading) {
-      return (
-        <div className="flex size-full items-center justify-center text-sm text-[var(--color-text-muted)]">
-          {t('list.loading')}
-        </div>
-      );
-    }
-
     if (teamsError) {
       return (
         <div className="flex size-full items-center justify-center p-6">
@@ -1557,8 +1555,14 @@ export const TeamListView = memo(function TeamListView(): React.JSX.Element {
   return (
     <TooltipProvider delayDuration={300}>
       <div className="size-full overflow-auto p-4">
-        {renderHeader()}
-        {renderContent()}
+        {teamsLoading && teamsWithProvisioning.length === 0 ? (
+          <TeamListSkeleton label={t('list.loading')} />
+        ) : (
+          <>
+            {renderHeader()}
+            {renderContent()}
+          </>
+        )}
         {createDialogElement}
         {importDialogElement}
         {launchDialogElement}

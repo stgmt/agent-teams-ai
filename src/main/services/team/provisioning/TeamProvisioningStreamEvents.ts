@@ -11,21 +11,24 @@ import {
   extractProvisioningStreamError,
   extractStreamUserText,
 } from './extractProvisioningStreamError';
-import {
-  hasCapturedUserVisibleSendMessage,
-  hasCapturedVisibleSendMessage,
-} from './leadRelayCapturedMessageTools';
+import { hasCapturedVisibleSendMessage } from './leadRelayCapturedMessageTools';
 import {
   appendLeadRelayCaptureAssistantText,
   isSyntheticLeadTextChunk,
   type LeadRelayCaptureStreamState,
+  noteLeadRelayCaptureSendCalls,
   resolveLeadRelayCaptureOnTerminalResult,
+  settleLeadRelayCaptureSendCalls,
 } from './leadRelayCaptureStreamHooks';
 import {
   clearGeminiPostLaunchHydrationState,
   clearPostCompactReminderState,
 } from './TeamProvisioningCleanup';
 import { readLiveLeadTextBuffer, recordLeadTurnText } from './TeamProvisioningLeadUserReplyTracker';
+import {
+  dropUnsettledLeadSendMessages,
+  type PendingLeadSendMessage,
+} from './TeamProvisioningLeadSendMessageCapture';
 import { buildRestartStillRunningReason } from './TeamProvisioningMemberSpawnStatusPolicy';
 import { recordProvisioningFirstTurnStart } from './TeamProvisioningTimeoutLifecycle';
 
@@ -85,6 +88,7 @@ export interface TeamProvisioningStreamRun {
   suppressGeminiPostLaunchHydrationOutput: boolean;
   activeCrossTeamReplyHints: unknown[];
   pendingInboxRelayCandidates: unknown[];
+  pendingLeadSendMessages: Map<string, PendingLeadSendMessage>;
   silentUserDmForwardClearHandle: NodeJS.Timeout | null;
   leadContextUsage: {
     promptInputTokens: number | null;
@@ -158,6 +162,7 @@ export interface TeamProvisioningStreamEventPorts<TRun extends TeamProvisioningS
   startRuntimeToolActivity(run: TRun, memberName: string, block: Record<string, unknown>): void;
   getRunLeadName(run: TRun): string;
   captureTeamSpawnEvents(run: TRun, content: Record<string, unknown>[]): void;
+  /** Gets send tool_use blocks and, later, their tool_result blocks. */
   captureSendMessages(run: TRun, content: Record<string, unknown>[]): void;
   /** Closes the user requests this lead turn answered; may persist a fallback reply. */
   finishLeadUserReplyTurn(run: TRun): void;
@@ -289,10 +294,7 @@ export function extractStreamContentBlocks(
   return Array.isArray(innerContent) ? (innerContent as Record<string, unknown>[]) : [];
 }
 
-export {
-  hasCapturedUserVisibleSendMessage,
-  hasCapturedVisibleSendMessage,
-} from './leadRelayCapturedMessageTools';
+export { hasCapturedVisibleSendMessage } from './leadRelayCapturedMessageTools';
 
 export function getStableLeadThoughtMessageId(msg: Record<string, unknown>): string | null {
   const entryUuid = typeof msg.uuid === 'string' ? msg.uuid.trim() : '';
@@ -583,7 +585,8 @@ export function handleTeamProvisioningStreamJsonMessage<TRun extends TeamProvisi
         );
       }
     }
-    if (content.some((block) => block?.type === 'tool_result')) {
+    const hasToolResult = content.some((block) => block?.type === 'tool_result');
+    if (hasToolResult) {
       run.leadRelayCapture?.touch?.();
     }
     for (const block of content) {
@@ -595,6 +598,13 @@ export function handleTeamProvisioningStreamJsonMessage<TRun extends TeamProvisi
         block.is_error === true
       );
     }
+    if (hasToolResult) {
+      // Lead send side effects and relay suppression wait for the runtime to accept the call.
+      if (run.leadRelayCapture) {
+        settleLeadRelayCaptureSendCalls(run.leadRelayCapture, content);
+      }
+      ports.captureSendMessages(run, content);
+    }
     ports.handleNativeTeammateUserMessage(run, msg);
     return;
   }
@@ -604,12 +614,7 @@ export function handleTeamProvisioningStreamJsonMessage<TRun extends TeamProvisi
 
     const hasVisibleSendMessage = hasCapturedVisibleSendMessage(content, run.teamName);
     if (run.leadRelayCapture) {
-      if (hasVisibleSendMessage) {
-        run.leadRelayCapture.hasVisibleSendMessage = true;
-      }
-      if (hasCapturedUserVisibleSendMessage(content, run.teamName)) {
-        run.leadRelayCapture.hasUserVisibleSendMessage = true;
-      }
+      noteLeadRelayCaptureSendCalls(run.leadRelayCapture, content, run.teamName);
     }
 
     const textParts = content
@@ -896,6 +901,7 @@ function handleSuccessResultMessage<TRun extends TeamProvisioningStreamRun>(
   ports.resetLiveLeadTextBuffer(run);
   run.activeCrossTeamReplyHints = [];
   run.pendingInboxRelayCandidates = [];
+  dropUnsettledLeadSendMessages(run, logger);
   run.silentUserDmForward = null;
   if (run.silentUserDmForwardClearHandle) {
     clearTimeout(run.silentUserDmForwardClearHandle);
@@ -935,6 +941,7 @@ function handleErrorResultMessage<TRun extends TeamProvisioningStreamRun>(
   run.pendingDirectCrossTeamSendRefresh = false;
   run.activeCrossTeamReplyHints = [];
   run.pendingInboxRelayCandidates = [];
+  dropUnsettledLeadSendMessages(run, logger);
   run.silentUserDmForward = null;
   if (run.silentUserDmForwardClearHandle) {
     clearTimeout(run.silentUserDmForwardClearHandle);

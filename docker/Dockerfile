@@ -10,7 +10,7 @@
 # Run:    docker run -p 3456:3456 -v ~/.claude:/data/.claude:ro -v agent-teams-app-data:/data/app-data agent-teams-ai
 # =============================================================================
 
-ARG NODE_VERSION=26.11.1
+ARG NODE_VERSION=26.12.1
 # Keep in sync with "packageManager" in package.json.
 ARG PNPM_VERSION=11.22.0
 

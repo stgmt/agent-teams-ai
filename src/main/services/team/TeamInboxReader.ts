@@ -460,13 +460,13 @@ export class TeamInboxReader {
   }
 
   /**
-   * Inbox owners that can be team members. An agent can address a message to a name the
-   * app would never accept for a member (a row of dashes, for one); that inbox is still
-   * read by getMessages, but it must not become a roster entry or a work-sync member.
+   * Inbox owners that can be team members. Invalid member names remain readable by
+   * message-history readers, but must not become roster or work-sync members.
    */
   async listInboxNames(teamName: string): Promise<string[]> {
     return (await this.listInboxFileNames(teamName)).filter(
-      (name) => validateTeamMemberNameFormat(name) === null
+      (name) =>
+        name.length > 0 && name.trim() === name && validateTeamMemberNameFormat(name) === null
     );
   }
 

@@ -37,8 +37,18 @@ const DECLARED_PUBLIC_SERVICE_ENTRYPOINTS = [
   'deliverOpenCodeLaunchPromptToLead',
   // App composition reads HTTP runtime ownership and installs the synchronous launch fence.
   'hasLiveOpenCodeMcpConsumers',
+  // Startup passes leave teams of other app profiles and native sessions alone.
+  'isTeamManagedByThisProfile',
+  // The synchronous quit-time backup leaves them alone too.
+  'isTeamManagedByThisProfileSync',
   'launchTeam',
+  // Opening a team repairs crash-stale task intervals only for teams this profile manages.
+  'repairStaleTaskActivityIntervalsBeforeSnapshot',
+  // Human message send may explicitly repair a verified OpenCode recipient identity.
+  'resolveRuntimeRecipientProviderIdForUserSend',
   'restartLeadRuntime',
+  // Both watchdog passes are admitted only for teams this profile manages.
+  'scanOpenCodePromptDeliveryWatchdog',
   'setLaunchAdmissionGuard',
   'setRuntimeRecoveryFailureObserver',
   'setTeamChangeEmitter',
@@ -52,6 +62,7 @@ const DOCUMENTED_EFFECTIVE_PUBLIC_SERVICE_INSTANCE_MEMBERS = [
   'cancelProvisioning',
   'cleanupPrelaunchBackup',
   'clearPendingCrossTeamReplyExpectation',
+  'clearStoppedLaneStopBackoff',
   'createTeam',
   'deliverOpenCodeLaunchPromptToLead',
   'deliverOpenCodeMemberMessage',
@@ -84,9 +95,12 @@ const DOCUMENTED_EFFECTIVE_PUBLIC_SERVICE_INSTANCE_MEMBERS = [
   'hasActiveTeamRuntimes',
   'hasLiveOpenCodeMcpConsumers',
   'hasProvisioningRun',
+  'hasTeamOperationInProgress',
   'initializeToolApprovalSettingsForLaunch',
   'isOpenCodeRuntimeRecipient',
   'isTeamAlive',
+  'isTeamManagedByThisProfile',
+  'isTeamManagedByThisProfileSync',
   'launchTeam',
   'notifyLanguageChange',
   'prepareForProvisioning',
@@ -107,6 +121,7 @@ const DOCUMENTED_EFFECTIVE_PUBLIC_SERVICE_INSTANCE_MEMBERS = [
   'repairStaleTaskActivityIntervalsBeforeSnapshot',
   'resolveCrossTeamReplyMetadata',
   'resolveRuntimeRecipientProviderId',
+  'resolveRuntimeRecipientProviderIdForUserSend',
   'respondToToolApproval',
   'restartLeadRuntime',
   'restartMember',

@@ -190,6 +190,7 @@ import {
   collectTeamScopedVisibleLoadingResets,
   teamProvisioningAttemptTracker,
 } from '../team/teamScopedStateCleanup';
+import { preserveReliableTaskBoardSnapshot } from '../team/teamSnapshotReadFallback';
 import {
   structurallySharePlainValue,
   structurallyShareTeamSnapshot,
@@ -2984,16 +2985,17 @@ export const createTeamSlice: StateCreator<AppState, [], [], TeamSlice> = (set, 
         }
 
         const previousForProjection = selectTeamDataForName(state, teamName) ?? previousData;
+        const reliableData = preserveReliableTaskBoardSnapshot(previousForProjection, data);
         const projectedTeamData = previousForProjection
           ? {
-              ...data,
+              ...reliableData,
               tasks: preserveKnownTaskChangePresence(
                 teamName,
                 previousForProjection.tasks,
-                data.tasks
+                reliableData.tasks
               ),
             }
-          : data;
+          : reliableData;
         const nextTeamData = structurallyShareTeamSnapshot(
           previousForProjection,
           projectedTeamData
@@ -3274,12 +3276,13 @@ export const createTeamSlice: StateCreator<AppState, [], [], TeamSlice> = (set, 
         )
       )
         return;
+      const reliableData = preserveReliableTaskBoardSnapshot(previousData, data);
       const projectedTeamData = previousData
         ? {
-            ...data,
-            tasks: preserveKnownTaskChangePresence(teamName, previousData.tasks, data.tasks),
+            ...reliableData,
+            tasks: preserveKnownTaskChangePresence(teamName, previousData.tasks, reliableData.tasks),
           }
-        : data;
+        : reliableData;
       const nextTeamData = structurallyShareTeamSnapshot(previousData, projectedTeamData);
       let projectedGlobalTaskNotifications: GlobalTaskNotificationParams | null = null;
       const snapshotToken = dataResult.token;
@@ -3346,7 +3349,7 @@ export const createTeamSlice: StateCreator<AppState, [], [], TeamSlice> = (set, 
       );
       recordLastResolvedTeamDataRefresh(teamName);
       const invalidationState = previousData
-        ? collectTaskChangeInvalidationState(teamName, previousData.tasks, data.tasks)
+        ? collectTaskChangeInvalidationState(teamName, previousData.tasks, nextTeamData.tasks)
         : { cacheKeys: [], taskIds: [] };
       if (invalidationState.cacheKeys.length > 0) {
         get().invalidateTaskChangePresence(invalidationState.cacheKeys);

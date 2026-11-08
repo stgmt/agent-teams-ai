@@ -7,6 +7,8 @@ import {
 } from './provisioning/TeamProvisioningLeadRuntimeRestart';
 import { hasLiveOpenCodeMcpConsumers } from './provisioning/TeamProvisioningMcpConsumerQuery';
 import { TeamProvisioningOpenCodeAggregatePrimaryFacade } from './provisioning/TeamProvisioningOpenCodeAggregatePrimaryFacade';
+import { hasCommittedOpenCodeRuntimeBootstrapSessionEvidence } from './provisioning/TeamProvisioningOpenCodeBootstrapEvidence';
+import { resolveOpenCodeRecipientIdentityForUserSend } from './provisioning/TeamProvisioningOpenCodeRecipientIdentityForUserSend';
 import { killTeamProcessAndWait } from './provisioning/TeamProvisioningRunProgress';
 import { OpenCodeTaskLogAttributionStore } from './taskLogs/stream/OpenCodeTaskLogAttributionStore';
 import { TeamAttachmentStore } from './TeamAttachmentStore';
@@ -107,6 +109,78 @@ export class TeamProvisioningService extends TeamProvisioningOpenCodeAggregatePr
 
   setTeamChangeEmitter(emitter: ((event: TeamChangeEvent) => void) | null): void {
     this.teamChangeEmitter = emitter;
+  }
+
+  /** Teams of other app profiles and native sessions are read-only for background passes. */
+  async isTeamManagedByThisProfile(teamName: string): Promise<boolean> {
+    return this.profileOwnership.isManagedByThisProfile(teamName);
+  }
+
+  /** Synchronous twin for passes that cannot await, such as the quit-time backup. */
+  isTeamManagedByThisProfileSync(teamName: string): boolean {
+    return this.profileOwnership.isManagedByThisProfileSync(teamName);
+  }
+
+  /** Explicit user-send command; the ordinary recipient query remains read-only. */
+  async resolveRuntimeRecipientProviderIdForUserSend(
+    teamName: string,
+    memberName: string
+  ): Promise<TeamProviderId | undefined> {
+    return resolveOpenCodeRecipientIdentityForUserSend(
+      { teamName, memberName },
+      {
+        resolveProviderId: (name, member) => super.resolveRuntimeRecipientProviderId(name, member),
+        getTrackedRunId: (name) => this.runTracking.getTrackedRunId(name),
+        getRun: (runId) => this.runs.get(runId),
+        readMetaMembers: (name) => this.membersMetaStore.getMembers(name),
+        readPersistedLaunchState: (name) => this.launchStateStore.read(name),
+        isTeamOwned: (name) => this.profileOwnership.isManagedByThisProfile(name),
+        isTeamStopped: (name) => this.launchStateStore.isStopped(name),
+        isRuntimeReachable: (name) => this.runTracking.canDeliverToOpenCodeRuntimeForTeam(name),
+        resolveActiveLaneRunId: (name, lane) =>
+          this.openCodeRuntimeRecoveryIdentity.resolveCurrentOpenCodeRuntimeRunId(name, lane),
+        hasCommittedRecipientSession: (input) =>
+          hasCommittedOpenCodeRuntimeBootstrapSessionEvidence(
+            input,
+            this.bootstrapEvidenceFacade.createOpenCodeRuntimeBootstrapEvidencePorts()
+          ),
+        getStopEpoch: (name) =>
+          `${this.stopAllTeamsGeneration}:${this.getStopTeamGeneration(name)}`,
+        materializeLaunchRoster: (input) =>
+          this.compatibilityDelegation.configFacade.materializeLaunchRoster(input),
+      }
+    );
+  }
+
+  /**
+   * Opening a team in the UI or over HTTP closes task intervals a crash left
+   * open in tasks/<team>/*.json. A team of another app profile or a native
+   * session keeps its task clocks for its owner to settle.
+   */
+  async repairStaleTaskActivityIntervalsBeforeSnapshot(teamName: string): Promise<void> {
+    if (!(await this.profileOwnership.isManagedByThisProfile(teamName))) {
+      return;
+    }
+    await super.repairStaleTaskActivityIntervalsBeforeSnapshot(teamName);
+  }
+
+  /**
+   * Both passes are admitted only for teams this profile manages. The startup
+   * pass may recover, deliver to and stop lanes. The continuity pass delivers
+   * to any team whose runtime looks reachable, and a live pid recorded in the
+   * team's processes.json counts as reachable even when another app instance
+   * owns that process.
+   */
+  async scanOpenCodePromptDeliveryWatchdog(
+    teamName: string,
+    pass: 'startup_recovery' | 'continuity' = 'startup_recovery'
+  ): Promise<number> {
+    if (!(await this.profileOwnership.isManagedByThisProfile(teamName))) {
+      return 0;
+    }
+    return pass === 'continuity'
+      ? this.openCodePromptDeliveryWatchdogCoordinator.scanContinuity(teamName)
+      : this.openCodePromptDeliveryWatchdogCoordinator.scan(teamName);
   }
 
   setRuntimeRecoveryFailureObserver(

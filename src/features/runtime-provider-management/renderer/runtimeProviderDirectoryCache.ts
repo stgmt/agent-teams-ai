@@ -8,6 +8,8 @@ export interface RuntimeProviderDirectoryCacheSnapshot {
   authoritative: boolean;
   totalCount?: number | null;
   nextCursor?: string | null;
+  runtimeRevision?: string | null;
+  lastSummaryFetchedAt?: string;
 }
 
 interface PublishRuntimeProviderDirectoryCacheInput {
@@ -15,8 +17,10 @@ interface PublishRuntimeProviderDirectoryCacheInput {
   entries: readonly RuntimeProviderDirectoryEntryDto[];
   fetchedAt: string;
   authoritative: boolean;
+  runtimeRevision?: string | null;
   totalCount?: number | null;
   nextCursor?: string | null;
+  readToken?: string;
 }
 
 const GLOBAL_SCOPE_KEY = '\u0000global';
@@ -34,6 +38,14 @@ const mergedFallbackByScope = new Map<
 >();
 let globalFallbackSource: RuntimeProviderDirectoryCacheSnapshot | null = null;
 let globalFallbackSnapshot: RuntimeProviderDirectoryCacheSnapshot | null = null;
+let observedRuntimeRevision: string | null = null;
+let invalidationEpoch = 0;
+const generationByScope = new Map<string, number>;
+
+/** Reject directory reads started before a credential mutation. */
+export function getRuntimeProviderDirectoryReadToken(projectPath?: string | null): string {
+  return `${invalidationEpoch}:${generationByScope.get(getScopeKey(projectPath)) ?? 0}`;
+}
 
 function getScopeKey(projectPath?: string | null): string {
   return projectPath?.trim() || GLOBAL_SCOPE_KEY;
@@ -170,9 +182,13 @@ function getSnapshotWithGlobalFallback(
 }
 
 export function getRuntimeProviderDirectoryCacheSnapshot(
-  projectPath?: string | null
+  projectPath?: string | null,
+  expectedRuntimeRevision?: string | null
 ): RuntimeProviderDirectoryCacheSnapshot | null {
-  return snapshotsByScope.get(getScopeKey(projectPath)) ?? EMPTY_SNAPSHOT;
+  const snapshot = snapshotsByScope.get(getScopeKey(projectPath)) ?? EMPTY_SNAPSHOT;
+  return expectedRuntimeRevision && snapshot?.runtimeRevision !== expectedRuntimeRevision
+    ? null
+    : snapshot;
 }
 
 export function getRuntimeProviderDirectoryCacheWithGlobalFallbackSnapshot(
@@ -188,26 +204,63 @@ export function publishRuntimeProviderDirectoryCache({
   authoritative,
   totalCount,
   nextCursor,
+  runtimeRevision,
+  readToken,
 }: PublishRuntimeProviderDirectoryCacheInput): void {
+  if (readToken !== undefined && readToken !== getRuntimeProviderDirectoryReadToken(projectPath)) return;
+  if (runtimeRevision && observedRuntimeRevision && runtimeRevision !== observedRuntimeRevision) {
+    return; // An in-flight response from a replaced binary is stale.
+  }
   const scopeKey = getScopeKey(projectPath);
   const current = snapshotsByScope.get(scopeKey);
   const nextFetchedAt = getFetchedAtTimestamp(fetchedAt);
   const currentFetchedAt = current ? getFetchedAtTimestamp(current.fetchedAt) : 0;
-
+  const matchingRevision =
+    !current || current.runtimeRevision === (runtimeRevision ?? observedRuntimeRevision);
   if (
     current &&
-    (nextFetchedAt < currentFetchedAt ||
-      (nextFetchedAt === currentFetchedAt && current.authoritative && !authoritative))
-  ) {
-    return;
-  }
-
+    matchingRevision &&
+    nextFetchedAt <
+      Math.max(currentFetchedAt, getFetchedAtTimestamp(current.lastSummaryFetchedAt ?? ''))
+  ) return;
+  const retainFullDirectory = matchingRevision && current?.authoritative && !authoritative;
+  const summaryByProvider = retainFullDirectory
+    ? new Map(entries.map((entry) => [entry.providerId, entry] as const))
+    : null;
+  const nextEntries = summaryByProvider
+    ? (current?.entries ?? []).map((entry) => {
+        const latest = summaryByProvider.get(entry.providerId);
+        if (!latest) return entry;
+        const connectionChanged =
+          entry.state !== latest.state ||
+          entry.setupKind !== latest.setupKind ||
+          entry.connectedAuthHint !== latest.connectedAuthHint ||
+          entry.ownership.length !== latest.ownership.length ||
+          entry.ownership.some((owner) => !latest.ownership.includes(owner));
+        return {
+          ...entry,
+          state: latest.state,
+          setupKind: latest.setupKind,
+          connectedAuthHint: latest.connectedAuthHint,
+          ownership: latest.ownership,
+          // Passive summaries have fewer capabilities. Keep live actions until
+          // connection changes make those actions stale (for example, logout).
+          actions: connectionChanged ? latest.actions : entry.actions,
+        };
+      })
+    : entries;
   const nextSnapshot: RuntimeProviderDirectoryCacheSnapshot = {
-    entries,
-    fetchedAt,
-    authoritative,
-    ...(totalCount !== undefined ? { totalCount } : {}),
-    ...(nextCursor !== undefined ? { nextCursor } : {}),
+    entries: nextEntries,
+    fetchedAt: retainFullDirectory ? (current?.fetchedAt ?? fetchedAt) : fetchedAt,
+    authoritative: retainFullDirectory ? true : authoritative,
+    runtimeRevision: runtimeRevision ?? observedRuntimeRevision,
+    ...(retainFullDirectory ? { lastSummaryFetchedAt: fetchedAt } : {}),
+    ...(retainFullDirectory
+      ? { totalCount: current?.totalCount, nextCursor: current?.nextCursor }
+      : {
+          ...(totalCount !== undefined ? { totalCount } : {}),
+          ...(nextCursor !== undefined ? { nextCursor } : {}),
+        }),
   };
   if (scopeKey === GLOBAL_SCOPE_KEY) {
     mergedFallbackByScope.clear();
@@ -215,6 +268,35 @@ export function publishRuntimeProviderDirectoryCache({
     mergedFallbackByScope.delete(scopeKey);
   }
   touchScope(scopeKey, nextSnapshot);
+  notifyScope(scopeKey);
+}
+
+/** Reject reads started before a credential mutation. Global credentials can
+ * be inherited by every project: retain display rows, but require revalidation
+ * before any project snapshot can claim an exact connected-provider count. */
+export function invalidateRuntimeProviderDirectoryScopeReads(projectPath?: string | null): void {
+  const scopeKey = getScopeKey(projectPath);
+  generationByScope.set(scopeKey, (generationByScope.get(scopeKey) ?? 0) + 1);
+  if (scopeKey !== GLOBAL_SCOPE_KEY) return;
+  // Fence even project requests that have not published a first snapshot.
+  invalidationEpoch += 1;
+  mergedFallbackByScope.clear();
+  for (const [projectScope, snapshot] of snapshotsByScope) {
+    if (projectScope === GLOBAL_SCOPE_KEY || !snapshot.authoritative) continue;
+    // Keep verified provider rows for display, but never present inherited
+    // credentials as a fresh, authoritative project count after global logout.
+    snapshotsByScope.set(projectScope, { ...snapshot, authoritative: false });
+    notifyScope(projectScope);
+  }
+}
+
+export function markRuntimeProviderDirectoryScopeUnverified(projectPath?: string | null): void {
+  invalidateRuntimeProviderDirectoryScopeReads(projectPath);
+  const scopeKey = getScopeKey(projectPath);
+  const current = snapshotsByScope.get(scopeKey);
+  if (!current?.authoritative) return;
+  touchScope(scopeKey, { ...current, authoritative: false });
+  mergedFallbackByScope.clear();
   notifyScope(scopeKey);
 }
 
@@ -255,7 +337,17 @@ export function useRuntimeProviderDirectoryCacheWithGlobalFallback(
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 }
 
-export function resetRuntimeProviderDirectoryCacheForTests(): void {
+/** The last settled revision survives hook unmounts; changes invalidate every scope. */
+export function observeRuntimeProviderDirectoryRevision(revision: string | null): void {
+  if (!revision || revision === observedRuntimeRevision) return;
+  if (observedRuntimeRevision !== null) invalidateRuntimeProviderDirectoryCache();
+  observedRuntimeRevision = revision;
+}
+
+/** Drop provider inventory when the installed OpenCode runtime identity changes. */
+export function invalidateRuntimeProviderDirectoryCache(): void {
+  invalidationEpoch += 1;
+  generationByScope.clear();
   snapshotsByScope.clear();
   mergedFallbackByScope.clear();
   globalFallbackSource = null;
@@ -265,4 +357,9 @@ export function resetRuntimeProviderDirectoryCacheForTests(): void {
       listener();
     }
   }
+}
+
+export function resetRuntimeProviderDirectoryCacheForTests(): void {
+  invalidateRuntimeProviderDirectoryCache();
+  observedRuntimeRevision = null;
 }

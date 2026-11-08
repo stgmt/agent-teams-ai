@@ -97,37 +97,52 @@ describe('TeamInboxReader', () => {
     expect(names).toEqual(['alice', 'bob']);
   });
 
-  it('listInboxNames leaves out inboxes whose name is not a valid member name', async () => {
+  it('does not treat malformed inbox filenames as team members', async () => {
     hoisted.dirs.set(inboxDir, [
       'alice.json',
-      '--------------------------.json',
       'user.json',
       'team-lead.json',
+      '--------------------------.json',
       'bad name.json',
+      '   .json',
+      ' alice.json',
+      'alice .json',
+      'CON.json',
       '*.json',
     ]);
-
-    const names = await reader.listInboxNames('my-team');
-    expect(names).toEqual(['alice', 'user', 'team-lead']);
+    expect(await reader.listInboxNames('my-team')).toEqual(['alice', 'user', 'team-lead']);
   });
 
-  it('getMessages still reads an inbox that is not a valid member name', async () => {
-    hoisted.dirs.set(inboxDir, ['--------------------------.json']);
+  it('still reads messages from an inbox with an invalid member name', async () => {
+    hoisted.dirs.set(inboxDir, ['alice.json', '--------------------------.json']);
+    hoisted.files.set(
+      '/mock/teams/my-team/inboxes/alice.json',
+      JSON.stringify([
+        {
+          from: 'bob',
+          text: 'regular inbox message',
+          timestamp: '2026-10-25T12:05:06.888Z',
+          read: false,
+          messageId: 'm-alice-inbox',
+        },
+      ])
+    );
     hoisted.files.set(
       '/mock/teams/my-team/inboxes/--------------------------.json',
       JSON.stringify([
         {
-          from: 'REVIWER',
-          text: 'approved',
+          from: 'reviewer',
+          text: 'review approved',
           timestamp: '2026-10-25T13:05:06.888Z',
           read: false,
-          messageId: 'm-dash-1',
+          messageId: 'm-dash-inbox',
         },
       ])
     );
-
-    const messages = await reader.getMessages('my-team');
-    expect(messages.map((message) => message.messageId)).toEqual(['m-dash-1']);
+    expect((await reader.getMessages('my-team')).map((message) => message.messageId)).toEqual([
+      'm-dash-inbox',
+      'm-alice-inbox',
+    ]);
   });
 
   it('getMessagesFor returns empty for corrupted JSON', async () => {

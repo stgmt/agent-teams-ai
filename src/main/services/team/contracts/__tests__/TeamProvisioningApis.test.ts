@@ -584,6 +584,9 @@ describe('TeamProvisioning API binders', () => {
         this.stoppedTeamName = teamName;
         return Promise.resolve();
       },
+      clearStoppedLaneStopBackoff(): void {
+        return undefined;
+      },
       isTeamAlive(this: RuntimeSource, teamName: string): boolean {
         return teamName === this.teamName;
       },
@@ -672,6 +675,7 @@ describe('TeamProvisioning API binders', () => {
           progress: null,
         }),
       stopTeam: () => Promise.resolve(),
+      clearStoppedLaneStopBackoff: () => undefined,
       isTeamAlive: () => true,
       getAliveTeams: () => ['team-bound'],
       getCurrentRunId: () => 'run-bound',
@@ -711,6 +715,7 @@ describe('TeamProvisioning API binders', () => {
     const lifecycleApi = bindTeamMemberLifecycleApi(lifecycleSource);
 
     expect(Object.keys(runtimeApi).sort()).toEqual([
+      'clearStoppedLaneStopBackoff',
       'getAliveTeams',
       'getCurrentRunId',
       'getRuntimeState',
@@ -939,6 +944,9 @@ describe('TeamProvisioning API binders', () => {
       resolveRuntimeRecipientProviderId(): Promise<'opencode'> {
         return Promise.resolve('opencode');
       },
+      resolveRuntimeRecipientProviderIdForUserSend(): Promise<'opencode'> {
+        return Promise.resolve('opencode');
+      },
       getLiveLeadProcessMessages(this: MessagingSource): InboxMessage[] {
         return this.liveMessages;
       },
@@ -983,6 +991,9 @@ describe('TeamProvisioning API binders', () => {
     await expect(api.resolveRuntimeRecipientProviderId('team-bound', 'worker')).resolves.toBe(
       'opencode'
     );
+    await expect(
+      api.resolveRuntimeRecipientProviderIdForUserSend('team-bound', 'worker')
+    ).resolves.toBe('opencode');
 
     pushLiveLeadProcessMessage('team-bound', {
       from: 'user',
