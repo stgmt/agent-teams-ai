@@ -9,6 +9,7 @@ export type RegistryTaskClientErrorCode =
   | 'MISSING_TOKEN'
   | 'INVALID_URL'
   | 'TOKEN_READ_FAILED'
+  | 'CREDENTIAL_STORE_UNREADABLE'
   | 'INVALID_ARGUMENT'
   | 'UNAUTHORIZED'
   | 'HTTP_ERROR'
