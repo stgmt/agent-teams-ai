@@ -32,6 +32,12 @@ export interface ConfiguredMemberLaunch {
    * `omp-spec-kit` MCP server substitutes these two variables.
    */
   specRegistryEnv?: Readonly<Record<string, string>>;
+  /**
+   * The bound-specification recipe. Kept separate from `instructions` because a
+   * member's briefing is built from the app-managed bootstrap text, not from
+   * `instructions`, and must still carry the recipe.
+   */
+  specInstructions?: string;
   worktree?: Readonly<{
     baseRepoPath: string;
     branchName: string;

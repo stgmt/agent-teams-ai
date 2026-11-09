@@ -95,7 +95,10 @@ describe('canonical configured team launch settings', () => {
     expect(lead?.instructions).toContain('archiveSpec');
     expect(lead?.instructions).toContain('spec_claim');
     const builder = await settings.findConfiguredMember(run, 'builder');
-    expect(builder?.instructions).toContain('stgm/tokenplan / registry-check');
+    // Members are launched from the app-managed bootstrap briefing, so the recipe
+    // travels in its own field and must not duplicate inside `instructions`.
+    expect(builder?.specInstructions).toContain('stgm/tokenplan / registry-check');
+    expect(builder?.instructions).not.toContain('spec_patch');
   });
 
   it('keeps instructions free of specification text when the team has no bindings', async () => {
@@ -103,6 +106,7 @@ describe('canonical configured team launch settings', () => {
     await settings.capture(run);
     const builder = await settings.findConfiguredMember(run, 'builder');
     expect(builder?.instructions).not.toContain('spec_patch');
+    expect(builder?.specInstructions).toBeUndefined();
   });
 
   it('never hands registry credentials to a team without specification bindings', async () => {

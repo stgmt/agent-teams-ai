@@ -168,8 +168,9 @@ function renderSpecBindingInstructions(
     '- addBacklogTask, registerIncidentBacklog: backlog and incidents.',
     '- createRoadmap (slug must match roadmap-*), assembleRoadmap: build ROADMAP.md from covered specs.',
     '',
-    'Design and scenarios: a change to the `.feature` file or to DESIGN.md needs a designReview receipt in the same spec_patch,',
-    'otherwise the hook answers DESIGN_REVIEW_REQUIRED. Scenario ids stay stable (@id:SCEN-...).',
+    'Scenarios: changing, renaming, deleting or archiving a specification that carries `.feature` scenarios needs a designReview',
+    'receipt in the same spec_patch, otherwise the hook answers DESIGN_REVIEW_REQUIRED. DESIGN.md edits do not require it.',
+    'Scenario ids stay stable (@id:SCEN-...).',
     'Roadmap work: create the roadmap spec with createRoadmap, write TASKS.md entries whose Requirements/Refs point at the covered',
     'spec requirements, then run assembleRoadmap and check the result with spec_inspect validation and spec_graph edges.',
     '',
@@ -378,6 +379,9 @@ export class NodeTeamLaunchSettings implements MemberLaunchSettingsPort {
           effort: meta.effort as TeamCreateRequest['effort'],
           syncModelsWithLead: meta.syncModelsWithLead,
         });
+    const specInstructions = meta.specBindings?.length
+      ? renderSpecBindingInstructions(meta.specBindings)
+      : undefined;
     const providerId = normalizeOptionalTeamProviderId(effective.providerId);
     if (!providerId) throw new Error('Configured member provider is required');
     const workspace = this.workspaces.get(captured);
@@ -408,12 +412,13 @@ export class NodeTeamLaunchSettings implements MemberLaunchSettingsPort {
       baseWorkingDirectory,
       worktree: !member.cwd?.trim() ? workspace?.worktree : undefined,
       isolation: member.isolation,
-      instructions: [
-        lead ? (meta.prompt ?? '') : [member.role, member.workflow].filter(Boolean).join('\n\n'),
-        meta.specBindings?.length ? renderSpecBindingInstructions(meta.specBindings) : '',
-      ]
-        .filter((part) => part.trim().length > 0)
-        .join('\n\n'),
+      // The lead is launched from `instructions`, so the recipe rides with it.
+      // Members get their briefing from the app-managed bootstrap text; the
+      // recipe reaches them through `specInstructions` in the briefing builder.
+      instructions: lead
+        ? [meta.prompt ?? '', specInstructions ?? ''].filter((part) => part.trim()).join('\n\n')
+        : [member.role, member.workflow].filter(Boolean).join('\n\n'),
+      ...(specInstructions ? { specInstructions } : {}),
     });
   }
 
