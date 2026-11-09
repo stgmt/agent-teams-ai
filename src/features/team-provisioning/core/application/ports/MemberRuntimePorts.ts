@@ -27,11 +27,16 @@ export interface ConfiguredMemberLaunch {
   resumeSessionId?: string; // resumes an existing CLI session instead of starting a new one
   taskLedgerProjectDirectory?: string;
   /**
-   * Registry endpoint and bearer token for the spec MCP the agent inherits.
-   * Present only for teams that have specification bindings; the agent's
-   * `omp-spec-kit` MCP server substitutes these two variables.
+   * Registry endpoint and bearer token for the app MCP child that proxies the
+   * specification registry. It goes into the generated `agent-teams` server
+   * environment, never into the agent CLI environment.
    */
-  specRegistryEnv?: Readonly<Record<string, string>>;
+  specMcpServerEnv?: Readonly<Record<string, string>>;
+  /** Registry team id and bound project/spec pairs the proxy enforces. */
+  specScope?: Readonly<{
+    teamId: string | null;
+    bindings: readonly { project: string; spec: string }[];
+  }>;
   /**
    * The bound-specification recipe. Kept separate from `instructions` because a
    * member's briefing is built from the app-managed bootstrap text, not from

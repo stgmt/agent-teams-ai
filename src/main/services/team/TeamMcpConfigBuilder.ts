@@ -48,6 +48,8 @@ export interface McpLaunchSpecResolveOptions {
 interface WriteMcpConfigOptions {
   mcpPolicy?: TeamMemberMcpPolicy;
   controlApiBaseUrl?: string | null;
+  /** Extra environment for the app MCP child only; the agent CLI never sees it. */
+  serverEnv?: Readonly<Record<string, string>>;
 }
 
 const MCP_SERVER_NAME = 'agent-teams';
@@ -575,6 +577,7 @@ export class TeamMcpConfigBuilder {
         ...launchSpec.env,
         [MCP_CLAUDE_DIR_ENV]: getClaudeBasePath(),
         ...(controlApiBaseUrl ? { [MCP_CONTROL_URL_ENV]: controlApiBaseUrl } : {}),
+        ...(options.serverEnv ?? {}),
         ...getDesktopMcpChildEnvironment(),
       },
     });

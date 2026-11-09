@@ -73,7 +73,7 @@ describe('canonical configured team launch settings', () => {
     });
     await settings.capture(run);
     const lead = await settings.findConfiguredMember(run, 'team-lead');
-    expect(lead?.specRegistryEnv).toEqual({
+    expect(lead?.specMcpServerEnv).toEqual({
       OMP_SPEC_REGISTRY_URL: 'http://127.0.0.1:8650/mcp',
       OMP_SPEC_REGISTRY_TOKEN: 'TEST-token',
     });
@@ -83,6 +83,10 @@ describe('canonical configured team launch settings', () => {
   it('carries the bound specifications and the registry recipe in the launch instructions', async () => {
     const { settings } = setup({
       specBindings: [{ project: 'stgm/tokenplan', spec: 'registry-check' }],
+      specRegistryEnvironment: async () => ({
+        OMP_SPEC_REGISTRY_URL: 'http://127.0.0.1:8650/mcp',
+        OMP_SPEC_REGISTRY_TOKEN: 'TEST-token',
+      }),
     });
     await settings.capture(run);
     const lead = await settings.findConfiguredMember(run, 'team-lead');
@@ -117,11 +121,11 @@ describe('canonical configured team launch settings', () => {
     const { settings } = setup({ specRegistryEnvironment });
     await settings.capture(run);
     const builder = await settings.findConfiguredMember(run, 'builder');
-    expect(builder?.specRegistryEnv).toBeUndefined();
+    expect(builder?.specMcpServerEnv).toBeUndefined();
     expect(specRegistryEnvironment).not.toHaveBeenCalled();
   });
 
-  it('starts a bound team even when the registry credential cannot be resolved', async () => {
+  it('refuses to launch a bound team when the registry credential cannot be resolved', async () => {
     const { settings } = setup({
       specBindings: [{ project: 'stgm/tokenplan', spec: 'registry-check' }],
       specRegistryEnvironment: async () => {
@@ -129,9 +133,23 @@ describe('canonical configured team launch settings', () => {
       },
     });
     await settings.capture(run);
+    await expect(settings.findConfiguredMember(run, 'builder')).rejects.toThrow('MISSING_TOKEN');
+  });
+
+  it('publishes the registry team id and bound pairs as the proxy scope', async () => {
+    const { settings } = setup({
+      specBindings: [{ project: 'stgm/tokenplan', spec: 'registry-check' }],
+      specRegistryEnvironment: async () => ({
+        OMP_SPEC_REGISTRY_URL: 'http://127.0.0.1:8650/mcp',
+        OMP_SPEC_REGISTRY_TOKEN: 'TEST-token',
+      }),
+    });
+    await settings.capture(run);
     const builder = await settings.findConfiguredMember(run, 'builder');
-    expect(builder?.specRegistryEnv).toBeUndefined();
-    expect(builder?.memberName).toBe('builder');
+    expect(builder?.specScope).toEqual({
+      teamId: null,
+      bindings: [{ project: 'stgm/tokenplan', spec: 'registry-check' }],
+    });
   });
 
   it('captures one revision of the configured roster, including the lead, and resolves inherited settings', async () => {

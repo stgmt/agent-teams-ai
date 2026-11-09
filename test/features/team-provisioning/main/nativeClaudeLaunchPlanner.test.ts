@@ -190,30 +190,34 @@ describe('native Claude launch planning with app-owned roster and scoped tools',
     }
   );
 
-  it('passes the spec registry endpoint and token into the launched agent environment', async () => {
-    const { planner } = setup();
-    const plan = await planner.prepare(
-      {
-        ...settings,
-        specRegistryEnv: {
+  it('never gives the agent CLI a registry credential, even when the parent has one', async () => {
+    const previous = {
+      OMP_SPEC_REGISTRY_URL: process.env.OMP_SPEC_REGISTRY_URL,
+      OMP_SPEC_REGISTRY_TOKEN: process.env.OMP_SPEC_REGISTRY_TOKEN,
+    };
+    process.env.OMP_SPEC_REGISTRY_URL = 'http://127.0.0.1:8650/mcp';
+    process.env.OMP_SPEC_REGISTRY_TOKEN = 'TEST-provider-token';
+    try {
+      const { planner, prepareProvider } = setup();
+      prepareProvider.mockResolvedValue({
+        executable: 'TEST-claude.exe',
+        env: {
+          TEST_AUTH: 'TEST-secret',
           OMP_SPEC_REGISTRY_URL: 'http://127.0.0.1:8650/mcp',
-          OMP_SPEC_REGISTRY_TOKEN: 'TEST-registry-token',
+          OMP_SPEC_REGISTRY_TOKEN: 'TEST-provider-token',
         },
-      },
-      token,
-      new AbortController().signal
-    );
-    expect(plan.env).toMatchObject({
-      OMP_SPEC_REGISTRY_URL: 'http://127.0.0.1:8650/mcp',
-      OMP_SPEC_REGISTRY_TOKEN: 'TEST-registry-token',
-    });
-  });
-
-  it('leaves an unbound team without registry variables or spec tools', async () => {
-    const { planner } = setup();
-    const plan = await planner.prepare(settings, token, new AbortController().signal);
-    expect(plan.env).not.toHaveProperty('OMP_SPEC_REGISTRY_URL');
-    expect(plan.env).not.toHaveProperty('OMP_SPEC_REGISTRY_TOKEN');
+        args: [],
+      });
+      const plan = await planner.prepare(settings, token, new AbortController().signal);
+      expect(plan.env).not.toHaveProperty('OMP_SPEC_REGISTRY_URL');
+      expect(plan.env).not.toHaveProperty('OMP_SPEC_REGISTRY_TOKEN');
+      expect(plan.env).not.toHaveProperty('OMP_SPEC_REGISTRY_TOKEN_FILE');
+    } finally {
+      for (const [key, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
   });
 
   it('isolates personal task lists by root, team and member while keeping restart identity stable', async () => {

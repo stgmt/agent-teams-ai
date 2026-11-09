@@ -329,8 +329,8 @@ export class NodeTeamLaunchSettings implements MemberLaunchSettingsPort {
     }
     const member = this.withConfiguredLead(members).find((entry) => entry.name === memberName);
     if (!member) return null;
-    const specRegistryEnv = await this.resolveSpecRegistryEnv(meta);
-    return this.resolveMember(run, captured, meta, member, specRegistryEnv);
+    const specMcpServerEnv = await this.resolveSpecMcpServerEnv(meta);
+    return this.resolveMember(run, captured, meta, member, specMcpServerEnv);
   }
 
   async runtimeConfiguration(run: TeamRunIdentity): Promise<Readonly<ConfiguredNativeTeam>> {
@@ -340,7 +340,7 @@ export class NodeTeamLaunchSettings implements MemberLaunchSettingsPort {
     if (revision(meta, members) !== captured.configurationRevision) {
       throw new Error('Canonical team launch settings changed after admission');
     }
-    const specRegistryEnv = await this.resolveSpecRegistryEnv(meta);
+    const specMcpServerEnv = await this.resolveSpecMcpServerEnv(meta);
     return Object.freeze({
       configurationRevision: captured.configurationRevision,
       createdAt: meta.createdAt,
@@ -348,7 +348,7 @@ export class NodeTeamLaunchSettings implements MemberLaunchSettingsPort {
       members: Object.freeze(
         this.withConfiguredLead(members).map((member) =>
           Object.freeze({
-            launch: this.resolveMember(run, captured, meta, member, specRegistryEnv),
+            launch: this.resolveMember(run, captured, meta, member, specMcpServerEnv),
             color: member.color,
             joinedAt: member.joinedAt ?? meta.createdAt,
           })
@@ -362,7 +362,7 @@ export class NodeTeamLaunchSettings implements MemberLaunchSettingsPort {
     captured: Readonly<CapturedTeam>,
     meta: TeamMetaFile,
     member: TeamMember,
-    specRegistryEnv?: Readonly<Record<string, string>>
+    specMcpServerEnv?: Readonly<Record<string, string>>
   ): Readonly<ConfiguredMemberLaunch> {
     const lead = isCanonicalSettingsLeadMember(member);
     const effective = lead
@@ -407,7 +407,18 @@ export class NodeTeamLaunchSettings implements MemberLaunchSettingsPort {
       skipPermissions: meta.skipPermissions !== false,
       limitContext: meta.limitContext === true,
       extraCliArgs: meta.extraCliArgs,
-      ...(specRegistryEnv ? { specRegistryEnv } : {}),
+      ...(specMcpServerEnv ? { specMcpServerEnv } : {}),
+      ...(meta.specBindings?.length
+        ? {
+            specScope: {
+              teamId: typeof meta.registryTeamId === 'string' ? meta.registryTeamId : null,
+              bindings: meta.specBindings.map((binding) => ({
+                project: binding.project,
+                spec: binding.spec,
+              })),
+            },
+          }
+        : {}),
       workingDirectory,
       baseWorkingDirectory,
       worktree: !member.cwd?.trim() ? workspace?.worktree : undefined,
@@ -429,22 +440,23 @@ export class NodeTeamLaunchSettings implements MemberLaunchSettingsPort {
    * credential must not block the launch: the agent simply starts without spec
    * tools and the app reports the registry error on its own paths.
    */
-  private async resolveSpecRegistryEnv(
+  private async resolveSpecMcpServerEnv(
     meta: TeamMetaFile
   ): Promise<Readonly<Record<string, string>> | undefined> {
     if (!meta.specBindings?.length) return undefined;
     const resolve = this.ports.specRegistryEnvironment;
-    if (!resolve) return undefined;
-    try {
-      const environment = await resolve();
-      if (!environment) return undefined;
-      const entries = Object.entries(environment).filter(
-        ([key, value]) => key.length > 0 && typeof value === 'string' && value.length > 0
-      );
-      return entries.length > 0 ? Object.freeze(Object.fromEntries(entries)) : undefined;
-    } catch {
-      return undefined;
+    if (!resolve) {
+      throw new Error('The team has bound specifications but no registry credential resolver');
     }
+    // No fallback: a bound team must launch with working spec tools or not at all.
+    const environment = await resolve();
+    const entries = Object.entries(environment ?? {}).filter(
+      ([key, value]) => key.length > 0 && typeof value === 'string' && value.length > 0
+    );
+    if (entries.length === 0) {
+      throw new Error('The team has bound specifications but no registry credential is configured');
+    }
+    return Object.freeze(Object.fromEntries(entries));
   }
 
   release(run: TeamRunIdentity): void {

@@ -280,9 +280,6 @@ export class NativeClaudeLaunchPlanner implements NodeMemberLaunchPlanner {
       const env = withoutParentGitSelection({
         ...provider.env,
         ...artifacts.env,
-        // The agent's own spec MCP server substitutes these two variables; a
-        // team without bindings gets no value here and therefore no spec tools.
-        ...(settings.specRegistryEnv ?? {}),
         CLAUDE_CODE_TASK_LIST_ID: personalTaskListId(token),
         CLAUDE_CODE_ENABLE_TASKS: '1',
         CLAUDE_CODE_BOOTSTRAP_RUN_ID: token.runId,
@@ -291,6 +288,11 @@ export class NativeClaudeLaunchPlanner implements NodeMemberLaunchPlanner {
       delete env.AGENT_TEAMS_LEAD_START_CREDENTIAL;
       // These fields describe this launch only, never a parent process's workspace.
       for (const key of [
+        // The registry credential belongs to the app MCP child; an inherited
+        // value would mount a second, duplicate spec server in the agent.
+        'OMP_SPEC_REGISTRY_URL',
+        'OMP_SPEC_REGISTRY_TOKEN',
+        'OMP_SPEC_REGISTRY_TOKEN_FILE',
         'CLAUDE_CODE_TASK_LEDGER_PROJECT_DIR',
         'CLAUDE_CODE_TEAM_WORKTREE_PATH',
         'CLAUDE_CODE_TEAM_WORKTREE_BRANCH',
