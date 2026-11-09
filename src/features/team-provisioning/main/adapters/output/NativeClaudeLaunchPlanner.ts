@@ -293,6 +293,9 @@ export class NativeClaudeLaunchPlanner implements NodeMemberLaunchPlanner {
         'OMP_SPEC_REGISTRY_URL',
         'OMP_SPEC_REGISTRY_TOKEN',
         'OMP_SPEC_REGISTRY_TOKEN_FILE',
+        // The project selector rides with the credential: inherited alone it
+        // points the spec-kit plugin at a corpus this team is not bound to.
+        'OMP_SPEC_PROJECT',
         'CLAUDE_CODE_TASK_LEDGER_PROJECT_DIR',
         'CLAUDE_CODE_TEAM_WORKTREE_PATH',
         'CLAUDE_CODE_TEAM_WORKTREE_BRANCH',

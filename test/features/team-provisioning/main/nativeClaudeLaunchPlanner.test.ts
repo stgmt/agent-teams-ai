@@ -205,6 +205,7 @@ describe('native Claude launch planning with app-owned roster and scoped tools',
           TEST_AUTH: 'TEST-secret',
           OMP_SPEC_REGISTRY_URL: 'http://127.0.0.1:8650/mcp',
           OMP_SPEC_REGISTRY_TOKEN: 'TEST-provider-token',
+          OMP_SPEC_PROJECT: 'OTHER/project',
         },
         args: [],
       });
@@ -212,6 +213,9 @@ describe('native Claude launch planning with app-owned roster and scoped tools',
       expect(plan.env).not.toHaveProperty('OMP_SPEC_REGISTRY_URL');
       expect(plan.env).not.toHaveProperty('OMP_SPEC_REGISTRY_TOKEN');
       expect(plan.env).not.toHaveProperty('OMP_SPEC_REGISTRY_TOKEN_FILE');
+      // The selector travels with the credential: alone it points the plugin at
+      // a corpus this team is not bound to.
+      expect(plan.env).not.toHaveProperty('OMP_SPEC_PROJECT');
     } finally {
       for (const [key, value] of Object.entries(previous)) {
         if (value === undefined) delete process.env[key];
