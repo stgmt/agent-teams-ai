@@ -1,9 +1,11 @@
 const kanbanStore = require('./kanbanStore.js');
-const taskStore = require('./taskStore.js');
 const tasks = require('./tasks.js');
 const reviewStateHelpers = require('./reviewState.js');
 const runtimeHelpers = require('./runtimeHelpers.js');
 const { withTeamBoardLock } = require('./boardLock.js');
+const pendingKanbanGuard = require('./pendingKanbanGuard.js');
+const pendingKanbanTransition = require('./pendingKanbanTransition.js');
+const taskStore = require('./taskStore.js');
 
 function getEffectiveReviewState(context, task) {
   const state = getKanbanState(context);
@@ -57,39 +59,21 @@ function assertKanbanColumnAllowed(context, task, column, options = {}) {
   }
 }
 
+function assertKanbanStateConsistent(context, state = getKanbanState(context)) {
+  pendingKanbanGuard.assertNoPendingTransitions(context.paths, taskStore);
+  return state;
+}
+
 function getKanbanState(context) {
-  return withTeamBoardLock(context.paths, () => readKanbanStateAlreadyLocked(context));
+  return withTeamBoardLock(context.paths, () => {
+    const state = kanbanStore.readKanbanState(context.paths, context.teamName);
+    return assertKanbanStateConsistent(context, state);
+  });
 }
 
 function readKanbanStateAlreadyLocked(context) {
-  return kanbanStore.readKanbanState(context.paths, context.teamName);
-}
-
-function assertKanbanStateConsistent(context, state) {
-  return kanbanStore.assertKanbanStateConsistent(context.paths, state);
-}
-
-function inspectPendingTransition(context, taskId) {
-  return withTeamBoardLock(context.paths, () => {
-    const snapshot = kanbanStore.inspectPendingTransition(context.paths, context.teamName, taskId);
-    if (snapshot.column === 'none') return snapshot;
-    try {
-      require('./taskArtifact.js').verifyTask(context, taskStore.readTask(context.paths, taskId));
-      return snapshot;
-    } catch {
-      return { ...snapshot, mode: 'conflict', reason: 'artifact_invalid' };
-    }
-  });
-}
-
-function resolvePendingTransition(context, taskId, transitionId, snapshotHash, mode, contextHash) {
-  return withTeamBoardLock(context.paths, () => {
-    const task = taskStore.readTask(context.paths, taskId, { includeDeleted: true });
-    if (task.pendingKanbanTransition?.kind !== 'status') {
-      require('./taskArtifact.js').verifyTask(context, task);
-    }
-    return kanbanStore.resolvePendingTransition(context.paths, context.teamName, taskId, transitionId, snapshotHash, mode, contextHash);
-  });
+  const state = kanbanStore.readKanbanState(context.paths, context.teamName);
+  return assertKanbanStateConsistent(context, state);
 }
 
 function setKanbanColumn(context, taskId, column, options = {}) {
@@ -97,15 +81,18 @@ function setKanbanColumn(context, taskId, column, options = {}) {
     const canonicalTaskId = tasks.resolveTaskId(context, taskId);
     const task = tasks.getTask(context, canonicalTaskId);
     assertKanbanColumnAllowed(context, task, String(column), options);
-    if (column === 'review' || column === 'approved') require('./taskArtifact.js').verifyTask(context, task);
-    kanbanStore.setKanbanColumn(
-      context.paths, context.teamName, canonicalTaskId, String(column), options.updateTask
-    );
+    const state = getKanbanState(context);
+    const targetTask = { ...task, reviewState: column };
+    pendingKanbanTransition.runPendingTransition(context, task, targetTask, {
+      kind: 'review',
+      column,
+      ...(column === 'review' ? { reviewer: state.tasks[canonicalTaskId]?.reviewer } : {}),
+    });
     return getKanbanState(context);
   });
 }
 
-function clearKanban(context, taskId, options) {
+function clearKanban(context, taskId, options = {}) {
   return withTeamBoardLock(context.paths, () => {
     const canonicalTaskId = tasks.resolveTaskId(context, taskId);
     const task = tasks.getTask(context, canonicalTaskId);
@@ -119,11 +106,15 @@ function clearKanban(context, taskId, options) {
           Array.isArray(orderedTaskIds) &&
           orderedTaskIds.some((entry) => String(entry) === String(canonicalTaskId))
       );
-    if (!hasTaskEntry && !hasColumnOrderRef) {
-      return state;
-    }
-    const transition = options && typeof options.transition === 'string' ? options.transition : 'direct';
-    const allowedInternalTransitions = new Set(['request_changes', 'rollback', 'status_reset', 'delete', 'restore']);
+    if (!hasTaskEntry && !hasColumnOrderRef) return state;
+    const transition = typeof options.transition === 'string' ? options.transition : 'direct';
+    const allowedInternalTransitions = new Set([
+      'request_changes',
+      'rollback',
+      'status_reset',
+      'delete',
+      'restore',
+    ]);
     const reviewState = getEffectiveReviewState(context, task);
     if (transition === 'direct' && reviewState !== 'none') {
       throw new Error(
@@ -133,19 +124,23 @@ function clearKanban(context, taskId, options) {
     if (transition !== 'direct' && !allowedInternalTransitions.has(transition)) {
       throw new Error(`Invalid kanban clear transition: ${transition}`);
     }
-    kanbanStore.clearKanbanWithTaskTransition(context.paths, context.teamName, canonicalTaskId, {
-      operation: 'clear', nextReviewState: options?.nextReviewState ?? 'none',
-    });
-    try {
-      return getKanbanState(context);
-    } catch (error) {
-      throw Object.assign(
-        new Error(`KANBAN_TRANSITION_UNCERTAIN: Task status transition for task ${canonicalTaskId} has an unknown outcome; action may have completed. Inspect the task and board before further changes. ${error.message}`),
-        { code: 'KANBAN_TRANSITION_UNCERTAIN', cause: error, taskId: canonicalTaskId }
-      );
-    }
+    const nextReviewState =
+      typeof options.nextReviewState === 'string' ? options.nextReviewState : 'none';
+    pendingKanbanTransition.runPendingTransition(
+      context,
+      task,
+      { ...task, reviewState: nextReviewState },
+      {
+        kind: transition === 'direct' ? 'status' : 'review',
+        column: 'none',
+        ...(transition === 'direct' ? { targetStatus: task.status } : {}),
+        operation: transition === 'request_changes' ? 'request_changes' : 'clear',
+      },
+    );
+    return getKanbanState(context);
   });
 }
+
 
 function listReviewers(context) {
   return getKanbanState(context).reviewers;
@@ -187,17 +182,33 @@ function removeReviewer(context, reviewer) {
 
 function updateColumnOrder(context, columnId, orderedTaskIds) {
   return withTeamBoardLock(context.paths, () => {
+    getKanbanState(context);
     const canonicalIds = orderedTaskIds.map((taskId) => tasks.resolveTaskId(context, taskId));
     return kanbanStore.updateColumnOrder(context.paths, context.teamName, columnId, canonicalIds);
   });
 }
 
+function inspectPendingTransition(context, taskId) {
+  return pendingKanbanTransition.inspectPendingTransition(context, taskId);
+}
+
+function resolvePendingTransition(context, taskId, transitionId, snapshotHash, mode, contextHash) {
+  return pendingKanbanTransition.resolvePendingTransition(
+    context,
+    taskId,
+    transitionId,
+    snapshotHash,
+    mode,
+    contextHash
+  );
+}
+
 module.exports = {
-  assertKanbanStateConsistent,
   readKanbanStateAlreadyLocked,
+  getKanbanState,
+  assertKanbanStateConsistent,
   inspectPendingTransition,
   resolvePendingTransition,
-  getKanbanState,
   setKanbanColumn,
   clearKanban,
   listReviewers,

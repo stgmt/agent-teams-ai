@@ -15,6 +15,7 @@ import type {
   OrphanedRunRecovery,
 } from './createNativeTeamLifecycle';
 import type { AppConnectionContext } from '@features/external-agent-connection/contracts';
+import type { TeamProfileOwnership } from '@main/services/team/provisioning/TeamProvisioningProfileOwnership';
 
 export interface NativeDesktopTeamRuntimeDependencies {
   owner: AppConnectionContext;
@@ -28,6 +29,8 @@ export interface NativeDesktopTeamRuntimeDependencies {
   inbox: NativeTeamLifecycleDependencies['inbox'];
   controlUrl(): Promise<string>;
   briefing: NativeTeamLifecycleDependencies['briefing'];
+  readStartupTasks: NativeTeamLifecycleDependencies['readStartupTasks'];
+  createController: NativeTeamLifecycleDependencies['createController'];
   invalidate(teamName: string): void;
   contextInvalidationSignal(expected: AppConnectionContext): AbortSignal;
   withExpectedContext<T>(expected: AppConnectionContext, operation: () => Promise<T>): Promise<T>;
@@ -40,6 +43,9 @@ export interface NativeDesktopTeamRuntimeDependencies {
   /** Non-owning OpenCode prompt ledger; enables lane lead delivery and member relay. */
   openCodeMemberDelivery?: NativeTeamLifecycleDependencies['openCodeLeadDelivery'];
   definitions: TeamLaunchRequestPersistence;
+  profileOwnership: TeamProfileOwnership;
+  claimTeam(teamName: string, reason: 'create' | 'launch'): Promise<void>;
+  clearStoppedLaneStopBackoff(teamName: string): void;
   /**
    * Progress for runs the registry no longer holds. Omitted means the shell keeps no
    * such history, which is the only truthful answer: a run that left the registry and
@@ -64,6 +70,7 @@ export interface NativeDesktopTeamRuntime {
    */
   registry: MemberLifecycleRegistry;
   runtime: DesktopTeamRuntime;
+  profileOwnership: TeamProfileOwnership;
   /** Native in-memory logs; persistence across restart is a phase 7 concern. */
   logs: Pick<NativeTeamLifecycle['logs'], 'read'>;
   /** Clears claims whose runs are not alive in this process. */
@@ -90,6 +97,8 @@ export function createNativeDesktopTeamRuntime(
     inbox: deps.inbox,
     controlUrl: deps.controlUrl,
     briefing: deps.briefing,
+    readStartupTasks: deps.readStartupTasks,
+    createController: deps.createController,
     invalidate: deps.invalidate,
     contextInvalidationSignal: deps.contextInvalidationSignal,
     withExpectedContext: deps.withExpectedContext,
@@ -102,6 +111,8 @@ export function createNativeDesktopTeamRuntime(
     currentContext: deps.currentContext,
     lifecycle,
     definitions: deps.definitions,
+    claimTeam: (teamName, reason) => deps.claimTeam(teamName, reason),
+    clearStoppedLaneStopBackoff: (teamName) => deps.clearStoppedLaneStopBackoff(teamName),
     progressHistory: deps.progressHistory ?? { findByRunId: async () => undefined },
     ...(deps.bootstrapRuntime ? { bootstrapRuntime: deps.bootstrapRuntime } : {}),
     ...(deps.launchAdmission ? { launchAdmission: deps.launchAdmission } : {}),
@@ -113,7 +124,19 @@ export function createNativeDesktopTeamRuntime(
     lifecycle,
     registry,
     runtime,
+    profileOwnership: deps.profileOwnership,
     logs: lifecycle.logs,
-    recoverStartup: async () => lifecycle.recoverOrphanedRuns(await deps.listTeamNames()),
+    recoverStartup: async () => {
+      const names = await deps.listTeamNames();
+      const recovered: string[] = [];
+      const failed: { teamName: string; error: string }[] = [];
+      for (const teamName of names) {
+        if (!(await deps.profileOwnership.isManagedByThisProfile(teamName))) continue;
+        const result = await lifecycle.recoverOrphanedRuns([teamName]);
+        recovered.push(...result.recovered);
+        failed.push(...result.failed);
+      }
+      return { recovered, failed };
+    },
   };
 }

@@ -1,4 +1,30 @@
 {
+  "specificationBindings": {
+    "actionError": "Could not update specification links: {{error}}",
+    "availableHeading": "Available in the registry",
+    "bindingsLoadError": "Could not load linked specifications: {{error}}",
+    "button": "Specifications ({{count}})",
+    "buttonAria": "Manage specifications for {{team}}",
+    "choose": "Choose a specification",
+    "close": "Close",
+    "description": "Link one or more registry specifications to this team. New tasks must belong to a linked specification.",
+    "discoveryError": "Registry discovery failed: {{error}}",
+    "emptyBindings": "No specifications are linked yet. Create a specification through MCP, refresh the registry, then link it here.",
+    "emptyCandidates": "No unlinked specifications were found. Create one through MCP and refresh this list.",
+    "link": "Link specification",
+    "linkedHeading": "Linked specifications",
+    "loadingBindings": "Loading linked specifications…",
+    "loadingRegistry": "Loading registry specifications…",
+    "refresh": "Refresh registry",
+    "refreshTasksError": "Could not refresh specification tasks: {{error}}. Showing the last loaded task data.",
+    "refreshing": "Refreshing…",
+    "saving": "Saving…",
+    "selectAria": "Specification to link",
+    "title": "Team specifications",
+    "unlink": "Unlink",
+    "unavailableProjects": "Some registry projects are unavailable: {{projects}}.",
+    "unavailableSuffix": "{{label}} (unavailable)"
+  },
   "rolePlanner": {
     "title": "Role plan",
     "description": "Read-only recommendations for assigned tasks. No agents are started and this is not a runtime concurrency limit.",
@@ -254,11 +280,41 @@
     "failed": "Could not update the task artifact."
   },
   "create": {
+    "registryPicker": {
+      "loading": "Connecting to the specification registry…",
+      "missingToken": "No registry credential was found. Add it to ~/.spec-registry/mcp-token.txt or OMP_SPEC_REGISTRY_TOKEN, then retry.",
+      "unauthorized": "The registry rejected the credential. Check the configured credential, then retry.",
+      "invalidUrl": "The configured registry address is invalid. Correct it, then retry.",
+      "invalidResponse": "The registry returned an unexpected response. Check the registry service, then retry.",
+      "error": "Could not connect to the specification registry. Check its configuration and credentials, then retry.",
+      "connected": "Connected to {{url}}",
+      "retry": "Retry",
+      "refresh": "Refresh",
+      "noProjects": "No projects found. Add a project to the registry, then refresh.",
+      "unavailableProjects": "Some projects are unavailable. Check their registry setup, then refresh.",
+      "projectUnavailable": "The saved project is unavailable. Check its registry setup, then refresh.",
+      "unavailableLabel": "Unavailable",
+      "noSpecs": "No specifications found in this project. Add one to the registry, then refresh.",
+      "missingProject": "The saved project is not available. Choose another project or refresh.",
+      "missingSpec": "The saved specification is not available. Choose another specification or refresh.",
+      "selectProject": "Select a project",
+      "clearBinding": "Clear specification selection",
+      "connectTitle": "Connect specifications",
+      "connectDescription": "Choose the project and specification that own this team's tasks.",
+      "legacyNotice": "The board will show tasks from the selected specification. Existing local task files are not deleted or imported.",
+      "saveError": "Could not save this team's specification. Check the connection and try again.",
+      "bindingImmutable": "This team already has a specification. Create a separate team for a different one so task history stays with the right tasks.",
+      "connectAction": "Connect",
+      "selectSpec": "Select a specification",
+      "optionalBinding": "A specification link is optional when creating a team. You can connect a registry specification later."
+    },
+    "registryBindingDescription": "Choose the existing project and specification that will hold this team's tasks. The working directory is not a registry project.",
     "actions": {
       "create": "Create",
       "creating": "Creating...",
       "openExisting": "Open Existing Team",
-      "skipPreflightAndCreate": "Skip preflight and create"
+      "skipPreflightAndCreate": "Skip preflight and create",
+      "backToTeams": "Back to teams"
     },
     "conflict": {
       "description": "Running two teams in the same directory is risky - they may conflict editing the same files. Consider using a different directory or a git worktree for isolation.",
@@ -276,6 +332,10 @@
       "loadProjectsFailed": "Failed to load projects"
     },
     "fields": {
+      "specProject": "Registry project (required)",
+      "specSlug": "Specification (required)",
+      "specProjectOptional": "Registry project (optional)",
+      "specSlugOptional": "Specification (optional)",
       "color": "Color (optional)",
       "description": "Description (optional)",
       "prompt": "Prompt for team lead (optional)",
@@ -334,6 +394,8 @@
       "readyStatus": "Ready"
     },
     "validation": {
+      "registryBindingIncomplete": "Choose an available registry project and specification, or clear both fields to create the team without a registry binding.",
+      "registryBindingRequired": "Select an available registry project and specification.",
       "nameMustContainLetterOrDigit": "Name must contain at least one letter or digit",
       "nameTooLong": "Name is too long (max 64 chars)",
       "selectWorkingDirectory": "Select working directory (cwd)",
@@ -359,7 +421,8 @@
       "kind": {
         "root": "Root",
         "group": "Group"
-      }
+      },
+      "invalidSelection": "Choose a valid organization and destination before creating the team."
     },
     "defaultDescription": {
       "fallback": "Team for provisioning flow",
@@ -368,7 +431,17 @@
     "defaultWorkflows": {
       "reviewer": "Review every completed task in the project. Read the code changes, check for correctness, style, and potential issues. Approve the task or request changes with clear feedback."
     },
-    "memberModelLockReason": "This teammate is synced with the lead model. Turn off sync to set a custom provider, model, or effort."
+    "memberModelLockReason": "This teammate is synced with the lead model. Turn off sync to set a custom provider, model, or effort.",
+    "draft": {
+      "replaceConfirmation": "You have an unfinished team draft. Starting this action will replace it. Continue?",
+      "replace": "Replace draft",
+      "continue": "Continue creating"
+    },
+    "placementFailure": {
+      "title": "Team created, but not added to the organization",
+      "message": "Team {{teamName}} was created. Assign it from the Organization Map; do not create it again.",
+      "acknowledge": "Got it"
+    }
   },
   "editTeam": {
     "actions": {
@@ -1331,6 +1404,14 @@
     "explicitChoice": "Explicit choice - {{model}}"
   },
   "taskDetail": {
+    "specification": {
+      "ariaLabel": "Specification task details",
+      "fullRecord": "Full specification record",
+      "noRequirements": "No requirements are linked to this task.",
+      "requirements": "Requirements",
+      "requirementsUnavailable": "Requirements were not included in the loaded task data.",
+      "status": "Specification status: {{status}}"
+    },
     "navigation": {
       "reviewRefused": "Changes could not be opened. The request is saved.",
       "editorRefused": "The file could not be opened in the team editor. The request is saved."
@@ -1496,6 +1577,15 @@
   },
   "tasks": {
     "createTask": {
+      "registryDescription": "The task will be saved in the connected specification and appear on the board.",
+      "bindingUnknown": "Cannot determine this team's specification binding. Reload the team before creating a task.",
+      "requirements": "Specification requirements",
+      "requirementsHint": "Enter at least one requirement ID from the connected specification. Separate multiple IDs with commas.",
+      "requirementsPlaceholder": "For example: FR-1, AC-2",
+      "chooseSpecification": "Choose a specification",
+      "manageSpecifications": "Manage specifications",
+      "noSpecificationsLinked": "No specifications are linked. Create one through MCP, then link it to this team.",
+      "selectedSpecificationNotice": "This task will be created in the selected specification.",
       "assignee": "Assignee",
       "assigneeOptional": "Assignee (optional)",
       "blockedByOptional": "Blocked by tasks (optional)",
@@ -2865,7 +2955,7 @@
       "addTask": "Add task",
       "noTasks": "No tasks"
     },
-    "title": "Kanban",
+    "title": "Tasks",
     "columns": {
       "todo": "TODO",
       "inProgress": "IN PROGRESS",
@@ -3479,6 +3569,9 @@
   "templates": {
     "label": "Team template",
     "placeholder": "Start from a team template",
+    "confirmTitle": "Apply team template?",
+    "confirmMessage": "This replaces the description, prompt and teammates, resets runtime selection, disables Run after create and Solo team, and enables model sync. Continue?",
+    "confirmAction": "Apply template",
     "names": {
       "software-product": "Software Product Team",
       "marketing": "Marketing Team",

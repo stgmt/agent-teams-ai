@@ -6,7 +6,6 @@ const { assertValidGroupInboxRows, pickGroupProtocolFields } = require('./groupE
 const { withFileLock, withFileLockSync } = require('./fileLock.js');
 const { looksLikeIdleAckOnlyText } = require('./idleAckText.js');
 const runtimeHelpers = require('./runtimeHelpers.js');
-const taskStore = require('./taskStore.js');
 const { readConsistentCompletionTasks } = require('./completionProof.js');
 const { isTaskOpen } = require('./taskLifecycle.js');
 const {
@@ -282,7 +281,18 @@ const POST_COMPLETION_MESSAGE_NOTICE_SUFFIX =
  * message the user.
  */
 function readBoardCompletionEpoch(paths) {
-  const tasks = readConsistentCompletionTasks(paths);
+  let tasks;
+  try {
+    tasks = readConsistentCompletionTasks(paths);
+  } catch (error) {
+    if (error && error.code === 'KANBAN_TRANSITION_UNCERTAIN') throw error;
+    throw Object.assign(
+      new Error(
+        `KANBAN_TRANSITION_UNCERTAIN: Cannot verify task and board completion state: ${error instanceof Error ? error.message : String(error)}`
+      ),
+      { code: 'KANBAN_TRANSITION_UNCERTAIN', cause: error }
+    );
+  }
   if (!Array.isArray(tasks) || tasks.length === 0) return null;
   if (!tasks.every((task) => task && !isTaskOpen(task))) return null;
   let lastBoardEventMs = 0;
@@ -562,8 +572,14 @@ function appendInboxRow(filePath, row, options = {}) {
   return withFileLockSync(filePath, () => appendInboxRowUnlocked(filePath, row, options));
 }
 
-function appendInboxRowAsync(filePath, row, options = {}) {
-  return withFileLock(filePath, () => appendInboxRowUnlocked(filePath, row, options));
+function appendInboxRowAsync(filePath, row, options = {}, isCurrent) {
+  if (isCurrent !== undefined && typeof isCurrent !== 'function') {
+    throw new Error('Invalid async inbox authorization check');
+  }
+  return withFileLock(filePath, () => {
+    if (isCurrent && !isCurrent()) return null;
+    return appendInboxRowUnlocked(filePath, row, options);
+  });
 }
 
 function prepareInboxMessage(paths, flags) {
@@ -632,9 +648,10 @@ function sendInboxMessage(paths, flags) {
   return inboxSendResult(appendInboxRow(filePath, payload, options));
 }
 
-async function sendInboxMessageAsync(paths, flags) {
+async function sendInboxMessageAsync(paths, flags, isCurrent) {
   const { filePath, payload, options } = prepareInboxMessage(paths, flags);
-  return inboxSendResult(await appendInboxRowAsync(filePath, payload, options));
+  const appended = await appendInboxRowAsync(filePath, payload, options, isCurrent);
+  return appended ? inboxSendResult(appended) : { deliveredToInbox: false, cancelled: true };
 }
 
 function isRetractableTaskNotificationRow(row, taskId, displayToken) {

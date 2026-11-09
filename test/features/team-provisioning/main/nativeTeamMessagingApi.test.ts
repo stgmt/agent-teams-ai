@@ -35,15 +35,21 @@ function setup(delivery?: {
   const sendLeadMessage = vi.fn(async () => undefined);
   const liveLeadMessages = new NativeLeadLiveMessageStore();
   const relayLeadInboxMessages = vi.fn(async () => 0);
-  const findConfiguredMember = vi.fn(async () => ({
-    providerId: 'opencode',
-  }));
+  const readConfigSnapshot = vi.fn(async () => ({
+    name: 'test-team',
+    members: [
+      { name: 'team-lead', providerId: 'anthropic' },
+      { name: 'Builder', providerId: 'opencode' },
+      { name: 'Coder', providerId: 'codex' },
+    ],
+  }) as never);
+  const readMembersMeta = vi.fn(async () => []);
   const api = new NativeTeamMessagingApi({
     runs: {
       find: (teamName) => (teamName === run.teamName ? currentSnapshot : null),
       isLive: () => live,
     },
-    settings: { findConfiguredMember } as never,
+    recipientSources: { readConfigSnapshot, readMembersMeta },
     liveLeadMessages,
     sendLeadMessage,
     relayLeadInboxMessages,
@@ -56,7 +62,7 @@ function setup(delivery?: {
     api,
     sendLeadMessage,
     relayLeadInboxMessages,
-    findConfiguredMember,
+    readConfigSnapshot,
     setSnapshot: (next: typeof snapshot | null) => {
       currentSnapshot = next;
     },
@@ -85,13 +91,21 @@ describe('native team messaging', () => {
   });
 
   it('resolves the recipient provider and lane lead session', async () => {
-    const { api, findConfiguredMember } = setup();
+    const { api, readConfigSnapshot } = setup();
     await expect(api.resolveRuntimeRecipientProviderId('test-team', 'builder')).resolves.toBe(
       'opencode'
     );
-    expect(findConfiguredMember).toHaveBeenCalledWith(run, 'builder');
+    expect(readConfigSnapshot).toHaveBeenCalledWith('test-team');
     expect(api.getCurrentLeadSessionId('test-team')).toBe('TEST-session');
     expect(api.getCurrentLeadSessionId('absent')).toBeNull();
+  });
+
+  it('resolves Claude and Codex from persisted members while the team is stopped', async () => {
+    const { api, setSnapshot } = setup();
+    setSnapshot(null);
+    await expect(api.resolveRuntimeRecipientProviderId('test-team', 'TEAM-LEAD')).resolves.toBe('anthropic');
+    await expect(api.resolveRuntimeRecipientProviderId('test-team', 'cOdEr')).resolves.toBe('codex');
+    await expect(api.resolveRuntimeRecipientProviderId('test-team', 'missing')).resolves.toBeUndefined();
   });
 
   it('relays the lead inbox through the native relay', async () => {

@@ -1467,6 +1467,14 @@ describe('message task action and dialog ownership', () => {
     [...host.querySelectorAll<HTMLButtonElement>('button')].find(
       (button) => button.textContent === 'Create'
     )!;
+  const enterRequirements = async (host: HTMLElement) => {
+    await act(() => {
+      const input = host.querySelector<HTMLInputElement>('#task-requirements')!;
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, 'FR-1');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      return Promise.resolve();
+    });
+  };
 
   it('preserves source A over filter B and keeps the rejected form and command for explicit retry', async () => {
     vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
@@ -1501,6 +1509,8 @@ describe('message task action and dialog ownership', () => {
               teamName: 'demo',
               members: [],
               tasks: [],
+              specBindings: [{ project: 'owner/project', spec: 'feature' }],
+              bindingState: 'known',
               defaultSubject: dialog.createTaskDialog.defaultSubject,
               defaultDescription: dialog.createTaskDialog.defaultDescription,
               defaultGroupChatId: dialog.defaultMessageGroupChatId('group-b'),
@@ -1519,9 +1529,16 @@ describe('message task action and dialog ownership', () => {
     expect(description).toContain('Keep the original group');
     expect(description).not.toContain('info_for_agent');
     expect(description).not.toContain('private task context');
+    expect(createButton(host).disabled).toBe(true);
+    await enterRequirements(host);
     await act(() => Promise.resolve(createButton(host).click()));
     expect(host.querySelector('[role="alert"]')?.textContent).toBe('Group A is archived');
     expect(submit.mock.calls[0][0].groupChatId).toBe('group-a');
+    expect(submit.mock.calls[0][0]).toMatchObject({
+      specProject: 'owner/project',
+      specSlug: 'feature',
+      requirements: ['FR-1'],
+    });
     const command = submit.mock.calls[0][0].command;
     expect(command?.commandId).toBeTruthy();
     expect(createButton(host).disabled).toBe(false);
@@ -1546,6 +1563,7 @@ describe('message task action and dialog ownership', () => {
     expect(submit.mock.calls[2][0].command).not.toEqual(command);
     expect(host.querySelector('#task-subject')).toBeNull();
     await act(() => Promise.resolve(dialog.openCreateTaskDialog('Ordinary task')));
+    await enterRequirements(host);
     await act(() => Promise.resolve(createButton(host).click()));
     expect(submit.mock.calls[3][0].groupChatId).toBe('group-b');
     await act(() =>
@@ -1557,8 +1575,62 @@ describe('message task action and dialog ownership', () => {
         })
       )
     );
+    await enterRequirements(host);
     await act(() => Promise.resolve(createButton(host).click()));
     expect(submit.mock.calls[4][0].groupChatId).toBeUndefined();
+    await act(() => Promise.resolve(root.unmount()));
+  });
+
+  it('submits local tasks only for confirmed unbound teams and requires a registry scope when bound', async () => {
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    const submitted: CreateTaskRequest[] = [];
+    const renderDialog = async (bindingState: 'known' | 'unknown', bound: boolean) => {
+      await act(async () => {
+        root.render(React.createElement(CreateTaskDialog, {
+          key: `${bindingState}-${bound}`,
+          open: true,
+          teamName: 'demo',
+          members: [],
+          tasks: [],
+          bindingState,
+          specBindings: bound ? [{ project: 'owner/project', spec: 'feature' }] : [],
+          defaultSubject: 'Create a task',
+          onClose: () => {},
+          onSubmit: async (request) => { submitted.push(request); },
+        }));
+      });
+    };
+
+    await renderDialog('unknown', false);
+    expect(createButton(host).disabled).toBe(true);
+    expect(host.querySelector('[role="alert"]')).not.toBeNull();
+    await act(() => Promise.resolve(createButton(host).click()));
+    expect(submitted).toHaveLength(0);
+
+    await renderDialog('known', false);
+    expect(host.querySelector('#task-requirements')).toBeNull();
+    expect(createButton(host).disabled).toBe(false);
+    await act(() => Promise.resolve(createButton(host).click()));
+    expect(submitted).toHaveLength(1);
+    expect(submitted[0]).toMatchObject({ subject: 'Create a task' });
+    expect(submitted[0]).not.toHaveProperty('specProject');
+    expect(submitted[0]).not.toHaveProperty('specSlug');
+    expect(submitted[0]).not.toHaveProperty('requirements');
+
+    await renderDialog('known', true);
+    expect(createButton(host).disabled).toBe(true);
+    await enterRequirements(host);
+    await act(() => Promise.resolve(createButton(host).click()));
+    expect(submitted).toHaveLength(2);
+    expect(submitted[1]).toMatchObject({
+      subject: 'Create a task',
+      specProject: 'owner/project',
+      specSlug: 'feature',
+      requirements: ['FR-1'],
+    });
     await act(() => Promise.resolve(root.unmount()));
   });
 

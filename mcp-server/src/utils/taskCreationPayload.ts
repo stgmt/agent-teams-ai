@@ -21,6 +21,31 @@ export function resolveTaskCreationActor(params: {
   return explicitActor ? { createdBy: validatedActor } : { from: validatedActor };
 }
 
+const INVALID_REQUIREMENTS_MESSAGE =
+  'INVALID_REQUIREMENTS: requirements must be an array of non-empty requirement ids such as "FR-1".';
+
+/**
+ * Validate provided requirement ids before forwarding them to the canonical
+ * registry. Missing or empty requirements are refused by the app, never routed
+ * to a separate task store.
+ */
+function normalizeTaskRequirements(value: unknown): string[] | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!Array.isArray(value)) {
+    throw new Error(INVALID_REQUIREMENTS_MESSAGE);
+  }
+  const normalized = value.map((entry) => {
+    if (typeof entry !== 'string' || !entry.trim()) {
+      throw new Error(INVALID_REQUIREMENTS_MESSAGE);
+    }
+    return entry.trim();
+  });
+  const unique = [...new Set(normalized)];
+  return unique.length > 0 ? unique : undefined;
+}
+
 /**
  * Shared payload builder for task_create and task_create_from_message.
  *
@@ -37,6 +62,7 @@ export function buildCreateTaskPayload(params: {
   from?: string;
   blockedBy?: string[];
   related?: string[];
+  requirements?: string[];
   prompt?: string;
   descriptionTaskRefs?: z.infer<typeof taskRefSchema>[];
   promptTaskRefs?: z.infer<typeof taskRefSchema>[];
@@ -44,6 +70,7 @@ export function buildCreateTaskPayload(params: {
   sourceMessageId?: string;
   sourceMessage?: Record<string, unknown>;
 }): Record<string, unknown> {
+  const requirements = normalizeTaskRequirements(params.requirements);
   return {
     subject: params.subject,
     ...(params.groupChatId !== undefined ? { groupChatId: params.groupChatId } : {}),
@@ -53,6 +80,7 @@ export function buildCreateTaskPayload(params: {
     ...(!params.createdBy && params.from ? { from: params.from } : {}),
     ...(params.blockedBy?.length ? { 'blocked-by': params.blockedBy.join(',') } : {}),
     ...(params.related?.length ? { related: params.related.join(',') } : {}),
+    ...(requirements ? { requirements } : {}),
     ...(params.prompt ? { prompt: params.prompt } : {}),
     ...(params.descriptionTaskRefs?.length
       ? { descriptionTaskRefs: params.descriptionTaskRefs }

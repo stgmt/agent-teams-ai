@@ -24,10 +24,10 @@ import { phase } from './lib/runtime-bootstrap-diagnostics.mts';
 import { createRuntimeCommandCapture } from './lib/runtime-command-capture.mts';
 import {
   formatRuntimeVersionForDisplay,
-  getExpectedRuntimeCliVersion,
   matchesRuntimeCliVersion,
 } from './lib/runtime-cli-version.mjs';
 import { spawnSyncWithWindowsShell } from './lib/windows-shell-spawn.mjs';
+import { validateWindowsRuntimeLock } from './lib/windows-runtime-lock.mjs';
 
 const runAndCapture = createRuntimeCommandCapture(spawnSyncWithWindowsShell);
 
@@ -178,31 +178,22 @@ function readPackageManagerCommand(repoRoot) {
 }
 
 function readRuntimeLock() {
-  return JSON.parse(fs.readFileSync(runtimeLockPath, 'utf8'));
+  const runtimeLock = JSON.parse(fs.readFileSync(runtimeLockPath, 'utf8'));
+  validateWindowsRuntimeLock(runtimeLock);
+  return runtimeLock;
 }
 
 function getPlatformAssetKey() {
-  const platformKey = `${process.platform}-${process.arch}`;
-
-  switch (platformKey) {
-    case 'darwin-arm64':
-    case 'darwin-x64':
-    case 'linux-x64':
-    case 'win32-arm64':
-    case 'win32-x64':
-      return platformKey;
-    default:
-      throw new Error(
-        `Dev runtime bootstrap does not support this platform yet: ${process.platform}/${process.arch}`
-      );
+  if (process.platform !== 'win32' || process.arch !== 'x64') {
+    throw new Error(
+      `Dev runtime bootstrap supports only Windows x64, got ${process.platform}/${process.arch}`
+    );
   }
+  return 'win32-x64';
 }
 
 function getReleaseAssetDownload(runtimeLock, asset) {
-  const releaseTag =
-    typeof runtimeLock.releaseTag === 'string' && runtimeLock.releaseTag.trim().length > 0
-      ? runtimeLock.releaseTag.trim()
-      : runtimeLock.sourceRef;
+  const releaseTag = runtimeLock.releaseTag;
   const url = `https://github.com/${runtimeLock.releaseRepository}/releases/download/${releaseTag}/${encodeURIComponent(asset.file)}`;
   return {
     url,
@@ -364,6 +355,24 @@ async function resolveElectronViteArgs(args) {
 
 function readBinaryVersion(binaryPath) {
   return runAndCapture(binaryPath, ['--version'], { timeout: 30_000 });
+}
+
+function verifyExtractedRuntimeIdentity(binaryPath, runtimeLock, platformKey) {
+  const runtimeDir = path.dirname(binaryPath);
+  const versionPath = path.join(runtimeDir, 'VERSION');
+  const commitPath = path.join(runtimeDir, 'COMMIT_SHA');
+  if (
+    !fs.existsSync(versionPath) ||
+    fs.readFileSync(versionPath, 'utf8').trim() !== runtimeLock.version
+  ) {
+    throw new Error(`Bootstrapped runtime VERSION mismatch for ${platformKey}`);
+  }
+  if (
+    !fs.existsSync(commitPath) ||
+    fs.readFileSync(commitPath, 'utf8').trim() !== runtimeLock.sourceCommit
+  ) {
+    throw new Error(`Bootstrapped runtime source commit mismatch for ${platformKey}`);
+  }
 }
 
 function isExecutable(filePath) {
@@ -559,7 +568,7 @@ async function acquireBootstrapLock(lockPath) {
 
 async function ensureBootstrappedRuntime() {
   const runtimeLock = readRuntimeLock();
-  const expectedCliVersion = getExpectedRuntimeCliVersion(runtimeLock);
+  const expectedCliVersion = runtimeLock.cliVersion;
   const platformKey = getPlatformAssetKey();
   const asset = runtimeLock.assets[platformKey];
   if (!asset) {
@@ -619,7 +628,7 @@ async function ensureBootstrappedRuntime() {
       logRuntimePhase('archive extracted');
 
       const extractedBinaryPath = findExtractedBinary(extractDir, asset.binaryName);
-      if (process.platform !== 'win32') fs.chmodSync(extractedBinaryPath, 0o755);
+      verifyExtractedRuntimeIdentity(extractedBinaryPath, runtimeLock, platformKey);
       const versionText = phase('extracted-version', () => readBinaryVersion(extractedBinaryPath));
       if (!matchesRuntimeCliVersion(versionText, expectedCliVersion)) {
         throw new Error(

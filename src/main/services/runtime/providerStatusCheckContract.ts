@@ -1,3 +1,4 @@
+import { RuntimeStatusProjectAccessDeniedError } from '@main/services/runtime/runtimeStatusExecutionContext';
 import { isWorkingDirectoryMissingError } from '@main/utils/cliWorkingDirectory';
 import { CLI_PROVIDER_STATUS_UNAVAILABLE_MESSAGE } from '@shared/types/cliInstaller';
 import {
@@ -189,9 +190,7 @@ export function createPendingProviderStatus(providerId: CliProviderId): CliProvi
 
 export function getProviderStatusCheckErrorCode(error: unknown): CliProviderStatusCheckErrorCode {
   if (error instanceof RuntimeStatusCommandError) {
-    return error.projectAccessDenied
-      ? 'unavailable'
-      : getProviderStatusCheckErrorCode(error.cause);
+    return error.projectAccessDenied ? 'unavailable' : getProviderStatusCheckErrorCode(error.cause);
   }
   if (isWorkingDirectoryMissingError(error)) {
     return 'project_missing';
@@ -215,7 +214,8 @@ export function createRuntimeStatusErrorProviderStatus(
   const errorCode = getProviderStatusCheckErrorCode(error);
   const isOpenCodeTimeout = providerId === 'opencode' && errorCode === 'timeout';
   const projectAccessDenied =
-    error instanceof RuntimeStatusCommandError && error.projectAccessDenied !== null;
+    error instanceof RuntimeStatusProjectAccessDeniedError ||
+    (error instanceof RuntimeStatusCommandError && error.projectAccessDenied !== null);
   if (errorCode === 'project_missing') {
     const projectPath = isWorkingDirectoryMissingError(error) ? error.cwd : message;
     return {
@@ -241,12 +241,12 @@ export function createRuntimeStatusErrorProviderStatus(
       ? getRuntimeStatusErrorDetails(error)
       : isOpenCodeTimeout
         ? [
-          'OpenCode is taking longer than expected to load provider status. Your saved connections were not changed. Retry in a moment.',
-          error instanceof RuntimeStatusCommandError ? getRuntimeStatusErrorDetails(error) : null,
-        ]
-          .filter(Boolean)
-          .join('\n\n')
-      : getRuntimeStatusErrorDetails(error),
+            'OpenCode is taking longer than expected to load provider status. Your saved connections were not changed. Retry in a moment.',
+            error instanceof RuntimeStatusCommandError ? getRuntimeStatusErrorDetails(error) : null,
+          ]
+            .filter(Boolean)
+            .join('\n\n')
+        : getRuntimeStatusErrorDetails(error),
   };
 }
 

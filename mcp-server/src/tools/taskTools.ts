@@ -28,6 +28,19 @@ const toolContextSchema = {
   claudeDir: z.string().min(1).optional(),
 };
 
+const taskScopeSelectorFields = {
+  project: z.string().trim().min(1).optional().describe('Registry project scope, if selecting one of several team specs.'),
+  spec: z.string().trim().min(1).optional().describe('Registry specification slug paired with project.'),
+};
+
+function resolveTaskScope(project?: string, spec?: string) {
+  if (project === undefined && spec === undefined) return undefined;
+  if (project === undefined || spec === undefined) {
+    throw new Error('Task scope requires both project and spec');
+  }
+  return { project, spec };
+}
+
 const ALWAYS_LOAD_META = {
   'anthropic/alwaysLoad': true,
 } as const;
@@ -60,6 +73,7 @@ export function registerTaskTools(server: Pick<FastMCP, 'addTool'>) {
       "Create a team task. For task intents from a group user message, prefer task_create_from_message with the original messageId; otherwise pass the known groupChatId explicitly when applicable. Raw/headless calls do not inject a user actor or auto-start: owner without createdBy/from/startImmediately creates a pending task with no recorded actor, and assigning it to the lead suppresses the lead's self-notification. Tasks you create yourself (including as lead) pass createdBy with your own configured name. Use createdBy: 'user' only when acting for the user; for an immediate user-origin assignment add startImmediately: true. Always provide a stable idempotencyKey (or commandId UUID) and reuse it only when retrying the exact same request after timeout or response loss. Use a new key for every distinct task intent.",
     parameters: z.object({
       ...toolContextSchema,
+      ...taskScopeSelectorFields,
       subject: z.string().min(1),
       groupChatId: z
         .uuid()
@@ -84,6 +98,12 @@ export function registerTaskTools(server: Pick<FastMCP, 'addTool'>) {
         .describe('Legacy actor/sender alternative, used only when createdBy is omitted.'),
       blockedBy: z.array(z.string().min(1)).optional(),
       related: z.array(z.string().min(1)).optional(),
+      requirements: z
+        .array(z.string().trim().min(1))
+        .min(1)
+        .describe(
+          'Existing requirement ids this task implements, for example ["FR-1", "AC-2"]. Required for every task.'
+        ),
       prompt: z.string().optional(),
       descriptionTaskRefs: z.array(taskRefSchema).optional(),
       promptTaskRefs: z.array(taskRefSchema).optional(),
@@ -109,6 +129,8 @@ export function registerTaskTools(server: Pick<FastMCP, 'addTool'>) {
     execute: async ({
       teamName,
       claudeDir,
+      project,
+      spec,
       subject,
       groupChatId,
       description,
@@ -117,6 +139,7 @@ export function registerTaskTools(server: Pick<FastMCP, 'addTool'>) {
       from,
       blockedBy,
       related,
+      requirements,
       prompt,
       descriptionTaskRefs,
       promptTaskRefs,
@@ -125,22 +148,27 @@ export function registerTaskTools(server: Pick<FastMCP, 'addTool'>) {
       idempotencyKey,
     }) => {
       assertConfiguredTeam(teamName, claudeDir);
+      const scope = resolveTaskScope(project, spec);
       const controller = getController(teamName, claudeDir);
       const { taskBoard } = controller;
       const taskActor = resolveTaskCreationActor({ teamName, claudeDir, createdBy, from });
-      const payload = buildCreateTaskPayload({
-        subject,
-        groupChatId,
-        description,
-        owner,
-        ...taskActor,
-        blockedBy,
-        related,
-        prompt,
-        descriptionTaskRefs,
-        promptTaskRefs,
-        startImmediately,
-      });
+      const payload = {
+        ...buildCreateTaskPayload({
+          subject,
+          groupChatId,
+          description,
+          owner,
+          ...taskActor,
+          blockedBy,
+          related,
+          requirements,
+          prompt,
+          descriptionTaskRefs,
+          promptTaskRefs,
+          startImmediately,
+        }),
+        ...(scope ? { specProject: scope.project, specSlug: scope.spec } : {}),
+      };
       const resolvedCommandId = resolveOptionalTaskCreateCommandId({
         teamName,
         commandId,
@@ -186,6 +214,7 @@ export function registerTaskTools(server: Pick<FastMCP, 'addTool'>) {
       'Create a task from a persisted user message. Always provide a stable requestKey for this exact task intent and reuse the same messageId + requestKey only on retry. Use a different requestKey to create another legitimate task from the same message. Original canonical user group messages infer groupChatId; new associated tasks require your configured non-user createdBy actor.',
     parameters: z.object({
       ...toolContextSchema,
+      ...taskScopeSelectorFields,
       messageId: z.string().min(1),
       subject: z.string().min(1),
       groupChatId: z
@@ -199,6 +228,12 @@ export function registerTaskTools(server: Pick<FastMCP, 'addTool'>) {
       createdBy: z.string().optional(),
       blockedBy: z.array(z.string().min(1)).optional(),
       related: z.array(z.string().min(1)).optional(),
+      requirements: z
+        .array(z.string().trim().min(1))
+        .min(1)
+        .describe(
+          'Existing requirement ids this task implements, for example ["FR-1", "AC-2"]. Required for every task.'
+        ),
       prompt: z.string().optional(),
       descriptionTaskRefs: z.array(taskRefSchema).optional(),
       promptTaskRefs: z.array(taskRefSchema).optional(),
@@ -216,6 +251,8 @@ export function registerTaskTools(server: Pick<FastMCP, 'addTool'>) {
     execute: async ({
       teamName,
       claudeDir,
+      project,
+      spec,
       messageId,
       subject,
       groupChatId,
@@ -224,6 +261,7 @@ export function registerTaskTools(server: Pick<FastMCP, 'addTool'>) {
       createdBy,
       blockedBy,
       related,
+      requirements,
       prompt,
       descriptionTaskRefs,
       promptTaskRefs,
@@ -231,6 +269,7 @@ export function registerTaskTools(server: Pick<FastMCP, 'addTool'>) {
       requestKey,
     }) => {
       assertConfiguredTeam(teamName, claudeDir);
+      const scope = resolveTaskScope(project, spec);
       const controller = getController(teamName, claudeDir);
       const { taskBoard } = controller;
 
@@ -277,21 +316,25 @@ export function registerTaskTools(server: Pick<FastMCP, 'addTool'>) {
 
       // 5. Forward into canonical create-task path
       const taskActor = resolveTaskCreationActor({ teamName, claudeDir, createdBy });
-      const payload = buildCreateTaskPayload({
-        subject,
-        groupChatId: associatedGroupChatId,
-        description,
-        owner,
-        ...taskActor,
-        blockedBy,
-        related,
-        prompt,
-        descriptionTaskRefs,
-        promptTaskRefs,
-        startImmediately,
-        sourceMessageId: messageId,
-        sourceMessage,
-      });
+      const payload = {
+        ...buildCreateTaskPayload({
+          subject,
+          groupChatId: associatedGroupChatId,
+          description,
+          owner,
+          ...taskActor,
+          blockedBy,
+          related,
+          requirements,
+          prompt,
+          descriptionTaskRefs,
+          promptTaskRefs,
+          startImmediately,
+          sourceMessageId: messageId,
+          sourceMessage,
+        }),
+        ...(scope ? { specProject: scope.project, specSlug: scope.spec } : {}),
+      };
       const commandId = resolveMessageTaskCommandId({ teamName, messageId, requestKey });
       return await Promise.resolve(
         jsonTextContent(
@@ -326,16 +369,17 @@ export function registerTaskTools(server: Pick<FastMCP, 'addTool'>) {
       '- groupChatId: optional group context; fetch group_chat_list before proactive sends; association does not grant membership\n' +
       '- sourceMessage.attachments: from original user message (filePath = absolute path to file on disk, use Read tool to view)\n' +
       '- attachments: files attached to the task (filePath = absolute path, use Read tool to view)\n' +
-      '- artifactRequirement: when required, send file bytes with task_set_artifact_file before completion\n' +
       '- comments[].attachments: files on comments (filePath = absolute path, use Read tool to view)',
     parameters: z.object({
       ...toolContextSchema,
+      ...taskScopeSelectorFields,
       taskId: z.string().min(1),
     }),
-    execute: async ({ teamName, claudeDir, taskId }) => {
+    execute: async ({ teamName, claudeDir, project, spec, taskId }) => {
       assertConfiguredTeam(teamName, claudeDir);
+      const scope = resolveTaskScope(project, spec);
       return await Promise.resolve(
-        jsonTextContent(getController(teamName, claudeDir).taskBoard.getTask(taskId))
+        jsonTextContent(getController(teamName, claudeDir).taskBoard.getTask(taskId, scope))
       );
     },
   });
@@ -346,14 +390,16 @@ export function registerTaskTools(server: Pick<FastMCP, 'addTool'>) {
       'Get a single task comment by id. Returns the comment object and minimal task context (id, displayId, subject, status, owner).',
     parameters: z.object({
       ...toolContextSchema,
+      ...taskScopeSelectorFields,
       taskId: z.string().min(1),
       commentId: z.string().min(1),
     }),
-    execute: async ({ teamName, claudeDir, taskId, commentId }) => {
+    execute: async ({ teamName, claudeDir, project, spec, taskId, commentId }) => {
       assertConfiguredTeam(teamName, claudeDir);
+      const scope = resolveTaskScope(project, spec);
       return await Promise.resolve(
         jsonTextContent(
-          getController(teamName, claudeDir).taskBoard.getTaskComment(taskId, commentId)
+          getController(teamName, claudeDir).taskBoard.getTaskComment(taskId, commentId, scope)
         )
       );
     },
@@ -365,6 +411,7 @@ export function registerTaskTools(server: Pick<FastMCP, 'addTool'>) {
       'List compact active task inventory/search rows for a team. Deleted tasks are excluded. Use it to browse, filter, and drill into inventory, not as a primary working queue. Defaults to 50 rows and caps at 200 rows; use filters or a smaller limit to narrow results. Supports stable conjunctive filters for owner, active status, reviewState, review overlay column, and task relationships.',
     parameters: z.object({
       ...toolContextSchema,
+      ...taskScopeSelectorFields,
       owner: z.string().min(1).optional(),
       status: inventoryTaskStatusSchema.optional(),
       reviewState: reviewStateSchema.optional(),
@@ -376,6 +423,8 @@ export function registerTaskTools(server: Pick<FastMCP, 'addTool'>) {
     execute: async ({
       teamName,
       claudeDir,
+      project,
+      spec,
       owner,
       status,
       reviewState,
@@ -385,9 +434,11 @@ export function registerTaskTools(server: Pick<FastMCP, 'addTool'>) {
       limit,
     }) => {
       assertConfiguredTeam(teamName, claudeDir);
+      const scope = resolveTaskScope(project, spec);
       return await Promise.resolve(
         jsonTextContent(
           getController(teamName, claudeDir).taskBoard.listTaskInventory({
+            ...(scope ? { scope } : {}),
             ...(owner ? { owner } : {}),
             ...(status ? { status } : {}),
             ...(reviewState ? { reviewState } : {}),
@@ -402,97 +453,38 @@ export function registerTaskTools(server: Pick<FastMCP, 'addTool'>) {
   });
 
   server.addTool({
-    name: 'task_set_status',
+    name: 'task_update',
     description:
-      'Set task work status. Open dependencies prevent in_progress/completed. Execution transitions require the current owner; lead override is limited to administrative transitions.',
-    parameters: z.object({
-      ...toolContextSchema,
-      taskId: z.string().min(1),
-      status: z.enum(['pending', 'in_progress', 'completed', 'deleted']),
-      actor: taskMutationActorSchema,
-    }),
-    execute: async ({ teamName, claudeDir, taskId, status, actor }) => {
+      'Update a canonical task title, description, or requirement references. Requirement references must exist in the selected spec; the registry prevents removing the last requirement. Use the opaque taskId returned by task_get/task_list.',
+    parameters: z
+      .object({
+        ...toolContextSchema,
+        ...taskScopeSelectorFields,
+        taskId: z.string().min(1),
+        subject: z.string().min(1).optional(),
+        description: z.string().optional(),
+        requirements: z.array(z.string().trim().min(1)).min(1).optional(),
+      })
+      .refine(
+        ({ subject, description, requirements }) =>
+          subject !== undefined || description !== undefined || requirements !== undefined,
+        { message: 'Provide at least one task field to update' }
+      ),
+    execute: async ({ teamName, claudeDir, project, spec, taskId, subject, description, requirements }) => {
       assertConfiguredTeam(teamName, claudeDir);
+      const scope = resolveTaskScope(project, spec);
       return await Promise.resolve(
         jsonTextContent(
           slimTask(
-            getController(teamName, claudeDir).taskBoard.setTaskStatus(
+            getController(teamName, claudeDir).taskBoard.updateTaskFields(
               taskId,
-              status,
-              actor
-            ) as Record<string, unknown>
-          )
-        )
-      );
-    },
-  });
-
-  server.addTool({
-    name: 'task_restore',
-    description:
-      'Restore a deleted task back to pending work state as its current owner or the team lead',
-    parameters: z.object({
-      ...toolContextSchema,
-      taskId: z.string().min(1),
-      actor: taskMutationActorSchema,
-    }),
-    execute: async ({ teamName, claudeDir, taskId, actor }) => {
-      assertConfiguredTeam(teamName, claudeDir);
-      return await Promise.resolve(
-        jsonTextContent(
-          slimTask(
-            getController(teamName, claudeDir).taskBoard.restoreTask(taskId, actor) as Record<
-              string,
-              unknown
-            >
-          )
-        )
-      );
-    },
-  });
-
-  server.addTool({
-    name: 'task_start',
-    description:
-      'Mark task as in progress. Only the current owner may start it. Open dependencies prevent starting.',
-    parameters: z.object({
-      ...toolContextSchema,
-      taskId: z.string().min(1),
-      actor: taskMutationActorSchema,
-    }),
-    execute: async ({ teamName, claudeDir, taskId, actor }) => {
-      assertConfiguredTeam(teamName, claudeDir);
-      return await Promise.resolve(
-        jsonTextContent(
-          slimTask(
-            getController(teamName, claudeDir).taskBoard.startTask(taskId, actor) as Record<
-              string,
-              unknown
-            >
-          )
-        )
-      );
-    },
-  });
-
-  server.addTool({
-    name: 'task_complete',
-    description:
-      'Mark task as completed. Only the current owner may complete it. Open dependencies and missing or changed required artifacts prevent completion.',
-    parameters: z.object({
-      ...toolContextSchema,
-      taskId: z.string().min(1),
-      actor: taskMutationActorSchema,
-    }),
-    execute: async ({ teamName, claudeDir, taskId, actor }) => {
-      assertConfiguredTeam(teamName, claudeDir);
-      return await Promise.resolve(
-        jsonTextContent(
-          slimTask(
-            getController(teamName, claudeDir).taskBoard.completeTask(taskId, actor) as Record<
-              string,
-              unknown
-            >
+              {
+                ...(subject !== undefined ? { subject } : {}),
+                ...(description !== undefined ? { description } : {}),
+                ...(requirements !== undefined ? { requirements } : {}),
+              },
+              scope
+            )
           )
         )
       );
@@ -505,20 +497,132 @@ export function registerTaskTools(server: Pick<FastMCP, 'addTool'>) {
       'Attach required artifact bytes (up to 20 MiB decoded) as base64. The filename must match any user-specified name; actor must match the task owner. Base64 expands data and can consume substantial MCP context.',
     parameters: z.object({
       ...toolContextSchema,
+      ...taskScopeSelectorFields,
       taskId: z.string().min(1),
       filename: z.string().min(1).max(255),
       base64Data: z.string().max(Math.ceil((20 * 1024 * 1024) / 3) * 4),
       actor: taskMutationActorSchema,
     }),
-    execute: async ({ teamName, claudeDir, taskId, filename, base64Data, actor }) => {
+    execute: async ({ teamName, claudeDir, project, spec, taskId, filename, base64Data, actor }) => {
       assertConfiguredTeam(teamName, claudeDir);
       const task = getController(teamName, claudeDir).taskBoard.setTaskArtifactFile(
         taskId,
         { filename, base64Data },
-        actor
-      ) as Record<string, unknown>;
+        actor,
+        resolveTaskScope(project, spec)
+      );
       return await Promise.resolve(
         jsonTextContent({ task: slimTask(task), artifactRequirement: task.artifactRequirement })
+      );
+    },
+  });
+
+  server.addTool({
+    name: 'task_set_status',
+    description:
+      'Set task work status. Open dependencies prevent in_progress/completed. Execution transitions require the current owner; lead override is limited to administrative transitions.',
+    parameters: z.object({
+      ...toolContextSchema,
+      ...taskScopeSelectorFields,
+      taskId: z.string().min(1),
+      status: z.enum(['pending', 'in_progress', 'completed', 'deleted']),
+      actor: taskMutationActorSchema,
+    }),
+    execute: async ({ teamName, claudeDir, project, spec, taskId, status, actor }) => {
+      assertConfiguredTeam(teamName, claudeDir);
+      const scope = resolveTaskScope(project, spec);
+      return await Promise.resolve(
+        jsonTextContent(
+          slimTask(
+            getController(teamName, claudeDir).taskBoard.setTaskStatus(
+              taskId,
+              status,
+              actor,
+              scope
+            )
+          )
+        )
+      );
+    },
+  });
+
+  server.addTool({
+    name: 'task_restore',
+    description:
+      'Restore a deleted task back to pending work state as its current owner or the team lead',
+    parameters: z.object({
+      ...toolContextSchema,
+      ...taskScopeSelectorFields,
+      taskId: z.string().min(1),
+      actor: taskMutationActorSchema,
+    }),
+    execute: async ({ teamName, claudeDir, project, spec, taskId, actor }) => {
+      assertConfiguredTeam(teamName, claudeDir);
+      const scope = resolveTaskScope(project, spec);
+      return await Promise.resolve(
+        jsonTextContent(
+          slimTask(
+            getController(teamName, claudeDir).taskBoard.restoreTask(
+              taskId,
+              actor,
+              scope
+            )
+          )
+        )
+      );
+    },
+  });
+
+  server.addTool({
+    name: 'task_start',
+    description:
+      'Mark task as in progress. Only the current owner may start it. Open dependencies prevent starting.',
+    parameters: z.object({
+      ...toolContextSchema,
+      ...taskScopeSelectorFields,
+      taskId: z.string().min(1),
+      actor: taskMutationActorSchema,
+    }),
+    execute: async ({ teamName, claudeDir, project, spec, taskId, actor }) => {
+      assertConfiguredTeam(teamName, claudeDir);
+      const scope = resolveTaskScope(project, spec);
+      return await Promise.resolve(
+        jsonTextContent(
+          slimTask(
+            getController(teamName, claudeDir).taskBoard.startTask(
+              taskId,
+              actor,
+              scope
+            )
+          )
+        )
+      );
+    },
+  });
+
+  server.addTool({
+    name: 'task_complete',
+    description:
+      'Mark task as completed. Only the current owner may complete it. Open dependencies prevent completion.',
+    parameters: z.object({
+      ...toolContextSchema,
+      ...taskScopeSelectorFields,
+      taskId: z.string().min(1),
+      actor: taskMutationActorSchema,
+    }),
+    execute: async ({ teamName, claudeDir, project, spec, taskId, actor }) => {
+      assertConfiguredTeam(teamName, claudeDir);
+      const scope = resolveTaskScope(project, spec);
+      return await Promise.resolve(
+        jsonTextContent(
+          slimTask(
+            getController(teamName, claudeDir).taskBoard.completeTask(
+              taskId,
+              actor,
+              scope
+            )
+          )
+        )
       );
     },
   });
@@ -529,20 +633,23 @@ export function registerTaskTools(server: Pick<FastMCP, 'addTool'>) {
       'Assign, reassign, or clear task owner. Lead may reassign any task; current owner may hand off; other members may only self-claim an unassigned task.',
     parameters: z.object({
       ...toolContextSchema,
+      ...taskScopeSelectorFields,
       taskId: z.string().min(1),
       owner: z.string().nullable(),
       actor: taskMutationActorSchema,
     }),
-    execute: async ({ teamName, claudeDir, taskId, owner, actor }) => {
+    execute: async ({ teamName, claudeDir, project, spec, taskId, owner, actor }) => {
       assertConfiguredTeam(teamName, claudeDir);
+      const scope = resolveTaskScope(project, spec);
       return await Promise.resolve(
         jsonTextContent(
           slimTask(
             getController(teamName, claudeDir).taskBoard.setTaskOwner(
               taskId,
               owner,
-              actor
-            ) as Record<string, unknown>
+              actor,
+              scope
+            )
           )
         )
       );
@@ -555,18 +662,24 @@ export function registerTaskTools(server: Pick<FastMCP, 'addTool'>) {
       'Add task comment. from is required and must be your configured teammate name; user/system are reserved for app-owned writes.',
     parameters: z.object({
       ...toolContextSchema,
+      ...taskScopeSelectorFields,
       taskId: z.string().min(1),
       text: z.string().min(1),
       from: z.string().min(1),
       taskRefs: z.array(taskRefSchema).optional(),
     }),
-    execute: async ({ teamName, claudeDir, taskId, text, from, taskRefs }) => {
+    execute: async ({ teamName, claudeDir, project, spec, taskId, text, from, taskRefs }) => {
       assertConfiguredTeam(teamName, claudeDir);
-      const result = getController(teamName, claudeDir).taskBoard.addTaskComment(taskId, {
-        text,
-        ...(from ? { from } : {}),
-        ...(taskRefs?.length ? { taskRefs } : {}),
-      }) as Record<string, unknown>;
+      const scope = resolveTaskScope(project, spec);
+      const result = getController(teamName, claudeDir).taskBoard.addTaskComment(
+        taskId,
+        {
+          text,
+          ...(from ? { from } : {}),
+          ...(taskRefs?.length ? { taskRefs } : {}),
+        },
+        scope
+      );
       const payload = taskWriteResult(result);
       const protocolInstruction = buildCommentCompletionInstruction(payload);
       return await Promise.resolve(
@@ -581,6 +694,7 @@ export function registerTaskTools(server: Pick<FastMCP, 'addTool'>) {
       'Attach a file to a task. Returns attachment metadata with filePath for future access via Read tool.',
     parameters: z.object({
       ...toolContextSchema,
+      ...taskScopeSelectorFields,
       taskId: z.string().min(1),
       filePath: z.string().min(1),
       mode: z.enum(['copy', 'link']).optional(),
@@ -591,6 +705,8 @@ export function registerTaskTools(server: Pick<FastMCP, 'addTool'>) {
     execute: async ({
       teamName,
       claudeDir,
+      project,
+      spec,
       taskId,
       filePath,
       mode,
@@ -599,16 +715,21 @@ export function registerTaskTools(server: Pick<FastMCP, 'addTool'>) {
       noFallback,
     }) => {
       assertConfiguredTeam(teamName, claudeDir);
+      const scope = resolveTaskScope(project, spec);
       return await Promise.resolve(
         jsonTextContent(
           taskWriteResult(
-            getController(teamName, claudeDir).taskBoard.attachTaskFile(taskId, {
-              file: filePath,
-              ...(mode ? { mode } : {}),
-              ...(filename ? { filename } : {}),
-              ...(mimeType ? { 'mime-type': mimeType } : {}),
-              ...(noFallback ? { 'no-fallback': true } : {}),
-            }) as Record<string, unknown>
+            getController(teamName, claudeDir).taskBoard.attachTaskFile(
+              taskId,
+              {
+                file: filePath,
+                ...(mode ? { mode } : {}),
+                ...(filename ? { filename } : {}),
+                ...(mimeType ? { 'mime-type': mimeType } : {}),
+                ...(noFallback ? { 'no-fallback': true } : {}),
+              },
+              scope
+            )
           )
         )
       );
@@ -621,6 +742,7 @@ export function registerTaskTools(server: Pick<FastMCP, 'addTool'>) {
       'Attach a file to a task comment. Returns attachment metadata with filePath for future access via Read tool.',
     parameters: z.object({
       ...toolContextSchema,
+      ...taskScopeSelectorFields,
       taskId: z.string().min(1),
       commentId: z.string().min(1),
       filePath: z.string().min(1),
@@ -632,6 +754,8 @@ export function registerTaskTools(server: Pick<FastMCP, 'addTool'>) {
     execute: async ({
       teamName,
       claudeDir,
+      project,
+      spec,
       taskId,
       commentId,
       filePath,
@@ -641,16 +765,22 @@ export function registerTaskTools(server: Pick<FastMCP, 'addTool'>) {
       noFallback,
     }) => {
       assertConfiguredTeam(teamName, claudeDir);
+      const scope = resolveTaskScope(project, spec);
       return await Promise.resolve(
         jsonTextContent(
           taskWriteResult(
-            getController(teamName, claudeDir).taskBoard.attachCommentFile(taskId, commentId, {
-              file: filePath,
-              ...(mode ? { mode } : {}),
-              ...(filename ? { filename } : {}),
-              ...(mimeType ? { 'mime-type': mimeType } : {}),
-              ...(noFallback ? { 'no-fallback': true } : {}),
-            }) as Record<string, unknown>
+            getController(teamName, claudeDir).taskBoard.attachCommentFile(
+              taskId,
+              commentId,
+              {
+                file: filePath,
+                ...(mode ? { mode } : {}),
+                ...(filename ? { filename } : {}),
+                ...(mimeType ? { 'mime-type': mimeType } : {}),
+                ...(noFallback ? { 'no-fallback': true } : {}),
+              },
+              scope
+            )
           )
         )
       );
@@ -662,18 +792,21 @@ export function registerTaskTools(server: Pick<FastMCP, 'addTool'>) {
     description: 'Set or clear task clarification state',
     parameters: z.object({
       ...toolContextSchema,
+      ...taskScopeSelectorFields,
       taskId: z.string().min(1),
       value: z.enum(['lead', 'user', 'clear']),
     }),
-    execute: async ({ teamName, claudeDir, taskId, value }) => {
+    execute: async ({ teamName, claudeDir, project, spec, taskId, value }) => {
       assertConfiguredTeam(teamName, claudeDir);
+      const scope = resolveTaskScope(project, spec);
       return await Promise.resolve(
         jsonTextContent(
           slimTask(
             getController(teamName, claudeDir).taskBoard.setNeedsClarification(
               taskId,
-              value === 'clear' ? null : value
-            ) as Record<string, unknown>
+              value === 'clear' ? null : value,
+              scope
+            )
           )
         )
       );
@@ -685,20 +818,23 @@ export function registerTaskTools(server: Pick<FastMCP, 'addTool'>) {
     description: 'Link tasks by blockedBy, blocks, or related relationship',
     parameters: z.object({
       ...toolContextSchema,
+      ...taskScopeSelectorFields,
       taskId: z.string().min(1),
       targetId: z.string().min(1),
       relationship: relationshipTypeSchema,
     }),
-    execute: async ({ teamName, claudeDir, taskId, targetId, relationship }) => {
+    execute: async ({ teamName, claudeDir, project, spec, taskId, targetId, relationship }) => {
       assertConfiguredTeam(teamName, claudeDir);
+      const scope = resolveTaskScope(project, spec);
       return await Promise.resolve(
         jsonTextContent(
           slimTask(
             getController(teamName, claudeDir).taskBoard.linkTask(
               taskId,
               targetId,
-              relationship
-            ) as Record<string, unknown>
+              relationship,
+              scope
+            )
           )
         )
       );
@@ -710,20 +846,23 @@ export function registerTaskTools(server: Pick<FastMCP, 'addTool'>) {
     description: 'Remove task relationship link',
     parameters: z.object({
       ...toolContextSchema,
+      ...taskScopeSelectorFields,
       taskId: z.string().min(1),
       targetId: z.string().min(1),
       relationship: relationshipTypeSchema,
     }),
-    execute: async ({ teamName, claudeDir, taskId, targetId, relationship }) => {
+    execute: async ({ teamName, claudeDir, project, spec, taskId, targetId, relationship }) => {
       assertConfiguredTeam(teamName, claudeDir);
+      const scope = resolveTaskScope(project, spec);
       return await Promise.resolve(
         jsonTextContent(
           slimTask(
             getController(teamName, claudeDir).taskBoard.unlinkTask(
               taskId,
               targetId,
-              relationship
-            ) as Record<string, unknown>
+              relationship,
+              scope
+            )
           )
         )
       );
@@ -776,9 +915,7 @@ export function registerTaskTools(server: Pick<FastMCP, 'addTool'>) {
         content: [
           {
             type: 'text' as const,
-            text: await getController(teamName, claudeDir).taskBoard.requestTaskBriefing(
-              memberName
-            ),
+            text: await getController(teamName, claudeDir).taskBoard.requestTaskBriefing(memberName),
           },
         ],
       };

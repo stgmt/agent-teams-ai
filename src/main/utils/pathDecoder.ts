@@ -547,6 +547,11 @@ function copyLegacyDirectoryPath(currentPath: string, legacyPath: string): strin
   }
 }
 
+/** Local execution metadata for registry-backed tasks. */
+export function getLocalTasksBasePath(): string {
+  return path.join(getClaudeBasePath(), 'tasks-local');
+}
+
 export function getTaskChangeSummariesBasePath(): string {
   return path.join(getClaudeBasePath(), 'task-change-summaries');
 }

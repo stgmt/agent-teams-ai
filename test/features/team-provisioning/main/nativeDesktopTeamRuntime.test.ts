@@ -11,6 +11,7 @@ import { NativeMemberInboxRelay } from '../../../../src/features/team-provisioni
 import { createNativeDesktopTeamRuntime } from '../../../../src/features/team-provisioning/main/composition/createNativeDesktopTeamRuntime';
 import { createNativeTeamProvisioningApis } from '../../../../src/features/team-provisioning/main/composition/createNativeTeamProvisioningApis';
 import { NativeTeamConfigStore } from '../../../../src/features/team-provisioning/main/infrastructure/NativeTeamConfigStore';
+import { claimTeamForThisProfile, createTeamProfileOwnership } from '../../../../src/main/services/team/provisioning/TeamProvisioningProfileOwnership';
 
 import type { NativeDesktopTeamRuntimeDependencies } from '../../../../src/features/team-provisioning/main/composition/createNativeDesktopTeamRuntime';
 import type { TeamLaunchRuntimeAdapter } from '../../../../src/main/services/team/runtime';
@@ -36,6 +37,7 @@ function setup(
     teamsRoot?: string;
     listTeamNames?: () => Promise<readonly string[]>;
     relayIntervalMs?: number;
+    profileOwnership?: NativeDesktopTeamRuntimeDependencies['profileOwnership'];
   } = {}
 ) {
   const deps: NativeDesktopTeamRuntimeDependencies = {
@@ -53,6 +55,10 @@ function setup(
     inbox: {} as never,
     controlUrl: async () => 'http://127.0.0.1:1',
     briefing: async () => 'TEST briefing',
+    readStartupTasks: async () => [],
+    createController: () => ({
+      taskBoard: { deliverStartupWorkAsync: async () => ({ delivered: [], skipped: [] }) },
+    }),
     invalidate: () => undefined,
     contextInvalidationSignal: () => new AbortController().signal,
     withExpectedContext: async (_expected, operation) => operation(),
@@ -61,6 +67,12 @@ function setup(
       create: async () => undefined,
       updateLaunchSettings: async () => undefined,
     },
+    profileOwnership: options.profileOwnership ?? {
+      isManagedByThisProfile: async () => true,
+      isManagedByThisProfileSync: () => true,
+    },
+    claimTeam: async () => undefined,
+    clearStoppedLaneStopBackoff: () => undefined,
     progressHistory: { findByRunId: async () => undefined },
     listTeamNames: options.listTeamNames ?? (async () => []),
     ...(options.relayIntervalMs !== undefined ? { relayIntervalMs: options.relayIntervalMs } : {}),
@@ -113,6 +125,10 @@ describe('native desktop team runtime composition', () => {
         prepareForProvisioning: async () => ({}) as never,
       },
       taskActivity: { repairStaleTaskActivityIntervalsBeforeSnapshot: async () => undefined },
+      recipientSources: {
+        readConfigSnapshot: async () => null,
+        readMembersMeta: async () => [],
+      },
       now: () => '2026-10-31T00:00:00.000Z',
     });
     expect(Object.keys(apis)).toHaveLength(11);
@@ -178,14 +194,39 @@ describe('native desktop team runtime composition', () => {
         configurationRevision: 'TEST-revision',
       },
     }));
+    await mkdir(join(teamsRoot, 'foreign-team'), { recursive: true });
+    await store.mutate('foreign-team', new AbortController().signal, async () => ({
+      name: 'foreign-team',
+      appManagedRun: {
+        identity: {
+          appInstanceId: 'TEST-foreign-app',
+          dataRootFingerprint: 'TEST-foreign-root',
+          connectionGeneration: 1,
+          teamName: 'foreign-team',
+          runId: 'TEST-foreign-run',
+        },
+        configurationRevision: 'TEST-revision',
+      },
+    }));
+    await claimTeamForThisProfile({ teamsBasePath: teamsRoot, teamName: 'test-team', reason: 'create', profileScope: 'TEST-own' });
+    await claimTeamForThisProfile({ teamsBasePath: teamsRoot, teamName: 'foreign-team', reason: 'create', profileScope: 'TEST-foreign' });
     const { recoverStartup } = setup(undefined, {
       teamsRoot,
-      listTeamNames: async () => ['test-team'],
+      listTeamNames: async () => ['test-team', 'foreign-team'],
+      profileOwnership: createTeamProfileOwnership({
+        isTrackedInThisProcess: () => false,
+        getTeamsBasePath: () => teamsRoot,
+        getProfileScope: () => 'TEST-own',
+      }),
     });
     await expect(recoverStartup()).resolves.toEqual({ recovered: ['test-team'], failed: [] });
     const config = JSON.parse(
       await readFile(join(teamsRoot, 'test-team', 'config.json'), 'utf8')
     ) as Record<string, unknown>;
     expect(config.appManagedRun).toBeUndefined();
+    const foreign = JSON.parse(
+      await readFile(join(teamsRoot, 'foreign-team', 'config.json'), 'utf8')
+    ) as Record<string, unknown>;
+    expect(foreign.appManagedRun).toBeDefined();
   });
 });

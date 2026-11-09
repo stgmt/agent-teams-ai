@@ -11,6 +11,7 @@ import { estimateCachedValueBytes } from './cacheMemoryEstimate';
 import { listTaskTeamNames } from './consistentTaskSnapshot';
 import { getTeamFsWorkerClient } from './TeamFsWorkerClient';
 import { compactTeamTaskForSnapshot } from './teamTaskSnapshotCompaction';
+import { normalizeExecutionTaskMetadata } from './execution/ExecutionTaskMetadata';
 
 import type {
   SourceMessageSnapshot,
@@ -72,6 +73,86 @@ interface ScannedTaskFile {
 
 function cloneTasks<T>(tasks: readonly T[]): T[] {
   return structuredClone([...tasks]);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function readCreationCommand(value: unknown): TeamTask['creationCommand'] {
+  if (!isRecord(value)) return undefined;
+  if (
+    ['namespace', 'scopeKey', 'operation', 'commandId', 'payloadHash'].every(
+      (key) => typeof value[key] === 'string'
+    )
+  )
+    return value as unknown as TeamTask['creationCommand'];
+  if (typeof value.idempotencyKey === 'string') return { idempotencyKey: value.idempotencyKey };
+  return undefined;
+}
+
+function readStringArray(value: unknown): string[] | undefined {
+  return Array.isArray(value) && value.every((item) => typeof item === 'string')
+    ? value
+    : undefined;
+}
+
+function isRegistryStatus(value: unknown): value is NonNullable<TeamTask['registryStatus']> {
+  return (
+    typeof value === 'string' &&
+    [
+      'planned',
+      'todo',
+      'ready',
+      'in-progress',
+      'blocked',
+      'done',
+      'deleted',
+      'deferred',
+      'unknown',
+    ].includes(value)
+  );
+}
+
+function isRegistrySource(value: unknown): value is NonNullable<TeamTask['registrySource']> {
+  return (
+    isRecord(value) &&
+    (value.path === null || typeof value.path === 'string') &&
+    ['startLine', 'startColumn', 'endLine', 'endColumn'].every(
+      (key) =>
+        value[key] === null || (typeof value[key] === 'number' && Number.isFinite(value[key]))
+    )
+  );
+}
+
+function isRegistryTask(value: unknown): value is NonNullable<TeamTask['registryTask']> {
+  if (!isRecord(value)) return false;
+  return (
+    ['canonicalId', 'specSlug', 'localId', 'title'].every(
+      (key) => typeof value[key] === 'string'
+    ) &&
+    ['description', 'creationToken', 'phase', 'owner', 'tracking', 'contentHash'].every(
+      (key) => value[key] === null || typeof value[key] === 'string'
+    ) &&
+    isRegistryStatus(value.status) &&
+    isRegistrySource(value.source) &&
+    ['requirements', 'dependsOn', 'blocks', 'blockedBy'].every(
+      (key) => readStringArray(value[key]) !== undefined
+    ) &&
+    (value.body === undefined || typeof value.body === 'string')
+  );
+}
+
+function isRegistryEntity(value: unknown): value is NonNullable<TeamTask['registryEntity']> {
+  return (
+    isRecord(value) &&
+    ['canonicalId', 'specSlug', 'localId', 'kind', 'title', 'body'].every(
+      (key) => typeof value[key] === 'string'
+    ) &&
+    isRecord(value.attributes) &&
+    (value.contentHash === null || typeof value.contentHash === 'string') &&
+    (value.span === null || isRegistrySource(value.span))
+  );
 }
 
 function buildTaskFileSignature(stat: fs.Stats): TaskFileSignature {
@@ -472,6 +553,12 @@ export class TeamTaskReader {
         )
           ? (parsed.status as TeamTask['status'])
           : 'pending';
+        const pendingKanbanTransition =
+          parsed.pendingKanbanTransition === null || parsed.pendingKanbanTransition === undefined
+            ? undefined
+            : (normalizeExecutionTaskMetadata({
+                pendingKanbanTransition: parsed.pendingKanbanTransition,
+              }).pendingKanbanTransition ?? undefined);
         let task: TeamTask = {
           id:
             typeof parsed.id === 'string' || typeof parsed.id === 'number' ? String(parsed.id) : '',
@@ -483,6 +570,44 @@ export class TeamTaskReader {
                     ? String(parsed.id)
                     : ''
                 ),
+          specProject: typeof parsed.specProject === 'string' ? parsed.specProject : undefined,
+          specSlug: typeof parsed.specSlug === 'string' ? parsed.specSlug : undefined,
+          registryLocalId:
+            typeof parsed.registryLocalId === 'string' ? parsed.registryLocalId : undefined,
+          registryStatus: isRegistryStatus(parsed.registryStatus)
+            ? parsed.registryStatus
+            : undefined,
+          registryTask: isRegistryTask(parsed.registryTask) ? parsed.registryTask : undefined,
+          registryEntity: isRegistryEntity(parsed.registryEntity)
+            ? parsed.registryEntity
+            : undefined,
+          requirements: readStringArray(parsed.requirements),
+          dependsOn: readStringArray(parsed.dependsOn),
+          registryRefs: readStringArray(parsed.registryRefs),
+          registryPhase:
+            parsed.registryPhase === null || typeof parsed.registryPhase === 'string'
+              ? parsed.registryPhase
+              : undefined,
+          tracking:
+            parsed.tracking === null || typeof parsed.tracking === 'string'
+              ? parsed.tracking
+              : undefined,
+          contentHash:
+            parsed.contentHash === null || typeof parsed.contentHash === 'string'
+              ? parsed.contentHash
+              : undefined,
+          registrySource: isRegistrySource(parsed.registrySource)
+            ? parsed.registrySource
+            : undefined,
+          registryBody: typeof parsed.registryBody === 'string' ? parsed.registryBody : undefined,
+          registryAttributes: isRecord(parsed.registryAttributes)
+            ? parsed.registryAttributes
+            : undefined,
+          doneWhen:
+            parsed.doneWhen === null || typeof parsed.doneWhen === 'string'
+              ? parsed.doneWhen
+              : undefined,
+          creationCommand: readCreationCommand(parsed.creationCommand),
           subject,
           description:
             typeof parsed.description === 'string'
@@ -602,6 +727,7 @@ export class TeamTaskReader {
             reviewState: parsed.reviewState as TeamTask['reviewState'],
             status,
           }),
+          pendingKanbanTransition,
           sourceMessageId:
             typeof parsed.sourceMessageId === 'string' && parsed.sourceMessageId.trim()
               ? parsed.sourceMessageId.trim()

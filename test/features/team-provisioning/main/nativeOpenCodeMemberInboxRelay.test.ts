@@ -49,7 +49,8 @@ afterEach(async () => {
 function build(
   deliver: (
     input: OpenCodeMemberMessageDeliveryInput
-  ) => OpenCodeMemberInboxDelivery | Promise<OpenCodeMemberInboxDelivery>
+  ) => OpenCodeMemberInboxDelivery | Promise<OpenCodeMemberInboxDelivery>,
+  owned = true
 ) {
   const teamsBasePath = join(claudeBase, 'teams');
   const identity = createNativeOpenCodeMemberIdentity({
@@ -82,6 +83,7 @@ function build(
   const wakes: string[] = [];
   const relay = createNativeOpenCodeMemberInboxRelay({
     teamsBasePath,
+    isManagedByThisProfile: async () => owned,
     identity,
     ledgerTransitions,
     visibleReplyProof,
@@ -103,6 +105,13 @@ function build(
 }
 
 describe('native OpenCode member inbox relay', () => {
+  it('refuses another profile’s inbox without delivering', async () => {
+    const { relay, delivered } = build(() => { throw new Error('must not deliver'); }, false);
+    const result = await relay.relayOpenCodeMemberInboxMessages(teamName, memberName);
+    expect(result.diagnostics).toContain('opencode_member_inbox_relay_skipped_team_of_another_app_profile');
+    expect(delivered).toEqual([]);
+  });
+
   it('delivers an unread member row to the lane and then marks it read', async () => {
     const writer = new TeamInboxWriter();
     await writer.sendMessage(teamName, {

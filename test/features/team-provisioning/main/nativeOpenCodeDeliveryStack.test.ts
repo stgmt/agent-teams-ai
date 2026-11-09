@@ -20,6 +20,7 @@ function sources(overrides: Record<string, unknown> = {}) {
     teamsBasePath: 'C:/TEST-teams',
     launchState: { read: async () => null, write: async () => ({}) as never },
     isTeamAlive: () => true,
+    isManagedByThisProfile: async () => true,
     runs: createNativeSecondaryRuntimeRunStore(),
     openCodeAdapter: () => adapter,
     messageAdapter: () => adapter,

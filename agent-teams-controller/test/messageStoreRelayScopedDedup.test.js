@@ -1,3 +1,27 @@
+const { startControlServer } = require('./helpers/controlServer.js');
+const { resetTaskBackendCache } = require('../src/internal/taskBackendSelection.js');
+const { resetSyncControlRequestChannel } = require('../src/internal/syncControlRequest.js');
+
+let registryServer;
+let registryPreviousEnv;
+const registryEnvKeys = ['AGENT_TEAMS_BOUND_CONTROL_URL', 'AGENT_TEAMS_BOUND_CONTEXT_JSON', 'AGENT_TEAMS_MCP_CLAUDE_DIR'];
+beforeEach(async () => {
+  registryPreviousEnv = Object.fromEntries(registryEnvKeys.map((key) => [key, process.env[key]]));
+  registryServer = await startControlServer();
+  process.env.AGENT_TEAMS_BOUND_CONTROL_URL = registryServer.url;
+  process.env.AGENT_TEAMS_BOUND_CONTEXT_JSON = JSON.stringify({ appInstanceId: 'controller-consumer-test', dataRootFingerprint: 'controller-consumer-root', connectionGeneration: 1 });
+  resetTaskBackendCache();
+});
+afterEach(async () => {
+  resetTaskBackendCache();
+  resetSyncControlRequestChannel();
+  if (registryServer) await registryServer.stop();
+  for (const key of registryEnvKeys) {
+    if (registryPreviousEnv[key] === undefined) delete process.env[key];
+    else process.env[key] = registryPreviousEnv[key];
+  }
+});
+
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -15,6 +39,7 @@ describe('relay-scoped user restatement dedup', () => {
 
   function makeClaudeDir() {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-teams-relay-dedup-'));
+    process.env.AGENT_TEAMS_MCP_CLAUDE_DIR = dir;
     tempDirs.push(dir);
     fs.mkdirSync(path.join(dir, 'teams', 'my-team'), { recursive: true });
     fs.mkdirSync(path.join(dir, 'tasks', 'my-team'), { recursive: true });
@@ -126,7 +151,7 @@ describe('relay-scoped user restatement dedup', () => {
   it('lets a reply carrying the required task refs land after one without them', () => {
     const claudeDir = makeClaudeDir();
     const controller = createController({ teamName: 'my-team', claudeDir });
-    const task = controller.tasks.createTask({ subject: 'Write the report', owner: 'bob' });
+    const task = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Write the report', owner: 'bob' });
     const withoutRefs = controller.messages.sendMessage({
       to: 'user',
       from: 'alice',
@@ -152,7 +177,7 @@ describe('relay-scoped user restatement dedup', () => {
   it('suppresses a second reply once the first already carries the required task refs', () => {
     const claudeDir = makeClaudeDir();
     const controller = createController({ teamName: 'my-team', claudeDir });
-    const task = controller.tasks.createTask({ subject: 'Write the report', owner: 'bob' });
+    const task = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Write the report', owner: 'bob' });
     const taskRefs = [{ taskId: task.id, displayId: task.displayId, teamName: 'my-team' }];
     const first = controller.messages.sendMessage({
       to: 'user',

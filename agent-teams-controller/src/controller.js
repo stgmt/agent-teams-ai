@@ -7,13 +7,14 @@ const review = require('./internal/review.js');
 const taskBoard = require('./internal/taskBoard.js');
 const messages = require('./internal/messages.js');
 const processes = require('./internal/processes.js');
-const maintenance = require('./internal/maintenance.js');
 const crossTeam = require('./internal/crossTeam.js');
 const runtime = require('./internal/runtime.js');
 const workSync = require('./internal/workSync.js');
 const groupChats = require('./internal/groupChats.js');
+const maintenance = require('./internal/maintenance.js');
 const agentBlocks = require('./internal/agentBlocks.js');
 const taskCompletionClaim = require('./internal/taskCompletionClaim.js');
+const specBindings = require('./internal/specBindings.js');
 const {
   buildChatVisualizationProtocolText,
   buildChatVisualizationRefreshInstruction,
@@ -24,6 +25,12 @@ function bindModule(context, moduleApi) {
     Object.entries(moduleApi).map(([name, fn]) => [name, (...args) => fn(context, ...args)])
   );
 }
+const appScopedSpecBindings = Object.freeze({
+  listTeamSpecBindings: (scopeCredential) => specBindings.listTeamSpecBindings(scopeCredential),
+  linkTeamSpec: (binding, scopeCredential) =>
+    specBindings.linkTeamSpec(null, binding, scopeCredential),
+});
+
 
 function createController(options) {
   const context = createControllerContext(boundControllerOptions(options));
@@ -38,11 +45,11 @@ function createController(options) {
     taskBoard: bindModule(context, taskBoard),
     messages: bindModule(context, messages),
     processes: bindModule(context, processes),
-    maintenance: bindModule(context, maintenance),
     crossTeam: bindModule(context, crossTeam),
     runtime: bindModule(context, runtime),
     workSync: bindModule(context, workSync),
-    groupChats: bindModule(context, groupChats),
+    maintenance: bindModule(context, maintenance),
+    specBindings: appScopedSpecBindings,
   };
 }
 
@@ -51,6 +58,7 @@ module.exports = {
     withTeamBoardLock: boardLocks.withTeamBoardLock,
     tryWithTeamBoardLock: boardLocks.tryWithTeamBoardLock,
   },
+  appScopedSpecBindings,
   createController,
   createControllerContext,
   agentBlocks,
@@ -70,9 +78,9 @@ module.exports = {
   taskBoard,
   messages,
   processes,
-  maintenance,
   crossTeam,
   runtime,
   workSync,
+  maintenance,
   groupChats,
 };

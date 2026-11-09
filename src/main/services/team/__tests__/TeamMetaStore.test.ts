@@ -5,8 +5,12 @@ const atomicWriteAsync = vi.hoisted(() =>
 );
 
 vi.mock('../atomicWrite', () => ({ atomicWriteAsync }));
+vi.mock('../fileLock', () => ({
+  withFileLock: (_path: string, run: () => Promise<unknown>) => run(),
+}));
 
 import { TeamMetaStore } from '../TeamMetaStore';
+import { hasCompleteKnownMetadata } from '../TeamMetadataReadFidelity';
 
 import type { TeamMetaFile } from '../TeamMetaStore';
 
@@ -76,5 +80,20 @@ describe('TeamMetaStore', () => {
     expect(JSON.parse(atomicWriteAsync.mock.calls[0]?.[1])).toMatchObject({
       syncModelsWithLead: false,
     });
+  });
+
+  it('retains registry binding and registration state during serialization', () => {
+    const value = {
+      cwd: '/sandbox/team',
+      createdAt: 1,
+      registryTeamId: 'team-id',
+      registryRegistrationRequestId: 'request-id',
+      registryRegistrationCompleted: false,
+      specBindings: [{ project: 'owner/project', spec: 'example' }],
+    };
+    const normalized = JSON.parse(new TeamMetaStore().serializeMeta(value));
+    expect(normalized).toMatchObject(value);
+    expect(hasCompleteKnownMetadata(value, normalized)).toBe(true);
+    expect(hasCompleteKnownMetadata(value, { ...normalized, specBindings: [] })).toBe(false);
   });
 });

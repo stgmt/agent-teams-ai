@@ -15,7 +15,8 @@ import {
   buildTaskChangeRequestOptions,
   canDisplayTaskChangesForOptions,
 } from '@renderer/utils/taskChangeRequest';
-import { deriveTaskDisplayId, formatTaskDisplayLabel } from '@shared/utils/taskIdentity';
+import { formatSpecificationTaskLabel } from '@renderer/utils/specificationTaskPresentation';
+import { deriveTaskDisplayId } from '@shared/utils/taskIdentity';
 import {
   isTeamTaskFinishedForDependency,
   isTeamTaskNeedsFixActionable,
@@ -148,7 +149,7 @@ const DependencyBadge = ({
   const depTask = taskMap.get(taskId);
   const isCompleted = depTask ? isTeamTaskFinishedForDependency(depTask) : false;
   const label = depTask
-    ? `${formatTaskDisplayLabel(depTask)}: ${depTask.subject}`
+    ? `${formatSpecificationTaskLabel(depTask)}: ${depTask.subject}`
     : `#${deriveTaskDisplayId(taskId)}`;
 
   return (
@@ -166,7 +167,7 @@ const DependencyBadge = ({
             onScrollToTask?.(taskId);
           }}
         >
-          {depTask ? formatTaskDisplayLabel(depTask) : `#${deriveTaskDisplayId(taskId)}`}
+          {depTask ? formatSpecificationTaskLabel(depTask) : `#${deriveTaskDisplayId(taskId)}`}
         </button>
       </TooltipTrigger>
       <TooltipContent side="bottom">{label}</TooltipContent>
@@ -184,7 +185,7 @@ const FlatDependencyRow = ({
 }: FlatDependencyRowProps): React.JSX.Element => {
   const depTask = taskMap.get(taskId);
   const displayLabel = depTask
-    ? formatTaskDisplayLabel(depTask)
+    ? formatSpecificationTaskLabel(depTask)
     : `#${deriveTaskDisplayId(taskId)}`;
   const toneClass =
     tone === 'blocked'
@@ -799,7 +800,7 @@ export const KanbanTaskCard = memo(
         {flat ? (
           <div className="absolute left-3 right-1.5 top-1.5 flex min-w-0 items-center justify-between gap-2">
             <div className="flex min-w-0 items-center gap-1.5 text-[10px] leading-none text-[var(--color-text-muted)]">
-              <span className="truncate">{formatTaskDisplayLabel(task)}</span>
+              <span className="truncate">{formatSpecificationTaskLabel(task)}</span>
               <UnreadCommentsBadge
                 unreadCount={unreadCount}
                 totalCount={commentCount}
@@ -827,7 +828,7 @@ export const KanbanTaskCard = memo(
         ) : (
           <>
             <span className="absolute left-[3px] top-[2px] flex max-w-[calc(100%-72px)] items-center gap-1 text-[9px] leading-none text-[var(--color-text-muted)]">
-              <span className="truncate">{formatTaskDisplayLabel(task)}</span>
+              <span className="truncate">{formatSpecificationTaskLabel(task)}</span>
               {hasLiveTaskLogs ? (
                 <span aria-label={t('kanban.taskCard.taskLogsActive')} className="inline-flex">
                   <OngoingIndicator size="sm" title={t('kanban.taskCard.newTaskLogsArriving')} />

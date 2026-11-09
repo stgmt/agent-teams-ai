@@ -38,6 +38,7 @@ import {
   readRuntimeStatusCommand,
   RuntimeStatusCommandError,
 } from './runtimeStatusCommandDiagnostics';
+import { resolveRuntimeStatusExecutionContext } from './runtimeStatusExecutionContext';
 
 import type {
   CliProviderId,
@@ -604,13 +605,17 @@ function mapRuntimeProviderModelCatalog(
 
 function getRuntimeModelCatalogRefreshState(
   runtimeStatus: NonNullable<UnifiedRuntimeStatusResponse['providers']>[string] | undefined,
-  modelCatalog: CliProviderStatus['modelCatalog']
+  modelCatalog: CliProviderStatus['modelCatalog'],
+  summary: boolean
 ): NonNullable<CliProviderStatus['modelCatalogRefreshState']> {
   if (modelCatalog) {
     return modelCatalog.status === 'ready' ? 'ready' : 'error';
   }
 
-  return runtimeStatus?.runtimeCapabilities?.modelCatalog?.dynamic === true ? 'loading' : 'idle';
+  if (runtimeStatus?.runtimeCapabilities?.modelCatalog?.dynamic !== true) {
+    return 'idle';
+  }
+  return summary ? 'loading' : 'error';
 }
 
 function mapRuntimeSubscriptionRateLimitWindow(
@@ -924,14 +929,18 @@ export class ClaudeMultimodelBridgeService {
           })
         : Promise.resolve(null);
 
+    const context = await resolveRuntimeStatusExecutionContext(
+      providerId,
+      getProviderStatusCommandCwd(options.projectPath)
+    );
     const modelListPromise = execCli(
       binaryPath,
-      ['model', 'list', '--json', '--provider', providerId],
+      ['model', 'list', '--json', '--provider', providerId, ...context.projectArgs],
       {
         timeout: PROVIDER_MODELS_TIMEOUT_MS,
         maxBuffer: PROVIDER_MODELS_MAX_BUFFER_BYTES,
         env,
-        cwd: getProviderStatusCommandCwd(options.projectPath),
+        cwd: context.cwd,
       }
     );
 
@@ -1028,7 +1037,8 @@ export class ClaudeMultimodelBridgeService {
 
   private mapRuntimeProviderStatus(
     providerId: CliProviderId,
-    runtimeStatus: NonNullable<UnifiedRuntimeStatusResponse['providers']>[string] | undefined
+    runtimeStatus: NonNullable<UnifiedRuntimeStatusResponse['providers']>[string] | undefined,
+    options: { summary?: boolean } = {}
   ): CliProviderStatus {
     const provider = createDefaultProviderStatus(providerId);
     if (!runtimeStatus) {
@@ -1101,7 +1111,11 @@ export class ClaudeMultimodelBridgeService {
         })) ?? [],
       models: extractModelIds(runtimeStatus.models),
       modelCatalog,
-      modelCatalogRefreshState: getRuntimeModelCatalogRefreshState(runtimeStatus, modelCatalog),
+      modelCatalogRefreshState: getRuntimeModelCatalogRefreshState(
+        runtimeStatus,
+        modelCatalog,
+        options.summary === true
+      ),
       subscriptionRateLimits: mapRuntimeSubscriptionRateLimits(
         providerId,
         runtimeStatus.authMethod,
@@ -1224,10 +1238,15 @@ export class ClaudeMultimodelBridgeService {
     connectionIssues: Partial<Record<CliProviderId, string>>,
     options: { summary?: boolean; timeoutMs?: number; projectPath?: string | null } = {}
   ): Promise<CliProviderStatus> {
+    const context = await resolveRuntimeStatusExecutionContext(
+      providerId,
+      getProviderStatusCommandCwd(options.projectPath)
+    );
     const args = ['runtime', 'status', '--json', '--provider', providerId];
     if (options.summary) {
       args.push('--summary');
     }
+    args.push(...context.projectArgs);
     const timeout = this.getProviderStatusRuntimeTimeout(binaryPath, providerId, options);
     const parsed = await readRuntimeStatusCommand(
       binaryPath,
@@ -1236,12 +1255,14 @@ export class ClaudeMultimodelBridgeService {
         timeout,
         maxBuffer: PROVIDER_STATUS_MAX_BUFFER_BYTES,
         env,
-        cwd: getProviderStatusCommandCwd(options.projectPath),
+        cwd: context.cwd,
       },
-      extractJsonObject<UnifiedRuntimeStatusResponse>
+      extractJsonObject<UnifiedRuntimeStatusResponse>,
+      undefined,
+      getProviderStatusCommandCwd(options.projectPath)
     );
     const mappedProvider = this.applyConnectionIssue(
-      this.mapRuntimeProviderStatus(providerId, parsed.providers?.[providerId]),
+      this.mapRuntimeProviderStatus(providerId, parsed.providers?.[providerId], options),
       connectionIssues
     );
     if (mappedProvider.statusCheckOutcome !== 'authoritative') {

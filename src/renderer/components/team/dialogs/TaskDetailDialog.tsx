@@ -25,6 +25,7 @@ import { buildTaskChangeRequestOptions } from '@renderer/utils/taskChangeRequest
 import { RefreshCw } from 'lucide-react';
 
 import { TaskDetailLoadingDialog } from './TaskDetailLoadingDialog';
+import { SpecificationTaskDetails } from '../SpecificationTaskDetails';
 
 import type { TaskDetailHeadingProps } from '@features/team-task-detail/renderer';
 import type { TaskDetailFileLinkIntent } from '@features/team-task-detail/renderer';
@@ -284,6 +285,7 @@ const LoadedTaskDetailDialog = ({
               onRetry={retryRead}
             />
           ) : null}
+          <SpecificationTaskDetails task={task} />
           <TaskDetailContent
             key={taskDetailKey(sessionController.identity)}
             actions={presentation.actions}

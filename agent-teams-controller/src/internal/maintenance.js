@@ -4,6 +4,7 @@ const path = require('path');
 const { withTeamBoardLock } = require('./boardLock.js');
 const kanbanStore = require('./kanbanStore.js');
 const taskStore = require('./taskStore.js');
+const pendingKanbanGuard = require('./pendingKanbanGuard.js');
 
 function listInboxNames(paths) {
   const inboxDir = path.join(paths.teamDir, 'inboxes');
@@ -154,6 +155,7 @@ function reconcileArtifacts(context, options = {}) {
   // lock in between. Under the lock, scans read fresh and the cross-process
   // lockfile serializes the writes.
   return withTeamBoardLock(context.paths, () => {
+    pendingKanbanGuard.assertNoPendingTransitions(context.paths, taskStore);
     const tasks = taskStore.listTasks(context.paths);
 
     const gcResult = garbageCollectKanban

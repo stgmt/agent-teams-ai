@@ -26,7 +26,7 @@ export function resolveOptionalTaskCreateCommandId(
   }
 
   if (commandId && !CANONICAL_TASK_UUID_PATTERN.test(commandId)) {
-    throw new Error('task_create commandId must be a canonical task UUID (version 1-5)');
+    throw new Error('task_create commandId must be a UUID (version 1-5)');
   }
   const idempotencyCommandId = idempotencyKey
     ? CANONICAL_TASK_UUID_PATTERN.test(idempotencyKey)
@@ -69,10 +69,6 @@ export function createTaskWithOptionalIdempotency(input: {
 
   const commandPayload = {
     ...input.payload,
-    id: input.commandId,
-    // MCP callers may choose their command id, so an unrelated legacy task
-    // at that UUID must never be adopted as a retry of this request.
-    allowLegacyAdoption: false,
     creationCommand: {
       namespace: MCP_TASK_CREATION_NAMESPACE,
       scopeKey: input.teamName,
@@ -83,25 +79,15 @@ export function createTaskWithOptionalIdempotency(input: {
   };
 
   if (input.admitCreate) {
-    if (!input.taskBoard.getTask) throw new Error('Task creation admission requires task lookup');
-    let exists = false;
+    // Command UUIDs identify requests, not registry-allocated numeric task ids.
     try {
-      input.taskBoard.getTask(input.commandId);
-      exists = true;
-    } catch (error) {
-      if ((error as { code?: string }).code !== 'TASK_NOT_FOUND') throw error;
-    }
-    if (exists)
       return withoutCreationCommand(input.taskBoard.reconcileTaskCreation(commandPayload));
+    } catch (error) {
+      if (!error || typeof error !== 'object' || !('code' in error) || error.code !== 'TASK_NOT_FOUND')
+        throw error;
+    }
   }
-  const create = () => {
-    try {
-      return withoutCreationCommand(input.taskBoard.createTask(commandPayload));
-    } catch (error) {
-      if (!isExistingCommandTaskError(error, input.commandId!)) throw error;
-      return withoutCreationCommand(input.taskBoard.reconcileTaskCreation(commandPayload));
-    }
-  };
+  const create = () => withoutCreationCommand(input.taskBoard.createTask(commandPayload));
   return input.admitCreate ? input.admitCreate().then(create) : create();
 }
 
@@ -144,10 +130,6 @@ function stableJson(value: unknown): string {
       .join(',')}}`;
   }
   throw new TypeError(`Task creation payload contains unsupported ${typeof value} value`);
-}
-
-function isExistingCommandTaskError(error: unknown, commandId: string): boolean {
-  return error instanceof Error && error.message === `Task already exists: ${commandId}`;
 }
 
 function withoutCreationCommand(value: unknown): unknown {

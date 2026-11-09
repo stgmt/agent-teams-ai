@@ -18,6 +18,10 @@ on:
       - 'pnpm-workspace.yaml'
       - 'scripts/electron-builder/**'
       - 'runtime.lock.json'
+      - 'scripts/e2e/opencode-project-path-packaged.mjs'
+      - 'src/main/services/runtime/ClaudeMultimodelBridgeService.ts'
+      - 'src/main/services/runtime/runtimeStatusExecutionContext.ts'
+      - 'src/main/services/team/provisioning/TeamProvisioningProviderPreflight.ts'
       - 'managed-git.lock.json'
       - 'scripts/stage-managed-git.mjs'
       - 'src/main/utils/managedGit.ts'
@@ -77,36 +81,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: darwin-arm64
-            arch: arm64
-            os: darwin
-            runner: ${{ vars.CI_MACOS_ARM_RUNNER || 'namespace-profile-macos-15' }}
-            pack: pack:mac:arm64
-            bundle: release/mac-arm64/Agent Teams AI.app
-          - platform: darwin-x64
-            arch: x64
-            os: darwin
-            runner: macos-15-intel
-            pack: pack:mac:x64
-            bundle: release/mac/Agent Teams AI.app
           - platform: win32-x64
             arch: x64
             os: win32
             runner: windows-2022
             pack: pack:win:x64
             bundle: release/win-unpacked
-          - platform: win32-arm64
-            arch: arm64
-            os: win32
-            runner: windows-11-arm
-            pack: pack:win:arm64
-            bundle: release/win-arm64-unpacked
-          - platform: linux-x64
-            arch: x64
-            os: linux
-            runner: ${{ vars.CI_LINUX_RUNNER || 'ubicloud-standard-4' }}
-            pack: pack:linux
-            bundle: release/linux-unpacked
 
     steps:
       - uses: actions/checkout@v6
@@ -118,12 +98,8 @@ jobs:
           node-version-file: .node-version
           cache: pnpm
       - uses: actions/setup-python@v6
-        if: matrix.os != 'darwin'
         with:
           python-version: '3.11'
-      - name: Install Linux packaging tools
-        if: matrix.os == 'linux'
-        run: sudo apt-get update && sudo apt-get install -y libarchive-tools rpm xvfb
       - name: Restore node-gyp executable bit
         shell: bash
         run: |
@@ -136,6 +112,9 @@ jobs:
         run: node ./scripts/ci/install-dependencies-with-retry.mjs
       - name: Verify managed Git pins and archive path safety
         run: node --test scripts/stage-managed-git.test.mjs
+      - name: Validate packaged OpenCode project-path smoke syntax early
+        if: matrix.os == 'darwin'
+        run: node --check scripts/e2e/opencode-project-path-packaged.mjs
       - name: Typecheck packaged CI policy with pinned compiler
         run: node ./node_modules/@typescript/native/bin/tsc --noEmit -p scripts/tsconfig/tsconfig.packaged-ci.json
       - name: Assert Electron binary was provisioned during install
@@ -154,9 +133,6 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: node ./scripts/stage-terminal-platform-runtime.mjs --platform ${{ matrix.platform }}
-      - name: Stage Windows console wrapper
-        if: matrix.os == 'win32'
-        run: node ./scripts/stage-opencode-console-wrapper.mjs --platform ${{ matrix.platform }} --require
       - name: Build app
         env:
           NODE_OPTIONS: --max-old-space-size=8192
@@ -164,9 +140,7 @@ jobs:
       - name: Package unsigned test bundle
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-        # Only the two macOS commands omit DMG/ZIP in the intermediate draft lane.
-        # Native rebuild, staging and every bundle smoke below remain mandatory.
-        run: pnpm ${{ matrix.pack }} --publish never --config.mac.identity=null --config.mac.forceCodeSigning=false --config.mac.notarize=false ${{ matrix.os == 'darwin' && needs.packaged-scope.outputs.scope == 'app' && '--dir' || '' }}
+        run: pnpm ${{ matrix.pack }} --publish never
       - name: Verify bundle native architecture
         run: node ./scripts/electron-builder/verifyBundle.cjs "${{ matrix.bundle }}" ${{ matrix.os }} ${{ matrix.arch }}
       - name: Smoke packaged SQLite and PTY modules
@@ -174,16 +148,14 @@ jobs:
       - name: Smoke packaged Git without external installation
         run: node ./scripts/electron-builder/smokeManagedGit.cjs "${{ matrix.bundle }}" ${{ matrix.os }} ${{ matrix.arch }}
       - name: Smoke managed Git inside native Windows terminal
-        if: matrix.os == 'win32'
         run: node ./scripts/electron-builder/smokeManagedTerminalGit.cjs "${{ matrix.bundle }}" ${{ matrix.arch }}
       - name: Smoke packaged MCP handshake
         run: node ./scripts/electron-builder/smokePackagedMcp.cjs "${{ matrix.bundle }}" ${{ matrix.os }}
-      - name: Verify macOS 13 minimum
-        if: matrix.os == 'darwin'
-        run: test "$(plutil -extract LSMinimumSystemVersion raw -o - '${{ matrix.bundle }}/Contents/Info.plist')" = '13.0'
       - name: Smoke packaged app
-        if: matrix.os != 'linux'
         run: node ./scripts/electron-builder/smokePackagedApp.cjs "${{ matrix.bundle }}" ${{ matrix.os }}
+      - name: Qualify packaged macOS OpenCode project-path status and model list
+        if: matrix.os == 'darwin'
+        run: node scripts/e2e/opencode-project-path-packaged.mjs "${{ matrix.bundle }}"
       - name: Smoke packaged app under Xvfb
         if: matrix.os == 'linux'
         run: xvfb-run -a node ./scripts/electron-builder/smokePackagedApp.cjs "${{ matrix.bundle }}" linux

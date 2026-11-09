@@ -3,14 +3,23 @@ import { getTeamsBasePath } from '@main/utils/pathDecoder';
 import { migrateProviderBackendId } from '@shared/utils/providerBackend';
 import { normalizeProviderBillingMode } from '@shared/utils/providerBillingMode';
 import { normalizeRuntimeSelectionVersion } from '@shared/utils/teamRuntimeSelection';
+import { randomUUID } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 
+import { resolveTeamSpecBindings } from './registry/TeamSpecBinding';
 import { atomicWriteAsync } from './atomicWrite';
+import { withFileLock } from './fileLock';
 import { hasCompleteKnownMetadata } from './TeamMetadataReadFidelity';
 import { MAX_TEAM_METADATA_BYTES, serializeTeamMetadata } from './TeamMetadataSerialization';
 
-import type { ProviderModelLaunchIdentity, TeamFastMode, TeamProviderId } from '@shared/types';
+import type {
+  ProviderModelLaunchIdentity,
+  RegistryRegistrationIdentity,
+  TeamFastMode,
+  TeamProviderId,
+  TeamSpecBinding,
+} from '@shared/types';
 
 /**
  * Persisted team-level metadata saved by the UI before CLI provisioning.
@@ -22,6 +31,15 @@ export interface TeamMetaFile {
   version: 1;
   runtimeSelectionVersion?: 1;
   deletedAt?: string;
+  registryTeamId?: string;
+  registryRegistrationRequestId?: string;
+  registryRegistrationProject?: string;
+  registryRegistrationProtocol?: 1;
+  registryRegistrationIdentity?: RegistryRegistrationIdentity;
+  registryRegistrationCompleted?: boolean;
+  specProject?: string;
+  specSlug?: string;
+  specBindings?: TeamSpecBinding[];
   displayName?: string;
   description?: string;
   color?: string;
@@ -43,7 +61,11 @@ export interface TeamMetaFile {
 
 const metaMutationLocks = new Map<string, Promise<void>>();
 
-async function withMetaMutationLock<T>(pathKey: string, operation: () => Promise<T>): Promise<T> {
+async function withMetaMutationLock<T>(
+  pathKey: string,
+  operation: () => Promise<T>,
+  createParent = true
+): Promise<T> {
   const previous = metaMutationLocks.get(pathKey);
   let release!: () => void;
   const current = new Promise<void>((resolve) => {
@@ -52,7 +74,7 @@ async function withMetaMutationLock<T>(pathKey: string, operation: () => Promise
   metaMutationLocks.set(pathKey, current);
   if (previous) await previous;
   try {
-    return await operation();
+    return await withFileLock(pathKey, operation, { preventLiveOwnerTakeover: true, createParent });
   } finally {
     release();
     if (metaMutationLocks.get(pathKey) === current) metaMutationLocks.delete(pathKey);
@@ -75,6 +97,23 @@ function normalizeProviderId(value: unknown): TeamProviderId | undefined {
 
 function normalizeOptionalString(value: unknown): string | null {
   return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
+}
+
+function normalizeRegistrationIdentity(value: unknown): RegistryRegistrationIdentity | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  const exact = (item: unknown): item is string =>
+    typeof item === 'string' && item.length > 0 && item === item.trim();
+  if (!exact(record.securityStoreId) || !exact(record.idp) || !exact(record.userId))
+    return undefined;
+  return { securityStoreId: record.securityStoreId, idp: record.idp, userId: record.userId };
+}
+
+function registrationIdentitiesEqual(
+  a: RegistryRegistrationIdentity,
+  b: RegistryRegistrationIdentity
+): boolean {
+  return a.securityStoreId === b.securityStoreId && a.idp === b.idp && a.userId === b.userId;
 }
 
 function normalizeFastMode(value: unknown): TeamFastMode | null {
@@ -208,6 +247,24 @@ export class TeamMetaStore {
         version: 1,
         deletedAt: typeof file.deletedAt === 'string' ? file.deletedAt : undefined,
         runtimeSelectionVersion: normalizeRuntimeSelectionVersion(file.runtimeSelectionVersion),
+        registryTeamId: normalizeOptionalString(file.registryTeamId) ?? undefined,
+        registryRegistrationProject:
+          normalizeOptionalString(file.registryRegistrationProject) ?? undefined,
+        registryRegistrationRequestId:
+          normalizeOptionalString(file.registryRegistrationRequestId) ?? undefined,
+        registryRegistrationProtocol: file.registryRegistrationProtocol === 1 ? 1 : undefined,
+        registryRegistrationIdentity: normalizeRegistrationIdentity(
+          file.registryRegistrationIdentity
+        ),
+        registryRegistrationCompleted:
+          typeof file.registryRegistrationCompleted === 'boolean'
+            ? file.registryRegistrationCompleted
+            : undefined,
+        specProject: normalizeOptionalString(file.specProject) ?? undefined,
+        specSlug: normalizeOptionalString(file.specSlug) ?? undefined,
+        ...(file.specBindings !== undefined
+          ? { specBindings: resolveTeamSpecBindings({ specBindings: file.specBindings }, teamName) }
+          : {}),
         displayName:
           typeof file.displayName === 'string' ? file.displayName.trim() || undefined : undefined,
         description:
@@ -250,9 +307,28 @@ export class TeamMetaStore {
   ): Promise<void> {
     const metaPath = this.getMetaPath(teamName, teamsBasePath);
     await withMetaMutationLock(metaPath, async () => {
-      const current = await this.getMeta(teamName, teamsBasePath);
+      const current = await this.getMeta(teamName, teamsBasePath, { requireCompleteFields: true });
+      if (!current) {
+        try {
+          await fs.promises.lstat(metaPath);
+          throw new Error('Cannot replace unreadable team metadata');
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        }
+      }
       await this.writeMetaUnlocked(metaPath, {
         ...data,
+        registryTeamId: current?.registryTeamId ?? data.registryTeamId,
+        registryRegistrationRequestId:
+          current?.registryRegistrationRequestId ?? data.registryRegistrationRequestId,
+        registryRegistrationProject:
+          current?.registryRegistrationProject ?? data.registryRegistrationProject,
+        registryRegistrationProtocol:
+          current?.registryRegistrationProtocol ?? data.registryRegistrationProtocol,
+        registryRegistrationIdentity:
+          current?.registryRegistrationIdentity ?? data.registryRegistrationIdentity,
+        registryRegistrationCompleted:
+          current?.registryRegistrationCompleted ?? data.registryRegistrationCompleted,
         runtimeSelectionVersion:
           normalizeRuntimeSelectionVersion(data.runtimeSelectionVersion) ??
           current?.runtimeSelectionVersion,
@@ -269,9 +345,162 @@ export class TeamMetaStore {
   ): Promise<void> {
     const metaPath = this.getMetaPath(teamName, teamsBasePath);
     await withMetaMutationLock(metaPath, async () => {
-      const data = await update(await this.getMeta(teamName, teamsBasePath));
+      const current = await this.getMeta(teamName, teamsBasePath, { requireCompleteFields: true });
+      if (!current) {
+        try {
+          await fs.promises.lstat(metaPath);
+          throw new Error('Cannot update unreadable team metadata');
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        }
+      }
+      const data = await update(current);
+      for (const field of [
+        'registryRegistrationRequestId',
+        'registryRegistrationProject',
+        'registryTeamId',
+      ] as const) {
+        if (current?.[field] && data[field] !== current[field]) {
+          throw new Error(`Cannot change durable ${field}`);
+        }
+      }
+      if (
+        current?.registryRegistrationIdentity &&
+        (!data.registryRegistrationIdentity ||
+          !registrationIdentitiesEqual(
+            data.registryRegistrationIdentity,
+            current.registryRegistrationIdentity
+          ))
+      ) {
+        throw new Error('Cannot change durable registry registration identity');
+      }
+      if (
+        current?.registryRegistrationProtocol &&
+        data.registryRegistrationProtocol !== current.registryRegistrationProtocol
+      ) {
+        throw new Error('Cannot change durable registry registration protocol');
+      }
       await this.writeMetaUnlocked(metaPath, data);
     });
+  }
+
+  /**
+   * Reserve one stable registration request and project before any network call.
+   * This does not authorize sending or retrying: the caller must first obtain
+   * and fence the registry's authenticated principal and authoritative store.
+   */
+  async prepareRegistryRegistration(
+    teamName: string,
+    project: string,
+    teamsBasePath = getTeamsBasePath()
+  ): Promise<{ requestId: string; project: string; teamId?: string }> {
+    const requestedProject = project.trim();
+    if (!requestedProject || requestedProject !== project) {
+      throw new Error('Registry registration requires an exact project');
+    }
+    const metaPath = this.getMetaPath(teamName, teamsBasePath);
+    return withMetaMutationLock(
+      metaPath,
+      async () => {
+        const current = await this.getMeta(teamName, teamsBasePath, {
+          requireCompleteFields: true,
+        });
+        if (!current) throw new Error('Team metadata is missing or unreadable');
+        const requestId = current.registryRegistrationRequestId;
+        if (requestId && current.registryRegistrationProtocol !== 1) {
+          throw new Error('Legacy registration outcome is unknown; refusing unsafe replay');
+        }
+        if (requestId && current.registryRegistrationProject !== requestedProject) {
+          throw new Error(
+            'Registry registration project is missing or does not match the durable request'
+          );
+        }
+        if (current.registryTeamId && !requestId) {
+          throw new Error('Registered team is missing its durable registration request');
+        }
+        if (requestId) {
+          return {
+            requestId,
+            project: requestedProject,
+            ...(current.registryTeamId ? { teamId: current.registryTeamId } : {}),
+          };
+        }
+        const nextRequestId = randomUUID();
+        const { version: _version, ...data } = current;
+        await this.writeMetaUnlocked(metaPath, {
+          ...data,
+          registryRegistrationRequestId: nextRequestId,
+          registryRegistrationProject: requestedProject,
+          registryRegistrationProtocol: 1,
+          registryRegistrationCompleted: false,
+        });
+        return { requestId: nextRequestId, project: requestedProject };
+      },
+      false
+    );
+  }
+
+  async fenceRegistryRegistration(
+    teamName: string,
+    project: string,
+    requestId: string,
+    identity: RegistryRegistrationIdentity,
+    teamsBasePath = getTeamsBasePath()
+  ): Promise<void> {
+    const validIdentity = normalizeRegistrationIdentity(identity);
+    if (!validIdentity) throw new Error('Invalid registry registration identity');
+    await this.updateMeta(
+      teamName,
+      (current) => {
+        if (
+          !current ||
+          current.registryRegistrationProtocol !== 1 ||
+          current.registryRegistrationProject !== project ||
+          current.registryRegistrationRequestId !== requestId
+        ) {
+          throw new Error('Registry registration reservation changed');
+        }
+        if (
+          current.registryRegistrationIdentity &&
+          !registrationIdentitiesEqual(current.registryRegistrationIdentity, validIdentity)
+        ) {
+          throw new Error('Registry registration identity mismatch');
+        }
+        const { version: _version, ...data } = current;
+        return { ...data, registryRegistrationIdentity: validIdentity };
+      },
+      teamsBasePath
+    );
+  }
+
+  async recordRegistryRegistration(
+    teamName: string,
+    project: string,
+    requestId: string,
+    identity: RegistryRegistrationIdentity,
+    teamId: string,
+    teamsBasePath = getTeamsBasePath()
+  ): Promise<void> {
+    if (!teamId || teamId !== teamId.trim()) throw new Error('Invalid registry team identity');
+    await this.updateMeta(
+      teamName,
+      (current) => {
+        if (
+          !current ||
+          current.registryRegistrationProtocol !== 1 ||
+          current.registryRegistrationProject !== project ||
+          current.registryRegistrationRequestId !== requestId ||
+          !current.registryRegistrationIdentity ||
+          !registrationIdentitiesEqual(current.registryRegistrationIdentity, identity) ||
+          (current.registryTeamId && current.registryTeamId !== teamId)
+        ) {
+          throw new Error('Registry registration result does not match its durable fence');
+        }
+        const { version: _version, ...data } = current;
+        return { ...data, registryTeamId: teamId };
+      },
+      teamsBasePath
+    );
   }
 
   private async writeMetaUnlocked(
@@ -286,6 +515,21 @@ export class TeamMetaStore {
       version: 1,
       deletedAt: data.deletedAt,
       runtimeSelectionVersion: normalizeRuntimeSelectionVersion(data.runtimeSelectionVersion),
+      registryTeamId: normalizeOptionalString(data.registryTeamId) ?? undefined,
+      registryRegistrationProject:
+        normalizeOptionalString(data.registryRegistrationProject) ?? undefined,
+      registryRegistrationRequestId:
+        normalizeOptionalString(data.registryRegistrationRequestId) ?? undefined,
+      registryRegistrationProtocol: data.registryRegistrationProtocol === 1 ? 1 : undefined,
+      registryRegistrationIdentity: normalizeRegistrationIdentity(
+        data.registryRegistrationIdentity
+      ),
+      registryRegistrationCompleted: data.registryRegistrationCompleted,
+      specProject: normalizeOptionalString(data.specProject) ?? undefined,
+      specSlug: normalizeOptionalString(data.specSlug) ?? undefined,
+      ...(data.specBindings !== undefined
+        ? { specBindings: resolveTeamSpecBindings({ specBindings: data.specBindings }) }
+        : {}),
       displayName: data.displayName?.trim() || undefined,
       description: data.description?.trim() || undefined,
       color: data.color?.trim() || undefined,

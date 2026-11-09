@@ -502,11 +502,13 @@ describe('task-board commands E2E', () => {
     const dependency = harness.controller.taskBoard.createTask({
       subject: 'Dependency',
     }) as TeamTask;
+    const related = harness.controller.taskBoard.createTask({ subject: 'Related task' }) as TeamTask;
     const identity = makeIdentity('66666666-6666-4666-8666-666666666666');
     const payload = {
       subject: 'Task with recoverable backlink',
       createdBy: 'user',
       blockedBy: [dependency.id],
+      related: [related.id],
     };
     const destination: TaskBoardCreateTaskDestination = {
       ...harness.destination,
@@ -523,6 +525,10 @@ describe('task-board commands E2E', () => {
         };
         dependencyRow.blocks = [];
         await fs.writeFile(dependencyPath, JSON.stringify(dependencyRow));
+        const relatedPath = path.join(harness.claudeDir, 'tasks', TEAM_NAME, `${related.id}.json`);
+        const relatedRow = JSON.parse(await fs.readFile(relatedPath, 'utf8')) as { related?: string[] };
+        relatedRow.related = [];
+        await fs.writeFile(relatedPath, JSON.stringify(relatedRow));
         throw new Error('Simulated failure after the task row was committed');
       },
     };
@@ -538,6 +544,68 @@ describe('task-board commands E2E', () => {
     expect(result.outcome).toBe(ApplicationCommandRunOutcome.Executed);
     expect(result.createdInAttempt).toBe(true);
     expect(repairedDependency.blocks).toContain(identity.commandId);
+    expect((harness.controller.taskBoard.getTask(related.id) as TeamTask).related)
+      .toContain(identity.commandId);
+  });
+
+  it('preserves existing tasks on an explicit id collision and retains numeric allocation', async () => {
+    const harness = await makeHarness();
+    const numeric = harness.controller.taskBoard.createTask({ subject: 'Existing local task' }) as TeamTask;
+    expect(numeric.id).toBe('1');
+    const identity = makeIdentity('12121212-1212-4212-8212-121212121212');
+    harness.controller.taskBoard.createTask({ id: identity.commandId, subject: 'Unrelated task' });
+    const payload = { subject: 'New command task', createdBy: 'user' };
+    expect(() => harness.controller.taskBoard.createTask({
+      ...payload,
+      id: identity.commandId,
+      creationCommand: {
+        namespace: 'task-board',
+        scopeKey: TEAM_NAME,
+        operation: CREATE_TASK_OPERATION,
+        ...identity,
+        payloadHash: new NodeApplicationCommandHasher().hashJson(payload),
+      },
+    })).toThrow(/Task creation command conflict/);
+
+    await expect(harness.facade.createTask({
+      teamName: TEAM_NAME,
+      identity,
+      payload,
+      destination: harness.destination,
+    })).rejects.toThrow('Task creation conflicts with an existing destination task');
+    expect((harness.controller.taskBoard.getTask(identity.commandId) as TeamTask).subject)
+      .toBe('Unrelated task');
+    expect((harness.controller.taskBoard.getTask(numeric.id) as TeamTask).subject)
+      .toBe('Existing local task');
+    expect((harness.controller.taskBoard.createTask({ subject: 'Next local task' }) as TeamTask).id)
+      .toBe('2');
+  });
+
+  it('replays the same explicit local command and rejects a conflicting one', async () => {
+    const harness = await makeHarness();
+    const identity = makeIdentity('15151515-1515-4515-8515-151515151515');
+    const payload = { subject: 'Command task', createdBy: 'user' };
+    const command = {
+      namespace: 'task-board',
+      scopeKey: TEAM_NAME,
+      operation: CREATE_TASK_OPERATION,
+      ...identity,
+      payloadHash: new NodeApplicationCommandHasher().hashJson(payload),
+    };
+    const input = { ...payload, id: identity.commandId, creationCommand: command };
+    const first = harness.controller.taskBoard.createTask(input) as TeamTask;
+    const replay = harness.controller.taskBoard.createTask(input) as TeamTask;
+    expect(replay.id).toBe(first.id);
+    expect(harness.controller.taskBoard.listTasks()).toHaveLength(1);
+    expect(() => harness.controller.taskBoard.createTask({
+      ...input,
+      creationCommand: { ...command, payloadHash: 'different' },
+    })).toThrow(/Task creation command conflict/);
+    expect(() => harness.controller.taskBoard.createTask({
+      ...input,
+      id: 'different-task',
+    })).toThrow(/Task creation command conflict/);
+    expect((harness.controller.taskBoard.getTask(first.id) as TeamTask).subject).toBe(payload.subject);
   });
 
   it('reconciles a stale started command with an existing destination task', async () => {
@@ -545,7 +613,17 @@ describe('task-board commands E2E', () => {
     const identity = makeIdentity('22222222-2222-4222-8222-222222222222');
     const payload = { subject: 'Already persisted task', createdBy: 'user' };
     await seedStaleStarted(harness, identity, payload);
-    harness.destination.create({ ...payload, id: identity.commandId });
+    harness.destination.create({
+      ...payload,
+      id: identity.commandId,
+      creationCommand: {
+        namespace: 'task-board',
+        scopeKey: TEAM_NAME,
+        operation: CREATE_TASK_OPERATION,
+        ...identity,
+        payloadHash: new NodeApplicationCommandHasher().hashJson(payload),
+      },
+    });
 
     const result = await harness.facade.createTask({
       teamName: TEAM_NAME,
@@ -588,7 +666,17 @@ describe('task-board commands E2E', () => {
     };
     const payload = { subject: 'Original destination identity', createdBy: 'user' };
     await seedStaleStarted(harness, original, payload);
-    harness.destination.create({ ...payload, id: original.commandId });
+    harness.destination.create({
+      ...payload,
+      id: original.commandId,
+      creationCommand: {
+        namespace: 'task-board',
+        scopeKey: TEAM_NAME,
+        operation: CREATE_TASK_OPERATION,
+        ...original,
+        payloadHash: new NodeApplicationCommandHasher().hashJson(payload),
+      },
+    });
 
     const result = await harness.facade.createTask({
       teamName: TEAM_NAME,
@@ -755,7 +843,7 @@ describe('task-board commands E2E', () => {
     const feature = createApplicationCommandLedgerFeature({
       storageGateway: new InProcessGateway(core),
     });
-    const controller = createController({ teamName: TEAM_NAME, claudeDir });
+    const controller = createController({ teamName: TEAM_NAME, claudeDir, localTaskBoard: true });
     const destination = makeDestination(controller);
     return {
       claudeDir,

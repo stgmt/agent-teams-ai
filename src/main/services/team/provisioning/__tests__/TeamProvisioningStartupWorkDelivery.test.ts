@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import type { TeamTask } from '@shared/types';
 
 import { deliverStartupWorkAfterConfirmation } from '../TeamProvisioningStartupWorkDelivery';
 
@@ -20,6 +21,8 @@ interface InboxRow {
 
 describe('startup work delivery after a confirmed launch', () => {
   let claudeDir = '';
+  let controllerCreations = 0;
+  let taskReads = 0;
   const diagnostics: string[] = [];
   const warnings: string[] = [];
 
@@ -45,11 +48,21 @@ describe('startup work delivery after a confirmed launch', () => {
   const deliver = (
     memberName: string,
     launchAttemptId: string,
-    members = [{ name: 'bob' }, { name: 'carol', providerId: 'opencode' }]
+    members = [{ name: 'bob' }, { name: 'carol', providerId: 'opencode' }],
+    readTasks: (teamName: string) => Promise<TeamTask[]> = async () =>
+      board().listTasks() as TeamTask[]
   ) =>
     deliverStartupWorkAfterConfirmation(run(members) as never, memberName, launchAttemptId, {
-      createController: (input) => createController(input),
+      createController: (input) => {
+        controllerCreations += 1;
+        return createController(input);
+      },
+      readTasks: async (teamName) => {
+        taskReads += 1;
+        return readTasks(teamName);
+      },
       getClaudeBasePath: () => claudeDir,
+      isCurrent: () => true,
       appendMemberBootstrapDiagnostic: (_run, member, text) =>
         diagnostics.push(`${member}: ${text}`),
       logger: { warn: (message: string) => warnings.push(message) },
@@ -71,6 +84,8 @@ describe('startup work delivery after a confirmed launch', () => {
       })
     );
     diagnostics.length = 0;
+    controllerCreations = 0;
+    taskReads = 0;
     warnings.length = 0;
   });
 
@@ -78,67 +93,74 @@ describe('startup work delivery after a confirmed launch', () => {
 
   const board = () => createController({ teamName: 'fixture', claudeDir }).taskBoard;
 
-  it('S1.3, S1.5: a native member gets its tasks as messages and a diagnostic records the count', () => {
+  it('S1.3, S1.5: a native member gets its tasks from the supplied snapshot', async () => {
     board().createTask({ subject: 'First job', owner: 'bob' });
     const second = board().createTask({ subject: 'Second job', owner: 'bob' });
     board().startTask(String((second as { id: string }).id), 'bob');
     markInboxRead('bob');
 
-    deliver('bob', 'run-1@2026-10-22T10:00:00.000Z');
+    await expect(deliver('bob', 'run-1@2026-10-22T10:00:00.000Z')).resolves.toBe(2);
 
     expect(startupRows('bob')).toHaveLength(2);
     expect(startupRows('bob').every((row) => row.read === false)).toBe(true);
-    expect(diagnostics).toEqual([expect.stringMatching(/^bob: .*2 .*task/i)]);
+    expect(diagnostics).toEqual([]);
     expect(warnings).toEqual([]);
   });
 
-  it('S1.17: an OpenCode member is left alone (its briefing keeps the task queue)', () => {
+  it('S1.17: an OpenCode member is left alone without reading startup tasks', async () => {
     board().createTask({ subject: 'OpenCode job', owner: 'carol' });
     markInboxRead('carol');
 
-    deliver('carol', 'run-1@2026-10-22T10:00:00.000Z');
+    await expect(deliver('carol', 'run-1@2026-10-22T10:00:00.000Z')).resolves.toBe(0);
 
     expect(startupRows('carol')).toEqual([]);
+    expect(taskReads).toBe(0);
+    expect(controllerCreations).toBe(0);
     expect(diagnostics).toEqual([]);
   });
 
-  it('a member with no work gets nothing and no diagnostic noise', () => {
-    deliver('bob', 'run-1@2026-10-22T10:00:00.000Z');
+  it('a member with no work gets nothing and no diagnostic noise', async () => {
+    await expect(deliver('bob', 'run-1@2026-10-22T10:00:00.000Z')).resolves.toBe(0);
 
     expect(inbox('bob')).toEqual([]);
     expect(diagnostics).toEqual([]);
   });
 
-  it('S1.12: the same launch attempt delivers once', () => {
+  it('S1.12: the same launch attempt delivers once', async () => {
     board().createTask({ subject: 'Only once', owner: 'bob' });
     markInboxRead('bob');
 
-    deliver('bob', 'run-1@2026-10-22T10:00:00.000Z');
+    await deliver('bob', 'run-1@2026-10-22T10:00:00.000Z');
     markInboxRead('bob');
-    deliver('bob', 'run-1@2026-10-22T10:00:00.000Z');
+    await deliver('bob', 'run-1@2026-10-22T10:00:00.000Z');
 
     expect(startupRows('bob')).toHaveLength(1);
   });
 
-  it('S1.18: a restart inside the same run is a new launch attempt and delivers again', () => {
+  it('S1.18: a restart inside the same run is a new launch attempt and delivers again', async () => {
     board().createTask({ subject: 'Survives a restart', owner: 'bob' });
     markInboxRead('bob');
 
-    deliver('bob', 'run-1@2026-10-22T10:00:00.000Z');
+    await deliver('bob', 'run-1@2026-10-22T10:00:00.000Z');
     markInboxRead('bob');
-    deliver('bob', 'run-1@2026-10-22T10:20:00.000Z');
+    await deliver('bob', 'run-1@2026-10-22T10:20:00.000Z');
 
     expect(startupRows('bob')).toHaveLength(2);
     expect(startupRows('bob')[1]?.read).toBe(false);
   });
 
-  it('S1.19: a delivery failure is logged and recorded as a diagnostic, never swallowed', () => {
-    // The member is in the run but not in the team config: the controller refuses it.
-    deliver('stranger', 'run-1@2026-10-22T10:00:00.000Z', [{ name: 'stranger' }]);
+  it('registry read failure is logged and rethrown before controller creation', async () => {
+    await expect(
+      deliver('bob', 'run-1@2026-10-22T10:00:00.000Z', undefined, async () => {
+        throw new Error('registry read unavailable');
+      })
+    ).rejects.toThrow('registry read unavailable');
 
     expect(warnings).toHaveLength(1);
-    expect(warnings[0]).toContain('stranger');
+    expect(warnings[0]).toContain('registry read unavailable');
     expect(diagnostics).toHaveLength(1);
-    expect(diagnostics[0]).toMatch(/^stranger: .*(failed|could not)/i);
+    expect(diagnostics[0]).toMatch(/^bob: .*failed.*registry read unavailable/i);
+    expect(taskReads).toBe(1);
+    expect(controllerCreations).toBe(0);
   });
 });

@@ -1,3 +1,27 @@
+const { startControlServer } = require('./helpers/controlServer.js');
+const { resetTaskBackendCache } = require('../src/internal/taskBackendSelection.js');
+const { resetSyncControlRequestChannel } = require('../src/internal/syncControlRequest.js');
+
+let registryServer;
+let registryPreviousEnv;
+const registryEnvKeys = ['AGENT_TEAMS_BOUND_CONTROL_URL', 'AGENT_TEAMS_BOUND_CONTEXT_JSON', 'AGENT_TEAMS_MCP_CLAUDE_DIR'];
+beforeEach(async () => {
+  registryPreviousEnv = Object.fromEntries(registryEnvKeys.map((key) => [key, process.env[key]]));
+  registryServer = await startControlServer();
+  process.env.AGENT_TEAMS_BOUND_CONTROL_URL = registryServer.url;
+  process.env.AGENT_TEAMS_BOUND_CONTEXT_JSON = JSON.stringify({ appInstanceId: 'controller-consumer-test', dataRootFingerprint: 'controller-consumer-root', connectionGeneration: 1 });
+  resetTaskBackendCache();
+});
+afterEach(async () => {
+  resetTaskBackendCache();
+  resetSyncControlRequestChannel();
+  if (registryServer) await registryServer.stop();
+  for (const key of registryEnvKeys) {
+    if (registryPreviousEnv[key] === undefined) delete process.env[key];
+    else process.env[key] = registryPreviousEnv[key];
+  }
+});
+
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -19,6 +43,7 @@ describe('board completion is one question with one answer', () => {
 
   function makeClaudeDir() {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-teams-board-completion-'));
+    process.env.AGENT_TEAMS_MCP_CLAUDE_DIR = dir;
     tempDirs.push(dir);
     fs.mkdirSync(path.join(dir, 'teams', 'my-team'), { recursive: true });
     fs.mkdirSync(path.join(dir, 'tasks', 'my-team'), { recursive: true });
@@ -55,9 +80,11 @@ describe('board completion is one question with one answer', () => {
   function withClock(run) {
     const clock = { now: Date.parse('2026-09-02T09:00:00.000Z') };
     vi.useFakeTimers({ now: clock.now, toFake: ['Date'] });
+    registryServer.setClock(clock.now);
     const advance = (minutes) => {
       clock.now += minutes * 60 * 1000;
       vi.setSystemTime(clock.now);
+      registryServer.setClock(clock.now);
     };
     try {
       run(advance);
@@ -71,8 +98,8 @@ describe('board completion is one question with one answer', () => {
     const controller = createController({ teamName: 'my-team', claudeDir });
 
     withClock((advance) => {
-      const kept = controller.tasks.createTask({ subject: 'Write the summary', owner: 'bob' });
-      const dropped = controller.tasks.createTask({ subject: 'Print the poster', owner: 'bob' });
+      const kept = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Write the summary', owner: 'bob' });
+      const dropped = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Print the poster', owner: 'bob' });
       advance(1);
       controller.tasks.softDeleteTask(dropped.id, 'alice');
       advance(1);
@@ -110,8 +137,8 @@ describe('board completion is one question with one answer', () => {
     const controller = createController({ teamName: 'my-team', claudeDir });
 
     withClock((advance) => {
-      const written = controller.tasks.createTask({ subject: 'Write the summary', owner: 'bob' });
-      const checked = controller.tasks.createTask({ subject: 'Check the summary', owner: 'bob' });
+      const written = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Write the summary', owner: 'bob' });
+      const checked = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Check the summary', owner: 'bob' });
       controller.tasks.completeTask(written.id, 'bob');
       controller.review.requestReview(written.id, { from: 'alice', reviewer: 'alice' });
       expect(controller.tasks.getTask(written.id)).toMatchObject({
@@ -151,8 +178,8 @@ describe('board completion is one question with one answer', () => {
     const controller = createController({ teamName: 'my-team', claudeDir });
 
     withClock((advance) => {
-      const written = controller.tasks.createTask({ subject: 'Write the summary', owner: 'bob' });
-      const checked = controller.tasks.createTask({ subject: 'Check the summary', owner: 'bob' });
+      const written = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Write the summary', owner: 'bob' });
+      const checked = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Check the summary', owner: 'bob' });
       controller.tasks.completeTask(written.id, 'bob');
       controller.review.requestReview(written.id, { from: 'alice', reviewer: 'alice' });
       controller.review.requestChanges(written.id, {
@@ -201,7 +228,7 @@ describe('board completion is one question with one answer', () => {
     const controller = createController({ teamName: 'my-team', claudeDir });
     const send = (text) => controller.messages.sendMessage({ to: 'user', from: 'alice', text });
     withClock((advance) => {
-      const task = controller.tasks.createTask({ subject: 'Sandbox review', owner: 'bob' });
+      const task = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Sandbox review', owner: 'bob' });
       advance(1);
       controller.tasks.completeTask(task.id, 'bob');
       controller.review.requestReview(task.id, { from: 'alice', reviewer: 'alice' });
@@ -248,7 +275,7 @@ describe('board completion is one question with one answer', () => {
     const controller = createController({ teamName: 'my-team', claudeDir });
     const send = (text) => controller.messages.sendMessage({ to: 'user', from: 'alice', text });
     withClock((advance) => {
-      const task = controller.tasks.createTask({ subject: 'Legacy sandbox task', owner: 'bob' });
+      const task = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Legacy sandbox task', owner: 'bob' });
       advance(1);
       send('Legacy work in progress.');
       advance(1);
@@ -257,7 +284,7 @@ describe('board completion is one question with one answer', () => {
         delete persisted.historyEvents;
         return persisted;
       });
-      advance(1);
+      advance((Date.parse(controller.tasks.getTask(task.id).updatedAt) - Date.now()) / 60000 + 1);
       const final = send('Legacy work done.');
       expect(final.deduplicated).toBeUndefined();
       advance(1);
@@ -280,7 +307,7 @@ describe('board completion is one question with one answer', () => {
   function completeBoard(controller, advance) {
     const send = (flags) =>
       controller.messages.sendMessage({ to: 'user', from: 'alice', ...flags });
-    const task = controller.tasks.createTask({ subject: 'Write the file', owner: 'bob' });
+    const task = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Write the file', owner: 'bob' });
     const early = directMessage(controller, 'alice', 'bob', 'Tell me when the file is written.');
     advance(1);
     controller.tasks.completeTask(task.id, 'bob');

@@ -166,6 +166,10 @@ import {
   TEAM_DELETE_TASK_ATTACHMENT,
   TEAM_DELETE_TEAM,
   TEAM_DISCARD_QUEUED_USER_MESSAGES,
+  TEAM_DISCOVER_SPEC_REGISTRY,
+  TEAM_LIST_SPEC_BINDINGS,
+  TEAM_LINK_SPEC,
+  TEAM_UNLINK_SPEC,
   TEAM_FORCE_STOP,
   TEAM_GET_AGENT_RUNTIME,
   TEAM_GET_ALL_TASKS,
@@ -402,6 +406,8 @@ import type {
   TeamProvisioningPrepareResult,
   TeamProvisioningProgress,
   TeamSummary,
+  SpecRegistryDiscovery,
+  TeamSpecBinding,
   TeamTask,
   TeamTaskChangeSummariesResponse,
   TeamTaskChangeSummaryRequest,
@@ -926,6 +932,14 @@ const electronAPI: ElectronAPI = {
     readRecovery: createTeamReadRecoveryBridge((channel, ...args) =>
       ipcRenderer.invoke(channel, ...args)
     ),
+    discoverSpecRegistry: async () =>
+      invokeIpcWithResult<SpecRegistryDiscovery>(TEAM_DISCOVER_SPEC_REGISTRY),
+    listTeamSpecBindings: async (teamName: string) =>
+      invokeIpcWithResult<TeamSpecBinding[]>(TEAM_LIST_SPEC_BINDINGS, teamName),
+    linkTeamSpec: async (teamName: string, binding: TeamSpecBinding) =>
+      invokeIpcWithResult<TeamSpecBinding[]>(TEAM_LINK_SPEC, teamName, binding),
+    unlinkTeamSpec: async (teamName: string, binding: TeamSpecBinding) =>
+      invokeIpcWithResult<TeamSpecBinding[]>(TEAM_UNLINK_SPEC, teamName, binding),
     list: async () => {
       return invokeIpcWithResult<TeamSummary[]>(TEAM_LIST);
     },

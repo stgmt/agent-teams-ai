@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 
 import { api } from '@renderer/api';
 import { CreateTaskDialog } from '@renderer/components/team/dialogs/CreateTaskDialog';
@@ -10,6 +10,7 @@ import {
 } from '@renderer/store/slices/teamSlice';
 import { useShallow } from 'zustand/react/shallow';
 
+import type { SpecificationBinding } from '@renderer/utils/specificationTaskPresentation';
 import type { CreateTaskRequest } from '@shared/types';
 
 interface CreateTaskDialogState {
@@ -28,6 +29,26 @@ export function useGraphCreateTaskDialog(teamName: string): UseGraphCreateTaskDi
     defaultOwner: '',
   });
   const [submitting, setSubmitting] = useState(false);
+  const [bindingSnapshot, setBindingSnapshot] = useState<{
+    teamName: string;
+    bindings: SpecificationBinding[];
+  } | null>(null);
+
+  useEffect(() => {
+    if (!dialogState.open) return;
+    let cancelled = false;
+    void api.teams.listTeamSpecBindings(teamName).then(
+      (bindings) => {
+        if (!cancelled) setBindingSnapshot({ teamName, bindings });
+      },
+      () => {
+        if (!cancelled) setBindingSnapshot(null);
+      }
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [dialogState.open, teamName]);
 
   const { teamData, activeMembers, createTeamTask, isTeamProvisioning } = useStore(
     useShallow((state) => ({
@@ -41,6 +62,7 @@ export function useGraphCreateTaskDialog(teamName: string): UseGraphCreateTaskDi
   );
 
   const openCreateTaskDialog = useCallback((owner = ''): void => {
+    setBindingSnapshot(null);
     setDialogState({
       open: true,
       defaultOwner: owner,
@@ -48,6 +70,7 @@ export function useGraphCreateTaskDialog(teamName: string): UseGraphCreateTaskDi
   }, []);
 
   const closeCreateTaskDialog = useCallback((): void => {
+    setBindingSnapshot(null);
     setDialogState({
       open: false,
       defaultOwner: '',
@@ -86,6 +109,8 @@ export function useGraphCreateTaskDialog(teamName: string): UseGraphCreateTaskDi
     [closeCreateTaskDialog, createTeamTask, isTeamProvisioning, teamData?.isAlive, teamName]
   );
 
+  const currentBindings = bindingSnapshot?.teamName === teamName ? bindingSnapshot.bindings : null;
+
   return {
     openCreateTaskDialog,
     dialog: (
@@ -93,6 +118,8 @@ export function useGraphCreateTaskDialog(teamName: string): UseGraphCreateTaskDi
         open={dialogState.open}
         teamName={teamName}
         members={activeMembers}
+        specBindings={currentBindings ?? []}
+        bindingState={currentBindings === null ? 'unknown' : 'known'}
         tasks={teamData?.tasks ?? []}
         isTeamAlive={Boolean(teamData?.isAlive && !isTeamProvisioning)}
         defaultOwner={dialogState.defaultOwner}

@@ -16,6 +16,13 @@ import { Input } from '@renderer/components/ui/input';
 import { Label } from '@renderer/components/ui/label';
 import { MemberSelect } from '@renderer/components/ui/MemberSelect';
 import { MentionableTextarea } from '@renderer/components/ui/MentionableTextarea';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@renderer/components/ui/select';
 import { TiptapEditor } from '@renderer/components/ui/tiptap';
 import { useChipDraftPersistence } from '@renderer/hooks/useChipDraftPersistence';
 import { useDraftPersistence } from '@renderer/hooks/useDraftPersistence';
@@ -38,12 +45,20 @@ import {
   extractTaskRefsFromText,
   stripEncodedTaskReferenceMetadata,
 } from '@renderer/utils/taskReferenceUtils';
-import { deriveTaskDisplayId, formatTaskDisplayLabel } from '@shared/utils/taskIdentity';
+import {
+  formatSpecificationBindingLabel,
+  formatSpecificationTaskLabel,
+  getSpecificationBindingKey,
+  resolveSpecificationBinding,
+} from '@renderer/utils/specificationTaskPresentation';
+import { hasRequiredRegistryTaskInputs } from './createTaskScopeEligibility';
+import { deriveTaskDisplayId } from '@shared/utils/taskIdentity';
 import { getTeamTaskWorkflowColumn } from '@shared/utils/teamTaskState';
 import { AlertTriangle, ChevronDown, ChevronRight, Search } from 'lucide-react';
 
 import type { InlineChip } from '@renderer/types/inlineChip';
 import type { MentionSuggestion } from '@renderer/types/mention';
+import type { SpecificationBinding } from '@renderer/utils/specificationTaskPresentation';
 import type { CreateTaskRequest, ResolvedTeamMember, TeamTaskWithKanban } from '@shared/types';
 
 interface CreateTaskDialogProps {
@@ -51,6 +66,9 @@ interface CreateTaskDialogProps {
   teamName: string;
   members: ResolvedTeamMember[];
   tasks: TeamTaskWithKanban[];
+  specBindings: readonly SpecificationBinding[];
+  bindingState: 'known' | 'unknown';
+  onManageSpecifications?: () => void;
   isTeamAlive?: boolean;
   defaultSubject?: string;
   defaultDescription?: string;
@@ -68,6 +86,9 @@ export const CreateTaskDialog = ({
   teamName,
   members,
   tasks,
+  bindingState,
+  specBindings,
+  onManageSpecifications,
   isTeamAlive = false,
   defaultSubject = '',
   defaultDescription = '',
@@ -86,6 +107,7 @@ export const CreateTaskDialog = ({
   );
   const { suggestions: taskSuggestions } = useTaskSuggestions(teamName);
   const [subject, setSubject] = useState(defaultSubject);
+  const [requirementsInput, setRequirementsInput] = useState('');
   const [submitError, setSubmitError] = useState<string | null>(null);
   const descriptionDraft = useDraftPersistence({
     key: `createTask:${teamName}:description`,
@@ -104,6 +126,7 @@ export const CreateTaskDialog = ({
   const [blockedBySearch, setBlockedBySearch] = useState('');
   const [relatedSearch, setRelatedSearch] = useState('');
   const [showOptionalFields, setShowOptionalFields] = useState(false);
+  const [selectedSpecKey, setSelectedSpecKey] = useState('');
   const prevOpenRef = useRef(false);
   const pendingCommandRef = useRef<PendingCreateTaskCommand | null>(null);
   const submitGateRef = useRef<CreateTaskSubmitGate>({ inFlight: false });
@@ -115,6 +138,7 @@ export const CreateTaskDialog = ({
       resetCreateTaskSubmit(submitGateRef.current);
       // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional sync on prop change
       setSubject(defaultSubject);
+      setRequirementsInput('');
       setSubmitError(null);
       if (defaultChip) {
         const token = chipToken(defaultChip);
@@ -136,6 +160,7 @@ export const CreateTaskDialog = ({
       setBlockedBySearch('');
       setRelatedSearch('');
       setShowOptionalFields(false);
+      setSelectedSpecKey('');
     }
     if (!open && prevOpenRef.current) {
       pendingCommandRef.current = null;
@@ -174,9 +199,20 @@ export const CreateTaskDialog = ({
       })),
     [members, colorMap]
   );
+  const selectedSpecBinding = resolveSpecificationBinding(specBindings, selectedSpecKey);
+  const effectiveSelectedSpecKey = selectedSpecBinding
+    ? getSpecificationBindingKey(selectedSpecBinding)
+    : '';
 
+  const requirements = [...new Set(requirementsInput.split(/[,\s]+/).filter(Boolean))];
+  const registryBound = specBindings.length > 0;
   const requiresOwner = defaultStartImmediately === true;
-  const canSubmit = subject.trim().length > 0 && !submitting && (!requiresOwner || !!owner);
+  const canSubmit =
+    subject.trim().length > 0 &&
+    bindingState === 'known' &&
+    (!registryBound || hasRequiredRegistryTaskInputs(selectedSpecBinding, requirements)) &&
+    !submitting &&
+    (!requiresOwner || !!owner);
 
   // Only show non-internal, non-deleted tasks as candidates for blocking
   const availableTasks = tasks.filter(
@@ -206,7 +242,7 @@ export const CreateTaskDialog = ({
     const promptTaskRefs = trimmedPrompt
       ? extractTaskRefsFromText(promptDraft.value, taskSuggestions)
       : [];
-    const request: CreateTaskRequest = {
+    const commonRequest = {
       subject: subject.trim(),
       description: serializedDesc || undefined,
       owner: owner || undefined,
@@ -218,6 +254,14 @@ export const CreateTaskDialog = ({
       descriptionTaskRefs,
       promptTaskRefs,
     };
+    const request: CreateTaskRequest = selectedSpecBinding
+      ? {
+          ...commonRequest,
+          specProject: selectedSpecBinding.project,
+          specSlug: selectedSpecBinding.spec,
+          requirements,
+        }
+      : commonRequest;
     pendingCommandRef.current = resolveCreateTaskCommand(
       pendingCommandRef.current,
       teamName,
@@ -266,7 +310,13 @@ export const CreateTaskDialog = ({
       <DialogContent className="sm:max-w-[580px]">
         <DialogHeader>
           <DialogTitle>{t('tasks.createTask.title')}</DialogTitle>
-          <DialogDescription>{t('tasks.createTask.description')}</DialogDescription>
+          <DialogDescription>
+            {t(
+              registryBound
+                ? 'tasks.createTask.registryDescription'
+                : 'tasks.createTask.description'
+            )}
+          </DialogDescription>
         </DialogHeader>
 
         {!isTeamAlive ? (
@@ -288,6 +338,49 @@ export const CreateTaskDialog = ({
         ) : null}
 
         <div className="grid gap-4 py-2" onChangeCapture={() => setSubmitError(null)}>
+          {bindingState === 'unknown' ? (
+            <p role="alert" className="text-xs text-[var(--field-error-text)]">
+              {t('tasks.createTask.bindingUnknown', {
+                defaultValue:
+                  'Cannot determine this team’s specification binding. Reload the team before creating a task.',
+              })}
+            </p>
+          ) : registryBound ? (
+            <div className="grid gap-2">
+              <Label htmlFor="task-specification">
+                {t('tasks.createTask.chooseSpecification')}
+              </Label>
+              <Select
+                value={effectiveSelectedSpecKey}
+                onValueChange={(value) => {
+                  setSelectedSpecKey(value);
+                  setSubmitError(null);
+                }}
+              >
+                <SelectTrigger id="task-specification">
+                  <SelectValue placeholder={t('tasks.createTask.chooseSpecification')} />
+                </SelectTrigger>
+                <SelectContent>
+                  {specBindings.map((binding) => {
+                    const key = getSpecificationBindingKey(binding);
+                    return (
+                      <SelectItem key={key} value={key}>
+                        {formatSpecificationBindingLabel(binding)}
+                      </SelectItem>
+                    );
+                  })}
+                </SelectContent>
+              </Select>
+              <p className="text-[11px] text-[var(--color-text-muted)]">
+                {t('tasks.createTask.selectedSpecificationNotice')}
+              </p>
+            </div>
+          ) : onManageSpecifications ? (
+            <Button type="button" variant="ghost" size="sm" onClick={onManageSpecifications}>
+              {t('tasks.createTask.manageSpecifications')}
+            </Button>
+          ) : null}
+
           <div className="grid gap-2">
             <Label htmlFor="task-subject">{t('tasks.createTask.subject')}</Label>
             <Input
@@ -301,6 +394,21 @@ export const CreateTaskDialog = ({
               }}
             />
           </div>
+
+          {registryBound && (
+            <div className="grid gap-2">
+              <Label htmlFor="task-requirements">{t('tasks.createTask.requirements')}</Label>
+              <Input
+                id="task-requirements"
+                placeholder={t('tasks.createTask.requirementsPlaceholder')}
+                value={requirementsInput}
+                onChange={(event) => setRequirementsInput(event.target.value)}
+              />
+              <p className="text-xs text-[var(--color-text-muted)]">
+                {t('tasks.createTask.requirementsHint')}
+              </p>
+            </div>
+          )}
 
           {assigneeField}
 
@@ -425,7 +533,7 @@ export const CreateTaskDialog = ({
                                   variant="secondary"
                                   className="shrink-0 px-1 py-0 text-[10px] font-normal"
                                 >
-                                  {formatTaskDisplayLabel(t)}
+                                  {formatSpecificationTaskLabel(t)}
                                 </Badge>
                                 <span className="truncate">{t.subject}</span>
                               </button>
@@ -499,7 +607,7 @@ export const CreateTaskDialog = ({
                                   variant="secondary"
                                   className="shrink-0 px-1 py-0 text-[10px] font-normal"
                                 >
-                                  {formatTaskDisplayLabel(t)}
+                                  {formatSpecificationTaskLabel(t)}
                                 </Badge>
                                 <span className="truncate">{t.subject}</span>
                               </button>

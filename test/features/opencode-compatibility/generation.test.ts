@@ -1,6 +1,8 @@
 import {
   classifyNativeVersion,
   getLatestQualifiedOpenCodeV2Version,
+  isOpenCodeVersionProductionEligible,
+  isOpenCodeVersionServedByRuntime,
   isRecognizedOpenCodeRuntimeVersion,
   negotiateOpenCodeProtocol,
 } from '@features/opencode-compatibility';
@@ -23,51 +25,38 @@ import {
   readOpenCodeV2Contract,
 } from '../../../src/features/opencode-compatibility/core/domain/openCodeV2Contract';
 
+import { isOpenCodeRuntimeUsable } from '../../../src/features/runtime-provider-management/core/domain/runtimeProviderQuickConnect';
 import type { OpenCodeApiCapabilities } from '@main/services/team/opencode/capabilities/OpenCodeApiCapabilities';
 
-// Eligibility is data: the pinned runtime's qualification records, never a literal here.
-const pinnedQualified = runtimeLock.opencodeV2.qualified as Record<string, string[]>;
-const pinnedPlatforms = Object.keys(pinnedQualified);
 
-/** Runs a check as the main process of each pinned release platform. */
-function forEachPinnedPlatform(
-  check: (
-    eligible: (version: string) => boolean,
-    engine: (version: string) => string | null
-  ) => void
-): void {
-  const original = { platform: process.platform, arch: process.arch };
-  try {
-    for (const key of pinnedPlatforms) {
-      const [platform, arch] = key.split('-');
-      Object.defineProperty(process, 'platform', { value: platform, configurable: true });
-      Object.defineProperty(process, 'arch', { value: arch, configurable: true });
-      const flexible =
-        (runtimeLock.opencodeV2 as { cliVersionPolicy?: string }).cliVersionPolicy ===
-        'stable-v2-qualified-engine';
-      const contract = readOpenCodeV2Contract(runtimeLock.opencodeV2)!;
-      const engine = (raw: string): string | null => {
-        const version = raw.replace(/^opencode v/, '').trim();
-        if (
-          !Object.hasOwn(runtimeLock.assets, key) ||
-          !Object.hasOwn(runtimeLock.opencodeV2Delivery, key) ||
-          !openCodeV2ContractCovers(contract, version)
-        )
-          return null;
-        if (pinnedQualified[key].includes(version)) return version;
-        return flexible ? (pinnedQualified[key].at(-1) ?? null) : null;
-      };
-      check((version) => engine(version) !== null, engine);
-    }
-  } finally {
-    Object.defineProperty(process, 'platform', { value: original.platform, configurable: true });
-    Object.defineProperty(process, 'arch', { value: original.arch, configurable: true });
-  }
-}
+describe('published OpenCode V2 support boundary', () => {
+  it('honestly reflects the V1-only release and supplies no V2 engine', () => {
+    expect(Object.hasOwn(runtimeLock, 'opencodeV2')).toBe(false);
+    expect(runtimeLock.opencodeV2Delivery).toBe('off');
+    expect(getLatestQualifiedOpenCodeV2Version('win32', 'x64')).toBeNull();
+    expect(getLatestQualifiedOpenCodeV2Version('win32', 'arm64')).toBeNull();
+    expect(classifyNativeVersion('2.0.32')).toEqual({
+      kind: 'blocked',
+      reason: 'unknown_generation',
+    });
+    expect(isRecognizedOpenCodeRuntimeVersion('2.0.32')).toBe(false);
+    expect(isOpenCodeVersionServedByRuntime('2.0.32')).toBe(false);
+    expect(isOpenCodeVersionProductionEligible('2.0.32')).toBe(false);
+    expect(isAgentTeamsOpenCodeVersionSupported('2.0.32')).toBe(false);
+    expect(negotiateOpenCodeProtocol({ version: '2.0.32' }).kind).toBe('blocked');
+  });
+});
 
-describe('pinned OpenCode V2 contract', () => {
-  it('pins a valid range and qualification list from the runtime release manifest', () => {
-    expect(readOpenCodeV2Contract(runtimeLock.opencodeV2)).not.toBeNull();
+describe('synthetic OpenCode V2 contract algorithms', () => {
+  it('rejects an absent contract input', () => {
+    expect(readOpenCodeV2Contract(undefined)).toBeNull();
+  });
+  it('reports no V2 shipped by an empty synthetic qualification fixture', () => {
+    const withoutV2 = readOpenCodeV2Contract({
+      range: { minimum: '2.0.0', below: '3.0.0' },
+      qualified: { 'darwin-arm64': [], 'linux-x64': [], 'win32-x64': [] },
+    })!;
+    expect(openCodeV2ContractShipsV2(withoutV2)).toBe(false);
   });
 
   const fixture = readOpenCodeV2Contract({
@@ -75,7 +64,8 @@ describe('pinned OpenCode V2 contract', () => {
     qualified: { 'darwin-arm64': ['2.0.0', '2.1.4'], 'linux-x64': ['2.0.0'], 'win32-arm64': [] },
   })!;
 
-  it('qualifies a version only on the platforms its records list', () => {
+  it('qualifies a version only on the platforms its synthetic records list', () => {
+    expect(openCodeV2ContractShipsV2(fixture)).toBe(true);
     expect(openCodeV2ContractQualifies(fixture, ['darwin-arm64'], '2.1.4')).toBe(true);
     expect(openCodeV2ContractQualifies(fixture, ['linux-x64'], '2.1.4')).toBe(false);
     expect(openCodeV2ContractQualifies(fixture, ['linux-x64'], '2.0.0')).toBe(true);
@@ -139,7 +129,7 @@ describe('pinned OpenCode V2 contract', () => {
     expect(engineForNativeVersion(legacy, ambiguous, '2.0.32')).toBe('2.0.32');
   });
 
-  it('preserves actual native versions while classifying the advertised qualified engine dialect', async () => {
+  it('classifies native V2 versions against an explicitly synthetic qualification contract', async () => {
     vi.resetModules();
     vi.doMock('../../../runtime.lock.json', () => ({
       default: {
@@ -196,43 +186,9 @@ describe('pinned OpenCode V2 contract', () => {
     expect(openCodeV2PlatformKeys(environment)).toEqual(keys);
   });
 
-  it('offers no engine on unshipped Linux ARM64 in either main or preload target selection', () => {
-    const original = { platform: process.platform, arch: process.arch };
-    try {
-      vi.stubGlobal('electronAPI', undefined);
-      Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
-      Object.defineProperty(process, 'arch', { value: 'arm64', configurable: true });
-      expect(getLatestQualifiedOpenCodeV2Version('linux', 'arm64')).toBeNull();
-      for (const version of ['2.0.32', '2.99.0'])
-        expect(classifyNativeVersion(version)).toMatchObject({
-          kind: 'recognized',
-          generation: 'v2',
-          productionEligible: false,
-        });
-      vi.stubGlobal('electronAPI', { openCodeRuntime: { platform: 'linux', arch: 'x64' } });
-      expect(classifyNativeVersion('2.99.0')).toMatchObject({
-        apiDialect: 'v2-2.1.4',
-        productionEligible: true,
-      });
-      vi.stubGlobal('electronAPI', { openCodeRuntime: { platform: 'linux', arch: 'arm64' } });
-      expect(classifyNativeVersion('2.99.0')).toMatchObject({ productionEligible: false });
-      vi.stubGlobal('electronAPI', undefined);
-      vi.stubGlobal('navigator', { userAgent: 'Mozilla/5.0 (X11; Linux)' });
-      Object.defineProperty(process, 'platform', { value: undefined, configurable: true });
-      Object.defineProperty(process, 'arch', { value: undefined, configurable: true });
-      const uaOnly = classifyNativeVersion('2.99.0');
-      Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
-      Object.defineProperty(process, 'arch', { value: 'arm64', configurable: true });
-      expect(uaOnly).toMatchObject({ productionEligible: false });
-    } finally {
-      Object.defineProperty(process, 'platform', { value: original.platform, configurable: true });
-      Object.defineProperty(process, 'arch', { value: original.arch, configurable: true });
-      vi.unstubAllGlobals();
-    }
-  });
 
   it.each([null, {}, { 'linux-arm64': null }])(
-    'does not treat invalid present delivery metadata as legacy absence (%j)',
+    'refuses malformed delivery metadata in synthetic lock fixtures (%j)',
     async (delivery) => {
       vi.resetModules();
       const platformKey = `${process.platform}-${process.arch}`;
@@ -261,7 +217,7 @@ describe('pinned OpenCode V2 contract', () => {
     }
   );
 
-  it('recognizes no V2 version when the pinned contract is malformed', async () => {
+  it('recognizes no V2 version when a synthetic pinned contract is malformed', async () => {
     vi.resetModules();
     vi.doMock('../../../runtime.lock.json', () => ({
       default: { opencodeV2: { range: { minimum: '2.0.0', below: '4.0.0' }, qualified: {} } },
@@ -281,71 +237,31 @@ describe('pinned OpenCode V2 contract', () => {
     }
   });
 
-  it('treats a V2 binary as unserved when the pinned runtime ships without V2', async () => {
-    expect(openCodeV2ContractShipsV2(fixture)).toBe(true);
-    const withoutV2 = readOpenCodeV2Contract({
-      range: { minimum: '2.0.0', below: '3.0.0' },
-      qualified: { 'darwin-arm64': [], 'linux-x64': [], 'win32-x64': [] },
-    })!;
-    expect(openCodeV2ContractShipsV2(withoutV2)).toBe(false);
-    vi.resetModules();
-    vi.doMock('../../../runtime.lock.json', () => ({ default: { opencodeV2: withoutV2 } }));
-    try {
-      const generation =
-        await import('../../../src/features/opencode-compatibility/core/domain/generation');
-      const quickConnect =
-        await import('../../../src/features/runtime-provider-management/core/domain/runtimeProviderQuickConnect');
-      // Still recognized as V2 (so the status says why), but not served and not eligible.
-      expect(generation.classifyNativeVersion('2.0.32')).toMatchObject({
-        kind: 'recognized',
-        generation: 'v2',
-        productionEligible: false,
-      });
-      expect(generation.isOpenCodeVersionServedByRuntime('2.0.32')).toBe(false);
-      expect(generation.isOpenCodeVersionServedByRuntime('1.19.4')).toBe(true);
-      expect(
-        quickConnect.isOpenCodeRuntimeUsable({
-          installed: true,
-          version: '2.0.32',
-          source: 'path',
-          state: 'ready',
-        })
-      ).toBe(false);
-      expect(
-        quickConnect.isOpenCodeRuntimeUsable({
-          installed: true,
-          version: '1.19.4',
-          source: 'path',
-          state: 'ready',
-        })
-      ).toBe(true);
-    } finally {
-      vi.doUnmock('../../../runtime.lock.json');
-      vi.resetModules();
-    }
+  it('fails closed for V2 against the actual V1-only release', () => {
+    expect(Object.hasOwn(runtimeLock, 'opencodeV2')).toBe(false);
+    expect(runtimeLock.opencodeV2Delivery).toBe('off');
+
+    expect(isOpenCodeRuntimeUsable({
+      installed: true,
+      version: '2.0.32',
+      source: 'path',
+      state: 'ready',
+    })).toBe(false);
+    expect(isOpenCodeRuntimeUsable({
+      installed: true,
+      version: '1.19.4',
+      source: 'path',
+      state: 'ready',
+    })).toBe(true);
+    expect(classifyNativeVersion('2.0.32')).toEqual({
+      kind: 'blocked',
+      reason: 'unknown_generation',
+    });
+    expect(isOpenCodeVersionServedByRuntime('2.0.32')).toBe(false);
+    expect(isOpenCodeVersionProductionEligible('2.0.32')).toBe(false);
+    expect(isOpenCodeVersionServedByRuntime('1.19.4')).toBe(true);
   });
 
-  it('classifies eligibility from the pinned records on every release platform', () => {
-    const recognized = [...new Set(Object.values(pinnedQualified).flat()), '2.999.0'];
-    let eligible = 0;
-    let ineligible = 0;
-    forEachPinnedPlatform((qualified) => {
-      for (const version of recognized) {
-        const classification = classifyNativeVersion(version);
-        expect(classification).toMatchObject({ kind: 'recognized', generation: 'v2' });
-        expect(classification.kind === 'recognized' && classification.productionEligible).toBe(
-          qualified(version)
-        );
-        if (qualified(version)) eligible++;
-        else ineligible++;
-      }
-    });
-    // Eligibility exists exactly when the pinned runtime qualifies a version (none without V2).
-    expect(eligible > 0).toBe(
-      Object.values(pinnedQualified).some((versions) => versions.length > 0)
-    );
-    expect(ineligible).toBeGreaterThan(0);
-  });
 
   it.each([
     ['missing', undefined],
@@ -390,29 +306,20 @@ describe('pinned OpenCode V2 contract', () => {
 describe('native runtime discovery', () => {
   it.each([
     ['1.18.35', true],
-    ['2.0.0', true],
-    ['opencode v2.0.32', true],
-    ['2.0.21', true],
-    ['opencode v2.0.21', true],
-    ['opencode v2.0.26', true],
-    ['2.1.4', true],
-    ['2.99.0', true],
+    ['1.16.0', true],
+    ['2.0.0', false],
+    ['opencode v2.0.32', false],
     ['3.0.0', false],
     ['2.0.32-beta.1', false],
     ['2.0.32+build.7', false],
     ['1.15.9', false],
     [undefined, false],
-  ])('recognizes the pinned V2 range and stable V1 (%s)', (version, recognized) => {
+  ])('recognizes stable V1 but not V2 for the published runtime (%s)', (version, recognized) => {
     expect(isRecognizedOpenCodeRuntimeVersion(version)).toBe(recognized);
-    if (recognized && version && !version.startsWith('1.')) {
-      forEachPinnedPlatform((qualified) =>
-        expect(isAgentTeamsOpenCodeVersionSupported(version)).toBe(qualified(version))
-      );
-    }
   });
 });
 
-// Before A0 these future-version cases return production_supported with ready V1 evidence.
+// The published runtime is V1-only; its public consumers must refuse every unsupported V2 input.
 describe('current public OpenCode policy consumers', () => {
   it.each([
     '2.0.0',
@@ -432,10 +339,7 @@ describe('current public OpenCode policy consumers', () => {
       requiredForTeamLaunch: { ready: true, missing: [] },
     } as unknown as OpenCodeApiCapabilities;
     expect(evaluateOpenCodeSupport({ version, capabilities }).supported).toBe(false);
-    // V1 evidence never qualifies V2; only the pinned qualification data does.
-    forEachPinnedPlatform((qualified) =>
-      expect(isAgentTeamsOpenCodeVersionSupported(version)).toBe(qualified(version))
-    );
+    expect(isAgentTeamsOpenCodeVersionSupported(version)).toBe(false);
   });
 
   it.each(['2.0.0', '2.0.32', '3.0.0', 'garbage'])(
@@ -524,30 +428,32 @@ describe('current public OpenCode policy consumers', () => {
   });
 
   it.each(['2.0.0', '2.0.32', '2.0.21', '2.1.4', '2.37.105'])(
-    'recognizes in-range %s with eligibility from qualification data, without legacy negotiation',
+    'reports unsupported native V2 output as blocked by this release',
     (version) => {
-      forEachPinnedPlatform((qualified, engine) =>
-        expect(classifyNativeVersion(version)).toEqual({
-          kind: 'recognized',
-          generation: 'v2',
-          apiDialect: `v2-${engine(version) ?? version}`,
-          version,
-          productionEligible: qualified(version),
-        })
-      );
-      expect(negotiateOpenCodeProtocol({ version }).kind).toBe('blocked');
+      const stdout = `opencode v${version}\n`;
+      expect(classifyNativeVersion(stdout)).toEqual({
+        kind: 'blocked',
+        reason: 'unknown_generation',
+      });
+      expect(isRecognizedOpenCodeRuntimeVersion(stdout)).toBe(false);
+      expect(isOpenCodeVersionServedByRuntime(stdout)).toBe(false);
+      expect(isOpenCodeVersionProductionEligible(stdout)).toBe(false);
+      expect(isAgentTeamsOpenCodeVersionSupported(stdout)).toBe(false);
+      expect(negotiateOpenCodeProtocol({ version: stdout }).kind).toBe('blocked');
+      let reads = 0;
+      expect(
+        evaluateOpenCodeSupport({
+          version: stdout,
+          get capabilities(): OpenCodeApiCapabilities {
+            reads++;
+            throw new Error('unsupported V2 must not read V1 capabilities');
+          },
+        }).supported
+      ).toBe(false);
+      expect(reads).toBe(0);
     }
   );
 
-  it.each(['2.0.21', '2.1.0', '2.37.105'])(
-    'reports unqualified in-range %s qualification status without advising an upgrade',
-    (version) => {
-      const message = getUnsupportedAgentTeamsOpenCodeVersionMessage(version);
-      expect(message).toContain('not yet qualified');
-      expect(message).toContain('OpenCode V1');
-      expect(message).not.toContain('below');
-    }
-  );
   it.each(['3.0.0', 'garbage', '1.16.0-beta.1'])(
     'reports the actual rejection for %s',
     (version) => {
@@ -558,43 +464,6 @@ describe('current public OpenCode policy consumers', () => {
     }
   );
 
-  // Actual independently measured native --version stdout, not normalized DTO versions.
-  it.each(['2.0.0', '2.0.32'])(
-    'recognizes native CLI output for %s without launching V2',
-    (version) => {
-      const stdout = `opencode v${version}\n`;
-      forEachPinnedPlatform((qualified, engine) =>
-        expect(classifyNativeVersion(stdout)).toEqual({
-          kind: 'recognized',
-          generation: 'v2',
-          apiDialect: `v2-${engine(version) ?? version}`,
-          version,
-          productionEligible: qualified(version),
-        })
-      );
-      let reads = 0;
-      const decision = evaluateOpenCodeSupport({
-        version: stdout,
-        get capabilities(): OpenCodeApiCapabilities {
-          reads++;
-          throw new Error('V1 evidence cannot qualify native V2');
-        },
-      });
-      expect(decision.supported).toBe(false);
-      expect(decision.supportLevel).toBe('supported_capabilities_pending');
-      expect(decision.semver).toEqual({
-        major: 2,
-        minor: 0,
-        patch: Number(version.split('.')[2]),
-        prerelease: [],
-      });
-      expect(reads).toBe(0);
-      forEachPinnedPlatform((qualified) =>
-        expect(isAgentTeamsOpenCodeVersionSupported(stdout)).toBe(qualified(version))
-      );
-      expect(negotiateOpenCodeProtocol({ version: stdout }).kind).toBe('blocked');
-    }
-  );
 
   it.each([
     'opencode v1.18.34',

@@ -20,6 +20,7 @@ import type { PersistedTeamLaunchSnapshot, TeamConfig, TeamMember } from '@share
 export interface NativeOpenCodeStoppedTeamLaneCleanupDependencies {
   teamsBasePath: string;
   queue: Pick<TeamOperationQueue, 'run'>;
+  isManagedByThisProfile(teamName: string): Promise<boolean>;
   readConfig(teamName: string): Promise<TeamConfig | null>;
   readMembersMeta(teamName: string): Promise<readonly TeamMember[]>;
   canDeliverToOpenCodeRuntimeForTeam(teamName: string): boolean;
@@ -34,6 +35,7 @@ export interface NativeOpenCodeStoppedTeamLaneCleanup {
   stopLanesForStoppedTeam(teamName: string): Promise<number>;
   /** The same sweep, fired and forgotten; a stop never waits for clean-up. */
   stopLanesForStoppedTeamInBackground(teamName: string): void;
+  clearStopBackoff(teamName: string): void;
   hasAlivePersistedTeamProcess(teamName: string): boolean;
   hasOnlyExplicitlyStoppedPersistedTeamProcesses(teamName: string): boolean;
 }
@@ -48,6 +50,7 @@ export function createNativeOpenCodeStoppedTeamLaneCleanup(
   const boundary = createTeamProvisioningOpenCodeStoppedLaneCleanupBoundary(
     {
       withTeamLock: (teamName, operation) => deps.queue.run(teamName, operation),
+      isManagedByThisProfile: (teamName) => deps.isManagedByThisProfile(teamName),
       canDeliverToOpenCodeRuntimeForTeam: (teamName) =>
         deps.canDeliverToOpenCodeRuntimeForTeam(teamName),
       getOpenCodeRuntimeAdapter: () => deps.getOpenCodeRuntimeAdapter(),
@@ -75,9 +78,11 @@ export function createNativeOpenCodeStoppedTeamLaneCleanup(
   );
 
   return {
-    stopLanesForStoppedTeam: (teamName) => boundary.stopOpenCodeRuntimeLanesForStoppedTeam(teamName),
+    stopLanesForStoppedTeam: (teamName) =>
+      boundary.stopOpenCodeRuntimeLanesForStoppedTeam(teamName),
     stopLanesForStoppedTeamInBackground: (teamName) =>
       boundary.cleanupStoppedTeamOpenCodeRuntimeLanesInBackground(teamName),
+    clearStopBackoff: (teamName) => boundary.clearStopBackoff(teamName),
     hasAlivePersistedTeamProcess: (teamName) => boundary.hasAlivePersistedTeamProcess(teamName),
     hasOnlyExplicitlyStoppedPersistedTeamProcesses: (teamName) =>
       boundary.hasOnlyExplicitlyStoppedPersistedTeamProcesses(teamName),

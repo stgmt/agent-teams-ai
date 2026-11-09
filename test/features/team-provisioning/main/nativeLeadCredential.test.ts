@@ -30,6 +30,10 @@ async function setup() {
   // РИСК: real composition/config/MCP admission is covered; the MCP port rejects before OS/model launch.
   const lifecycle = createNativeTeamLifecycle({
     owner: context.snapshot(),
+    readStartupTasks: async () => [],
+    createController: () => ({
+      taskBoard: { deliverStartupWorkAsync: async () => ({ delivered: [], skipped: [] }) },
+    }),
     runtimeRoot: join(root, 'attempts'),
     workspaceRoot: join(root, 'workspaces'),
     teamsRoot,

@@ -4,6 +4,11 @@ import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const listTemplates = vi.hoisted(() => vi.fn());
+const confirmTemplate = vi.hoisted(() => vi.fn());
+
+vi.mock('@renderer/components/common/ConfirmDialog', () => ({
+  confirm: confirmTemplate,
+}));
 
 vi.mock('@renderer/api', () => ({
   api: {
@@ -86,6 +91,7 @@ async function click(element: HTMLButtonElement | null): Promise<void> {
 beforeEach(() => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
   listTemplates.mockReset();
+  confirmTemplate.mockReset();
   onApply = vi.fn();
   host = document.createElement('div');
   document.body.appendChild(host);
@@ -99,6 +105,51 @@ afterEach(() => {
 });
 
 describe('CreateTeamTemplatePicker', () => {
+  it('confirms before replacing a draft and keeps the previous selection on cancellation', async () => {
+    listTemplates.mockResolvedValue({ status: 'ready', templates: customTemplates() });
+    confirmTemplate.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    root.render(<CreateTeamTemplatePicker open confirmBeforeApply onApply={onApply} />);
+    await flush();
+
+    await click(optionCustom('tmpl-custom-1'));
+    expect(confirmTemplate).toHaveBeenCalledTimes(1);
+    expect(optionNone()?.getAttribute('aria-pressed')).toBe('true');
+    expect(optionCustom('tmpl-custom-1')?.getAttribute('aria-pressed')).toBe('false');
+    expect(onApply).not.toHaveBeenCalled();
+
+    await click(optionCustom('tmpl-custom-1'));
+    expect(optionCustom('tmpl-custom-1')?.getAttribute('aria-pressed')).toBe('true');
+    expect(onApply).toHaveBeenCalledTimes(1);
+    expect(onApply).toHaveBeenCalledWith(
+      expect.objectContaining({ description: 'Custom description', prompt: 'Custom prompt' }),
+      'custom',
+      'custom:tmpl-custom-1'
+    );
+  });
+
+  it('does not apply a pending confirmation after the picker closes', async () => {
+    listTemplates.mockResolvedValue({ status: 'ready', templates: customTemplates() });
+    // Promise.withResolvers is unavailable in the project's ES2023 TypeScript library.
+    let resolveConfirmation!: (accepted: boolean) => void;
+    const promise = new Promise<boolean>((resolve) => {
+      resolveConfirmation = resolve;
+    });
+    confirmTemplate.mockReturnValue(promise);
+    root.render(<CreateTeamTemplatePicker open confirmBeforeApply onApply={onApply} />);
+    await flush();
+    await click(optionBuiltin('marketing'));
+    expect(optionNone()?.getAttribute('aria-pressed')).toBe('true');
+    expect(optionBuiltin('research')?.disabled).toBe(true);
+
+    root.render(<CreateTeamTemplatePicker open={false} confirmBeforeApply onApply={onApply} />);
+    await flush();
+    await act(async () => {
+      resolveConfirmation(true);
+    });
+    expect(onApply).not.toHaveBeenCalled();
+    expect(optionNone()?.getAttribute('aria-pressed')).toBe('true');
+  });
+
   it('keeps the no-template default without applying anything on mount', async () => {
     listTemplates.mockResolvedValueOnce({ status: 'ready', templates: customTemplates() });
     renderPicker(true);

@@ -4,6 +4,27 @@ import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
 import { fileURLToPath } from 'node:url';
+import { startStdioAppControlFixture, type StdioAppControlFixture } from './stdioAppControlFixture';
+
+const APP_BINDING_ENV_KEYS = [
+  'AGENT_TEAMS_BOUND_CONTROL_URL',
+  'AGENT_TEAMS_BOUND_CONTEXT_JSON',
+  'AGENT_TEAMS_MCP_CLAUDE_DIR',
+] as const;
+const TEST_TASK_REQUIREMENTS = ['AC-1'];
+
+// These work-sync cases exercise standalone URL discovery, not desktop-bound routing.
+function temporarilyUnbindAppControl(): () => void {
+  const previous = Object.fromEntries(APP_BINDING_ENV_KEYS.map((key) => [key, process.env[key]]));
+  for (const key of APP_BINDING_ENV_KEYS) delete process.env[key];
+  return () => {
+    for (const key of APP_BINDING_ENV_KEYS) {
+      const value = previous[key];
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  };
+}
 
 function parseJsonToolResult(result: unknown) {
   const response = result as {
@@ -15,6 +36,12 @@ function parseJsonToolResult(result: unknown) {
     throw new Error(text ?? 'Tool returned an unspecified error');
   }
   return JSON.parse(text ?? 'null');
+}
+
+function leadActionSections(text: string): string {
+  const membersSectionIndex = text.indexOf('\nMembers (');
+  expect(membersSectionIndex).toBeGreaterThanOrEqual(0);
+  return text.slice(0, membersSectionIndex);
 }
 
 type TestTeamMember = Record<string, unknown>;
@@ -83,96 +110,39 @@ async function startControlServer(
   };
 }
 
-async function writeBulkTaskRows(claudeDir: string, teamName: string, count: number) {
-  const tasksDir = path.join(claudeDir, 'tasks', teamName);
-  await mkdir(tasksDir, { recursive: true });
-
-  await Promise.all(
-    Array.from({ length: count }, async (_, index) => {
-      const ordinal = String(index + 1).padStart(3, '0');
-      const id = `bulk-${ordinal}`;
-      const timestamp = new Date(Date.UTC(2026, 0, 1, 0, 0, index)).toISOString();
-      await writeFile(
-        path.join(tasksDir, `${id}.json`),
-        JSON.stringify(
-          {
-            id,
-            displayId: id,
-            subject: `Bulk inventory task ${ordinal}`,
-            description: `Large description that must not be returned in task_list row ${ordinal}`,
-            owner: index % 2 === 0 ? 'alice' : 'bob',
-            status: index % 3 === 0 ? 'completed' : 'pending',
-            reviewState: 'none',
-            commentCount: 99,
-            comments: [
-              {
-                id: `comment-${ordinal}`,
-                author: 'alice',
-                text: 'Large comment that must not be returned in task_list rows',
-              },
-            ],
-            historyEvents: [{ type: 'task_created', status: 'pending', timestamp }],
-            workIntervals: [{ startedAt: timestamp }],
-            createdAt: timestamp,
-            updatedAt: timestamp,
-          },
-          null,
-          2
-        ),
-        'utf8'
-      );
-    })
-  );
-}
-
-async function writeInventoryTaskRow(
-  claudeDir: string,
-  teamName: string,
-  task: {
-    id: string;
-    owner: string;
-    subject: string;
-    status?: 'pending' | 'in_progress' | 'completed' | 'deleted';
-    createdAt: string;
-  }
-) {
-  const tasksDir = path.join(claudeDir, 'tasks', teamName);
-  await mkdir(tasksDir, { recursive: true });
-  await writeFile(
-    path.join(tasksDir, `${task.id}.json`),
-    JSON.stringify(
-      {
-        id: task.id,
-        displayId: task.id,
-        subject: task.subject,
-        description: `Drill-down description for ${task.subject}`,
-        owner: task.owner,
-        status: task.status ?? 'pending',
-        reviewState: 'none',
-        comments: [],
-        historyEvents: [{ type: 'task_created', status: task.status ?? 'pending', timestamp: task.createdAt }],
-        createdAt: task.createdAt,
-        updatedAt: task.createdAt,
-      },
-      null,
-      2
-    ),
-    'utf8'
-  );
-}
-
 describe('agent-teams-mcp stdio e2e', () => {
   const serverPath = fileURLToPath(new URL('../dist/index.js', import.meta.url));
   const workspaceRoot = fileURLToPath(new URL('../..', import.meta.url));
 
   let claudeDir: string;
+  let appControl: StdioAppControlFixture | undefined;
+  let originalBindingEnvironment: Record<string, string | undefined>;
+  const requireAppControl = () => {
+    if (!appControl) throw new Error('Isolated app-control fixture has not started');
+    return appControl;
+  };
 
   beforeEach(async () => {
     claudeDir = await mkdtemp(path.join(os.tmpdir(), 'agent-teams-mcp-e2e-'));
+    originalBindingEnvironment = Object.fromEntries(
+      APP_BINDING_ENV_KEYS.map((key) => [key, process.env[key]])
+    );
+    const control = await startStdioAppControlFixture({ claudeDir });
+    appControl = control;
+    process.env.AGENT_TEAMS_BOUND_CONTROL_URL = control.baseUrl;
+    process.env.AGENT_TEAMS_BOUND_CONTEXT_JSON = JSON.stringify(control.context);
+    process.env.AGENT_TEAMS_MCP_CLAUDE_DIR = claudeDir;
   });
 
   afterEach(async () => {
+    await appControl?.close();
+    appControl = undefined;
     await rm(claudeDir, { recursive: true, force: true });
+    for (const key of APP_BINDING_ENV_KEYS) {
+      const originalValue = originalBindingEnvironment[key];
+      if (originalValue === undefined) delete process.env[key];
+      else process.env[key] = originalValue;
+    }
   });
 
   // Fails if client permissions can discover or invoke lifecycle tools in a native run.
@@ -227,7 +197,16 @@ describe('agent-teams-mcp stdio e2e', () => {
       const client = new McpStdIoClient(serverPath, workspaceRoot);
       let requestId = 3;
       const call = async (name: string, args: Record<string, unknown>) => {
-        const response = await client.callTool(name, { claudeDir, teamName, ...args }, requestId++);
+        const response = await client.callTool(
+          name,
+          {
+            claudeDir,
+            teamName,
+            ...(name === 'task_create' ? { requirements: TEST_TASK_REQUIREMENTS } : {}),
+            ...args,
+          },
+          requestId++
+        );
         return (response as { result: unknown }).result;
       };
       try {
@@ -242,8 +221,7 @@ describe('agent-teams-mcp stdio e2e', () => {
             blockedBy: [blocker.id],
           })
         );
-        const dependentPath = path.join(claudeDir, 'tasks', teamName, `${dependent.id}.json`);
-        const before = await readFile(dependentPath, 'utf8');
+        const before = parseJsonToolResult(await call('task_get', { taskId: dependent.id }));
         for (const [name, extra] of [
           ['task_start', {}],
           ['task_complete', {}],
@@ -253,7 +231,9 @@ describe('agent-teams-mcp stdio e2e', () => {
           const rejected = await call(name, { taskId: dependent.id, actor: 'bob', ...extra });
           expect(rejected).toMatchObject({ isError: true });
           expect(JSON.stringify(rejected)).toContain(`#${blocker.displayId}`);
-          expect(await readFile(dependentPath, 'utf8')).toBe(before);
+          expect(
+            parseJsonToolResult(await call('task_get', { taskId: dependent.id }))
+          ).toEqual(before);
         }
         for (const name of [
           completionTool,
@@ -270,7 +250,7 @@ describe('agent-teams-mcp stdio e2e', () => {
             ).status
           ).toBe('completed');
         }
-        const stored = JSON.parse(await readFile(dependentPath, 'utf8'));
+        const stored = parseJsonToolResult(await call('task_get', { taskId: dependent.id }));
         const commentId = `dep-resolved-${blocker.id}-${dependent.id}`;
         expect(
           stored.comments.filter((entry: { id: string }) => entry.id === commentId)
@@ -308,24 +288,9 @@ describe('agent-teams-mcp stdio e2e', () => {
   it('boots over stdio, lists task tools, and executes task lifecycle calls', async () => {
     await writeTeamConfig(claudeDir, 'e2e-team');
     const groupChatId = '11111111-1111-4111-8111-111111111111';
-    const context = {
-      appInstanceId: 'sandbox-task-group-package',
-      dataRootFingerprint: 'sandbox-task-group-root',
-      connectionGeneration: 1,
-    };
-    const catalogRequests: unknown[] = [];
-    // Controlled catalog HTTP fixture: this exercises the bundle, not a live desktop or team.
-    const control = await startControlServer(({ method, url, body }) => {
-      expect(method).toBe('POST');
-      expect(url).toBe('/api/teams/e2e-team/group-chats/list');
-      catalogRequests.push(body);
-      return { body: [{ id: groupChatId, archivedAt: null }] };
-    });
-    const client = new McpStdIoClient(serverPath, workspaceRoot, [], {
-      AGENT_TEAMS_BOUND_CONTROL_URL: control.baseUrl,
-      AGENT_TEAMS_BOUND_CONTEXT_JSON: JSON.stringify(context),
-      AGENT_TEAMS_MCP_CLAUDE_DIR: claudeDir,
-    });
+    const fixture = requireAppControl();
+    fixture.setGroupChats('e2e-team', [{ id: groupChatId, archivedAt: null }]);
+    const client = new McpStdIoClient(serverPath, workspaceRoot);
 
     try {
       const init = await client.initialize();
@@ -359,6 +324,7 @@ describe('agent-teams-mcp stdio e2e', () => {
         {
           claudeDir,
           teamName: 'e2e-team',
+          requirements: TEST_TASK_REQUIREMENTS,
           subject: 'Smoke task',
           groupChatId,
           createdBy: 'team-lead',
@@ -371,9 +337,28 @@ describe('agent-teams-mcp stdio e2e', () => {
 
       expect(createdTask.subject).toBe('Smoke task');
       expect(createdTask.owner).toBe('alice');
-      expect(typeof createdTask.id).toBe('string');
+      expect(createdTask.id).toMatch(/^\d+$/);
+      expect(fixture.requests).toContainEqual(
+        expect.objectContaining({
+          method: 'GET',
+          url: '/api/teams/e2e-team/tasks?includeDeleted=true',
+        })
+      );
       expect(createdTask.groupChatId).toBe(groupChatId);
-      expect(catalogRequests[0]).toEqual({ from: 'team-lead' });
+      expect(
+        fixture.requests.find(
+          (request) =>
+            request.method === 'POST' &&
+            request.url === '/api/teams/e2e-team/group-chats/list'
+        )?.body
+      ).toEqual({ from: 'team-lead' });
+      expect(
+        fixture.requests.find(
+          (request) =>
+            request.method === 'POST' &&
+            request.url === '/api/teams/e2e-team/tasks'
+        )?.body
+      ).toMatchObject({ requirements: TEST_TASK_REQUIREMENTS, groupChatId });
       const associatedGet = await client.callTool(
         'task_get',
         { claudeDir, teamName: 'e2e-team', taskId: createdTask.id },
@@ -398,6 +383,12 @@ describe('agent-teams-mcp stdio e2e', () => {
 
       expect(startedTask.status).toBe('in_progress');
       expect(startedTask.id).toBe(createdTask.id);
+      expect(fixture.requests).toContainEqual(
+        expect.objectContaining({
+          method: 'POST',
+          url: `/api/teams/e2e-team/tasks/${createdTask.id}/status`,
+        })
+      );
 
       const commentResult = await client.callTool(
         'task_add_comment',
@@ -419,6 +410,7 @@ describe('agent-teams-mcp stdio e2e', () => {
         {
           claudeDir,
           teamName: 'e2e-team',
+          requirements: TEST_TASK_REQUIREMENTS,
           subject: 'Review task',
           owner: 'alice',
         },
@@ -460,6 +452,7 @@ describe('agent-teams-mcp stdio e2e', () => {
         {
           claudeDir,
           teamName: 'e2e-team',
+          requirements: TEST_TASK_REQUIREMENTS,
           subject: 'Needs owner assignment',
         },
         9
@@ -622,7 +615,6 @@ describe('agent-teams-mcp stdio e2e', () => {
       });
     } finally {
       await client.close();
-      await control.close();
     }
   });
 
@@ -674,7 +666,28 @@ describe('agent-teams-mcp stdio e2e', () => {
 
   it('caps high-volume task_list inventory over stdio and keeps rows compact', async () => {
     await writeTeamConfig(claudeDir, 'bulk-inventory-team');
-    await writeBulkTaskRows(claudeDir, 'bulk-inventory-team', 225);
+    const fixture = requireAppControl();
+    for (let index = 0; index < 225; index += 1) {
+      const ordinal = String(index + 1).padStart(3, '0');
+      const timestamp = new Date(Date.UTC(2026, 0, 1, 0, 0, index)).toISOString();
+      const status = index % 3 === 0 ? 'completed' : 'pending';
+      fixture.seedTask('bulk-inventory-team', {
+        id: String(index + 1),
+        subject: `Bulk inventory task ${ordinal}`,
+        description: `Large description that must not be returned in task_list row ${ordinal}`,
+        owner: index % 2 === 0 ? 'alice' : 'bob',
+        status,
+        comments: [{
+          id: `comment-${ordinal}`,
+          author: 'alice',
+          text: 'Large comment that must not be returned in task_list rows',
+        }],
+        historyEvents: [{ type: 'task_created', status, timestamp }],
+        workIntervals: [{ startedAt: timestamp }],
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      });
+    }
     const client = new McpStdIoClient(serverPath, workspaceRoot);
 
     try {
@@ -775,10 +788,11 @@ describe('agent-teams-mcp stdio e2e', () => {
   it('applies task_list filters before default caps over stdio', async () => {
     await writeTeamConfig(claudeDir, 'filter-before-cap-team');
 
+    const fixture = requireAppControl();
     for (let index = 0; index < 60; index += 1) {
       const ordinal = String(index + 1).padStart(3, '0');
-      await writeInventoryTaskRow(claudeDir, 'filter-before-cap-team', {
-        id: `new-alice-${ordinal}`,
+      fixture.seedTask('filter-before-cap-team', {
+        id: String(index + 1),
         owner: 'alice',
         subject: `New alice task ${ordinal}`,
         createdAt: new Date(Date.UTC(2026, 0, 2, 0, 0, index)).toISOString(),
@@ -787,8 +801,8 @@ describe('agent-teams-mcp stdio e2e', () => {
 
     for (let index = 0; index < 3; index += 1) {
       const ordinal = String(index + 1).padStart(3, '0');
-      await writeInventoryTaskRow(claudeDir, 'filter-before-cap-team', {
-        id: `old-bob-${ordinal}`,
+      fixture.seedTask('filter-before-cap-team', {
+        id: String(index + 61),
         owner: 'bob',
         subject: `Old bob task ${ordinal}`,
         createdAt: new Date(Date.UTC(2025, 11, 31, 0, 0, index)).toISOString(),
@@ -827,11 +841,7 @@ describe('agent-teams-mcp stdio e2e', () => {
         (filteredInventoryResult as { result: unknown }).result
       ) as Array<Record<string, unknown>>;
       expect(filteredRows).toHaveLength(3);
-      expect(filteredRows.map((row) => row.id).sort()).toEqual([
-        'old-bob-001',
-        'old-bob-002',
-        'old-bob-003',
-      ]);
+      expect(filteredRows.map((row) => row.id).sort()).toEqual(['61', '62', '63']);
       expect(filteredRows.every((row) => row.owner === 'bob')).toBe(true);
     } finally {
       await client.close();
@@ -874,6 +884,7 @@ describe('agent-teams-mcp stdio e2e', () => {
         {
           claudeDir,
           teamName: 'deleted-inventory-team',
+          requirements: TEST_TASK_REQUIREMENTS,
           subject: 'Deleted task should not be inventory',
           owner: 'alice',
         },
@@ -939,6 +950,7 @@ describe('agent-teams-mcp stdio e2e', () => {
         {
           claudeDir,
           teamName: 'legacy-review-team',
+          requirements: TEST_TASK_REQUIREMENTS,
           subject: 'Legacy review fallback',
           owner: 'alice',
         },
@@ -959,23 +971,21 @@ describe('agent-teams-mcp stdio e2e', () => {
       const completedTask = parseJsonToolResult((completeResult as { result: unknown }).result);
       expect(completedTask.status).toBe('completed');
 
-      const taskPath = path.join(claudeDir, 'tasks', 'legacy-review-team', `${createdTask.id}.json`);
-      const persistedTask = JSON.parse(await readFile(taskPath, 'utf8')) as {
-        reviewState?: string;
-        historyEvents?: Array<Record<string, unknown>>;
-      };
-      persistedTask.reviewState = 'review';
-      persistedTask.historyEvents = (Array.isArray(persistedTask.historyEvents)
-        ? persistedTask.historyEvents
-        : []
-      ).filter(
-        (event) =>
-          event.type !== 'review_requested' &&
-          event.type !== 'review_started' &&
-          event.type !== 'review_approved' &&
-          event.type !== 'review_changes_requested'
-      );
-      await writeFile(taskPath, JSON.stringify(persistedTask, null, 2), 'utf8');
+      const fixture = requireAppControl();
+      const persistedTask = fixture.getTask('legacy-review-team', createdTask.id);
+      if (!persistedTask) throw new Error(`Missing app-control task ${createdTask.id}`);
+      fixture.updateTask('legacy-review-team', createdTask.id, {
+        reviewState: 'review',
+        historyEvents: (persistedTask.historyEvents ?? []).filter(
+          (event) =>
+            ![
+              'review_requested',
+              'review_started',
+              'review_approved',
+              'review_changes_requested',
+            ].includes(String(event.type))
+        ),
+      });
 
       const kanbanPath = path.join(claudeDir, 'teams', 'legacy-review-team', 'kanban-state.json');
       await writeFile(
@@ -1072,6 +1082,7 @@ describe('agent-teams-mcp stdio e2e', () => {
         {
           claudeDir,
           teamName: 'review-roundtrip-team',
+          requirements: TEST_TASK_REQUIREMENTS,
           subject: 'Needs reviewer assignment',
           owner: 'alice',
         },
@@ -1144,6 +1155,7 @@ describe('agent-teams-mcp stdio e2e', () => {
         {
           claudeDir,
           teamName: 'review-roundtrip-team',
+          requirements: TEST_TASK_REQUIREMENTS,
           subject: 'Needs fixes after review',
           owner: 'alice',
           description: 'Roundtrip description',
@@ -1271,7 +1283,7 @@ describe('agent-teams-mcp stdio e2e', () => {
           ?.content?.[0]?.text as string | undefined) ?? ''
       );
       expect(finalLeadBriefingText).toContain(`#${noReviewerTask.displayId}`);
-      expect(finalLeadBriefingText).not.toContain(`#${roundtripTask.displayId}`);
+      expect(leadActionSections(finalLeadBriefingText)).not.toContain(`#${roundtripTask.displayId}`);
     } finally {
       await client.close();
     }
@@ -1289,6 +1301,7 @@ describe('agent-teams-mcp stdio e2e', () => {
         {
           claudeDir,
           teamName: 'inventory-filters-team',
+          requirements: TEST_TASK_REQUIREMENTS,
           subject: 'Base task',
           owner: 'alice',
         },
@@ -1301,6 +1314,7 @@ describe('agent-teams-mcp stdio e2e', () => {
         {
           claudeDir,
           teamName: 'inventory-filters-team',
+          requirements: TEST_TASK_REQUIREMENTS,
           subject: 'Blocked task',
           owner: 'alice',
           blockedBy: [baseTask.id],
@@ -1314,6 +1328,7 @@ describe('agent-teams-mcp stdio e2e', () => {
         {
           claudeDir,
           teamName: 'inventory-filters-team',
+          requirements: TEST_TASK_REQUIREMENTS,
           subject: 'Related task',
           owner: 'alice',
           related: [baseTask.id],
@@ -1413,6 +1428,7 @@ describe('agent-teams-mcp stdio e2e', () => {
         {
           claudeDir,
           teamName: 'inventory-filters-team',
+          requirements: TEST_TASK_REQUIREMENTS,
           subject: 'Self review should be invalid',
           owner: 'alice',
         },
@@ -1494,6 +1510,7 @@ describe('agent-teams-mcp stdio e2e', () => {
         {
           claudeDir,
           teamName: 'clarification-team',
+          requirements: TEST_TASK_REQUIREMENTS,
           subject: 'Need lead answer',
           owner: 'alice',
         },
@@ -1508,6 +1525,7 @@ describe('agent-teams-mcp stdio e2e', () => {
         {
           claudeDir,
           teamName: 'clarification-team',
+          requirements: TEST_TASK_REQUIREMENTS,
           subject: 'Need user answer',
           owner: 'alice',
         },
@@ -1642,7 +1660,9 @@ describe('agent-teams-mcp stdio e2e', () => {
         ((leadAfterClearBriefingResult as { result: { content?: Array<{ text?: string }> } }).result
           ?.content?.[0]?.text as string | undefined) ?? ''
       );
-      expect(leadAfterClearBriefingText).not.toContain(`#${leadClarificationTask.displayId}`);
+      expect(leadActionSections(leadAfterClearBriefingText)).not.toContain(
+        `#${leadClarificationTask.displayId}`
+      );
       expect(leadAfterClearBriefingText).toContain('Waiting on user:');
       expect(leadAfterClearBriefingText).toContain(`#${userClarificationTask.displayId}`);
     } finally {
@@ -1662,6 +1682,7 @@ describe('agent-teams-mcp stdio e2e', () => {
         {
           claudeDir,
           teamName: 'terminal-routing-team',
+          requirements: TEST_TASK_REQUIREMENTS,
           subject: 'Lead-owned follow-up task',
           owner: 'team-lead',
         },
@@ -1710,6 +1731,7 @@ describe('agent-teams-mcp stdio e2e', () => {
         {
           claudeDir,
           teamName: 'terminal-routing-team',
+          requirements: TEST_TASK_REQUIREMENTS,
           subject: 'Approved terminal task',
           owner: 'alice',
           description: 'This should become terminal awareness, not work.',
@@ -1800,7 +1822,9 @@ describe('agent-teams-mcp stdio e2e', () => {
           ?.content?.[0]?.text as string | undefined) ?? ''
       );
       expect(leadAfterApprovalBriefingText).toContain(`#${leadOwnedTask.displayId}`);
-      expect(leadAfterApprovalBriefingText).not.toContain(`#${approvedTask.displayId}`);
+      expect(leadActionSections(leadAfterApprovalBriefingText)).not.toContain(
+        `#${approvedTask.displayId}`
+      );
 
       const approvedInventoryResult = await client.callTool(
         'task_list',
@@ -1842,6 +1866,7 @@ describe('agent-teams-mcp stdio e2e', () => {
         {
           claudeDir,
           teamName: 'repair-team',
+          requirements: TEST_TASK_REQUIREMENTS,
           subject: 'Owner became invalid',
           owner: 'alice',
         },
@@ -1868,6 +1893,7 @@ describe('agent-teams-mcp stdio e2e', () => {
         {
           claudeDir,
           teamName: 'repair-team',
+          requirements: TEST_TASK_REQUIREMENTS,
           subject: 'Dependency to be deleted',
           owner: 'bob',
         },
@@ -1882,6 +1908,7 @@ describe('agent-teams-mcp stdio e2e', () => {
         {
           claudeDir,
           teamName: 'repair-team',
+          requirements: TEST_TASK_REQUIREMENTS,
           subject: 'Broken dependency task',
           owner: 'bob',
           blockedBy: [dependencyTask.id],
@@ -1975,6 +2002,7 @@ describe('agent-teams-mcp stdio e2e', () => {
         {
           claudeDir,
           teamName: 'stdio-hardening-team',
+          requirements: TEST_TASK_REQUIREMENTS,
           subject: 'Lifecycle guard task',
           owner: 'alice',
         },
@@ -2172,6 +2200,7 @@ describe('agent-teams-mcp stdio e2e', () => {
         {
           claudeDir,
           teamName: 'stdio-codex-team',
+          requirements: TEST_TASK_REQUIREMENTS,
           subject: 'Codex stdio assignment',
           owner: 'bob',
           description: 'Verify Codex sees Agent Teams MCP tools over stdio.',
@@ -2231,6 +2260,7 @@ describe('agent-teams-mcp stdio e2e', () => {
       }
       return { statusCode: 404, body: { error: `Unhandled ${method} ${url}` } };
     });
+    const restoreAppBinding = temporarilyUnbindAppControl();
     const client = new McpStdIoClient(serverPath, workspaceRoot);
 
     try {
@@ -2302,6 +2332,7 @@ describe('agent-teams-mcp stdio e2e', () => {
         },
       ]);
     } finally {
+      restoreAppBinding();
       await client.close();
       await controlServer.close();
     }
@@ -2347,6 +2378,7 @@ describe('agent-teams-mcp stdio e2e', () => {
       }
       return { statusCode: 404, body: { error: `Unhandled ${method} ${url}` } };
     });
+    const restoreAppBinding = temporarilyUnbindAppControl();
     const previousControlUrl = process.env.CLAUDE_TEAM_CONTROL_URL;
     process.env.CLAUDE_TEAM_CONTROL_URL = controlServer.baseUrl;
     const client = new McpStdIoClient(serverPath, workspaceRoot);
@@ -2396,6 +2428,7 @@ describe('agent-teams-mcp stdio e2e', () => {
         '/api/teams/stdio-work-sync-env-team/member-work-sync/report',
       ]);
     } finally {
+      restoreAppBinding();
       if (previousControlUrl === undefined) {
         delete process.env.CLAUDE_TEAM_CONTROL_URL;
       } else {
@@ -2456,6 +2489,7 @@ describe('agent-teams-mcp stdio e2e', () => {
       JSON.stringify({ baseUrl: freshServer.baseUrl, updatedAt: new Date().toISOString() }),
       'utf8'
     );
+    const restoreAppBinding = temporarilyUnbindAppControl();
     const client = new McpStdIoClient(serverPath, workspaceRoot);
 
     try {
@@ -2499,6 +2533,7 @@ describe('agent-teams-mcp stdio e2e', () => {
         '/api/teams/stdio-work-sync-stale-team/member-work-sync/report',
       ]);
     } finally {
+      restoreAppBinding();
       await client.close();
       await staleServer.close();
       await freshServer.close();
@@ -2512,6 +2547,7 @@ describe('agent-teams-mcp stdio e2e', () => {
     ]);
     const previousControlUrl = process.env.CLAUDE_TEAM_CONTROL_URL;
     delete process.env.CLAUDE_TEAM_CONTROL_URL;
+    const restoreAppBinding = temporarilyUnbindAppControl();
     const client = new McpStdIoClient(serverPath, workspaceRoot);
 
     try {
@@ -2570,6 +2606,7 @@ describe('agent-teams-mcp stdio e2e', () => {
         },
       });
     } finally {
+      restoreAppBinding();
       if (previousControlUrl === undefined) {
         delete process.env.CLAUDE_TEAM_CONTROL_URL;
       } else {

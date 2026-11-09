@@ -17,6 +17,9 @@ describe('resolveCreateTaskCommand', () => {
       .mockReturnValueOnce('55555555-5555-4555-8555-555555555555');
     const request = {
       subject: 'Stable task',
+      specProject: 'project-a',
+      specSlug: 'spec-a',
+      requirements: ['FR-1'],
       owner: 'alice',
       groupChatId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
     };
@@ -59,18 +62,67 @@ describe('resolveCreateTaskCommand', () => {
     const first = resolveCreateTaskCommand(
       null,
       'team-a',
-      { subject: 'Stable relations', blockedBy: ['b', 'a'], related: ['d', 'c'] },
+      {
+        subject: 'Stable relations',
+        specProject: 'project-a',
+        specSlug: 'spec-a',
+        requirements: ['FR-1'],
+        blockedBy: ['b', 'a'],
+        related: ['d', 'c'],
+      },
       createCommandId
     );
     const reordered = resolveCreateTaskCommand(
       first,
       'team-a',
-      { subject: 'Stable relations', blockedBy: ['a', 'b'], related: ['c', 'd', 'c'] },
+      {
+        subject: 'Stable relations',
+        specProject: 'project-a',
+        specSlug: 'spec-a',
+        requirements: ['FR-1'],
+        blockedBy: ['a', 'b'],
+        related: ['c', 'd', 'c'],
+      },
       createCommandId
     );
 
     expect(reordered).toBe(first);
     expect(createCommandId).toHaveBeenCalledTimes(1);
+  });
+
+  it('starts a new command when the linked specification scope or requirements change', () => {
+    const createCommandId = vi
+      .fn<() => string>()
+      .mockReturnValueOnce('first')
+      .mockReturnValueOnce('second')
+      .mockReturnValueOnce('third');
+    const first = resolveCreateTaskCommand(null, 'team-a', {
+      subject: 'Task',
+      specProject: 'project-a',
+      specSlug: 'spec-a',
+      requirements: ['FR-1', 'AC-2'],
+    }, createCommandId);
+    const reordered = resolveCreateTaskCommand(first, 'team-a', {
+      subject: 'Task',
+      specProject: 'project-a',
+      specSlug: 'spec-a',
+      requirements: ['AC-2', 'FR-1'],
+    }, createCommandId);
+    const changed = resolveCreateTaskCommand(reordered, 'team-a', {
+      subject: 'Task',
+      specProject: 'project-a',
+      specSlug: 'spec-a',
+      requirements: ['FR-2'],
+    }, createCommandId);
+    const changedScope = resolveCreateTaskCommand(changed, 'team-a', {
+      subject: 'Task',
+      specProject: 'project-b',
+      specSlug: 'spec-b',
+      requirements: ['FR-2'],
+    }, createCommandId);
+    expect(reordered).toBe(first);
+    expect(changed.identity.commandId).toBe('second');
+    expect(changedScope.identity.commandId).toBe('third');
   });
 
   it('allows only one submit until the caller reports completion', () => {

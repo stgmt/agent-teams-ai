@@ -33,6 +33,7 @@ export function createNativeRuntimeSurface(runtime: DesktopTeamRuntime): NativeR
     runtime: {
       getRuntimeState: (teamName) => runtime.getRuntimeState(teamName),
       stopTeam: (teamName, expectedRunId) => runtime.stopTeam(teamName, expectedRunId),
+      clearStoppedLaneStopBackoff: (teamName) => runtime.clearStoppedLaneStopBackoff(teamName),
       isTeamAlive: (teamName) => runtime.isTeamAlive(teamName),
       getAliveTeams: () => runtime.getAliveTeams(),
       getCurrentRunId: (teamName) => runtime.getCurrentRunId(teamName),

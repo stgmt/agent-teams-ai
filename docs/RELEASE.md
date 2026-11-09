@@ -29,6 +29,19 @@ Before publishing:
 - Confirm the GitHub release title is exactly the tag (`v2.15.0`), not `Agent Teams v2.15.0`.
 - Keep the body in this document identical to the GitHub release body.
 
+## v2.18.6-tokenplan.0 (Draft; not published)
+
+Target repository: `stgmt/agent-teams-ai`. Do not publish or install this draft
+until the application and registry release checks and sandbox acceptance pass.
+
+### Planned release notes
+
+- Connect a team to multiple specifications without mixing tasks with the same number.
+- Let team leads create specifications, requirements, and shared tasks through MCP.
+- Keep agents' personal tasks separate from the team's shared task board.
+- Read task comments and attachments through the application.
+- Keep task result files on the local computer; verification for direct server completion remains in the backlog.
+
 ## v2.18.6 (Preparing draft)
 
 Target branch: `main`. Build a fresh `v2.18.6` draft after runtime `0.0.157` is verified and publicly available, then pin its exact manifest in `runtime.lock.json`. The earlier `v2.18.5` draft is superseded; preserve its immutable tag. Notes cover the shipped changes since public `v2.18.4`. Sign and qualify all platform artifacts before any publication. The original 2.18.4 user's CPU source remains unconfirmed (issue #1098).

@@ -683,7 +683,11 @@ importers:
         specifier: ^3.2.5
         version: 3.2.6(@types/debug@4.1.12)(@types/node@24.12.4)(happy-dom@21.0.4)(jiti@1.21.7)(sass@1.98.0)(supports-color@10.2.2)(terser@5.46.0)(tsx@4.23.15)(yaml@2.9.0)
 
-  agent-teams-controller: {}
+  agent-teams-controller:
+    devDependencies:
+      proper-lockfile:
+        specifier: 4.1.2
+        version: 4.1.2
 
   landing:
     dependencies:
@@ -16986,6 +16990,8 @@ snapshots:
       '@tanstack/react-store': 0.11.2(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       '@tanstack/table-core': 9.3.1
       react: 19.2.4
+    transitivePeerDependencies:
+      - react-dom
 
   '@tanstack/react-virtual@3.13.24(react-dom@19.2.4(react@19.2.4))(react@19.2.4)':
     dependencies:

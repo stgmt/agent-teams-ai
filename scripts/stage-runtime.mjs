@@ -11,6 +11,8 @@ import { formatGitHubReleaseDownloadError } from './lib/github-release-download-
 import { verifyRuntimeArchiveChecksum } from './lib/runtime-archive-checksum.mjs';
 import { extractArchive as extractRuntimeArchive } from './lib/runtime-payload-cache.mjs';
 import { verifyExternalOpenCodeV2Base } from './lib/opencode-v2-base-inventory.mts';
+import { matchesRuntimeCliVersion } from './lib/runtime-cli-version.mjs';
+import { validateWindowsRuntimeLock } from './lib/windows-runtime-lock.mjs';
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(scriptDir, '..');
@@ -25,7 +27,6 @@ Options:
   --platform <key>      Runtime platform key. Defaults to the current platform.
   --release-tag <tag>   Release tag to download from. Defaults to runtime.lock.json.
   --clean               Remove staged runtime files and keep resources/runtime/.gitkeep.
-  --help                Show this message.
 `);
 }
 
@@ -81,30 +82,18 @@ function runOrThrow(command, args, options = {}) {
 }
 
 function readRuntimeLock() {
-  return JSON.parse(fs.readFileSync(runtimeLockPath, 'utf8'));
+  const runtimeLock = JSON.parse(fs.readFileSync(runtimeLockPath, 'utf8'));
+  validateWindowsRuntimeLock(runtimeLock);
+  return runtimeLock;
 }
 
 function getDefaultPlatformKey() {
-  const key = `${process.platform}-${process.arch}`;
-  if (
-    key === 'darwin-arm64' ||
-    key === 'darwin-x64' ||
-    key === 'linux-x64' ||
-    key === 'win32-arm64' ||
-    key === 'win32-x64'
-  ) {
-    return key;
+  if (process.platform !== 'win32' || process.arch !== 'x64') {
+    throw new Error('The bundled runtime is supported only on Windows x64');
   }
-  throw new Error(`No bundled runtime asset is configured for ${key}`);
+  return 'win32-x64';
 }
 
-function getReleaseTag(runtimeLock, override) {
-  const tag = override?.trim() || runtimeLock.releaseTag?.trim() || runtimeLock.sourceRef?.trim();
-  if (!tag) {
-    throw new Error('runtime.lock.json does not define releaseTag or sourceRef');
-  }
-  return tag;
-}
 
 function getReleaseAssetUrl(runtimeLock, releaseTag, asset) {
   return `https://github.com/${runtimeLock.releaseRepository}/releases/download/${releaseTag}/${encodeURIComponent(asset.file)}`;
@@ -191,37 +180,67 @@ function findRuntimePayloadDir(extractDir, binaryName) {
   throw new Error(`Extracted runtime archive does not contain runtime/VERSION and ${binaryName}`);
 }
 
-function verifyStagedRuntime(runtimeLock, asset, platformKey) {
-  const versionPath = path.join(runtimeDir, 'VERSION');
-  const binaryPath = path.join(runtimeDir, asset.binaryName);
+function verifyStagedRuntime(runtimeLock, asset, platformKey, payloadDir = runtimeDir) {
+  const versionPath = path.join(payloadDir, 'VERSION');
+  const commitPath = path.join(payloadDir, 'COMMIT_SHA');
+  const binaryPath = path.join(payloadDir, asset.binaryName);
   if (!fs.existsSync(versionPath)) {
-    throw new Error('Staged runtime is missing resources/runtime/VERSION');
+    throw new Error('Staged runtime is missing VERSION');
+  }
+  if (!fs.existsSync(commitPath)) {
+    throw new Error('Staged runtime is missing COMMIT_SHA');
   }
   if (!fs.existsSync(binaryPath)) {
-    throw new Error(`Staged runtime is missing resources/runtime/${asset.binaryName}`);
+    throw new Error(`Staged runtime is missing ${asset.binaryName}`);
   }
 
   const versionText = fs.readFileSync(versionPath, 'utf8').trim();
-  if (!versionText.includes(runtimeLock.version)) {
+  if (versionText !== runtimeLock.version) {
     throw new Error(
       `Staged runtime version mismatch for ${platformKey}. Expected ${runtimeLock.version}, got ${versionText}`
+    );
+  }
+  const sourceCommit = fs.readFileSync(commitPath, 'utf8').trim();
+  if (sourceCommit !== runtimeLock.sourceCommit) {
+    throw new Error(`Staged runtime source commit mismatch for ${platformKey}`);
+  }
+
+  const result = spawnSync(binaryPath, ['--version'], {
+    cwd: payloadDir,
+    encoding: 'utf8',
+    shell: false,
+    timeout: 30_000,
+    windowsHide: true,
+  });
+  if (
+    result.error ||
+    result.status !== 0 ||
+    !matchesRuntimeCliVersion(result.stdout, runtimeLock.cliVersion)
+  ) {
+    const actualVersion =
+      result.stdout?.trim() || result.error?.message || `exit ${result.status}`;
+    throw new Error(
+      `Staged runtime CLI version mismatch for ${platformKey}. Expected ${runtimeLock.cliVersion}, got ${actualVersion}`
     );
   }
 }
 
 async function stageRuntime(options) {
   const runtimeLock = readRuntimeLock();
-  // Validate a present external map before any network or cleanup effect.
+  if (options.releaseTag && options.releaseTag !== runtimeLock.releaseTag) {
+    throw new Error('Windows Claude-only runtime release tag override is not permitted');
+  }
+
+  // Validate the delivery contract before any network or cleanup effect.
   const { readOpenCodeV2DeliveryMap } =
     await import('../src/features/opencode-runtime-installer/core/domain/v2Delivery.ts');
   readOpenCodeV2DeliveryMap(runtimeLock);
   const platformKey = options.platform?.trim() || getDefaultPlatformKey();
-  const asset = runtimeLock.assets?.[platformKey];
-  if (!asset) {
-    throw new Error(`runtime.lock.json has no asset for ${platformKey}`);
+  if (platformKey !== 'win32-x64') {
+    throw new Error(`Windows Claude-only runtime does not support ${platformKey}`);
   }
-
-  const releaseTag = getReleaseTag(runtimeLock, options.releaseTag);
+  const asset = runtimeLock.assets[platformKey];
+  const releaseTag = runtimeLock.releaseTag;
   const workDir = path.join(downloadRoot, `stage-${platformKey}-${process.pid}-${Date.now()}`);
   const archivePath = path.join(workDir, asset.file);
   const extractDir = path.join(workDir, 'extracted');
@@ -250,12 +269,10 @@ async function stageRuntime(options) {
 
     const payloadDir = findRuntimePayloadDir(extractDir, asset.binaryName);
     verifyExternalOpenCodeV2Base(payloadDir, runtimeLock, platformKey);
+    verifyStagedRuntime(runtimeLock, asset, platformKey, payloadDir);
+
     cleanRuntimeDir();
     fs.cpSync(payloadDir, runtimeDir, { recursive: true });
-    if (process.platform !== 'win32' && !platformKey.startsWith('win32-')) {
-      fs.chmodSync(path.join(runtimeDir, asset.binaryName), 0o755);
-    }
-    verifyStagedRuntime(runtimeLock, asset, platformKey);
     process.stdout.write(`Staged runtime ${runtimeLock.version} for ${platformKey}\n`);
   } finally {
     fs.rmSync(workDir, { recursive: true, force: true });
@@ -268,13 +285,15 @@ async function main() {
     printUsage();
     return;
   }
-
   if (options.clean) {
     cleanRuntimeDir();
     process.stdout.write('Cleaned resources/runtime\n');
     return;
   }
 
+  if (process.platform !== 'win32' || process.arch !== 'x64') {
+    throw new Error('The bundled runtime is supported only on Windows x64');
+  }
   await stageRuntime(options);
 }
 

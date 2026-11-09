@@ -12,6 +12,7 @@ function sources(
     repairStaleIntervalsAfterCrash: vi.fn(() => ({ repaired: true }) as never),
   };
   return {
+    isManagedByThisProfile: async () => true,
     intervals,
     readLaunchState: async () => null,
     readBootstrapLaunchSnapshot: async () => null,
@@ -22,6 +23,13 @@ function sources(
 }
 
 describe('native task activity repair', () => {
+  it('never repairs another profile’s team', async () => {
+    const deps = sources({ isManagedByThisProfile: async () => false });
+    const repair = createNativeTaskActivityRepair(deps);
+    await repair.repairStaleTaskActivityIntervalsBeforeSnapshot('foreign-team');
+    expect(deps.intervals.repairStaleIntervalsAfterCrash).not.toHaveBeenCalled();
+  });
+
   it('repairs a team whose run is gone, once', async () => {
     const deps = sources();
     const repair = createNativeTaskActivityRepair(deps);

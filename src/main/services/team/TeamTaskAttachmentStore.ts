@@ -123,7 +123,6 @@ export class TeamTaskAttachmentStore {
   ): Promise<TaskAttachmentMeta> {
     const trimmed = base64Data.trim();
     // Avoid allocating huge Buffers for obviously too-large payloads.
-    // Base64 decoded size is roughly 3/4 of the string length minus padding.
     const padding = trimmed.endsWith('==') ? 2 : trimmed.endsWith('=') ? 1 : 0;
     const estimatedBytes = Math.max(0, Math.floor((trimmed.length * 3) / 4) - padding);
     if (estimatedBytes > MAX_ATTACHMENT_SIZE) {
@@ -131,20 +130,80 @@ export class TeamTaskAttachmentStore {
         `Attachment too large: ${(estimatedBytes / (1024 * 1024)).toFixed(1)} MB (max ${MAX_ATTACHMENT_SIZE / (1024 * 1024)} MB)`
       );
     }
-
     const buffer = Buffer.from(trimmed, 'base64');
     if (buffer.length > MAX_ATTACHMENT_SIZE) {
       throw new Error(
         `Attachment too large: ${(buffer.length / (1024 * 1024)).toFixed(1)} MB (max ${MAX_ATTACHMENT_SIZE / (1024 * 1024)} MB)`
       );
     }
-
     const dir = this.getTaskDir(teamName, taskId);
     await fs.promises.mkdir(dir, { recursive: true });
-
     const filePath = this.getStoredFilePath(teamName, taskId, attachmentId, filename);
     await fs.promises.writeFile(filePath, buffer);
+    const meta: TaskAttachmentMeta = {
+      id: attachmentId,
+      filename,
+      mimeType,
+      size: buffer.length,
+      addedAt: new Date().toISOString(),
+      filePath,
+    };
+    logger.debug(`[${teamName}] Saved task attachment ${attachmentId} for task #${taskId}`);
+    return meta;
+  }
 
+  /** Save already-validated bytes without making a second base64 decode. */
+  async saveAttachmentBuffer(
+    teamName: string,
+    taskId: string,
+    attachmentId: string,
+    filename: string,
+    mimeType: AttachmentMediaType,
+    buffer: Buffer
+  ): Promise<TaskAttachmentMeta> {
+    if (!Buffer.isBuffer(buffer)) throw new Error('Attachment data must be a Buffer');
+    if (buffer.length > MAX_ATTACHMENT_SIZE) {
+      throw new Error(
+        `Attachment too large: ${(buffer.length / (1024 * 1024)).toFixed(1)} MB (max ${MAX_ATTACHMENT_SIZE / (1024 * 1024)} MB)`
+      );
+    }
+    const dir = this.getTaskDir(teamName, taskId);
+    const appDataPath = path.resolve(getAppDataPath());
+    const directories = [
+      appDataPath,
+      path.join(appDataPath, 'task-attachments'),
+      path.join(appDataPath, 'task-attachments', teamName),
+      dir,
+    ];
+    for (const directory of directories) {
+      try {
+        await fs.promises.mkdir(directory, { mode: 0o700 });
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      }
+      const directoryStat = await fs.promises.lstat(directory);
+      if (directoryStat.isSymbolicLink() || !directoryStat.isDirectory()) {
+        throw new Error('Invalid task attachment storage directory');
+      }
+    }
+
+    const filePath = this.getStoredFilePath(teamName, taskId, attachmentId, filename);
+    const handle = await fs.promises.open(filePath, 'wx', 0o600);
+    try {
+      await handle.writeFile(buffer);
+      await handle.sync();
+    } catch (error) {
+      await handle.close().catch(() => undefined);
+      await fs.promises.unlink(filePath).catch(() => undefined);
+      throw error;
+    }
+    await handle.close();
+
+    const fileStat = await fs.promises.lstat(filePath);
+    if (fileStat.isSymbolicLink() || !fileStat.isFile() || fileStat.size !== buffer.length) {
+      await fs.promises.unlink(filePath).catch(() => undefined);
+      throw new Error('Invalid task attachment file');
+    }
     const meta: TaskAttachmentMeta = {
       id: attachmentId,
       filename,

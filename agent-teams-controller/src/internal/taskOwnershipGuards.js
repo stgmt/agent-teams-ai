@@ -1,5 +1,6 @@
 const taskStore = require('./taskStore.js');
 const runtimeHelpers = require('./runtimeHelpers.js');
+const pendingKanbanGuard = require('./pendingKanbanGuard.js');
 
 function normalizeActorName(value) {
     return typeof value === 'string' && value.trim() ? value.trim() : '';
@@ -115,9 +116,13 @@ function assertTaskNotDeleted(task, action) {
     }
 }
 
-function readMutableTask(context, taskId, action) {
-    const task = taskStore.readTask(context.paths, taskId, { includeDeleted: true });
+function readMutableTask(context, taskId, action, scope) {
+    const task = taskStore.readTask(context.paths, taskId, {
+        includeDeleted: true,
+        ...(scope ? { scope } : {}),
+    });
     assertTaskNotDeleted(task, action);
+    pendingKanbanGuard.assertNoPendingKanbanTransition(task);
     return task;
 }
 

@@ -3,6 +3,18 @@ import { normalizeOptionalTeamProviderId } from '@shared/utils/teamProvider';
 
 /** Reject loss of recognized persisted values while allowing canonical defaults and migrations. */
 export function hasCompleteKnownMetadata(raw: unknown, normalized: unknown): boolean {
+  if (Array.isArray(raw) || Array.isArray(normalized)) {
+    return (
+      Array.isArray(raw) &&
+      Array.isArray(normalized) &&
+      raw.length === normalized.length &&
+      raw.every((value, index) =>
+        value !== null && typeof value === 'object'
+          ? hasCompleteKnownMetadata(value, normalized[index])
+          : value === normalized[index]
+      )
+    );
+  }
   if (
     !raw ||
     typeof raw !== 'object' ||

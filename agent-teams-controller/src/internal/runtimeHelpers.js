@@ -177,10 +177,9 @@ function getPaths(flags, teamName) {
   const claudeDir = getClaudeDir(flags);
   const safeTeam = assertSafePathSegment('team', teamName);
   const teamDir = path.join(claudeDir, 'teams', safeTeam);
-  const tasksDir = path.join(claudeDir, 'tasks', safeTeam);
   const kanbanPath = path.join(teamDir, 'kanban-state.json');
   const processesPath = path.join(teamDir, 'processes.json');
-  return { claudeDir, teamDir, tasksDir, kanbanPath, processesPath };
+  return { claudeDir, teamDir, kanbanPath, processesPath };
 }
 
 function isCanonicalLeadMember(member) {
@@ -656,7 +655,9 @@ function detectMimeTypeFromPathAndHeader(filePath, filename) {
 
 function getTaskAttachmentsDir(paths, taskId) {
   const safeTaskId = assertSafePathSegment('taskId', taskId);
-  return path.join(paths.teamDir, TASK_ATTACHMENTS_DIR, safeTaskId);
+  return path.join(paths.teamDir, TASK_ATTACHMENTS_DIR, safeTaskId.replace(/[%:]/g, (char) =>
+    char === '%' ? '%25' : '%3A'
+  ));
 }
 
 function getStoredAttachmentPath(paths, taskId, attachmentId, filename) {
@@ -773,9 +774,9 @@ module.exports = {
   resolveTaskCommentAuthorName,
   resolveTeamMembers,
   getCurrentRuntimeMemberIdentity,
+  resolveCanonicalLeadSessionId,
   getTaskAttachmentsDir,
   getStoredAttachmentPath,
-  resolveCanonicalLeadSessionId,
   resolveLeadSessionId,
   saveTaskAttachmentFile,
 };

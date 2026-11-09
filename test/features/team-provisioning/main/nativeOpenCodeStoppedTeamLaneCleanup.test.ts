@@ -37,10 +37,11 @@ afterEach(async () => {
   await rm(claudeBase, { recursive: true, force: true });
 });
 
-function subject(options: { canDeliver?: boolean } = {}) {
+function subject(options: { canDeliver?: boolean; owned?: boolean } = {}) {
   return createNativeOpenCodeStoppedTeamLaneCleanup({
     teamsBasePath,
     queue: new TeamOperationQueue(),
+    isManagedByThisProfile: async () => options.owned !== false,
     readConfig: async () => null,
     readMembersMeta: async () => [],
     canDeliverToOpenCodeRuntimeForTeam: () => options.canDeliver === true,
@@ -54,6 +55,17 @@ function subject(options: { canDeliver?: boolean } = {}) {
 }
 
 describe('native stopped-team lane cleanup', () => {
+  it('does not sweep lanes belonging to another profile', async () => {
+    await upsertOpenCodeRuntimeLaneIndexEntry({
+      teamsBasePath, teamName: TEAM, laneId: LANE, state: 'active',
+    });
+    await subject({ owned: false }).stopLanesForStoppedTeam(TEAM);
+    const laneIndex = await readOpenCodeRuntimeLaneIndex(teamsBasePath, TEAM);
+    expect(laneIndex?.lanes[LANE]?.state).toBe('active');
+    expect(deletedSecondary).toEqual([]);
+    expect(clearedPrimary).toBe(0);
+  });
+
   it('reports nothing to stop for a team that never ran a lane', async () => {
     await expect(subject().stopLanesForStoppedTeam(TEAM)).resolves.toBe(0);
     expect(deletedSecondary).toEqual([]);

@@ -11,6 +11,8 @@ import {
 import * as fs from 'fs';
 import * as path from 'path';
 
+import { bindingFromTeamMetadata, resolveTeamSpecBindings } from './registry/TeamSpecBinding';
+import type { TeamSpecBindingConfig } from './registry/TeamSpecBinding';
 import { isReadableTeamConfigPayload } from './TeamConfigPayload';
 import { getTeamFsWorkerClient } from './TeamFsWorkerClient';
 import { shouldSuppressLegacyLaunchArtifactHeuristic } from './TeamLaunchSummaryProjection';
@@ -22,6 +24,7 @@ import type {
   TeamConfig,
   TeamMember,
   TeamProviderId,
+  TeamSpecBinding,
   TeamSummary,
   TeamSummaryMember,
 } from '@shared/types';
@@ -59,6 +62,10 @@ interface InternalTeamConfigFingerprint extends TeamConfigFingerprint {
   highResolution: boolean;
   numericSize: number;
 }
+
+export type TeamRegistryBindingState =
+  | { status: 'verified'; binding: TeamSpecBindingConfig }
+  | { status: 'unavailable' };
 
 interface CachedTeamConfig {
   value: TeamConfig;
@@ -753,7 +760,7 @@ export class TeamConfigReader {
     const configPath = path.join(getTeamsBasePath(), teamName, 'config.json');
     const existingRead = TeamConfigReader.configReadInFlightByPath.get(configPath);
     if (existingRead) {
-      return this.resolveConfigRead(teamName, configPath, existingRead);
+      return this.resolveConfigRead(existingRead);
     }
 
     const generation = TeamConfigReader.getConfigGeneration(configPath);
@@ -768,7 +775,7 @@ export class TeamConfigReader {
     TeamConfigReader.configReadInFlightByPath.set(configPath, readPromise);
 
     try {
-      return await this.resolveConfigRead(teamName, configPath, readPromise);
+      return await this.resolveConfigRead(readPromise);
     } finally {
       if (TeamConfigReader.configReadInFlightByPath.get(configPath) === readPromise) {
         TeamConfigReader.configReadInFlightByPath.delete(configPath);
@@ -834,7 +841,7 @@ export class TeamConfigReader {
 
       const existingRead = TeamConfigReader.configReadInFlightByPath.get(configPath);
       if (existingRead) {
-        return this.resolveConfigRead(teamName, configPath, existingRead);
+        return this.resolveConfigRead(existingRead);
       }
 
       const generation = TeamConfigReader.getConfigGeneration(configPath);
@@ -848,7 +855,7 @@ export class TeamConfigReader {
       );
       TeamConfigReader.configReadInFlightByPath.set(configPath, readPromise);
       try {
-        return await this.resolveConfigRead(teamName, configPath, readPromise);
+        return await this.resolveConfigRead(readPromise);
       } finally {
         if (TeamConfigReader.configReadInFlightByPath.get(configPath) === readPromise) {
           TeamConfigReader.configReadInFlightByPath.delete(configPath);
@@ -859,9 +866,59 @@ export class TeamConfigReader {
     return null;
   }
 
+  /**
+   * Registry consumers must use this fresh, fail-closed read rather than infer
+   * authority from the independently cached TeamConfig projection.
+   */
+  async getRegistryBindingState(teamName: string): Promise<TeamRegistryBindingState> {
+    const teamPath = path.join(getTeamsBasePath(), teamName);
+    const configPath = path.join(teamPath, 'config.json');
+    const metaPath = path.join(teamPath, 'team.meta.json');
+    try {
+      const [configBefore, metaBefore] = await Promise.all([
+        TeamConfigReader.readConfigFingerprint(configPath),
+        TeamConfigReader.readConfigFingerprint(metaPath),
+      ]);
+      if (
+        (!configBefore && !metaBefore) ||
+        (configBefore && (!configBefore.isFile || configBefore.numericSize > MAX_CONFIG_READ_BYTES))
+      ) {
+        return { status: 'unavailable' };
+      }
+      const [raw, meta] = await Promise.all([
+        configBefore ? readFileUtf8WithTimeout(configPath, PER_TEAM_READ_TIMEOUT_MS) : null,
+        metaBefore
+          ? this.teamMetaStore.getMeta(teamName, getTeamsBasePath(), {
+              requireCompleteFields: true,
+            })
+          : null,
+      ]);
+      if (metaBefore && !meta) return { status: 'unavailable' };
+      const fresh: TeamConfig | null = raw === null ? null : (JSON.parse(raw) as TeamConfig);
+      if (fresh !== null && !isReadableTeamConfigPayload(fresh)) return { status: 'unavailable' };
+      const [configAfter, metaAfter] = await Promise.all([
+        TeamConfigReader.readConfigFingerprint(configPath),
+        TeamConfigReader.readConfigFingerprint(metaPath),
+      ]);
+      if (
+        Boolean(configBefore) !== Boolean(configAfter) ||
+        (configBefore &&
+          configAfter &&
+          !TeamConfigReader.fingerprintsEqual(configBefore, configAfter)) ||
+        Boolean(metaBefore) !== Boolean(metaAfter) ||
+        (metaBefore && metaAfter && !TeamConfigReader.fingerprintsEqual(metaBefore, metaAfter))
+      ) {
+        return { status: 'unavailable' };
+      }
+      const binding = bindingFromTeamMetadata(fresh ?? {}, meta);
+      resolveTeamSpecBindings(binding, teamName);
+      return { status: 'verified', binding };
+    } catch {
+      return { status: 'unavailable' };
+    }
+  }
+
   private async resolveConfigRead(
-    teamName: string,
-    configPath: string,
     readPromise: Promise<TeamConfig | null>
   ): Promise<TeamConfig | null> {
     try {
@@ -1074,6 +1131,19 @@ export class TeamConfigReader {
     }
   }
 
+  async updateSpecBindings(
+    teamName: string,
+    specBindings: readonly TeamSpecBinding[]
+  ): Promise<TeamConfig | null> {
+    const config = await this.getConfig(teamName);
+    if (!config) return null;
+    const validatedBindings = resolveTeamSpecBindings({ specBindings }, teamName);
+    const updatedConfig: TeamConfig = { ...config, specBindings: validatedBindings };
+    const configPath = path.join(getTeamsBasePath(), teamName, 'config.json');
+    await atomicWriteAsync(configPath, JSON.stringify(updatedConfig, null, 2));
+    await TeamConfigReader.primeConfig(teamName, updatedConfig);
+    return updatedConfig;
+  }
   async updateConfig(
     teamName: string,
     updates: { name?: string; description?: string; color?: string; language?: string }

@@ -7,6 +7,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 
+import { currentCreateTeamDraftGeneration } from '@renderer/services/createTeamDraftGeneration';
 import { draftStorage } from '@renderer/services/draftStorage';
 
 import type { InlineChip } from '@renderer/types/inlineChip';
@@ -47,8 +48,11 @@ export function useChipDraftPersistence(key: string): UseChipDraftResult {
   const [isSaved, setIsSaved] = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingRef = useRef<{ key: string; value: InlineChip[] } | null>(null);
-  const keyRef = useRef(key);
   const editRevisionRef = useRef(0);
+  const keyRef = useRef(key);
+  const generationRef = useRef(
+    key.startsWith('createTeam:') ? currentCreateTeamDraftGeneration() : undefined
+  );
 
   useEffect(() => {
     keyRef.current = key;
@@ -74,9 +78,13 @@ export function useChipDraftPersistence(key: string): UseChipDraftResult {
       const pending = pendingRef.current;
       pendingRef.current = null;
       if (pending.value.length === 0) {
-        void draftStorage.deleteDraft(pending.key);
+        void draftStorage.deleteDraft(pending.key, generationRef.current);
       } else {
-        void draftStorage.saveDraft(pending.key, JSON.stringify(pending.value));
+        void draftStorage.saveDraft(
+          pending.key,
+          JSON.stringify(pending.value),
+          generationRef.current
+        );
       }
     }
   }, []);
@@ -94,7 +102,8 @@ export function useChipDraftPersistence(key: string): UseChipDraftResult {
     const loadRevision = editRevisionRef.current;
     void (async () => {
       const raw = await draftStorage.loadDraft(key);
-      if (cancelled || raw == null || editRevisionRef.current !== loadRevision) return;
+      // A new user edit must win over an older IndexedDB response.
+      if (cancelled || editRevisionRef.current !== loadRevision || raw == null) return;
       try {
         const parsed: unknown = JSON.parse(raw);
         if (isValidChipArray(parsed)) {
@@ -136,11 +145,13 @@ export function useChipDraftPersistence(key: string): UseChipDraftResult {
       if (pending == null) return;
 
       if (pending.value.length === 0) {
-        void draftStorage.deleteDraft(pending.key);
+        void draftStorage.deleteDraft(pending.key, generationRef.current);
       } else {
-        void draftStorage.saveDraft(pending.key, JSON.stringify(pending.value)).then(() => {
-          if (mountedRef.current) setIsSaved(true);
-        });
+        void draftStorage
+          .saveDraft(pending.key, JSON.stringify(pending.value), generationRef.current)
+          .then(() => {
+            if (mountedRef.current) setIsSaved(true);
+          });
       }
     }, DEBOUNCE_MS);
   }, []);
@@ -169,7 +180,7 @@ export function useChipDraftPersistence(key: string): UseChipDraftResult {
     chipsRef.current = [];
     setChipsState([]);
     setIsSaved(false);
-    void draftStorage.deleteDraft(keyRef.current);
+    void draftStorage.deleteDraft(keyRef.current, generationRef.current);
   }, []);
 
   return { chips, setChips, addChip, removeChip, clearChipDraft, isSaved };

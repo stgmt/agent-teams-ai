@@ -43,6 +43,10 @@ async function setup(prepareTrust?: NativeWorkspaceTrustPreparation['prepare']) 
     : createNativeWorkspaceTrust({ homeDirectory: home, env: {} });
   const lifecycle = createNativeTeamLifecycle({
     owner: context.snapshot(),
+    readStartupTasks: async () => [],
+    createController: () => ({
+      taskBoard: { deliverStartupWorkAsync: async () => ({ delivered: [], skipped: [] }) },
+    }),
     runtimeRoot: join(root, 'attempts'),
     workspaceRoot: join(root, 'workspaces'),
     teamsRoot,

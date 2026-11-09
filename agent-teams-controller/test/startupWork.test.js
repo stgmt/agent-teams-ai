@@ -1,8 +1,32 @@
+const { startControlServer } = require('./helpers/controlServer.js');
+const { resetTaskBackendCache } = require('../src/internal/taskBackendSelection.js');
+const { resetSyncControlRequestChannel } = require('../src/internal/syncControlRequest.js');
+let registryServer;
+let registryPreviousEnv;
+const registryEnvKeys = ['AGENT_TEAMS_BOUND_CONTROL_URL', 'AGENT_TEAMS_BOUND_CONTEXT_JSON', 'AGENT_TEAMS_MCP_CLAUDE_DIR'];
+beforeEach(async () => {
+  registryPreviousEnv = Object.fromEntries(registryEnvKeys.map((key) => [key, process.env[key]]));
+  registryServer = await startControlServer();
+  process.env.AGENT_TEAMS_BOUND_CONTROL_URL = registryServer.url;
+  process.env.AGENT_TEAMS_BOUND_CONTEXT_JSON = JSON.stringify({ appInstanceId: 'controller-consumer-test', dataRootFingerprint: 'controller-consumer-root', connectionGeneration: 1 });
+  resetTaskBackendCache();
+});
+afterEach(async () => {
+  resetTaskBackendCache();
+  resetSyncControlRequestChannel();
+  if (registryServer) await registryServer.stop();
+  for (const key of registryEnvKeys) {
+    if (registryPreviousEnv[key] === undefined) delete process.env[key];
+    else process.env[key] = registryPreviousEnv[key];
+  }
+});
+
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
 const { createController } = require('../src/index.js');
+const { withFileLock } = require('../src/internal/fileLock.js');
 
 // Real controller on real files in a temp directory. No doubles: the only
 // shortcut is rewriting inbox rows as read, which is exactly what a member
@@ -19,6 +43,7 @@ describe('startup work delivery (bugfix: member startup)', () => {
 
   beforeEach(() => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'startup-work-'));
+    process.env.AGENT_TEAMS_MCP_CLAUDE_DIR = dir;
     fs.mkdirSync(teamDir(), { recursive: true });
     fs.writeFileSync(
       path.join(teamDir(), 'config.json'),
@@ -56,7 +81,7 @@ describe('startup work delivery (bugfix: member startup)', () => {
   const startupRowsForTask = (member, taskId) =>
     rowsForTask(member, taskId).filter((row) => String(row.messageId).startsWith('startup-work:'));
   const createOwned = (subject, extra = {}) =>
-    board.createTask({ subject, owner: 'bob', ...extra });
+    board.createTask({ subject, owner: 'bob', requirements: ['FR-1'], ...extra });
 
   describe('startup context carries no work (S1.14)', () => {
     const briefing = (options) =>
@@ -223,6 +248,47 @@ describe('startup work delivery (bugfix: member startup)', () => {
       expect(rows[1].read).toBe(false);
       expect(rows[1].text).not.toBe(rows[0].text);
       expect(rows[1].text).toContain('launch-2');
+    });
+
+    it('cancels a stale launch after waiting for the inbox lock', async () => {
+      const task = createOwned('Waits for the inbox lock');
+      markInboxRead('bob');
+      const snapshotBoard = createController({
+        teamName: 'fixture',
+        claudeDir: dir,
+        readOnlyTaskSnapshot: [tasks.getTask(task.id)],
+      }).taskBoard;
+      let releaseLock;
+      let notifyLockAcquired;
+      const lockReleased = new Promise((resolve) => {
+        releaseLock = resolve;
+      });
+      const lockAcquired = new Promise((resolve) => {
+        notifyLockAcquired = resolve;
+      });
+      const lock = withFileLock(inboxFile('bob'), async () => {
+        notifyLockAcquired();
+        await lockReleased;
+      });
+      await lockAcquired;
+
+      let checks = 0;
+      const delivery = snapshotBoard.deliverStartupWorkAsync('bob', {
+        launchId: 'run-1-generation-1-operation-1',
+        isCurrent: () => ++checks < 3,
+      });
+      try {
+        await vi.waitFor(() => expect(checks).toBe(2));
+      } finally {
+        releaseLock();
+        await lock;
+      }
+      await expect(delivery).resolves.toMatchObject({
+        memberName: 'bob',
+        delivered: [],
+        cancelled: true,
+      });
+      expect(startupRowsForTask('bob', task.id)).toEqual([]);
     });
 
     it('a member with nothing to do gets nothing', () => {

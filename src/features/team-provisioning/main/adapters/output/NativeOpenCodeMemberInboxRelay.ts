@@ -5,7 +5,9 @@ import {
   type RelayOpenCodeMemberInboxMessagesPorts,
   relayOpenCodeMemberInboxMessagesWithPorts,
 } from '@main/services/team/provisioning/TeamProvisioningOpenCodeMemberInboxRelay';
+import { createOpenCodeMemberInboxRelayResult } from '@main/services/team/provisioning/TeamProvisioningOpenCodeMemberInboxRelayResults';
 import { TeamInboxReader } from '@main/services/team/TeamInboxReader';
+import { createLogger } from '@shared/utils/logger';
 
 import type { NativeOpenCodeDeliveryReadCommitPolicy } from './NativeOpenCodeDeliveryReadCommit';
 import type { NativeOpenCodeLedgerTransitions } from './NativeOpenCodeLedgerTransitions';
@@ -21,6 +23,8 @@ import type { OpenCodeInboxAttachmentPayloadsResult } from '@main/services/team/
 import type { OpenCodeMemberInboxRelayResult } from '@main/services/team/provisioning/TeamProvisioningOpenCodeMemberInboxRelayResults';
 import type { InboxMessage, TeamTask } from '@shared/types';
 
+const logger = createLogger('team-provisioning:open-code-inbox-relay');
+
 /**
  * Passing a member's unread inbox rows to their lane.
  *
@@ -34,6 +38,7 @@ import type { InboxMessage, TeamTask } from '@shared/types';
  */
 export interface NativeOpenCodeMemberInboxRelayDependencies {
   teamsBasePath: string;
+  isManagedByThisProfile(teamName: string): Promise<boolean>;
   identity: NativeOpenCodeMemberIdentity;
   ledgerTransitions: NativeOpenCodeLedgerTransitions;
   visibleReplyProof: NativeOpenCodeVisibleReplyProof;
@@ -122,15 +127,27 @@ export function createNativeOpenCodeMemberInboxRelay(
       deps.deliverOpenCodeMemberMessage(teamName, input),
     suppressRuntimeInactiveWarning: (teamName) => deps.suppressRuntimeInactiveWarning(teamName),
     logWarning: (message) => deps.logWarning(message),
+    logDiagnostic: (message) => logger.diagnostic(message),
     nowIso: () => deps.nowIso(),
     getErrorMessage: (error) => deps.getErrorMessage(error),
   };
 
   return {
-    relayOpenCodeMemberInboxMessages: (teamName, memberName, options) =>
-      relayOpenCodeMemberInboxMessagesWithPorts(
-        { teamName, memberName, relayKey: `${teamName}:${memberName}`, ...(options ? { options } : {}) },
+    async relayOpenCodeMemberInboxMessages(teamName, memberName, options) {
+      if (!(await deps.isManagedByThisProfile(teamName))) {
+        return createOpenCodeMemberInboxRelayResult({
+          diagnostics: ['opencode_member_inbox_relay_skipped_team_of_another_app_profile'],
+        });
+      }
+      return relayOpenCodeMemberInboxMessagesWithPorts(
+        {
+          teamName,
+          memberName,
+          relayKey: `${teamName}:${memberName}`,
+          ...(options ? { options } : {}),
+        },
         ports
-      ),
+      );
+    },
   };
 }

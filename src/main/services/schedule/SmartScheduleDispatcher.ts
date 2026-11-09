@@ -47,7 +47,9 @@ function readyMember(entry: TeamAgentRuntimeEntry | undefined): boolean {
   // Non-OpenCode leads are tracked by the authoritative live process rather
   // than an optional teammate livenessKind (which is absent in their snapshot).
   if (entry.backendType === 'lead') {
-    return entry.pidSource === 'lead_process' && Number.isSafeInteger(entry.pid) && (entry.pid ?? 0) > 0;
+    return (
+      entry.pidSource === 'lead_process' && Number.isSafeInteger(entry.pid) && (entry.pid ?? 0) > 0
+    );
   }
   return Boolean(entry.livenessKind && READY_KINDS.has(entry.livenessKind));
 }
@@ -109,7 +111,12 @@ export class SmartScheduleDispatcher {
         return skipped('Team lifecycle operation in progress; no work was submitted');
       }
       if (!this.runtime.isTeamAlive(team)) {
-        if (isCancelled() || this.runtime.isTeamLaunching(team) || this.runtime.isTeamBusy(team) || this.runtime.isTeamAlive(team)) {
+        if (
+          isCancelled() ||
+          this.runtime.isTeamLaunching(team) ||
+          this.runtime.isTeamBusy(team) ||
+          this.runtime.isTeamAlive(team)
+        ) {
           return skipped('Team state changed while scheduling; no action was submitted');
         }
         if (schedule.executionMode === 'agent') {
@@ -125,7 +132,12 @@ export class SmartScheduleDispatcher {
         if (!saved?.cwd || !saved.providerId) {
           return skipped('Team launch settings are missing or the provider is not selected');
         }
-        if (isCancelled() || this.runtime.isTeamLaunching(team) || this.runtime.isTeamBusy(team) || this.runtime.isTeamAlive(team)) {
+        if (
+          isCancelled() ||
+          this.runtime.isTeamLaunching(team) ||
+          this.runtime.isTeamBusy(team) ||
+          this.runtime.isTeamAlive(team)
+        ) {
           return skipped('Team launch state changed; no duplicate launch was submitted');
         }
         // Launch has its own per-team admission. The prompt is sent by that launch
@@ -141,7 +153,8 @@ export class SmartScheduleDispatcher {
         }
         return {
           kind: 'dispatched',
-          summary: 'Team launch requested with scheduled instructions; bootstrap/work not yet verified',
+          summary:
+            'Team launch requested with scheduled instructions; bootstrap/work not yet verified',
         };
       }
       return await this.dispatchToLiveTeam(schedule, runId, isCancelled);
@@ -165,10 +178,11 @@ export class SmartScheduleDispatcher {
     }
     const leadName = await this.runtime.getLeadName(team);
     if (!leadName) return skipped('Team lead cannot be resolved');
+    const requestedMember =
+      schedule.executionMode === 'team' ? leadName : schedule.targetMember?.trim() || leadName;
+    // Only the lead is case-insensitive; teammate identities stay exact.
     const memberName =
-      schedule.executionMode === 'team'
-        ? leadName
-        : schedule.targetMember?.trim() || leadName;
+      requestedMember.toLowerCase() === leadName.toLowerCase() ? leadName : requestedMember;
     const saved = await this.runtime.getSavedRequest(team);
     const configured = memberName === leadName || saved?.members.some((m) => m.name === memberName);
     if (!configured) return skipped(`Member "${memberName}" is not configured in this team`);
@@ -187,7 +201,9 @@ export class SmartScheduleDispatcher {
       const configuredMember = saved?.members.find((member) => member.name === memberName);
       const providerId = entry?.providerId ?? configuredMember?.providerId ?? saved?.providerId;
       if (providerId === 'opencode' || entry?.laneKind === 'secondary') {
-        return skipped('Automatic attach of this runtime lane is not safe; start the member manually');
+        return skipped(
+          'Automatic attach of this runtime lane is not safe; start the member manually'
+        );
       }
       const statuses = await this.runtime.getMemberStatuses(team);
       const memberStatus = statuses.statuses[memberName];

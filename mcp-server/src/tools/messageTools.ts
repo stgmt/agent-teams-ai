@@ -17,7 +17,7 @@ export function registerMessageTools(server: Pick<FastMCP, 'addTool'>) {
   server.addTool({
     name: 'message_send',
     description:
-      'Send a visible team/user message into team inbox. OpenCode teammates should use this for normal replies to the human user, lead, or same-team teammates. from is required and must be your configured teammate name; user is reserved for app-owned writes. When replying to an app-delivered OpenCode runtime message, include source="runtime_delivery" and relayOfMessageId with the inbound app messageId. After a successful app-delivered runtime reply, stop and do not send the same answer again. Do not invent placeholder task refs. If the message is not about a real board task, omit # task labels; never use #00000000.',
+      'Send a visible team/user message into team inbox. OpenCode teammates should use this for normal replies to the human user, lead, or same-team teammates. from is required and must be your configured teammate name; user is reserved for app-owned writes. For an app-admitted human request, include its exact requestMessageId for an ordinary answer or provide the structured report from lead_briefing. When replying to an app-delivered OpenCode runtime message, include source="runtime_delivery" and relayOfMessageId with the inbound app messageId. After a successful app-delivered runtime reply, stop and do not send the same answer again. Do not invent placeholder task refs. If the message is not about a real board task, omit # task labels; never use #00000000.',
     parameters: z.object({
       ...toolContextSchema,
       to: z.string().min(1),
@@ -27,6 +27,36 @@ export function registerMessageTools(server: Pick<FastMCP, 'addTool'>) {
       source: z.string().optional(),
       relayOfMessageId: z.string().optional(),
       leadSessionId: z.string().optional(),
+      requestMessageId: z.string().min(1).max(256).optional(),
+      report: z
+        .object({
+          inspectionId: z.string().min(1).max(256),
+          summary: z.string().trim().min(1).max(4000),
+          members: z
+            .array(
+              z
+                .object({
+                  memberName: z.string().min(1).max(200),
+                  statements: z
+                    .array(
+                      z
+                        .object({
+                          kind: z.enum(['result', 'blocker', 'action', 'observation']),
+                          text: z.string().trim().min(1).max(4000),
+                          evidenceIds: z.array(z.string().min(1).max(512)).min(1).max(100),
+                        })
+                        .strict()
+                    )
+                    .min(1)
+                    .max(20),
+                })
+                .strict()
+            )
+            .max(200),
+          nextStep: z.string().trim().min(1).max(4000),
+        })
+        .strict()
+        .optional(),
       attachments: z
         .array(
           z.object({
@@ -50,11 +80,13 @@ export function registerMessageTools(server: Pick<FastMCP, 'addTool'>) {
       source,
       relayOfMessageId,
       leadSessionId,
+      requestMessageId,
+      report,
       attachments,
       taskRefs,
     }) => {
       assertConfiguredTeam(teamName, claudeDir);
-      const result = getController(teamName, claudeDir).messages.sendMessage({
+      const result = await getController(teamName, claudeDir).messages.sendMessage({
         to,
         text,
         ...(from ? { from } : {}),
@@ -62,6 +94,8 @@ export function registerMessageTools(server: Pick<FastMCP, 'addTool'>) {
         ...(source ? { source } : {}),
         ...(relayOfMessageId ? { relayOfMessageId } : {}),
         ...(leadSessionId ? { leadSessionId } : {}),
+        ...(requestMessageId ? { requestMessageId } : {}),
+        ...(report ? { report } : {}),
         ...(attachments?.length ? { attachments } : {}),
         ...(taskRefs?.length ? { taskRefs } : {}),
       });

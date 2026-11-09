@@ -19,6 +19,7 @@ import type {
   TriggerTestResult,
 } from './notifications';
 import type { OpenCodeStartupCleanupRecoveryAPI } from './openCodeStartupCleanup';
+import type { SpecRegistryDiscovery, TeamSpecBinding } from './registryTask';
 import type {
   AgentChangeSet,
   ApplyReviewRequest,
@@ -453,6 +454,10 @@ export interface HttpServerAPI {
 
 export interface TeamsAPI extends TeamMemberSettingsApi, TeamReadLegacyApi {
   readRecovery?: TeamReadRecoveryApi;
+  discoverSpecRegistry: () => Promise<SpecRegistryDiscovery>;
+  listTeamSpecBindings: (teamName: string) => Promise<TeamSpecBinding[]>;
+  linkTeamSpec: (teamName: string, binding: TeamSpecBinding) => Promise<TeamSpecBinding[]>;
+  unlinkTeamSpec: (teamName: string, binding: TeamSpecBinding) => Promise<TeamSpecBinding[]>;
   list: () => Promise<TeamSummary[]>;
   getTaskChangePresence: (teamName: string) => Promise<Record<string, TaskChangePresenceState>>;
   setChangePresenceTracking: (teamName: string, enabled: boolean) => Promise<void>;

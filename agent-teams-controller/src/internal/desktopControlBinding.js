@@ -121,4 +121,11 @@ module.exports = {
   assertDraftExpectation,
   assertManagementExpectation,
   isDesktopBound: () => binding !== null,
+  /**
+   * Resolves the binding from the current environment instead of the snapshot
+   * captured at load. Used by code that composes its own clients (task backend
+   * selection) and by tests; the capture-once rule still governs the helpers
+   * above, which must never be retargeted.
+   */
+  readBindingFromEnvironment: readBinding,
 };

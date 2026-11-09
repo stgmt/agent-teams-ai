@@ -45,7 +45,6 @@ async function inspectDeniedProjectAccess(
   return null;
 }
 
-
 interface RuntimeStatusCommandContext {
   binaryPath: string;
   args: readonly string[];
@@ -113,7 +112,8 @@ export async function readRuntimeStatusCommand<T>(
   options: ExecCliOptions,
   parse: (stdout: string) => T,
   checkProjectAccess: (directory: string) => Promise<void> = (directory) =>
-    access(directory, constants.R_OK | constants.X_OK)
+    access(directory, constants.R_OK | constants.X_OK),
+  diagnosticProjectPath?: string
 ): Promise<T> {
   const context = { binaryPath, args, cwd: options.cwd ?? process.cwd() };
   let output: { stdout: string; stderr: string } | undefined;
@@ -125,7 +125,7 @@ export async function readRuntimeStatusCommand<T>(
     if (isWorkingDirectoryMissingError(error)) throw error;
     const projectAccessDenied = await inspectDeniedProjectAccess(
       error,
-      options.cwd,
+      diagnosticProjectPath ?? options.cwd,
       checkProjectAccess
     );
     throw new RuntimeStatusCommandError(error, context, output, projectAccessDenied);

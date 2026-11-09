@@ -1,5 +1,6 @@
+import { resolveRuntimeRecipientProviderId } from '@main/services/team/provisioning/TeamProvisioningRuntimeRecipientResolution';
+
 import type { TeamRunRegistryRead } from '../../../contracts';
-import type { MemberLaunchSettingsPort } from '../../../core/application/ports/MemberRuntimePorts';
 import type { NativeTeamLifecycle } from '../../composition/createNativeTeamLifecycle';
 import type { NativeLeadLiveMessageStore } from '../output/NativeLeadLiveMessageStore';
 import type { NativeLeadOutputStream } from '../output/NativeLeadOutputStream';
@@ -10,6 +11,7 @@ import type {
   TeamOpenCodeMemberInboxRelayOptions,
   TeamOpenCodeMemberInboxRelayResult,
 } from '@main/services/team/contracts/TeamProvisioningApis';
+import type { RuntimeRecipientProviderSourcePorts } from '@main/services/team/provisioning/TeamProvisioningRuntimeRecipientResolution';
 import type { InboxMessage, OpenCodeRuntimeDeliveryStatus, TeamProviderId } from '@shared/types';
 
 /**
@@ -24,7 +26,7 @@ export type NativeOpenCodeMemberDeliveryPort = Pick<
 
 interface Dependencies {
   runs: Pick<TeamRunRegistryRead, 'find' | 'isLive'>;
-  settings: Pick<MemberLaunchSettingsPort, 'findConfiguredMember'>;
+  recipientSources: RuntimeRecipientProviderSourcePorts;
   liveLeadMessages: Pick<NativeLeadLiveMessageStore, 'read' | 'push'>;
   /** Process-lead output capture; a lane lead carries its session on the lane instead. */
   leadOutput?: Pick<NativeLeadOutputStream, 'detectedSessionId'>;
@@ -68,10 +70,7 @@ export class NativeTeamMessagingApi implements TeamMessagingApi {
     teamName: string,
     memberName: string
   ): Promise<TeamProviderId | undefined> {
-    const snapshot = this.deps.runs.find(teamName);
-    if (!snapshot) return undefined;
-    const launch = await this.deps.settings.findConfiguredMember(snapshot.identity, memberName);
-    return launch?.providerId as TeamProviderId | undefined;
+    return resolveRuntimeRecipientProviderId({ teamName, memberName }, this.deps.recipientSources);
   }
 
   getCurrentLeadSessionId(teamName: string): string | null {
@@ -79,14 +78,19 @@ export class NativeTeamMessagingApi implements TeamMessagingApi {
     if (!snapshot) return null;
     const lead = Object.values(snapshot.members).find((member) => member.role === 'lead');
     return (
-      lead?.lane?.sessionId ?? this.deps.leadOutput?.detectedSessionId(snapshot.identity.runId) ?? null
+      lead?.lane?.sessionId ??
+      this.deps.leadOutput?.detectedSessionId(snapshot.identity.runId) ??
+      null
     );
   }
 
   getLiveLeadProcessMessages(teamName: string): InboxMessage[] {
     const snapshot = this.liveSnapshot(teamName);
     if (!snapshot) return [];
-    return this.deps.liveLeadMessages.read(snapshot.identity, this.getCurrentLeadSessionId(teamName));
+    return this.deps.liveLeadMessages.read(
+      snapshot.identity,
+      this.getCurrentLeadSessionId(teamName)
+    );
   }
 
   pushLiveLeadProcessMessage(teamName: string, message: InboxMessage): void {
@@ -145,5 +149,4 @@ export class NativeTeamMessagingApi implements TeamMessagingApi {
     this.requireRun(teamName);
     return this.deps.relayLeadInboxMessages(teamName);
   }
-
 }

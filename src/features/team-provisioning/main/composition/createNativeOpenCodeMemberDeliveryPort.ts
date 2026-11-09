@@ -35,6 +35,7 @@ import type {
  */
 export interface NativeOpenCodeMemberDeliveryPortDependencies {
   teamsBasePath: string;
+  isManagedByThisProfile(teamName: string): Promise<boolean>;
   readConfig(teamName: string): Promise<TeamConfig | null>;
   readTeamMeta(teamName: string): Promise<{
     launchIdentity?: {
@@ -135,6 +136,7 @@ export function createNativeOpenCodeMemberDeliveryPort(
   });
   const relay = createNativeOpenCodeMemberInboxRelay({
     teamsBasePath: deps.teamsBasePath,
+    isManagedByThisProfile: (teamName) => deps.isManagedByThisProfile(teamName),
     identity,
     ledgerTransitions,
     visibleReplyProof,

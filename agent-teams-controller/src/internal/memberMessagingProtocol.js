@@ -70,9 +70,16 @@ function isCodexMember(member) {
   return model.startsWith('gpt-') || model.startsWith('openai/gpt-');
 }
 
+function resolveMemberRuntimeProvider(member) {
+  if (isOpenCodeMember(member)) return 'opencode';
+  if (isCodexMember(member)) return 'codex';
+  return 'native';
+}
+
 module.exports = {
   createMemberMessagingProtocol,
   isCodexMember,
   isOpenCodeMember,
   normalizeRuntimeProvider,
+  resolveMemberRuntimeProvider,
 };

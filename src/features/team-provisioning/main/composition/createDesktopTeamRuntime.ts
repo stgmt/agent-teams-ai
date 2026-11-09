@@ -34,8 +34,10 @@ export interface TeamLaunchRequestPersistence {
 
 export interface DesktopTeamRuntimeDependencies {
   currentContext(): Readonly<AppConnectionContext>;
-  lifecycle: Pick<NativeTeamLifecycle, 'commands' | 'runs' | 'watch'>;
+  lifecycle: Pick<NativeTeamLifecycle, 'activity' | 'commands' | 'runs' | 'watch'>;
   definitions: TeamLaunchRequestPersistence;
+  claimTeam(teamName: string, reason: 'create' | 'launch'): Promise<void>;
+  clearStoppedLaneStopBackoff(teamName: string): void;
   /** Persisted progress for runs the native registry no longer holds (app restart). */
   progressHistory: ProvisioningStatusReaderPort;
   /** Persisted runtime state for a team the current registry never saw. */
@@ -67,6 +69,7 @@ export interface DesktopTeamRuntime extends ProvisioningStatusReaderPort {
     onProgress: (progress: TeamProvisioningProgress) => void
   ): Promise<TeamLaunchResponse>;
   cancelProvisioning(runId: string): Promise<void>;
+  clearStoppedLaneStopBackoff(teamName: string): void;
   hasProvisioningRun(teamName: string): boolean;
   getRuntimeState(teamName: string): Promise<TeamRuntimeState>;
   stopTeam(teamName: string, expectedRunId?: string | null): Promise<void>;
@@ -134,11 +137,13 @@ export function createDesktopTeamRuntime(deps: DesktopTeamRuntimeDependencies): 
   let pendingLaunchAdmissions = 0;
   const launch = async (
     teamName: string,
-    onProgress: (progress: TeamProvisioningProgress) => void
+    onProgress: (progress: TeamProvisioningProgress) => void,
+    reason: 'create' | 'launch'
   ): Promise<TeamLaunchResponse> => {
     deps.launchAdmission?.assertAdmitted();
     pendingLaunchAdmissions += 1;
     try {
+      await deps.claimTeam(teamName, reason);
       return await launchRun(teamName, onProgress);
     } finally {
       pendingLaunchAdmissions -= 1;
@@ -280,25 +285,30 @@ export function createDesktopTeamRuntime(deps: DesktopTeamRuntimeDependencies): 
   };
 
   return {
-    async createTeam(request, onProgress) {
-      try {
-        await deps.definitions.create(request, new AbortController().signal);
-      } catch (error) {
-        // A metadata-only draft already exists; keep its roster and only update launch fields.
-        if (!(error instanceof TeamDefinitionExistsError)) throw error;
+    createTeam(request, onProgress) {
+      return deps.lifecycle.activity.run(request.teamName, async () => {
+        let reason: 'create' | 'launch' = 'create';
+        try {
+          await deps.definitions.create(request, new AbortController().signal);
+        } catch (error) {
+          if (!(error instanceof TeamDefinitionExistsError)) throw error;
+          reason = 'launch';
+          if (!isActive(deps.lifecycle.runs.find(request.teamName))) {
+            await persistLaunchSettings(request);
+          }
+        }
+        return launch(request.teamName, onProgress, reason);
+      });
+    },
+
+    launchTeam(request, onProgress) {
+      return deps.lifecycle.activity.run(request.teamName, async () => {
+        // Never rewrite the definition of a live run: its captured revision is fenced.
         if (!isActive(deps.lifecycle.runs.find(request.teamName))) {
           await persistLaunchSettings(request);
         }
-      }
-      return launch(request.teamName, onProgress);
-    },
-
-    async launchTeam(request, onProgress) {
-      // Never rewrite the definition of a live run: its captured revision is fenced.
-      if (!isActive(deps.lifecycle.runs.find(request.teamName))) {
-        await persistLaunchSettings(request);
-      }
-      return launch(request.teamName, onProgress);
+        return launch(request.teamName, onProgress, 'launch');
+      });
     },
 
     async cancelProvisioning(runId) {
@@ -332,6 +342,7 @@ export function createDesktopTeamRuntime(deps: DesktopTeamRuntimeDependencies): 
     },
 
     stopTeam,
+    clearStoppedLaneStopBackoff: (teamName) => deps.clearStoppedLaneStopBackoff(teamName),
 
     async stopAllTeams() {
       const failures: { teamName: string; error: string }[] = [];

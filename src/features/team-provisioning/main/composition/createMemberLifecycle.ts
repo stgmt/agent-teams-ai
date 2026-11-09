@@ -4,11 +4,15 @@ import { MemberLifecycleCommands } from '../../core/application/commands/MemberL
 import { StartBoundMember } from '../../core/application/commands/StartBoundMember';
 import { TeamLifecycleCommands } from '../../core/application/commands/TeamLifecycleCommands';
 import { LeadMemberStartAuthority } from '../../core/application/LeadMemberStartAuthority';
-import { TeamOperationQueue } from '../../core/application/TeamOperationQueue';
 import { MemberLifecycleRegistry } from '../../core/domain/MemberLifecycleRegistry';
+import {
+  NativeTeamOperationActivity,
+  ObservedTeamOperationQueue,
+} from './NativeTeamOperationActivity';
 
 import type {
   ConfiguredMemberIdentity,
+  MemberProcessToken,
   TeamLaneGroup,
   TeamLifecycleFeed,
   TeamLifecycleSnapshot,
@@ -41,6 +45,10 @@ export interface MemberLifecycleDependencies {
     team: TeamRunIdentity,
     launch: Readonly<ConfiguredMemberLaunch>
   ): Promise<void>;
+  onMemberConnected?(
+    launch: Readonly<ConfiguredMemberLaunch>,
+    token: Readonly<MemberProcessToken>
+  ): Promise<void>;
   /** A member runtime failed; the recovery feature decides what to do with it. */
   reportRuntimeFailure?(input: {
     teamName: string;
@@ -52,6 +60,7 @@ export interface MemberLifecycleDependencies {
 
 export interface MemberLifecycle {
   registry: MemberLifecycleRegistry;
+  activity: NativeTeamOperationActivity;
   commands: MemberLifecycleCommands;
   teams: TeamLifecycleCommands;
   leadStart: StartBoundMember;
@@ -64,7 +73,8 @@ export interface MemberLifecycle {
 export function createMemberLifecycle(dependencies: MemberLifecycleDependencies): MemberLifecycle {
   const registry = dependencies.registry ?? new MemberLifecycleRegistry(dependencies.owner);
   const authority = dependencies.authority ?? new LeadMemberStartAuthority();
-  const gate = new TeamOperationQueue();
+  const activity = new NativeTeamOperationActivity();
+  const gate = new ObservedTeamOperationQueue(activity);
   const commands = new MemberLifecycleCommands({
     registry,
     gate,
@@ -74,12 +84,16 @@ export function createMemberLifecycle(dependencies: MemberLifecycleDependencies)
     ...(dependencies.registerConfiguredMember
       ? { registerConfiguredMember: dependencies.registerConfiguredMember }
       : {}),
+    ...(dependencies.onMemberConnected
+      ? { onMemberConnected: dependencies.onMemberConnected }
+      : {}),
     ...(dependencies.reportRuntimeFailure
       ? { reportRuntimeFailure: dependencies.reportRuntimeFailure }
       : {}),
   });
   return {
     registry,
+    activity,
     commands,
     teams: new TeamLifecycleCommands({
       registry,

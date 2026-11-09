@@ -35,6 +35,10 @@ interface Dependencies {
     team: TeamRunIdentity,
     launch: Readonly<ConfiguredMemberLaunch>
   ): Promise<void>;
+  onMemberConnected?(
+    launch: Readonly<ConfiguredMemberLaunch>,
+    token: Readonly<MemberProcessToken>
+  ): Promise<void>;
   /**
    * A member's runtime reported a failure. Recovery decides whether a lead can be
    * restarted, so the observation leaves the registry instead of dying in it.
@@ -135,9 +139,9 @@ export class MemberLifecycleCommands {
     try {
       const selected = await this.ports.gate.run(target.teamName, async () => {
         signal?.throwIfAborted();
-        const sharedLane = this.lanes.laneGroupsFor(target, target.memberName).find(
-          (group) => group.tokens.length > 1
-        );
+        const sharedLane = this.lanes
+          .laneGroupsFor(target, target.memberName)
+          .find((group) => group.tokens.length > 1);
         if (sharedLane)
           throw new MemberRestartConflictError(
             'Restarting a member of a shared adapter lane is not supported yet'
@@ -223,12 +227,14 @@ export class MemberLifecycleCommands {
     const selected = await this.ports.gate.run(token.teamName, async () => {
       this.ports.registry.assertRun(token);
       const member = this.ports.registry.snapshot(token.teamName).members[token.memberName];
-      const group = this.lanes.laneGroupsFor(token, token.memberName).find((candidate) =>
-        candidate.tokens.some(
-          (entry) =>
-            entry.generation === token.generation && entry.operationId === token.operationId
-        )
-      );
+      const group = this.lanes
+        .laneGroupsFor(token, token.memberName)
+        .find((candidate) =>
+          candidate.tokens.some(
+            (entry) =>
+              entry.generation === token.generation && entry.operationId === token.operationId
+          )
+        );
       if (group) {
         if (
           member?.desired !== 'running' ||
@@ -267,9 +273,7 @@ export class MemberLifecycleCommands {
     this.lanes.launchLane(tokens, laneId);
   }
 
-  listLanePermissions(input: {
-    run: TeamRunIdentity;
-  }): Promise<readonly MemberLanePermission[]> {
+  listLanePermissions(input: { run: TeamRunIdentity }): Promise<readonly MemberLanePermission[]> {
     return this.lanes.listLanePermissions(input);
   }
 
@@ -540,7 +544,6 @@ export class MemberLifecycleCommands {
     }
   }
 
-
   private async spawn(execution: Execution): Promise<void> {
     const { token } = execution;
     // Consumed before the first await, so a cancelled launch cannot inherit settings.
@@ -578,7 +581,10 @@ export class MemberLifecycleCommands {
       let terminated = false;
       const unsubscribe = runtime.subscribe({
         connected: () => {
-          if (accepted) this.ports.registry.observeConnected(token);
+          if (accepted && this.ports.registry.observeConnected(token)) {
+            const notification = this.ports.onMemberConnected?.(launchSettings, token);
+            if (notification) void notification.catch(() => undefined);
+          }
           this.settleTeamLaunch(token);
         },
         connectionLost: () => {

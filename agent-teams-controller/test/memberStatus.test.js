@@ -1,3 +1,27 @@
+const { startControlServer } = require('./helpers/controlServer.js');
+const { resetTaskBackendCache } = require('../src/internal/taskBackendSelection.js');
+const { resetSyncControlRequestChannel } = require('../src/internal/syncControlRequest.js');
+
+let registryServer;
+let registryPreviousEnv;
+const registryEnvKeys = ['AGENT_TEAMS_BOUND_CONTROL_URL', 'AGENT_TEAMS_BOUND_CONTEXT_JSON', 'AGENT_TEAMS_MCP_CLAUDE_DIR'];
+beforeEach(async () => {
+  registryPreviousEnv = Object.fromEntries(registryEnvKeys.map((key) => [key, process.env[key]]));
+  registryServer = await startControlServer();
+  process.env.AGENT_TEAMS_BOUND_CONTROL_URL = registryServer.url;
+  process.env.AGENT_TEAMS_BOUND_CONTEXT_JSON = JSON.stringify({ appInstanceId: 'controller-consumer-test', dataRootFingerprint: 'controller-consumer-root', connectionGeneration: 1 });
+  resetTaskBackendCache();
+});
+afterEach(async () => {
+  resetTaskBackendCache();
+  resetSyncControlRequestChannel();
+  if (registryServer) await registryServer.stop();
+  for (const key of registryEnvKeys) {
+    if (registryPreviousEnv[key] === undefined) delete process.env[key];
+    else process.env[key] = registryPreviousEnv[key];
+  }
+});
+
 const fs = require('fs');
 const http = require('http');
 const os = require('os');
@@ -19,7 +43,6 @@ describe('lead_briefing: Members section (bugfix: lead status)', () => {
   let savedControlUrl;
 
   const teamDir = () => path.join(dir, 'teams', 'fixture');
-  const tasksDir = () => path.join(dir, 'tasks', 'fixture');
   const inboxFile = (member) => path.join(teamDir(), 'inboxes', `${member}.json`);
   const ago = (ms) => new Date(Date.now() - ms).toISOString();
 
@@ -35,14 +58,11 @@ describe('lead_briefing: Members section (bugfix: lead status)', () => {
     return lines.slice(start, end).join('\n');
   };
 
-  // РИСК: давность записана тестом, а не набрана временем. Файл задачи переписывается с
-  // прошлыми метками; сам формат записи тот же, что пишет настоящий контроллер.
-  const rewriteTask = (taskId, mutate) => {
-    const file = path.join(tasksDir(), `${taskId}.json`);
-    const task = JSON.parse(fs.readFileSync(file, 'utf8'));
+  // Seed historical execution metadata through the same registry task facade.
+  const rewriteTask = (taskId, mutate) => controller.tasks.updateTask(taskId, (task) => {
     mutate(task);
-    fs.writeFileSync(file, JSON.stringify(task, null, 2));
-  };
+    return task;
+  });
 
   // РИСК: сервер имитирует приложение. Он отвечает JSON такой же формы, как настоящий
   // маршрут `/members/diagnostics`; сами процессы членов и их проверку живости он не
@@ -76,6 +96,7 @@ describe('lead_briefing: Members section (bugfix: lead status)', () => {
     savedControlUrl = process.env.CLAUDE_TEAM_CONTROL_URL;
     delete process.env.CLAUDE_TEAM_CONTROL_URL;
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'member-status-'));
+    process.env.AGENT_TEAMS_MCP_CLAUDE_DIR = dir;
     fs.mkdirSync(teamDir(), { recursive: true });
     fs.writeFileSync(
       path.join(teamDir(), 'config.json'),
@@ -104,7 +125,7 @@ describe('lead_briefing: Members section (bugfix: lead status)', () => {
   });
 
   it('S3.3: a task in progress shows the age since start and the age of the owner last action', async () => {
-    const task = controller.taskBoard.createTask({ subject: 'Reconcile the ledger', owner: 'bob' });
+    const task = controller.taskBoard.createTask({ requirements: ['FR-1'], subject: 'Reconcile the ledger', owner: 'bob' });
     controller.taskBoard.startTask(task.id, 'bob');
     controller.tasks.addTaskComment(task.id, {
       from: 'bob',
@@ -160,7 +181,7 @@ describe('lead_briefing: Members section (bugfix: lead status)', () => {
   });
 
   it('S3.8: a task in review is shown at the reviewer with the review mark and at the owner', async () => {
-    const task = controller.taskBoard.createTask({ subject: 'Ship the export', owner: 'bob' });
+    const task = controller.taskBoard.createTask({ requirements: ['FR-1'], subject: 'Ship the export', owner: 'bob' });
     controller.taskBoard.startTask(task.id, 'bob');
     controller.taskBoard.completeTask(task.id, 'bob');
     controller.taskBoard.requestReview(task.id, { from: 'bob', reviewer: 'rita' });
@@ -177,7 +198,7 @@ describe('lead_briefing: Members section (bugfix: lead status)', () => {
   });
 
   it('S3.12: a finished task is not listed as the member work', async () => {
-    const task = controller.taskBoard.createTask({ subject: 'Old work', owner: 'bob' });
+    const task = controller.taskBoard.createTask({ requirements: ['FR-1'], subject: 'Old work', owner: 'bob' });
     controller.taskBoard.startTask(task.id, 'bob');
     controller.taskBoard.completeTask(task.id, 'bob');
 

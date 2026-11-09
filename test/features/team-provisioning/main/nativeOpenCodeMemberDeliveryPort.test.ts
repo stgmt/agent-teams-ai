@@ -43,6 +43,7 @@ afterEach(async () => {
 function deliveryPort(delivered: OpenCodeMemberMessageDeliveryInput[]) {
   return createNativeOpenCodeMemberDeliveryPort({
     teamsBasePath,
+    isManagedByThisProfile: async () => true,
     readConfig: async () => config,
     readTeamMeta: async () => null,
     readMetaMembers: async () => [],
@@ -86,7 +87,10 @@ function messaging(delivery: ReturnType<typeof deliveryPort>) {
         team === teamName ? ({ identity: { teamName } } as never) : undefined,
       isLive: () => true,
     } as never,
-    settings: { findConfiguredMember: () => null } as never,
+    recipientSources: {
+      readConfigSnapshot: async () => config,
+      readMembersMeta: async () => [],
+    },
     liveLeadMessages: { read: () => [], push: () => undefined } as never,
     sendLeadMessage: async () => undefined,
     relayLeadInboxMessages: async () => 0,

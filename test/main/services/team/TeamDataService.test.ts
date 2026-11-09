@@ -4,7 +4,7 @@ import * as nodeFs from 'fs';
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, type Mock, vi } from 'vitest';
 
 import { gitIdentityResolver } from '../../../../src/main/services/parsing/GitIdentityResolver';
 import { getEffectiveInboxMessageId } from '../../../../src/main/services/team/inboxMessageIdentity';
@@ -717,6 +717,8 @@ describe('TeamDataService draft metadata', () => {
     const listCacheInvalidateSpy = vi.spyOn(TeamConfigReader, 'invalidateListTeamsCache');
     await service.createTeamConfig({
       teamName: 'draft-team',
+      specProject: 'owner/project',
+      specSlug: 'draft-spec',
       displayName: 'Draft Team',
       description: 'Saved draft',
       color: '#3366ff',
@@ -747,6 +749,8 @@ describe('TeamDataService draft metadata', () => {
     await expect(service.getSavedRequest('missing-team')).resolves.toBeNull();
     await expect(service.getSavedRequest('draft-team')).resolves.toMatchObject({
       teamName: 'draft-team',
+      specProject: 'owner/project',
+      specSlug: 'draft-spec',
       displayName: 'Draft Team',
       description: 'Saved draft',
       color: '#3366ff',
@@ -774,6 +778,16 @@ describe('TeamDataService draft metadata', () => {
         },
       ],
     });
+  });
+
+  it('rejects incomplete draft registry binding before creating the team', async () => {
+    const claudeRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'team-draft-binding-'));
+    tempPaths.push(claudeRoot);
+    setClaudeBasePathOverride(claudeRoot);
+    await expect(new TeamDataService().createTeamConfig({
+      teamName: 'draft-team', members: [], specProject: 'owner/project',
+    })).rejects.toThrow('specProject and specSlug');
+    await expect(fs.access(path.join(claudeRoot, 'teams', 'draft-team'))).rejects.toThrow();
   });
 
   it('rejects oversized UTF-8 launch instructions without losing readable saved metadata', async () => {
@@ -1451,6 +1465,131 @@ function createDurableTaskStartNotificationHarness(options: {
   );
   service.setTaskBoardCommandFacade({ createTask: commandFacadeCreateTask } as never);
   return { service, sendMessage, commandFacadeCreateTask };
+}
+interface GlobalTaskBoardTestOptions {
+  teams: Array<{
+    teamName: string;
+    displayName: string;
+    projectPath?: string;
+  }>;
+  configs: Record<string, TeamConfig>;
+  tasks: Array<TeamTask & { teamName: string }>;
+  getState: (teamName: string) => Promise<KanbanState>;
+}
+
+function createRegistryGlobalTaskBoardHarness(options: GlobalTaskBoardTestOptions): {
+  service: TeamDataService;
+  listTeams: Mock<() => Promise<GlobalTaskBoardTestOptions['teams']>>;
+  getConfigSnapshot: Mock<(teamName: string) => Promise<TeamConfig | null>>;
+  getTasks: Mock<
+    (teamName: string) => Promise<{ backed: true; tasks: TeamTask[] }>
+  >;
+} {
+  const configs = new Map(Object.entries(options.configs));
+  const bindings = new Map<string, NonNullable<TeamConfig['specBindings']>>();
+  const metadata = new Map<string, TeamMetaFile>();
+  for (const team of options.teams) {
+    const config = configs.get(team.teamName);
+    if (!config) throw new Error(`Missing test config for ${team.teamName}`);
+    bindings.set(team.teamName, [...(config.specBindings ?? [])]);
+    metadata.set(team.teamName, {
+      version: 1,
+      cwd: `/teams/${team.teamName}`,
+      createdAt: 1,
+      registryTeamId: config.registryTeamId,
+      specBindings: [...(config.specBindings ?? [])],
+    });
+  }
+
+  const listTeams = vi.fn(async () => options.teams);
+  const getConfigSnapshot = vi.fn(async (teamName: string) => configs.get(teamName) ?? null);
+  const updateSpecBindings = vi.fn(
+    async (teamName: string, nextBindings: NonNullable<TeamConfig['specBindings']>) => {
+      const current = configs.get(teamName);
+      if (!current) throw new Error(`Missing test config for ${teamName}`);
+      const next = { ...current, specBindings: [...nextBindings] };
+      configs.set(teamName, next);
+      bindings.set(teamName, [...nextBindings]);
+      return next;
+    }
+  );
+  const configReader = { listTeams, getConfigSnapshot, updateSpecBindings };
+
+  const teamMetaStore = {
+    getMeta: vi.fn(async (teamName: string) => metadata.get(teamName) ?? null),
+    updateMeta: vi.fn(
+      async (
+        teamName: string,
+        update: (
+          current: TeamMetaFile | null
+        ) => Omit<TeamMetaFile, 'version'> | Promise<Omit<TeamMetaFile, 'version'>>
+      ) => {
+        const current = metadata.get(teamName) ?? null;
+        const next = await update(current);
+        metadata.set(teamName, { ...next, version: current?.version ?? 1 });
+      }
+    ),
+  };
+
+  const getBindings = vi.fn(async (teamName: string) => [...(bindings.get(teamName) ?? [])]);
+  const linkTeamSpec = vi.fn(
+    async (teamId: string, binding: { project: string; spec: string }) => {
+      const team = options.teams.find(
+        ({ teamName }) => configs.get(teamName)?.registryTeamId === teamId
+      );
+      if (!team) throw new Error(`Unknown test registry team ${teamId}`);
+      const current = bindings.get(team.teamName) ?? [];
+      const next = current.some(
+        (entry) => entry.project === binding.project && entry.spec === binding.spec
+      )
+        ? current
+        : [...current, binding];
+      bindings.set(team.teamName, next);
+      return [...next];
+    }
+  );
+  const getTasks = vi.fn(async (teamName: string) => ({
+    backed: true as const,
+    tasks: options.tasks
+      .filter((task) => task.teamName === teamName)
+      .map(({ teamName: _teamName, ...task }) => task),
+  }));
+  const registryTaskProvider = { getBindings, linkTeamSpec, getTasks };
+  const service = new TeamDataService(
+    configReader as never,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    { getState: options.getState } as never,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    teamMetaStore as never,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    registryTaskProvider as never
+  );
+
+  return { service, listTeams, getConfigSnapshot, getTasks };
+}
+
+function buildGlobalTaskBoardConfig(
+  teamName: string,
+  overrides: Partial<TeamConfig> = {}
+): TeamConfig {
+  return buildDefaultTeamConfig({
+    name: teamName,
+    registryTeamId: `registry-${teamName}`,
+    specBindings: [{ project: 'owner/project', spec: 'global-board' }],
+    ...overrides,
+  });
 }
 
 describe('TeamDataService', () => {
@@ -2471,7 +2610,7 @@ describe('TeamDataService', () => {
     });
   });
 
-  it('includes projectPath from config when creating a task', async () => {
+  it('allows local creation and includes projectPath from config', async () => {
     const createTaskMock = vi.fn((task) => task);
     const getConfig = vi.fn(async () => {
       throw new Error('verified config read should not be used for task enrichment');
@@ -2527,6 +2666,47 @@ describe('TeamDataService', () => {
     );
     expect(getConfigSnapshot).toHaveBeenCalledWith('my-team');
     expect(getConfig).not.toHaveBeenCalled();
+    await expect(
+      service.createTask('my-team', {
+        subject: 'Do not fall back for an explicit registry scope',
+        specProject: 'owner/project',
+        specSlug: 'demo-spec',
+        requirements: ['FR-1'],
+      })
+    ).rejects.toMatchObject({ code: 'REGISTRY_SCOPE_UNLINKED' });
+    expect(createTaskMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('requires registry scope for task creation on a registry-bound team', async () => {
+    const service = new TeamDataService({
+      getConfigSnapshot: vi.fn(async () => ({
+        name: 'My team',
+        members: [],
+        specProject: 'owner/project',
+        specSlug: 'demo-spec',
+      })),
+    } as never);
+
+    await expect(
+      service.createTask('my-team', { subject: 'Missing registry scope' })
+    ).rejects.toMatchObject({ code: 'REGISTRY_SCOPE_INCOMPLETE' });
+  });
+
+  it('fails closed when team binding configuration cannot be verified', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'team-data-unknown-binding-'));
+    tempPaths.push(root);
+    setClaudeBasePathOverride(root);
+    const teamDirectory = path.join(root, 'teams', 'my-team');
+    await fs.mkdir(teamDirectory, { recursive: true });
+    await fs.writeFile(path.join(teamDirectory, 'config.json'), '{invalid', 'utf8');
+    const service = new TeamDataService({
+      getConfig: vi.fn(async () => null),
+      getConfigSnapshot: vi.fn(async () => null),
+    } as never);
+
+    await expect(
+      service.createTask('my-team', { subject: 'Unknown binding' })
+    ).rejects.toMatchObject({ code: 'REGISTRY_SCOPE_INCOMPLETE' });
   });
 
   it('routes identified task creates through the durable command facade without legacy fallback', async () => {
@@ -2612,11 +2792,11 @@ describe('TeamDataService', () => {
       subject: 'Legacy task',
       status: 'pending',
     };
-    let storedTask: (TeamTask & { creationCommand?: unknown }) | null = null;
-    const directCreate = vi.fn((input: Record<string, unknown>) => {
+    let storedTask: TeamTask | null = null;
+    const directCreate = vi.fn((input: Pick<TeamTask, 'creationCommand'>) => {
       storedTask = {
         ...legacyTask,
-        creationCommand: input.creationCommand,
+        ...(input.creationCommand ? { creationCommand: input.creationCommand } : {}),
       };
       return storedTask;
     });
@@ -2917,7 +3097,7 @@ describe('TeamDataService', () => {
     };
 
     const firstCreate = service.createTask('my-team', request);
-    expect(commandFacadeCreateTask).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(commandFacadeCreateTask).toHaveBeenCalledTimes(1));
     expect(sendMessage).not.toHaveBeenCalled();
 
     commitFirstAttempt?.({
@@ -2972,7 +3152,13 @@ describe('TeamDataService', () => {
     const persistenceFailure = new Error('pre-commit-persistence-failure');
     const { service, sendMessage, commandFacadeCreateTask } =
       createDurableTaskStartNotificationHarness({ task });
-    commandFacadeCreateTask.mockRejectedValueOnce(persistenceFailure);
+    commandFacadeCreateTask
+      .mockRejectedValueOnce(persistenceFailure)
+      .mockResolvedValueOnce({
+        task,
+        outcome: 'executed',
+        createdInAttempt: true,
+      });
     const request = {
       subject: task.subject,
       owner: 'lead-agent',
@@ -3817,54 +4003,41 @@ describe('TeamDataService', () => {
   });
 
   it('applies kanban overlay review state in global task projections', async () => {
-    const service = new TeamDataService(
-      {
-        listTeams: vi.fn(async () => [
-          {
-            teamName: 'my-team',
-            displayName: 'My team',
-            projectPath: '/repo',
-          },
-        ]),
-      } as never,
-      {
-        getAllTasks: vi.fn(async () => [
-          {
-            id: 'task-global-review',
-            teamName: 'my-team',
-            subject: 'Global review task',
-            status: 'completed',
-            owner: 'bob',
-            reviewState: 'none',
-            historyEvents: [
-              {
-                id: 'evt-created',
-                type: 'task_created',
-                status: 'completed',
-                timestamp: '2026-03-01T09:00:00.000Z',
-              },
-            ],
-          },
-        ]),
-      } as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {
-        getState: vi.fn(async () => ({
+    const { service } = createRegistryGlobalTaskBoardHarness({
+      teams: [{ teamName: 'my-team', displayName: 'My team', projectPath: '/repo' }],
+      configs: {
+        'my-team': buildGlobalTaskBoardConfig('My team', { projectPath: '/repo' }),
+      },
+      tasks: [
+        {
+          id: 'task-global-review',
           teamName: 'my-team',
-          reviewers: [],
-          tasks: {
-            'task-global-review': {
-              column: 'review',
-              reviewer: 'carol',
-              movedAt: '2026-03-01T10:00:00.000Z',
+          subject: 'Global review task',
+          status: 'completed',
+          owner: 'bob',
+          reviewState: 'none',
+          historyEvents: [
+            {
+              id: 'evt-created',
+              type: 'task_created',
+              status: 'completed',
+              timestamp: '2026-03-01T09:00:00.000Z',
             },
+          ],
+        },
+      ],
+      getState: async () => ({
+        teamName: 'my-team',
+        reviewers: [],
+        tasks: {
+          'task-global-review': {
+            column: 'review',
+            reviewer: 'carol',
+            movedAt: '2026-03-01T10:00:00.000Z',
           },
-        })),
-      } as never
-    );
+        },
+      }),
+    });
 
     const tasks = await service.getAllTasks();
 
@@ -3876,60 +4049,48 @@ describe('TeamDataService', () => {
   });
 
   it('uses config snapshots instead of full team summaries for global task team info', async () => {
-    const listTeams = vi.fn(async () => [
-      {
-        teamName: 'my-team',
-        displayName: 'My team from list',
-        projectPath: '/repo-from-list',
-      },
-    ]);
-    const getConfigSnapshot = vi.fn(async (teamName: string) =>
-      teamName === 'my-team'
-        ? {
-            name: 'My team from config',
-            members: [{ name: 'lead', role: 'Team Lead', cwd: '/repo-from-lead' }],
-            deletedAt: '2026-03-01T12:00:00.000Z',
-          }
-        : null
-    );
-    const getAllTasks = vi.fn(async () => []);
-    const getAllTasksProjectionSnapshot = vi.fn(async () => [
-      {
-        id: 'task-global-config',
-        teamName: 'my-team',
-        subject: 'Global config task',
-        status: 'pending',
-        owner: 'bob',
-        blockedBy: ['old-blocker'],
-      },
-    ]);
-    const service = new TeamDataService(
-      {
-        listTeams,
-        getConfigSnapshot,
-      } as never,
-      {
-        getAllTasks,
-        getAllTasksProjectionSnapshot,
-      } as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {
-        getState: vi.fn(async () => ({
+    const {
+      service,
+      listTeams,
+      getConfigSnapshot,
+      getTasks,
+    } = createRegistryGlobalTaskBoardHarness({
+      teams: [
+        {
           teamName: 'my-team',
-          reviewers: [],
-          tasks: {},
-        })),
-      } as never
-    );
+          displayName: 'My team from list',
+          projectPath: '/repo-from-list',
+        },
+      ],
+      configs: {
+        'my-team': buildGlobalTaskBoardConfig('My team from config', {
+          members: [{ name: 'lead', role: 'Team Lead', cwd: '/repo-from-lead' }],
+          deletedAt: '2026-03-01T12:00:00.000Z',
+        }),
+      },
+      tasks: [
+        {
+          id: 'task-global-config',
+          teamName: 'my-team',
+          subject: 'Global config task',
+          status: 'pending',
+          owner: 'bob',
+          blockedBy: ['old-blocker'],
+        },
+      ],
+      getState: async () => ({
+        teamName: 'my-team',
+        reviewers: [],
+        tasks: {},
+      }),
+    });
 
     const tasks = await service.getAllTasks();
 
-    expect(listTeams).not.toHaveBeenCalled();
-    expect(getAllTasksProjectionSnapshot).toHaveBeenCalledOnce();
-    expect(getAllTasks).not.toHaveBeenCalled();
+    expect(listTeams).toHaveBeenCalledOnce();
+    expect(getTasks).toHaveBeenCalledWith('my-team', {
+      binding: { project: 'owner/project', spec: 'global-board' },
+    });
     expect(getConfigSnapshot).toHaveBeenCalledWith('my-team');
     expect(tasks[0]).toMatchObject({
       id: 'task-global-config',
@@ -3945,7 +4106,7 @@ describe('TeamDataService', () => {
       id: `task-${index}`,
       teamName: index === 0 ? 'old-team' : 'my-team',
       subject: `Task ${index}`,
-      status: 'pending' as const,
+      status: 'pending',
       owner: 'bob',
       createdAt: `2026-03-01T00:${String(index % 60).padStart(2, '0')}:00.000Z`,
       updatedAt: `2026-03-01T${String(Math.floor(index / 60)).padStart(2, '0')}:${String(
@@ -3957,41 +4118,27 @@ describe('TeamDataService', () => {
           author: 'bob',
           text: `Comment ${index}`,
           createdAt: '2026-03-01T09:00:00.000Z',
-          type: 'comment' as const,
+          type: 'regular',
         },
       ],
-    }));
+    } satisfies TeamTask & { teamName: string }));
     const getState = vi.fn(async (teamName: string) => ({
       teamName,
       reviewers: [],
       tasks: {},
     }));
-    const service = new TeamDataService(
-      {
-        listTeams: vi.fn(async () => [
-          {
-            teamName: 'my-team',
-            displayName: 'My team',
-            projectPath: '/repo',
-          },
-          {
-            teamName: 'old-team',
-            displayName: 'Old team',
-            projectPath: '/old-repo',
-          },
-        ]),
-      } as never,
-      {
-        getAllTasks: vi.fn(async () => rawTasks),
-      } as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {
-        getState,
-      } as never
-    );
+    const { service } = createRegistryGlobalTaskBoardHarness({
+      teams: [
+        { teamName: 'my-team', displayName: 'My team', projectPath: '/repo' },
+        { teamName: 'old-team', displayName: 'Old team', projectPath: '/old-repo' },
+      ],
+      configs: {
+        'my-team': buildGlobalTaskBoardConfig('My team', { projectPath: '/repo' }),
+        'old-team': buildGlobalTaskBoardConfig('Old team', { projectPath: '/old-repo' }),
+      },
+      tasks: rawTasks,
+      getState,
+    });
 
     const tasks = await service.getAllTasks();
 
@@ -4006,55 +4153,42 @@ describe('TeamDataService', () => {
   });
 
   it('lets kanban approved overlay win over stale review history in global task projections', async () => {
-    const service = new TeamDataService(
-      {
-        listTeams: vi.fn(async () => [
-          {
-            teamName: 'my-team',
-            displayName: 'My team',
-            projectPath: '/repo',
-          },
-        ]),
-      } as never,
-      {
-        getAllTasks: vi.fn(async () => [
-          {
-            id: 'task-global-approved',
-            teamName: 'my-team',
-            subject: 'Global approved task',
-            status: 'completed',
-            owner: 'bob',
-            reviewState: 'none',
-            historyEvents: [
-              {
-                id: 'evt-review',
-                type: 'review_started',
-                from: 'none',
-                to: 'review',
-                timestamp: '2026-03-01T09:00:00.000Z',
-              },
-            ],
-          },
-        ]),
-      } as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {
-        getState: vi.fn(async () => ({
+    const { service } = createRegistryGlobalTaskBoardHarness({
+      teams: [{ teamName: 'my-team', displayName: 'My team', projectPath: '/repo' }],
+      configs: {
+        'my-team': buildGlobalTaskBoardConfig('My team', { projectPath: '/repo' }),
+      },
+      tasks: [
+        {
+          id: 'task-global-approved',
           teamName: 'my-team',
-          reviewers: [],
-          tasks: {
-            'task-global-approved': {
-              column: 'approved',
-              reviewer: 'carol',
-              movedAt: '2026-03-01T10:00:00.000Z',
+          subject: 'Global approved task',
+          status: 'completed',
+          owner: 'bob',
+          reviewState: 'none',
+          historyEvents: [
+            {
+              id: 'evt-review',
+              type: 'review_started',
+              from: 'none',
+              to: 'review',
+              timestamp: '2026-03-01T09:00:00.000Z',
             },
+          ],
+        },
+      ],
+      getState: async () => ({
+        teamName: 'my-team',
+        reviewers: [],
+        tasks: {
+          'task-global-approved': {
+            column: 'approved',
+            reviewer: 'carol',
+            movedAt: '2026-03-01T10:00:00.000Z',
           },
-        })),
-      } as never
-    );
+        },
+      }),
+    });
 
     const tasks = await service.getAllTasks();
 
@@ -4064,6 +4198,7 @@ describe('TeamDataService', () => {
       kanbanColumn: 'approved',
     });
   });
+
 
   it('propagates leadSessionId for kanban-driven review transitions', async () => {
     const requestReviewMock = vi.fn();

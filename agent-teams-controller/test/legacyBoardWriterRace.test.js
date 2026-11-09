@@ -35,7 +35,11 @@ describe('legacy Kanban writer during a review transition', () => {
         ],
       })
     );
-    const board = createController({ teamName: 'fixture', claudeDir: root }).taskBoard;
+    const board = createController({
+      teamName: 'fixture',
+      claudeDir: root,
+      localTaskBoard: true,
+    }).taskBoard;
     const first = board.createTask({ subject: 'transition', owner: 'bob' });
     const other = board.createTask({ subject: 'other', owner: 'bob' });
     board.completeTask(first.id, 'bob');

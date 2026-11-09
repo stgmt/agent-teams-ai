@@ -16,8 +16,10 @@ vi.mock('@main/utils/pathDecoder', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@main/utils/pathDecoder')>()),
   getTeamsBasePath: () => path.join(fixture.dir, 'teams'),
   getTasksBasePath: () => path.join(fixture.dir, 'tasks'),
+  getLocalTasksBasePath: () => path.join(fixture.dir, 'tasks-local'),
 }));
 
+import { ExecutionTaskStore } from '@main/services/team/execution/ExecutionTaskStore';
 import { withFileLockForSyncOperation } from '@main/services/team/fileLock';
 import { stopTeamWithEscalation } from '@main/services/team/lifecycle/teamForceStopFlow';
 import { stopTeamFlow } from '@main/services/team/provisioning/TeamProvisioningStopFlow';
@@ -56,8 +58,122 @@ describe('Kanban transition integration', () => {
     fs.rmSync(target, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
   });
 
+  it('reads a local board using the explicitly local task backend', async () => {
+    const controller = createController({
+      teamName: 'fixture', claudeDir: fixture.dir, localTaskBoard: true,
+    });
+    controller.taskBoard.createTask({ subject: 'Local task' });
+    await expect(new TeamKanbanManager().getState('fixture', { strict: true })).resolves.toMatchObject({
+      teamName: 'fixture',
+      tasks: {},
+    });
+  });
+
+  it('reads a registry draft from its metadata without contacting the registry', async () => {
+    fs.unlinkSync(path.join(teamDir, 'config.json'));
+    fs.writeFileSync(
+      path.join(teamDir, 'team.meta.json'),
+      JSON.stringify({
+        version: 1, cwd: fixture.dir, specBindings: [{ project: 'owner/project', spec: 'spec' }],
+      })
+    );
+    await expect(new TeamKanbanManager().getState('fixture', { strict: true })).resolves.toMatchObject({
+      teamName: 'fixture',
+      tasks: {},
+    });
+  });
+
+  it('surfaces unreadable execution records instead of returning an empty board', async () => {
+    const executionDir = path.join(fixture.dir, 'tasks-local', 'fixture');
+    fs.mkdirSync(executionDir, { recursive: true });
+    fs.writeFileSync(path.join(executionDir, 'broken.json'), '{');
+    await expect(new TeamKanbanManager().getState('fixture', { strict: true })).rejects.toThrow(
+      /Execution record/
+    );
+  });
+
+  it('does not substitute an empty board when the board file is corrupt', async () => {
+    fs.writeFileSync(path.join(teamDir, 'kanban-state.json'), '{');
+    await expect(new TeamKanbanManager().getState('fixture')).rejects.toThrow(
+      /Kanban safety state is corrupt/
+    );
+  });
+
+  it('reads registry boards without consulting local canonical task files', async () => {
+    fs.writeFileSync(
+      path.join(teamDir, 'config.json'),
+      JSON.stringify({ name: 'fixture', members: [], specProject: 'owner/project', specSlug: 'spec' })
+    );
+    const tasksDir = path.join(fixture.dir, 'tasks', 'fixture');
+    fs.mkdirSync(tasksDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(tasksDir, 'stale.json'),
+      JSON.stringify({ id: 'stale', status: 'deleted', pendingKanbanTransition: null })
+    );
+    await expect(new TeamKanbanManager().getState('fixture', { strict: true })).resolves.toMatchObject({
+      teamName: 'fixture',
+      tasks: {},
+    });
+  });
+
+  it('updates registry board ordering while preserving existing task entries', async () => {
+    fs.writeFileSync(
+      path.join(teamDir, 'config.json'),
+      JSON.stringify({ name: 'fixture', members: [], specProject: 'owner/project', specSlug: 'spec' })
+    );
+    const statePath = path.join(teamDir, 'kanban-state.json');
+    const task = { column: 'review', movedAt: '2026-01-01T00:00:00.000Z', reviewer: 'lead' };
+    fs.writeFileSync(statePath, JSON.stringify({
+      teamName: 'fixture', reviewers: ['lead'], tasks: { 'spec:TASK-1': task },
+    }));
+    await new TeamKanbanManager().updateColumnOrder('fixture', 'review', ['spec:TASK-1']);
+    expect(JSON.parse(fs.readFileSync(statePath, 'utf8'))).toMatchObject({
+      reviewers: ['lead'], tasks: { 'spec:TASK-1': task },
+      columnOrder: { review: ['spec:TASK-1'] },
+    });
+  });
+
+  it('blocks a registry board for an execution marker even without a canonical task', async () => {
+    fs.writeFileSync(
+      path.join(teamDir, 'config.json'),
+      JSON.stringify({ name: 'fixture', members: [], specProject: 'owner/project', specSlug: 'spec' })
+    );
+    const taskId = 'orphan-task';
+    const hash = 'a'.repeat(64);
+    new ExecutionTaskStore().write('fixture', taskId, {
+      pendingKanbanTransition: {
+        id: 'transition', taskId, kind: 'review', phase: 'prepared', column: 'review',
+        beforeTaskHash: hash, expectedTaskHash: hash, beforeBoardHash: hash,
+        expectedBoardHash: hash, beforeBoardToken: hash, contextHash: hash,
+        targetBoard: { teamName: 'fixture', reviewers: [], tasks: {} },
+      },
+    });
+    await expect(new TeamKanbanManager().getState('fixture', { strict: true })).rejects.toMatchObject({
+      code: 'KANBAN_TRANSITION_UNCERTAIN',
+      taskId,
+    });
+    await expect(
+      new TeamKanbanManager().updateColumnOrder('fixture', 'review', [taskId])
+    ).rejects.toMatchObject({ code: 'KANBAN_TRANSITION_UNCERTAIN', taskId });
+    expect(fs.existsSync(path.join(teamDir, 'kanban-state.json'))).toBe(false);
+  });
+
+  it('does not fall back to local tasks for an invalid registry binding', async () => {
+    fs.writeFileSync(
+      path.join(teamDir, 'config.json'),
+      JSON.stringify({ name: 'fixture', members: [], specProject: 'owner/project' })
+    );
+    await expect(new TeamKanbanManager().getState('fixture', { strict: true })).rejects.toThrow(
+      /Cannot verify task authority/
+    );
+  });
+
   it('exposes a failed board publication as uncertain to the controller, desktop and a restarted process', async () => {
-    const controller = createController({ teamName: 'fixture', claudeDir: fixture.dir });
+    const controller = createController({
+      teamName: 'fixture',
+      claudeDir: fixture.dir,
+      localTaskBoard: true,
+    });
     const board = controller.taskBoard as unknown as {
       createTask: (input: object) => { id: string };
       completeTask: (id: string, actor: string) => void;
@@ -115,12 +231,16 @@ describe('Kanban transition integration', () => {
       code: 'KANBAN_TRANSITION_UNCERTAIN',
     });
     const source = path.resolve('agent-teams-controller/src/index.js');
-    const child = `const {createController}=require(process.argv[1]); try { createController({teamName:'fixture',claudeDir:process.argv[2]}).taskBoard.getKanbanState(); process.exitCode=1; } catch(e) { if(e.code !== 'KANBAN_TRANSITION_UNCERTAIN') { console.error(e); process.exitCode=2; } }`;
+    const child = `const {createController}=require(process.argv[1]); try { createController({teamName:'fixture',claudeDir:process.argv[2],localTaskBoard:true}).taskBoard.getKanbanState(); process.exitCode=1; } catch(e) { if(e.code !== 'KANBAN_TRANSITION_UNCERTAIN') { console.error(e); process.exitCode=2; } }`;
     execFileSync(process.execPath, ['-e', child, source, fixture.dir]);
   });
 
   it('waits asynchronously for the controller lock before a synchronous board write', async () => {
-    const liveController = createController({ teamName: 'fixture', claudeDir: fixture.dir });
+    const liveController = createController({
+      teamName: 'fixture',
+      claudeDir: fixture.dir,
+      localTaskBoard: true,
+    });
     const board = liveController.taskBoard as unknown as {
       createTask: (input: object) => { id: string };
       completeTask: (id: string, actor: string) => void;
@@ -152,6 +272,7 @@ describe('Kanban transition integration', () => {
     const controller = createController({
       teamName: 'fixture',
       claudeDir: fixture.dir,
+      localTaskBoard: true,
     }) as unknown as { context: { paths: object } };
     const started = Date.now();
     expect(() => readBoardCompletionEpoch(controller.context.paths)).toThrow(
@@ -175,7 +296,11 @@ describe('Kanban transition integration', () => {
   });
 
   it('does not alter a pending review while repairing stale activity after a crash', () => {
-    const controller = createController({ teamName: 'fixture', claudeDir: fixture.dir });
+    const controller = createController({
+      teamName: 'fixture',
+      claudeDir: fixture.dir,
+      localTaskBoard: true,
+    });
     const board = controller.taskBoard as unknown as {
       createTask: (input: object) => { id: string };
       completeTask: (id: string, actor: string) => void;
@@ -224,7 +349,11 @@ describe('Kanban transition integration', () => {
   });
 
   it('reports an unfinished timer without changing an uncertain review, and preserves explicit recovery', async () => {
-    const controller = createController({ teamName: 'fixture', claudeDir: fixture.dir });
+    const controller = createController({
+      teamName: 'fixture',
+      claudeDir: fixture.dir,
+      localTaskBoard: true,
+    });
     const board = controller.taskBoard as unknown as {
       createTask: (input: object) => { id: string };
       completeTask: (id: string, actor: string) => void;
@@ -251,15 +380,14 @@ describe('Kanban transition integration', () => {
     const taskPath = path.join(fixture.dir, 'tasks', 'fixture', `${task.id}.json`);
     const before = fs.readFileSync(taskPath, 'utf8');
     const parsed = JSON.parse(before);
-    expect(parsed.pendingKanbanTransition.taskHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(parsed.pendingKanbanTransition.beforeTaskHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(parsed.pendingKanbanTransition.expectedTaskHash).toMatch(/^[a-f0-9]{64}$/);
     expect(parsed.reviewIntervals.at(-1).completedAt).toBeUndefined();
-    const inspected = controller.kanban.inspectPendingTransition(task.id) as {
-      transitionId: string;
-      snapshotHash: string;
-      mode: string;
-      contextHash: string;
-    };
+    const inspected = controller.kanban.inspectPendingTransition(task.id);
     expect(inspected.mode).toBe('publish');
+    if (inspected.mode === 'conflict') {
+      throw new Error('The pending transition cannot be resolved while its board snapshot conflicts.');
+    }
     const activity = new TeamTaskActivityIntervalService();
     const pause = vi.fn(() =>
       activity.pauseActiveIntervalsForTeam('fixture', '2026-11-06T00:00:00.000Z')
@@ -333,7 +461,11 @@ describe('Kanban transition integration', () => {
   });
 
   it('does not retry an activity write whose rename succeeded before reporting EIO', async () => {
-    const controller = createController({ teamName: 'fixture', claudeDir: fixture.dir });
+    const controller = createController({
+      teamName: 'fixture',
+      claudeDir: fixture.dir,
+      localTaskBoard: true,
+    });
     const board = controller.taskBoard as unknown as {
       createTask: (input: object) => { id: string };
       startTask: (id: string, actor: string) => void;
@@ -388,7 +520,11 @@ describe('Kanban transition integration', () => {
   });
 
   it('does not close an uncertain interval after another process publishes a new run', async () => {
-    const controller = createController({ teamName: 'fixture', claudeDir: fixture.dir });
+    const controller = createController({
+      teamName: 'fixture',
+      claudeDir: fixture.dir,
+      localTaskBoard: true,
+    });
     const board = controller.taskBoard as unknown as {
       createTask: (input: object) => { id: string };
       completeTask: (id: string, actor: string) => void;
@@ -557,7 +693,11 @@ export const boardLocks = controller.boardLocks;`
 
   it('releases the lock before the next microtask in the same event loop', async () => {
     const scope = path.join(teamDir, 'board-state');
-    const controller = createController({ teamName: 'fixture', claudeDir: fixture.dir });
+    const controller = createController({
+      teamName: 'fixture',
+      claudeDir: fixture.dir,
+      localTaskBoard: true,
+    });
     let heldInMicrotask: boolean | undefined;
     let writeError: unknown;
     await withFileLockForSyncOperation(scope, () => {

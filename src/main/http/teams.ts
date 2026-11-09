@@ -14,6 +14,7 @@ import { join } from 'path';
 
 import { registerTeamLifecycleRoutes } from './teams/teamLifecycleRoutes';
 import { registerTeamManagementRoutes } from './teams/teamManagementRoutes';
+import { registerTeamTaskRoutes } from './teams/teamTaskRoutes';
 import { registerTeamMemberDiagnosticsRoute } from './teamMemberDiagnostics';
 import {
   HttpBadRequestError,
@@ -263,6 +264,7 @@ async function getTeamDataWithRuntimeOverlay(
 export function registerTeamRoutes(app: FastifyInstance, services: HttpServices): void {
   const managementFeature =
     services.teamPromptManagement ?? services.externalAgentConnection?.teamPromptManagement;
+  registerTeamTaskRoutes(app, services);
   registerTeamManagementRoutes(app, services);
   registerTeamMemberDiagnosticsRoute(app, services, {
     logger,

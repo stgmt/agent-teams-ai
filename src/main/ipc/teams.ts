@@ -26,6 +26,7 @@ import {
 import {
   parseCreateTeamRequest,
   TeamRequestValidationError,
+  validateBootstrapOnlyLaunchRequest,
 } from '@main/services/team/TeamRequestValidation';
 import { getAppIconPath } from '@main/utils/appIcon';
 import { getTeamsBasePath } from '@main/utils/pathDecoder';
@@ -46,6 +47,7 @@ import {
   TEAM_DELETE_TASK_ATTACHMENT,
   TEAM_DELETE_TEAM,
   TEAM_DISCARD_QUEUED_USER_MESSAGES,
+  TEAM_DISCOVER_SPEC_REGISTRY,
   TEAM_FORCE_STOP,
   TEAM_GET_AGENT_RUNTIME,
   TEAM_GET_ALL_TASKS,
@@ -78,7 +80,9 @@ import {
   TEAM_LAUNCH_FAILURE_DIAGNOSTICS,
   TEAM_LEAD_ACTIVITY,
   TEAM_LEAD_CONTEXT,
+  TEAM_LINK_SPEC,
   TEAM_LIST,
+  TEAM_LIST_SPEC_BINDINGS,
   TEAM_MEMBER_SPAWN_STATUSES,
   TEAM_PERMANENTLY_DELETE,
   TEAM_PREPARE_PROVISIONING,
@@ -111,6 +115,7 @@ import {
   TEAM_TOOL_APPROVAL_READ_FILE,
   TEAM_TOOL_APPROVAL_RESPOND,
   TEAM_TOOL_APPROVAL_SETTINGS,
+  TEAM_UNLINK_SPEC,
   TEAM_UPDATE_CONFIG,
   TEAM_UPDATE_KANBAN,
   TEAM_UPDATE_KANBAN_COLUMN_ORDER,
@@ -190,6 +195,7 @@ import {
 } from '../services/team/messageDeliveryText';
 import { buildOpenCodeRuntimeDeliveryUserVisibleImpact } from '../services/team/opencode/delivery/OpenCodeRuntimeDeliveryAdvisoryPolicy';
 import { assertEscalatedStopConfirmed } from '../services/team/provisioning/TeamProvisioningOpenCodeRuntimeStopOutcome';
+import { resolveTeamSpecBinding } from '../services/team/registry/TeamSpecBinding';
 import { TeamAttachmentStore } from '../services/team/TeamAttachmentStore';
 import { TeamConfigReader } from '../services/team/TeamConfigReader';
 import { capMessagesPageLiveOverlay } from '../services/team/teamInboxOrdering';
@@ -289,11 +295,13 @@ import type {
   RetryFailedOpenCodeSecondaryLanesResult,
   SendMessageRequest,
   SendMessageResult,
+  SpecRegistryDiscovery,
   TaskAttachmentMeta,
   TaskChangePresenceState,
   TaskComment,
   TaskFieldUpdates,
   TaskRef,
+  TaskCreationCommand,
   TeamAgentRuntimeSnapshot,
   TeamClaudeLogsQuery,
   TeamClaudeLogsResponse,
@@ -314,6 +322,7 @@ import type {
   TeamProvisioningModelVerificationMode,
   TeamProvisioningPrepareResult,
   TeamProvisioningProgress,
+  TeamSpecBinding,
   TeamSummary,
   TeamTask,
   TeamTaskStatus,
@@ -354,6 +363,41 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   }
   const prototype = Object.getPrototypeOf(value);
   return prototype === Object.prototype || prototype === null;
+}
+
+function validateTeamSpecBindingInput(
+  value: unknown,
+  teamName: string
+): { valid: true; value: TeamSpecBinding } | { valid: false; error: string } {
+  if (!isPlainObject(value)) {
+    return { valid: false, error: 'binding must be an object' };
+  }
+  const keys = Object.keys(value);
+  if (keys.length !== 2 || keys.some((key) => key !== 'project' && key !== 'spec')) {
+    return { valid: false, error: 'binding must contain only project and spec' };
+  }
+  if (typeof value.project !== 'string' || !value.project.trim()) {
+    return { valid: false, error: 'binding.project must be a non-empty string' };
+  }
+  if (typeof value.spec !== 'string' || !value.spec.trim()) {
+    return { valid: false, error: 'binding.spec must be a non-empty string' };
+  }
+  const project = value.project.trim();
+  const spec = value.spec.trim();
+  if (project.length > 256 || spec.length > 120) {
+    return { valid: false, error: 'binding project or spec exceeds the maximum length' };
+  }
+  try {
+    return {
+      valid: true,
+      value: resolveTeamSpecBinding({ specProject: project, specSlug: spec }, teamName),
+    };
+  } catch (error) {
+    return {
+      valid: false,
+      error: error instanceof Error ? error.message : 'Invalid spec binding',
+    };
+  }
 }
 
 function validateTeamGetDataOptions(
@@ -695,6 +739,10 @@ export function initializeTeamHandlers(
 }
 
 export function registerTeamHandlers(ipcMain: IpcMain): void {
+  ipcMain.handle(TEAM_DISCOVER_SPEC_REGISTRY, handleDiscoverSpecRegistry);
+  ipcMain.handle(TEAM_LIST_SPEC_BINDINGS, handleListTeamSpecBindings);
+  ipcMain.handle(TEAM_LINK_SPEC, handleLinkTeamSpec);
+  ipcMain.handle(TEAM_UNLINK_SPEC, handleUnlinkTeamSpec);
   ipcMain.handle(TEAM_LIST, handleListTeams);
   ipcMain.handle(TEAM_GET_DATA, handleGetData);
   ipcMain.handle(TEAM_GET_TASK_CHANGE_PRESENCE, handleGetTaskChangePresence);
@@ -787,6 +835,10 @@ export function registerTeamHandlers(ipcMain: IpcMain): void {
 }
 
 export function removeTeamHandlers(ipcMain: IpcMain): void {
+  ipcMain.removeHandler(TEAM_DISCOVER_SPEC_REGISTRY);
+  ipcMain.removeHandler(TEAM_LIST_SPEC_BINDINGS);
+  ipcMain.removeHandler(TEAM_LINK_SPEC);
+  ipcMain.removeHandler(TEAM_UNLINK_SPEC);
   ipcMain.removeHandler(TEAM_LIST);
   ipcMain.removeHandler(TEAM_GET_DATA);
   ipcMain.removeHandler(TEAM_GET_TASK_CHANGE_PRESENCE);
@@ -1101,6 +1153,57 @@ async function handleCreateInitialGitCommit(
   }
   return wrapTeamHandler('createInitialGitCommit', () =>
     worktreeGitService.createInitialCommit(validated.value)
+  );
+}
+
+async function handleDiscoverSpecRegistry(
+  _event: IpcMainInvokeEvent
+): Promise<IpcResult<SpecRegistryDiscovery>> {
+  return wrapTeamHandler('discoverSpecRegistry', () => getTeamDataService().discoverSpecRegistry());
+}
+
+async function handleListTeamSpecBindings(
+  _event: IpcMainInvokeEvent,
+  teamName: unknown
+): Promise<IpcResult<TeamSpecBinding[]>> {
+  const validated = validateTeamName(teamName);
+  if (!validated.valid) {
+    return { success: false, error: validated.error ?? 'Invalid teamName' };
+  }
+  return wrapTeamHandler('listTeamSpecBindings', () =>
+    getTeamDataService().listTeamSpecBindings(validated.value!)
+  );
+}
+
+async function handleLinkTeamSpec(
+  _event: IpcMainInvokeEvent,
+  teamName: unknown,
+  rawBinding: unknown
+): Promise<IpcResult<TeamSpecBinding[]>> {
+  const validated = validateTeamName(teamName);
+  if (!validated.valid) {
+    return { success: false, error: validated.error ?? 'Invalid teamName' };
+  }
+  const binding = validateTeamSpecBindingInput(rawBinding, validated.value!);
+  if (!binding.valid) return { success: false, error: binding.error };
+  return wrapTeamHandler('linkTeamSpec', () =>
+    getTeamDataService().linkTeamSpec(validated.value!, binding.value)
+  );
+}
+
+async function handleUnlinkTeamSpec(
+  _event: IpcMainInvokeEvent,
+  teamName: unknown,
+  rawBinding: unknown
+): Promise<IpcResult<TeamSpecBinding[]>> {
+  const validated = validateTeamName(teamName);
+  if (!validated.valid) {
+    return { success: false, error: validated.error ?? 'Invalid teamName' };
+  }
+  const binding = validateTeamSpecBindingInput(rawBinding, validated.value!);
+  if (!binding.valid) return { success: false, error: binding.error };
+  return wrapTeamHandler('unlinkTeamSpec', () =>
+    getTeamDataService().unlinkTeamSpec(validated.value!, binding.value)
   );
 }
 
@@ -2147,6 +2250,8 @@ async function handleLaunchTeamUnlocked(
   if (payload.prompt !== undefined && typeof payload.prompt !== 'string') {
     return { success: false, error: 'prompt must be a string' };
   }
+  const bootstrapError = validateBootstrapOnlyLaunchRequest(payload);
+  if (bootstrapError) return { success: false, error: bootstrapError };
 
   if (payload.model !== undefined && typeof payload.model !== 'string') {
     return { success: false, error: 'model must be a string' };
@@ -2187,6 +2292,7 @@ async function handleLaunchTeamUnlocked(
     if (meta) isDraft = true;
   }
 
+  if (isDraft && payload.bootstrapOnly) return { success: false, error: 'Finish team setup first' };
   if (isDraft) {
     const savedRequest = await getTeamDataService().getSavedRequest(tn);
     if (!savedRequest) {
@@ -2372,6 +2478,7 @@ async function handleLaunchTeamUnlocked(
           cwd,
           prompt:
             typeof payload.prompt === 'string' ? payload.prompt.trim() || undefined : undefined,
+          bootstrapOnly: payload.bootstrapOnly === true ? true : undefined,
           providerId: launchProviderId,
           providerBackendId: launchProviderBackendValidation.value,
           model: rawLaunchModel,
@@ -2841,10 +2948,10 @@ async function handleSendMessage(
         : leadName !== null && memberName === leadName;
     const actionMode = payload.actionMode ?? 'do';
 
-    const recipientProviderId = await messaging.resolveRuntimeRecipientProviderIdForUserSend(
-      tn,
-      memberName
-    );
+    const recipientProviderId = await messaging.resolveRuntimeRecipientProviderId(tn, memberName);
+    if (!recipientProviderId) {
+      throw new Error(`Cannot determine runtime provider for recipient "${memberName}"`);
+    }
     const isOpenCodeRecipient = recipientProviderId === 'opencode';
     if (validatedAttachments?.length) {
       const nativeAttachments = selectNativeMessageAttachments(
@@ -3188,11 +3295,52 @@ async function handleCreateTask(
     return { success: false, error: validatedTeamName.error ?? 'Invalid teamName' };
   }
 
-  if (!request || typeof request !== 'object') {
+  if (!isPlainObject(request)) {
     return { success: false, error: 'Invalid create task request' };
   }
 
   const payload = request as Partial<CreateTaskRequest>;
+  const hasSpecProject = Object.hasOwn(payload, 'specProject');
+  const hasSpecSlug = Object.hasOwn(payload, 'specSlug');
+  const hasRequirements = Object.hasOwn(payload, 'requirements');
+  const hasRegistryScope = hasSpecProject || hasSpecSlug || hasRequirements;
+  let registryScope: { project: string; spec: string; requirements: string[] } | undefined;
+  if (hasRegistryScope) {
+    if (!hasSpecProject || !hasSpecSlug || !hasRequirements) {
+      return {
+        success: false,
+        error: 'specProject, specSlug, and requirements must be provided together',
+      };
+    }
+    if (typeof payload.specProject !== 'string' || typeof payload.specSlug !== 'string') {
+      return { success: false, error: 'specProject and specSlug must be strings' };
+    }
+    if (!Array.isArray(payload.requirements)) {
+      return { success: false, error: 'requirements must be an array of strings' };
+    }
+    const binding = validateTeamSpecBindingInput(
+      { project: payload.specProject, spec: payload.specSlug },
+      validatedTeamName.value!
+    );
+    if (!binding.valid) return { success: false, error: binding.error };
+    const requirements: string[] = [];
+    for (let index = 0; index < payload.requirements.length; index += 1) {
+      const requirement = payload.requirements[index];
+      if (typeof requirement !== 'string' || !requirement.trim()) {
+        return {
+          success: false,
+          error: `requirements[${index}] must be a non-empty string`,
+        };
+      }
+      requirements.push(requirement.trim());
+    }
+    registryScope = {
+      project: binding.value.project,
+      spec: binding.value.spec,
+      requirements,
+    };
+  }
+
   let command: CreateTaskRequest['command'];
   if (payload.command !== undefined) {
     if (!payload.command || typeof payload.command !== 'object') {
@@ -3217,6 +3365,41 @@ async function handleCreateTask(
       commandId: commandId.trim(),
       idempotencyKey: idempotencyKey.trim(),
     };
+  }
+  let creationCommand: TaskCreationCommand | undefined;
+  if (payload.creationCommand !== undefined) {
+    const input = payload.creationCommand;
+    if (!isPlainObject(input)) {
+      return { success: false, error: 'creationCommand must be an object' };
+    }
+    if (
+      typeof input.namespace !== 'string' ||
+      !input.namespace.trim() ||
+      typeof input.scopeKey !== 'string' ||
+      !input.scopeKey.trim() ||
+      typeof input.operation !== 'string' ||
+      !input.operation.trim() ||
+      typeof input.commandId !== 'string' ||
+      !input.commandId.trim() ||
+      typeof input.payloadHash !== 'string' ||
+      !input.payloadHash.trim()
+    ) {
+      return { success: false, error: 'creationCommand fields must be non-empty strings' };
+    }
+    creationCommand = {
+      namespace: input.namespace.trim(),
+      scopeKey: input.scopeKey.trim(),
+      operation: input.operation.trim(),
+      commandId: input.commandId.trim(),
+      payloadHash: input.payloadHash.trim(),
+    };
+  }
+  let tracking: string | undefined;
+  if (payload.tracking !== undefined) {
+    if (typeof payload.tracking !== 'string' || !payload.tracking.trim()) {
+      return { success: false, error: 'tracking must be a non-empty string' };
+    }
+    tracking = payload.tracking.trim();
   }
   if (typeof payload.subject !== 'string' || payload.subject.trim().length === 0) {
     return { success: false, error: 'subject must be a non-empty string' };
@@ -3274,21 +3457,35 @@ async function handleCreateTask(
   if (payload.startImmediately !== undefined && typeof payload.startImmediately !== 'boolean') {
     return { success: false, error: 'startImmediately must be a boolean' };
   }
-
+  const commonRequest: Omit<CreateTaskRequest, 'specProject' | 'specSlug' | 'requirements'> = {
+    ...(command ? { command } : {}),
+    ...(creationCommand ? { creationCommand } : {}),
+    ...(tracking ? { tracking } : {}),
+    subject: payload.subject.trim(),
+    ...(payload.description !== undefined ? { description: payload.description.trim() } : {}),
+    ...(payload.groupChatId !== undefined ? { groupChatId: payload.groupChatId } : {}),
+    ...(payload.owner?.trim() ? { owner: payload.owner.trim() } : {}),
+    ...(payload.blockedBy !== undefined ? { blockedBy: payload.blockedBy } : {}),
+    ...(payload.related !== undefined ? { related: payload.related } : {}),
+    ...(validatedDescriptionTaskRefs.value
+      ? { descriptionTaskRefs: validatedDescriptionTaskRefs.value }
+      : {}),
+    ...(payload.prompt?.trim() ? { prompt: payload.prompt.trim() } : {}),
+    ...(validatedPromptTaskRefs.value ? { promptTaskRefs: validatedPromptTaskRefs.value } : {}),
+    ...(payload.startImmediately !== undefined
+      ? { startImmediately: payload.startImmediately }
+      : {}),
+  };
+  const createTaskRequest: CreateTaskRequest = registryScope
+    ? {
+        ...commonRequest,
+        specProject: registryScope.project,
+        specSlug: registryScope.spec,
+        requirements: registryScope.requirements,
+      }
+    : commonRequest;
   return wrapTeamHandler('createTask', () =>
-    getTeamDataService().createTask(validatedTeamName.value!, {
-      ...(command ? { command } : {}),
-      subject: payload.subject!.trim(),
-      description: payload.description?.trim(),
-      groupChatId: payload.groupChatId,
-      owner: payload.owner?.trim() || undefined,
-      blockedBy: payload.blockedBy,
-      related: payload.related,
-      descriptionTaskRefs: validatedDescriptionTaskRefs.value,
-      prompt: payload.prompt?.trim() || undefined,
-      promptTaskRefs: validatedPromptTaskRefs.value,
-      startImmediately: payload.startImmediately,
-    })
+    getTeamDataService().createTask(validatedTeamName.value!, createTaskRequest)
   );
 }
 
