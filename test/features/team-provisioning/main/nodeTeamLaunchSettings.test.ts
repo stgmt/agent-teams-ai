@@ -89,6 +89,11 @@ describe('canonical configured team launch settings', () => {
     expect(lead?.instructions).toContain('stgm/tokenplan / registry-check');
     expect(lead?.instructions).toContain('spec_patch');
     expect(lead?.instructions).toContain('requirements');
+    expect(lead?.instructions).toContain('createRoadmap');
+    expect(lead?.instructions).toContain('assembleRoadmap');
+    expect(lead?.instructions).toContain('designReview');
+    expect(lead?.instructions).toContain('archiveSpec');
+    expect(lead?.instructions).toContain('spec_claim');
     const builder = await settings.findConfiguredMember(run, 'builder');
     expect(builder?.instructions).toContain('stgm/tokenplan / registry-check');
   });
