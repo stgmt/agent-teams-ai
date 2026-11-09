@@ -140,43 +140,80 @@ export function applyTeamSpecScope(
   name: string,
   args: Record<string, unknown>,
   scope: SpecTeamScope,
+  descriptor?: SpecToolDescriptor,
   newRequestId: () => string = randomUUID
 ): Record<string, unknown> {
+  const accepts = acceptedFields(descriptor);
   const scoped: Record<string, unknown> = { ...args };
   delete scoped.declaredWorktree;
 
-  if (typeof scoped.requestId !== 'string' || scoped.requestId.trim().length === 0) {
+  if (
+    accepts.has('requestId') &&
+    (typeof scoped.requestId !== 'string' || !scoped.requestId.trim())
+  ) {
     scoped.requestId = newRequestId();
   }
 
+  const acceptsProject = accepts.has('project');
+  const acceptsSpec = accepts.has('spec');
   const rawProject = typeof scoped.project === 'string' ? scoped.project.trim() : '';
   const rawSpec = typeof scoped.spec === 'string' ? scoped.spec.trim() : '';
 
   if (rawProject || rawSpec) {
-    if (!rawProject || !rawSpec) {
+    if ((rawProject && !acceptsProject) || (rawSpec && !acceptsSpec)) {
       throw new SpecScopeError(
         SPEC_SCOPE_ERROR_CODES.INVALID_SCOPE,
-        `${name} requires project and spec together`
+        `${name} does not accept the supplied scope fields`
       );
     }
-    if (!matchesBinding(scope.bindings, rawProject, rawSpec)) {
-      throw new SpecScopeError(
-        SPEC_SCOPE_ERROR_CODES.NOT_LINKED,
-        `${rawProject}/${rawSpec} is not bound to this team`
-      );
+    if (rawProject && rawSpec) {
+      if (!matchesBinding(scope.bindings, rawProject, rawSpec)) {
+        throw new SpecScopeError(
+          SPEC_SCOPE_ERROR_CODES.NOT_LINKED,
+          `${rawProject}/${rawSpec} is not bound to this team`
+        );
+      }
+    } else if (rawProject) {
+      if (!scope.bindings.some((binding) => binding.project === rawProject)) {
+        throw new SpecScopeError(
+          SPEC_SCOPE_ERROR_CODES.NOT_LINKED,
+          `${rawProject} is not bound to this team`
+        );
+      }
+    } else {
+      const candidates = scope.bindings.filter((binding) => binding.spec === rawSpec);
+      if (candidates.length === 0) {
+        throw new SpecScopeError(
+          SPEC_SCOPE_ERROR_CODES.NOT_LINKED,
+          `${rawSpec} is not bound to this team`
+        );
+      }
+      if (candidates.length > 1 && acceptsProject) {
+        throw new SpecScopeError(
+          SPEC_SCOPE_ERROR_CODES.INVALID_SCOPE,
+          `${name} needs an explicit project: ${rawSpec} is bound in more than one project`
+        );
+      }
+      if (candidates.length === 1 && acceptsProject && !scoped.project) {
+        scoped.project = candidates[0].project;
+      }
     }
   } else if (scope.bindings.length === 1) {
     const [binding] = scope.bindings;
-    scoped.project = binding.project;
-    scoped.spec = binding.spec;
+    if (acceptsProject) scoped.project = binding.project;
+    if (acceptsSpec) scoped.spec = binding.spec;
   }
 
-  if (scope.teamId && (scoped.teamId === undefined || scoped.teamId === null)) {
+  if (
+    scope.teamId &&
+    accepts.has('teamId') &&
+    (scoped.teamId === undefined || scoped.teamId === null)
+  ) {
     scoped.teamId = scope.teamId;
   }
 
   const operations = scoped.operations;
-  if (Array.isArray(operations) && scope.teamId) {
+  if (Array.isArray(operations) && accepts.has('operations') && scope.teamId) {
     scoped.operations = operations.map((operation) => {
       if (!operation || typeof operation !== 'object') return operation;
       const entry = operation as Record<string, unknown>;
@@ -189,8 +226,16 @@ export function applyTeamSpecScope(
   return scoped;
 }
 
+function acceptedFields(descriptor: SpecToolDescriptor | undefined): ReadonlySet<string> {
+  const properties = descriptor?.inputSchema?.properties;
+  if (!properties || typeof properties !== 'object') return new Set<string>();
+  return new Set(Object.keys(properties as Record<string, unknown>));
+}
+
 /** Applies the team scope to every call; the tool list passes through untouched. */
 export class TeamScopedSpecGateway implements SpecRegistryGateway {
+  private descriptors?: Promise<readonly SpecToolDescriptor[]>;
+
   constructor(
     private readonly inner: SpecRegistryGateway,
     private readonly readScope: () => Promise<SpecTeamScope>,
@@ -206,10 +251,21 @@ export class TeamScopedSpecGateway implements SpecRegistryGateway {
     args: Record<string, unknown>,
     signal?: AbortSignal
   ): Promise<RegistryToolEnvelope<unknown>> {
+    const descriptor = await this.descriptorFor(name, signal);
     return this.inner.callTool(
       name,
-      applyTeamSpecScope(name, args, await this.readScope(), this.newRequestId),
+      applyTeamSpecScope(name, args, await this.readScope(), descriptor, this.newRequestId),
       signal
     );
+  }
+
+  /** The tool's own schema decides which scope fields may be added. */
+  private async descriptorFor(
+    name: string,
+    signal?: AbortSignal
+  ): Promise<SpecToolDescriptor | undefined> {
+    this.descriptors ??= this.inner.listTools(signal);
+    const tools = await this.descriptors;
+    return tools.find((tool) => tool.name === name);
   }
 }

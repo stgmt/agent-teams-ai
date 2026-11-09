@@ -12,6 +12,45 @@ import {
 import type { SpecRegistryGateway, SpecTeamScope } from '../SpecRegistryGateway';
 import type { RegistryToolEnvelope } from '../RegistryTaskClientTypes';
 
+const DESCRIPTORS = {
+  documents: {
+    name: 'spec_documents',
+    description: 'documents',
+    inputSchema: {
+      type: 'object',
+      properties: { action: {}, doc: {}, project: {}, spec: {}, requestId: {} },
+      required: ['action'],
+    },
+  },
+  catalog: {
+    name: 'spec_catalog',
+    description: 'catalog',
+    inputSchema: {
+      type: 'object',
+      properties: { view: {}, project: {}, spec: {}, requestId: {} },
+      required: ['view'],
+    },
+  },
+  tasks: {
+    name: 'spec_tasks',
+    description: 'tasks',
+    inputSchema: {
+      type: 'object',
+      properties: { spec: {}, project: {}, teamId: {}, requestId: {}, statuses: {} },
+      required: ['spec'],
+    },
+  },
+  patch: {
+    name: 'spec_patch',
+    description: 'patch',
+    inputSchema: {
+      type: 'object',
+      properties: { intent: {}, project: {}, spec: {}, teamId: {}, requestId: {}, operations: {} },
+      required: ['intent'],
+    },
+  },
+} as const;
+
 const scope: SpecTeamScope = {
   teamId: 'team-1',
   bindings: [
@@ -38,17 +77,30 @@ describe('team specification scope policy', () => {
       teamId: 'team-1',
       bindings: [{ project: 'stgm/tokenplan', spec: 'registry-check' }],
     };
-    const args = applyTeamSpecScope('spec_documents', { action: 'list' }, single, () => 'rid');
+    const args = applyTeamSpecScope(
+      'spec_documents',
+      { action: 'list' },
+      single,
+      DESCRIPTORS.documents,
+      () => 'rid'
+    );
     expect(args).toMatchObject({
       project: 'stgm/tokenplan',
       spec: 'registry-check',
       requestId: 'rid',
-      teamId: 'team-1',
     });
+    // spec_documents does not declare teamId; sending it would be an UNKNOWN_FIELD refusal.
+    expect(args).not.toHaveProperty('teamId');
   });
 
   it('leaves the scope absent when several specifications are bound', () => {
-    const args = applyTeamSpecScope('spec_documents', { action: 'list' }, scope, () => 'rid');
+    const args = applyTeamSpecScope(
+      'spec_documents',
+      { action: 'list' },
+      scope,
+      DESCRIPTORS.documents,
+      () => 'rid'
+    );
     expect(args).not.toHaveProperty('project');
     expect(args).not.toHaveProperty('spec');
   });
@@ -59,6 +111,7 @@ describe('team specification scope policy', () => {
         'spec_patch',
         { project: 'stgm/tokenplan', spec: 'balancer' },
         scope,
+        DESCRIPTORS.patch,
         () => 'rid'
       )
     ).not.toThrow();
@@ -67,6 +120,7 @@ describe('team specification scope policy', () => {
         'spec_patch',
         { project: 'stgm/tokenplan', spec: 'someone-else' },
         scope,
+        DESCRIPTORS.patch,
         () => 'rid'
       )
     ).toThrow(SpecScopeError);
@@ -78,6 +132,7 @@ describe('team specification scope policy', () => {
         'spec_patch',
         { project: 'stgm/other', spec: 'landing' },
         scope,
+        DESCRIPTORS.patch,
         () => 'rid'
       );
       throw new Error('expected refusal');
@@ -87,10 +142,15 @@ describe('team specification scope policy', () => {
     }
   });
 
-  it('requires project and spec together', () => {
-    expect(() =>
-      applyTeamSpecScope('spec_documents', { project: 'stgm/tokenplan' }, scope, () => 'rid')
-    ).toThrow(SpecScopeError);
+  it('invents no scope fields when the tool descriptor is unknown', () => {
+    const args = applyTeamSpecScope(
+      'unknown_tool',
+      { view: 'specs' },
+      scope,
+      undefined,
+      () => 'rid'
+    );
+    expect(args).toEqual({ view: 'specs' });
   });
 
   it('drops the local worktree selector and stamps the team id on task operations', () => {
@@ -104,6 +164,7 @@ describe('team specification scope policy', () => {
         ],
       },
       scope,
+      DESCRIPTORS.patch,
       () => 'rid'
     );
     expect(args).not.toHaveProperty('declaredWorktree');
@@ -113,8 +174,43 @@ describe('team specification scope policy', () => {
     ]);
   });
 
+  it('never adds teamId to a tool whose schema does not declare it', () => {
+    const args = applyTeamSpecScope(
+      'spec_documents',
+      { action: 'list', project: 'stgm/tokenplan', spec: 'balancer' },
+      scope,
+      DESCRIPTORS.documents,
+      () => 'rid'
+    );
+    expect(args).not.toHaveProperty('teamId');
+  });
+
+  it('accepts a project-only scope for a catalog-style tool', () => {
+    const args = applyTeamSpecScope(
+      'spec_catalog',
+      { view: 'specs', project: 'stgm/tokenplan' },
+      scope,
+      DESCRIPTORS.catalog,
+      () => 'rid'
+    );
+    expect(args.project).toBe('stgm/tokenplan');
+    expect(args).not.toHaveProperty('spec');
+  });
+
+  it('leaves a required specification to the registry when several are bound', () => {
+    const args = applyTeamSpecScope('spec_tasks', {}, scope, DESCRIPTORS.tasks, () => 'rid');
+    expect(args).not.toHaveProperty('spec');
+    expect(args.teamId).toBe('team-1');
+  });
+
   it('keeps a caller requestId so an idempotent retry stays idempotent', () => {
-    const args = applyTeamSpecScope('spec_patch', { requestId: 'mine' }, scope, () => 'rid');
+    const args = applyTeamSpecScope(
+      'spec_patch',
+      { requestId: 'mine' },
+      scope,
+      DESCRIPTORS.patch,
+      () => 'rid'
+    );
     expect(args.requestId).toBe('mine');
   });
 });
@@ -159,7 +255,7 @@ describe('registry gateway adapter', () => {
 
   it('applies the team scope before the call reaches the registry', async () => {
     const inner: SpecRegistryGateway = {
-      listTools: vi.fn(async () => []),
+      listTools: vi.fn(async () => [DESCRIPTORS.patch]),
       callTool: vi.fn(async () => okEnvelope),
     };
     const gateway = new TeamScopedSpecGateway(
