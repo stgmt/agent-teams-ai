@@ -81,6 +81,8 @@ const AGENT_TEAMS_RUNTIME_TOOL_NAMES = [
 ];
 
 const AGENT_TEAMS_WORK_SYNC_TOOL_NAMES = ['member_work_sync_status', 'member_work_sync_report'];
+const AGENT_TEAMS_SPEC_BINDING_TOOL_NAMES = ['team_spec_bindings', 'team_link_spec'];
+
 
 const AGENT_TEAMS_MCP_TOOL_GROUPS = [
   {
@@ -93,6 +95,12 @@ const AGENT_TEAMS_MCP_TOOL_GROUPS = [
     teammateOperational: true,
     toolNames: AGENT_TEAMS_TASK_TOOL_NAMES,
   },
+  {
+    id: 'teamSpec',
+    teammateOperational: true,
+    toolNames: AGENT_TEAMS_SPEC_BINDING_TOOL_NAMES,
+  },
+
   {
     id: 'lead',
     teammateOperational: false,
@@ -177,6 +185,7 @@ module.exports = {
   AGENT_TEAMS_KANBAN_TOOL_NAMES,
   AGENT_TEAMS_RUNTIME_TOOL_NAMES,
   AGENT_TEAMS_WORK_SYNC_TOOL_NAMES,
+  AGENT_TEAMS_SPEC_BINDING_TOOL_NAMES,
   AGENT_TEAMS_MCP_TOOL_GROUPS,
   AGENT_TEAMS_REGISTERED_TOOL_NAMES,
   AGENT_TEAMS_TEAMMATE_OPERATIONAL_TOOL_NAMES,

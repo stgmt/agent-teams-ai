@@ -80,6 +80,10 @@ function setup(withDelivery = true) {
       prepareForProvisioning: vi.fn(),
     },
     taskActivity: { repairStaleTaskActivityIntervalsBeforeSnapshot: vi.fn(async () => undefined) },
+    recipientSources: {
+      readConfigSnapshot: async () => null,
+      readMembersMeta: async () => [],
+    },
     ...(withDelivery ? { openCodeMemberDelivery: openCodeMemberDelivery as never } : {}),
     now: () => '2026-10-31T00:00:00.000Z',
   });
@@ -166,10 +170,11 @@ describe('native team provisioning API composition', () => {
   });
 
   it('notifies the alive teams from the native registry through the shared messaging adapter', async () => {
-    const { runtimeStub, lifecycle, sendLeadMessage } = setup();
+    const { apis, runtimeStub, lifecycle, sendLeadMessage } = setup();
     const writeLanguage = vi.fn(async () => undefined);
     const notifier = createNativeLanguageChangeNotifier({
       runtime: { runtime: runtimeStub, lifecycle } as unknown as NativeDesktopTeamRuntime,
+      messaging: apis.messaging,
       readConfig: vi.fn(async () => ({ name: 'TEST-team', language: 'en' })),
       writeLanguage,
       getSystemLocale: () => 'en-US',

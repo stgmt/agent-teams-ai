@@ -11,6 +11,7 @@ import {
   createNativeTeamProvisioningRoot,
   type NativeTeamProvisioningRootDependencies,
 } from '../../../../src/features/team-provisioning/main/composition/createNativeTeamProvisioningRoot';
+import { claimTeamForThisProfile, createTeamProfileOwnership } from '../../../../src/main/services/team/provisioning/TeamProvisioningProfileOwnership';
 
 import type { NativeDesktopTeamRuntimeDependencies } from '../../../../src/features/team-provisioning/main/composition/createNativeDesktopTeamRuntime';
 
@@ -43,6 +44,10 @@ function runtimeDeps(teamsRoot: string): NativeDesktopTeamRuntimeDependencies {
     inbox: {} as never,
     controlUrl: async () => 'http://127.0.0.1:1',
     briefing: async () => 'TEST briefing',
+    readStartupTasks: async () => [],
+    createController: () => ({
+      taskBoard: { deliverStartupWorkAsync: async () => ({ delivered: [], skipped: [] }) },
+    }),
     invalidate: () => undefined,
     contextInvalidationSignal: () => new AbortController().signal,
     withExpectedContext: async (_expected, operation) => operation(),
@@ -50,6 +55,12 @@ function runtimeDeps(teamsRoot: string): NativeDesktopTeamRuntimeDependencies {
       create: async () => undefined,
       updateLaunchSettings: async () => undefined,
     },
+    profileOwnership: {
+      isManagedByThisProfile: async () => true,
+      isManagedByThisProfileSync: () => true,
+    },
+    claimTeam: async () => undefined,
+    clearStoppedLaneStopBackoff: () => undefined,
     progressHistory: { findByRunId: async () => undefined },
     listTeamNames: async () => [],
   };
@@ -60,6 +71,10 @@ function buildDeps(teamsRoot: string): NativeTeamProvisioningRootDependencies {
     runtimeDeps: runtimeDeps(teamsRoot),
     apisDeps: {
       taskActivity: { repairStaleTaskActivityIntervalsBeforeSnapshot: async () => undefined },
+      recipientSources: {
+        readConfigSnapshot: async () => null,
+        readMembersMeta: async () => [],
+      },
       now: () => '2026-11-02T00:00:00.000Z',
     },
     watchdogDeps: {
@@ -119,6 +134,30 @@ function setup() {
 }
 
 describe('native team provisioning root', () => {
+  it('answers both ownership checks from the same real profile marker', async () => {
+    const teamsRoot = mkdtempSync(join(tmpdir(), 'native-profile-root-'));
+    directories.push(teamsRoot);
+    mkdirSync(join(teamsRoot, 'own-team'));
+    mkdirSync(join(teamsRoot, 'foreign-team'));
+    await claimTeamForThisProfile({
+      teamsBasePath: teamsRoot, teamName: 'own-team', reason: 'create', profileScope: 'own',
+    });
+    await claimTeamForThisProfile({
+      teamsBasePath: teamsRoot, teamName: 'foreign-team', reason: 'create', profileScope: 'foreign',
+    });
+    const deps = buildDeps(teamsRoot);
+    deps.runtimeDeps.profileOwnership = createTeamProfileOwnership({
+      isTrackedInThisProcess: () => false,
+      getTeamsBasePath: () => teamsRoot,
+      getProfileScope: () => 'own',
+    });
+    const root = createNativeTeamProvisioningRoot(deps);
+    await expect(root.isTeamManagedByThisProfile('own-team')).resolves.toBe(true);
+    await expect(root.isTeamManagedByThisProfile('foreign-team')).resolves.toBe(false);
+    expect(root.isTeamManagedByThisProfileSync('own-team')).toBe(true);
+    expect(root.isTeamManagedByThisProfileSync('foreign-team')).toBe(false);
+  });
+
   it('reports a team with no run as not alive and with no active runtimes', () => {
     const { root } = setup();
     expect(root.isTeamAlive('test-team')).toBe(false);

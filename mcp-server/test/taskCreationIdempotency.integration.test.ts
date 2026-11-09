@@ -2,10 +2,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { startControlServer } from '../../agent-teams-controller/test/helpers/controlServer.js';
 import * as controllerModule from '../src/controller';
-
 import { registerTools } from '../src/tools';
 
 type RegisteredTool = {
@@ -14,14 +14,11 @@ type RegisteredTool = {
   parameters?: { safeParse: (value: unknown) => { success: boolean } };
   execute: (args: Record<string, unknown>) => Promise<unknown> | unknown;
 };
+type RegistryRequest = { method: string; pathname: string; body: Record<string, unknown> };
 
 function collectTools(): Map<string, RegisteredTool> {
   const tools = new Map<string, RegisteredTool>();
-  registerTools({
-    addTool(tool: RegisteredTool) {
-      tools.set(tool.name, tool);
-    },
-  } as never);
+  registerTools({ addTool: (tool: RegisteredTool) => tools.set(tool.name, tool) } as never);
   return tools;
 }
 
@@ -30,38 +27,47 @@ function parseJsonToolResult(result: unknown): Record<string, unknown> {
   return JSON.parse(text ?? '{}') as Record<string, unknown>;
 }
 
-describe('MCP task creation idempotency', () => {
+describe('MCP task creation idempotency (registry-only)', () => {
   const tempDirs: string[] = [];
+  let server: Awaited<ReturnType<typeof startControlServer>>;
 
-  afterEach(() => {
+  beforeEach(async () => {
+    server = await startControlServer();
+    vi.stubEnv('AGENT_TEAMS_BOUND_CONTROL_URL', server.url);
+    vi.stubEnv('AGENT_TEAMS_BOUND_CONTEXT_JSON', JSON.stringify({
+      appInstanceId: 'mcp-idempotency-test',
+      dataRootFingerprint: 'mcp-idempotency-root',
+      connectionGeneration: 1,
+    }));
+  });
+
+  afterEach(async () => {
     vi.restoreAllMocks();
-    for (const dir of tempDirs.splice(0)) {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
+    vi.unstubAllEnvs();
+    await server.stop();
+    for (const dir of tempDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
   });
 
   function makeTeam(teamName: string): string {
     const claudeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-teams-mcp-idempotency-'));
     tempDirs.push(claudeDir);
+    vi.stubEnv('AGENT_TEAMS_MCP_CLAUDE_DIR', claudeDir);
     const teamDir = path.join(claudeDir, 'teams', teamName);
     fs.mkdirSync(teamDir, { recursive: true });
-    fs.writeFileSync(
-      path.join(teamDir, 'config.json'),
-      JSON.stringify({
-        name: teamName,
-        members: [{ name: 'lead', role: 'team-lead' }],
-      })
-    );
+    fs.writeFileSync(path.join(teamDir, 'config.json'), JSON.stringify({
+      name: teamName,
+      members: [{ name: 'lead', role: 'team-lead' }, { name: 'alice', role: 'developer' }],
+    }));
     return claudeDir;
   }
 
-  function taskFiles(claudeDir: string, teamName: string): string[] {
-    return fs
-      .readdirSync(path.join(claudeDir, 'tasks', teamName))
-      .filter((fileName) => fileName.endsWith('.json'));
+  function seedMessage(claudeDir: string, teamName: string) {
+    fs.writeFileSync(path.join(claudeDir, 'teams', teamName, 'sentMessages.json'), JSON.stringify([{
+      messageId: 'msg-user-1', from: 'user', to: 'lead', text: 'Ship the UI and API',
+      timestamp: '2026-11-05T10:00:00.000Z', source: 'user_sent',
+    }]));
   }
 
-  // Inject only the existing catalog port; task storage/provenance/idempotency remain real.
   function catalogFixture(teamName: string) {
     const original = controllerModule.getController;
     const groups = [
@@ -79,404 +85,202 @@ describe('MCP task creation idempotency', () => {
       controller.groupChats.listGroupChats = team === teamName ? list : async () => [];
       return controller;
     });
-    return {
-      groups,
-      list,
-      fail: () => {
-        unavailable = true;
-      },
-    };
+    return { groups, list, fail: () => { unavailable = true; } };
   }
 
-  it('admits associated tasks through the active team catalog and replays before mutable catalog checks', async () => {
+  async function registryTasks(teamName: string) {
+    const response = await fetch(`${server.url}/api/teams/${teamName}/tasks`);
+    const payload = await response.json() as { tasks: Array<Record<string, unknown>> };
+    return payload.tasks;
+  }
+
+  function expectNoTaskFiles(claudeDir: string, teamName: string) {
+    const taskDir = path.join(claudeDir, 'tasks', teamName);
+    expect(fs.existsSync(taskDir) ? fs.readdirSync(taskDir).filter((name) => name.endsWith('.json')) : []).toEqual([]);
+  }
+
+  it('admits associated tasks through the catalog and replays before mutable admission checks', async () => {
     const teamName = 'associated-create';
     const claudeDir = makeTeam(teamName);
     const catalog = catalogFixture(teamName);
     const tools = collectTools();
     const create = tools.get('task_create')!;
-    const request = {
-      teamName,
-      claudeDir,
-      subject: 'Associated work',
-      createdBy: 'lead',
-      groupChatId: catalog.groups[0]!.id,
-      idempotencyKey: 'associated-intent',
-    };
+    const request = { teamName, claudeDir, subject: 'Associated work', createdBy: 'lead',
+      groupChatId: catalog.groups[0]!.id, idempotencyKey: 'associated-intent', requirements: ['FR-1'] };
     const first = parseJsonToolResult(await create.execute(request));
     expect(first.groupChatId).toBe(request.groupChatId);
-    expect(
-      parseJsonToolResult(
-        await tools.get('task_get')!.execute({ teamName, claudeDir, taskId: first.id })
-      ).groupChatId
-    ).toBe(request.groupChatId);
-    expect(
-      parseJsonToolResult(await tools.get('task_list')!.execute({ teamName, claudeDir }))
-    ).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ id: first.id, groupChatId: request.groupChatId }),
-      ])
-    );
-    await expect(
-      create.execute({ ...request, idempotencyKey: 'no-actor', createdBy: 'user' })
-    ).rejects.toThrow('configured non-user');
-    await expect(
-      create.execute({
-        ...request,
-        idempotencyKey: 'foreign',
-        groupChatId: '22222222-2222-4222-8222-222222222222',
-      })
-    ).rejects.toThrow('group in this team');
+    expect(parseJsonToolResult(await tools.get('task_get')!.execute({ teamName, claudeDir, taskId: first.id })).groupChatId).toBe(request.groupChatId);
+    expect(parseJsonToolResult(await tools.get('task_list')!.execute({ teamName, claudeDir }))).toEqual(expect.arrayContaining([expect.objectContaining({ id: first.id, groupChatId: request.groupChatId })]));
+    await expect(create.execute({ ...request, idempotencyKey: 'no-actor', createdBy: 'user' })).rejects.toThrow('configured non-user');
+    await expect(create.execute({ ...request, idempotencyKey: 'foreign', groupChatId: '22222222-2222-4222-8222-222222222222' })).rejects.toThrow('group in this team');
     catalog.groups[0]!.archivedAt = '2026-10-10T00:00:00.000Z';
-    await expect(create.execute({ ...request, idempotencyKey: 'fresh-archived' })).rejects.toThrow(
-      'archived group'
-    );
+    await expect(create.execute({ ...request, idempotencyKey: 'fresh-archived' })).rejects.toThrow('archived group');
     const calls = catalog.list.mock.calls.length;
     catalog.fail();
-    expect(parseJsonToolResult(await collectTools().get('task_create')!.execute(request)).id).toBe(
-      first.id
-    );
-    await expect(
-      create.execute({ ...request, groupChatId: catalog.groups[1]!.id })
-    ).rejects.toThrow('Task creation command conflict');
+    expect(parseJsonToolResult(await collectTools().get('task_create')!.execute(request)).id).toBe(first.id);
+    await expect(create.execute({ ...request, groupChatId: catalog.groups[1]!.id })).rejects.toThrow('Task creation command conflict');
     expect(catalog.list).toHaveBeenCalledTimes(calls);
-    expect(taskFiles(claudeDir, teamName)).toHaveLength(1);
+    expect(await registryTasks(teamName)).toHaveLength(1);
+    expectNoTaskFiles(claudeDir, teamName);
   });
 
-  it('infers group context only from the original canonical user message and rejects conflicting targets/relays', async () => {
+  it('infers group context from the original user message and rejects conflicting targets and relays', async () => {
     const teamName = 'associated-message';
     const claudeDir = makeTeam(teamName);
     const catalog = catalogFixture(teamName);
     const originalId = '33333333-3333-4333-8333-333333333333';
-    const original = {
-      messageId: originalId,
-      groupMessageId: originalId,
-      groupChatId: catalog.groups[0]!.id,
-      groupChatProtocolVersion: 1,
-      from: 'user',
-      to: 'user',
-      text: 'Group request',
-      timestamp: '2026-10-10T00:00:00.000Z',
-      source: 'user_sent',
-      read: false,
-      groupRecipientNames: ['lead'],
-      groupRecipientRunKeys: { lead: 'run:lead' },
-    };
+    const original = { messageId: originalId, groupMessageId: originalId, groupChatId: catalog.groups[0]!.id,
+      groupChatProtocolVersion: 1, from: 'user', to: 'user', text: 'Group request',
+      timestamp: '2026-10-10T00:00:00.000Z', source: 'user_sent', read: false,
+      groupRecipientNames: ['lead'], groupRecipientRunKeys: { lead: 'run:lead' } };
     const inbox = path.join(claudeDir, 'teams', teamName, 'inboxes');
     fs.mkdirSync(inbox, { recursive: true });
     fs.writeFileSync(path.join(inbox, 'user.json'), JSON.stringify([original]));
-    fs.writeFileSync(
-      path.join(inbox, 'lead.json'),
-      JSON.stringify([
-        { ...original, messageId: 'physical-group-relay', to: 'lead', groupRunKey: 'run:lead' },
-      ])
-    );
+    fs.writeFileSync(path.join(inbox, 'lead.json'), JSON.stringify([{ ...original, messageId: 'physical-group-relay', to: 'lead', groupRunKey: 'run:lead' }]));
     const create = collectTools().get('task_create_from_message')!;
-    const request = {
-      teamName,
-      claudeDir,
-      messageId: originalId,
-      requestKey: 'group-intent',
-      subject: 'Inferred association',
-      createdBy: 'lead',
-    };
+    const request = { teamName, claudeDir, messageId: originalId, requestKey: 'group-intent', subject: 'Inferred association', createdBy: 'lead', requirements: ['FR-1'] };
     const first = parseJsonToolResult(await create.execute(request));
     expect(first.groupChatId).toBe(original.groupChatId);
-    await expect(
-      create.execute({
-        ...request,
-        requestKey: 'conflicting-source',
-        groupChatId: catalog.groups[1]!.id,
-      })
-    ).rejects.toThrow('must agree with the original');
-    await expect(
-      create.execute({
-        ...request,
-        requestKey: 'physical-source',
-        messageId: 'physical-group-relay',
-      })
-    ).rejects.toThrow('relay copy');
+    await expect(create.execute({ ...request, requestKey: 'conflicting-source', groupChatId: catalog.groups[1]!.id })).rejects.toThrow('must agree with the original');
+    await expect(create.execute({ ...request, requestKey: 'physical-source', messageId: 'physical-group-relay' })).rejects.toThrow('relay copy');
     catalog.groups[0]!.archivedAt = '2026-10-10T00:00:00.000Z';
     catalog.fail();
-    expect(
-      parseJsonToolResult(await collectTools().get('task_create_from_message')!.execute(request)).id
-    ).toBe(first.id);
-    expect(taskFiles(claudeDir, teamName)).toHaveLength(1);
+    expect(parseJsonToolResult(await collectTools().get('task_create_from_message')!.execute(request)).id).toBe(first.id);
+    expect(await registryTasks(teamName)).toHaveLength(1);
+    expectNoTaskFiles(claudeDir, teamName);
   });
 
-  it('keeps new idempotency fields optional and validates explicit identities', () => {
+  it('validates UUID command identities independently from numeric registry task ids', () => {
     const tools = collectTools();
-    expect(tools.get('task_create')!.description).toContain(
-      'Always provide a stable idempotencyKey'
-    );
-    expect(tools.get('task_create_from_message')!.description).toContain(
-      'Always provide a stable requestKey'
-    );
-    expect(
-      tools.get('task_create')!.parameters?.safeParse({
-        teamName: 'alpha',
-        subject: 'Keyed task',
-        commandId: '019cce7c-f940-4777-8777-777777777777',
-        idempotencyKey: '019cce7c-f940-4777-8777-777777777777',
-      }).success
-    ).toBe(true);
-    expect(
-      tools.get('task_create')!.parameters?.safeParse({
-        teamName: 'alpha',
-        subject: 'Non-canonical task id',
-        commandId: '019cce7c-f940-7777-8777-777777777777',
-      }).success
-    ).toBe(false);
-    expect(
-      tools.get('task_create_from_message')!.parameters?.safeParse({
-        teamName: 'alpha',
-        messageId: 'msg-1',
-        requestKey: 'ui-task',
-        subject: 'Task from message',
-      }).success
-    ).toBe(true);
-    expect(
-      tools.get('task_create')!.parameters?.safeParse({
-        teamName: 'alpha',
-        subject: 'Legacy unkeyed task',
-      }).success
-    ).toBe(true);
+    const create = tools.get('task_create')!;
+    expect(create.description).toContain('Always provide a stable idempotencyKey');
+    expect(tools.get('task_create_from_message')!.description).toContain('Always provide a stable requestKey');
+    for (const commandId of ['019cce7c-f940-7777-8777-777777777777', '42']) {
+      expect(create.parameters?.safeParse({ teamName: 'alpha', subject: 'Task', commandId, requirements: ['FR-1'] }).success).toBe(false);
+    }
+    expect(create.parameters?.safeParse({ teamName: 'alpha', subject: 'Task', commandId: '11111111-1111-4111-8111-111111111111', requirements: ['FR-1'] }).success).toBe(true);
+    expect(create.parameters?.safeParse({ teamName: 'alpha', subject: 'Task', idempotencyKey: '42', requirements: ['FR-1'] }).success).toBe(true);
   });
 
-  it('coalesces duplicate and concurrent task_create calls by explicit command identity', async () => {
+  it('coalesces concurrent creates, persists provenance remotely and never selects the task id', async () => {
     const teamName = 'create-team';
     const claudeDir = makeTeam(teamName);
-    const taskCreate = collectTools().get('task_create')!;
-    const request = {
-      claudeDir,
-      teamName,
-      subject: 'Create exactly once',
-      owner: 'lead',
-      commandId: '11111111-1111-4111-8111-111111111111',
-      idempotencyKey: '11111111-1111-4111-8111-111111111111',
-    };
-
-    const [first, concurrentRetry] = await Promise.all([
-      taskCreate.execute(request),
-      taskCreate.execute(request),
-    ]).then((results) => results.map(parseJsonToolResult));
-    const duplicateRetry = parseJsonToolResult(await taskCreate.execute(request));
-
-    expect(first.id).toBe(request.commandId);
+    const create = collectTools().get('task_create')!;
+    const request = { teamName, claudeDir, subject: 'Create exactly once', owner: 'lead', requirements: ['FR-1'],
+      commandId: '11111111-1111-4111-8111-111111111111', idempotencyKey: '11111111-1111-4111-8111-111111111111' };
+    const [first, retry] = await Promise.all([create.execute(request), create.execute(request)]).then((results) => results.map(parseJsonToolResult));
+    expect(first.id).toMatch(/^\d+$/);
+    expect(first.id).not.toBe(request.commandId);
     expect(first.creationCommand).toBeUndefined();
-    expect(concurrentRetry.id).toBe(first.id);
-    expect(duplicateRetry.id).toBe(first.id);
-    expect(taskFiles(claudeDir, teamName)).toEqual([`${request.commandId}.json`]);
-    const persisted = JSON.parse(
-      fs.readFileSync(path.join(claudeDir, 'tasks', teamName, `${request.commandId}.json`), 'utf8')
-    ) as Record<string, unknown>;
-    expect(persisted.creationCommand).toEqual(
-      expect.objectContaining({
-        namespace: 'agent-teams-mcp',
-        scopeKey: teamName,
-        commandId: request.commandId,
-        payloadHash: expect.stringMatching(/^sha256:/),
-      })
-    );
+    expect(retry.id).toBe(first.id);
+    expect(parseJsonToolResult(await collectTools().get('task_create')!.execute(request)).id).toBe(first.id);
+    const tasks = await registryTasks(teamName);
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0]!.creationCommand).toEqual(expect.objectContaining({ namespace: 'agent-teams-mcp', scopeKey: teamName, commandId: request.commandId, payloadHash: expect.stringMatching(/^sha256:/) }));
+    await expect(create.execute({ ...request, subject: 'Changed payload' })).rejects.toThrow('Task creation command conflict');
+    expectNoTaskFiles(claudeDir, teamName);
   });
 
-  it('replays from persisted provenance through a fresh tool boundary and rejects key reuse', async () => {
-    const teamName = 'restart-team';
-    const claudeDir = makeTeam(teamName);
-    const request = {
-      claudeDir,
-      teamName,
-      subject: 'Survive restart',
-      idempotencyKey: 'restart-safe-create',
-    };
-    const beforeRestart = parseJsonToolResult(
-      await collectTools().get('task_create')!.execute(request)
-    );
-
-    const afterRestartTools = collectTools();
-    const replayed = parseJsonToolResult(
-      await afterRestartTools.get('task_create')!.execute(request)
-    );
-    expect(replayed.id).toBe(beforeRestart.id);
-    expect(taskFiles(claudeDir, teamName)).toHaveLength(1);
-
-    await expect(
-      afterRestartTools.get('task_create')!.execute({
-        ...request,
-        subject: 'Different payload with reused key',
-      })
-    ).rejects.toThrow('Task creation command conflict');
-  });
-
-  it('refuses to adopt an unrelated legacy task at a caller-selected command id', async () => {
-    const teamName = 'legacy-collision-team';
-    const claudeDir = makeTeam(teamName);
-    const commandId = '22222222-2222-4222-8222-222222222222';
-    const taskCreate = collectTools().get('task_create')!;
-
-    parseJsonToolResult(
-      await taskCreate.execute({
-        claudeDir,
-        teamName,
-        subject: 'Original unrelated task',
-        commandId,
-      })
-    );
-    const taskPath = path.join(claudeDir, 'tasks', teamName, `${commandId}.json`);
-    const legacyTask = JSON.parse(fs.readFileSync(taskPath, 'utf8')) as Record<string, unknown>;
-    delete legacyTask.creationCommand;
-    fs.writeFileSync(taskPath, JSON.stringify(legacyTask));
-
-    await expect(
-      taskCreate.execute({
-        claudeDir,
-        teamName,
-        subject: 'Different requested task',
-        commandId,
-      })
-    ).rejects.toThrow('is not owned by this command');
-
-    const persisted = JSON.parse(fs.readFileSync(taskPath, 'utf8')) as Record<string, unknown>;
-    expect(persisted.subject).toBe('Original unrelated task');
-    expect(persisted.creationCommand).toBeUndefined();
-  });
-
-  it('keeps distinct request keys distinct even when the subject is identical', async () => {
-    const teamName = 'same-subject-team';
-    const claudeDir = makeTeam(teamName);
-    fs.writeFileSync(
-      path.join(claudeDir, 'teams', teamName, 'sentMessages.json'),
-      JSON.stringify([
-        {
-          messageId: 'msg-user-1',
-          from: 'user',
-          to: 'lead',
-          text: 'Review the same area twice',
-          timestamp: '2026-07-22T12:00:00.000Z',
-          source: 'user_sent',
-        },
-      ])
-    );
-    const taskCreateFromMessage = collectTools().get('task_create_from_message')!;
-    const request = {
-      claudeDir,
-      teamName,
-      messageId: 'msg-user-1',
-      subject: 'Review the login flow',
-      owner: 'lead',
-    };
-
-    const keyA = parseJsonToolResult(
-      await taskCreateFromMessage.execute({ ...request, requestKey: 'key-a' })
-    );
-    const keyB = parseJsonToolResult(
-      await taskCreateFromMessage.execute({ ...request, requestKey: 'key-b' })
-    );
-
-    // An explicit requestKey is the caller's intent, so an identical subject on the same
-    // message must not fold two deliberately separate requests into one task.
-    expect(keyB.id).not.toBe(keyA.id);
-    expect(keyA.subject).toBe(keyB.subject);
-    expect(taskFiles(claudeDir, teamName)).toHaveLength(2);
-
-    const keyAReplay = parseJsonToolResult(
-      await taskCreateFromMessage.execute({ ...request, requestKey: 'key-a' })
-    );
-    expect(keyAReplay.id).toBe(keyA.id);
-    expect(taskFiles(claudeDir, teamName)).toHaveLength(2);
-
-    // A keyless create carries no intent to separate, so the 10-minute content dedup
-    // window still collapses a replay of it.
-    const keylessRequest = { ...request, subject: 'Review the settings flow' };
-    const keyless = parseJsonToolResult(await taskCreateFromMessage.execute(keylessRequest));
-    const keylessReplay = parseJsonToolResult(await taskCreateFromMessage.execute(keylessRequest));
-    expect(keylessReplay.id).toBe(keyless.id);
-    expect(taskFiles(claudeDir, teamName)).toHaveLength(3);
-  });
-
-  it('uses messageId plus requestKey without collapsing distinct tasks from one message', async () => {
+  it('keeps distinct message request keys separate and rejects payload reuse', async () => {
     const teamName = 'message-team';
     const claudeDir = makeTeam(teamName);
-    const sentPath = path.join(claudeDir, 'teams', teamName, 'sentMessages.json');
-    fs.writeFileSync(
-      sentPath,
-      JSON.stringify([
-        {
-          messageId: 'msg-user-1',
-          from: 'user',
-          to: 'lead',
-          text: 'Please ship the UI and API changes',
-          timestamp: '2026-07-22T12:00:00.000Z',
-          source: 'user_sent',
-        },
-      ])
-    );
-    const taskCreateFromMessage = collectTools().get('task_create_from_message')!;
-    const uiRequest = {
-      claudeDir,
-      teamName,
-      messageId: 'msg-user-1',
-      requestKey: 'ui-task',
-      subject: 'Ship UI',
-    };
-
-    const [first, retry] = await Promise.all([
-      taskCreateFromMessage.execute(uiRequest),
-      taskCreateFromMessage.execute(uiRequest),
-    ]).then((results) => results.map(parseJsonToolResult));
-    const apiTask = parseJsonToolResult(
-      await taskCreateFromMessage.execute({
-        ...uiRequest,
-        requestKey: 'api-task',
-        subject: 'Ship API',
-      })
-    );
-
+    seedMessage(claudeDir, teamName);
+    const create = collectTools().get('task_create_from_message')!;
+    const request = { teamName, claudeDir, messageId: 'msg-user-1', subject: 'Review the same area', owner: 'lead', requirements: ['FR-1'] };
+    const [first, retry] = await Promise.all([create.execute({ ...request, requestKey: 'key-a' }), create.execute({ ...request, requestKey: 'key-a' })]).then((results) => results.map(parseJsonToolResult));
+    const second = parseJsonToolResult(await create.execute({ ...request, requestKey: 'key-b' }));
     expect(retry.id).toBe(first.id);
-    expect(apiTask.id).not.toBe(first.id);
-    expect(first.sourceMessageId).toBe('msg-user-1');
-    expect(apiTask.sourceMessageId).toBe('msg-user-1');
-    expect(taskFiles(claudeDir, teamName)).toHaveLength(2);
+    expect(second.id).not.toBe(first.id);
+    expect(second.subject).toBe(first.subject);
+    expect(first.sourceMessageId).toBe(request.messageId);
+    expect(second.sourceMessageId).toBe(request.messageId);
+    await expect(create.execute({ ...request, requestKey: 'key-a', subject: 'Different intent' })).rejects.toThrow('Task creation command conflict');
+    const unkeyed = parseJsonToolResult(await create.execute({ ...request, subject: 'Unkeyed docs' }));
+    const unkeyedReplay = parseJsonToolResult(await create.execute({ ...request, subject: 'Unkeyed docs' }));
+    const another = parseJsonToolResult(await create.execute({ ...request, subject: 'Unkeyed tests' }));
+    expect(unkeyedReplay.id).toBe(unkeyed.id);
+    expect(another.id).not.toBe(unkeyed.id);
+    expect(await registryTasks(teamName)).toHaveLength(4);
+    expectNoTaskFiles(claudeDir, teamName);
+  });
 
-    await expect(
-      taskCreateFromMessage.execute({
-        ...uiRequest,
-        subject: 'Changed payload with reused request key',
-      })
-    ).rejects.toThrow('Task creation command conflict');
+  it('forwards normalized requirements through both create paths and rejects missing requirements', async () => {
+    const teamName = 'requirements-forward';
+    const claudeDir = makeTeam(teamName);
+    seedMessage(claudeDir, teamName);
+    const tools = collectTools();
+    for (const name of ['task_create', 'task_create_from_message']) {
+      const create = tools.get(name)!;
+      const request = { teamName, claudeDir, messageId: 'msg-user-1', subject: name };
+      const created = parseJsonToolResult(await create.execute({ ...request, requirements: ['FR-1', ' FR-3 ', 'FR-1'] }));
+      expect(created.requirements).toEqual(['FR-1', 'FR-3']);
+      await expect(create.execute({ ...request, subject: `${name} missing` })).rejects.toThrow(/requirements/i);
+      await expect(create.execute({ ...request, subject: `${name} empty`, requirements: [] })).rejects.toThrow(/requirements/i);
+      for (const requirements of ['FR-1', ['FR-1', '  '], ['FR-1', 1]]) {
+        await expect(create.execute({ ...request, requirements })).rejects.toThrow('INVALID_REQUIREMENTS');
+        expect(create.parameters?.safeParse({ ...request, requirements }).success).toBe(false);
+      }
+    }
+    const requests = await server.requests() as RegistryRequest[];
+    const posts = requests.filter((request) => request.method === 'POST' && request.pathname.endsWith('/tasks'));
+    expect(posts.filter((request) => Array.isArray(request.body.requirements) && request.body.requirements.length > 0)).toHaveLength(2);
+    expect(await registryTasks(teamName)).toHaveLength(2);
+    expectNoTaskFiles(claudeDir, teamName);
+  });
 
-    // An unkeyed call carries no command identity, so the message id alone must never
-    // collapse two different task intents taken from the same message.
-    const legacyDocs = parseJsonToolResult(
-      await taskCreateFromMessage.execute({
-        claudeDir,
-        teamName,
-        messageId: 'msg-user-1',
-        subject: 'Legacy unkeyed docs task',
-      })
-    );
-    const legacyTests = parseJsonToolResult(
-      await taskCreateFromMessage.execute({
-        claudeDir,
-        teamName,
-        messageId: 'msg-user-1',
-        subject: 'Legacy unkeyed tests task',
-      })
-    );
-    expect(legacyTests.id).not.toBe(legacyDocs.id);
-    expect(taskFiles(claudeDir, teamName)).toHaveLength(4);
+  it('returns APPLIED then REPLAY over HTTP while preserving advanced owner, status and relationships', async () => {
+    const teamName = 'replay-advanced';
+    const claudeDir = makeTeam(teamName);
+    const tools = collectTools();
+    const create = tools.get('task_create')!;
+    const request = { teamName, claudeDir, subject: 'Advanced task', owner: 'lead', requirements: ['FR-1'], commandId: '88888888-8888-4888-8888-888888888888' };
+    const first = parseJsonToolResult(await create.execute(request));
+    const related = parseJsonToolResult(await create.execute({ teamName, claudeDir, subject: 'Related task', requirements: ['FR-1'] }));
+    await tools.get('task_set_owner')!.execute({ teamName, claudeDir, taskId: first.id, owner: 'alice', actor: 'lead' });
+    await tools.get('task_link')!.execute({ teamName, claudeDir, taskId: first.id, targetId: related.id, relationship: 'related' });
+    await tools.get('task_set_status')!.execute({ teamName, claudeDir, taskId: first.id, status: 'in_progress', actor: 'alice' });
+    const replayed = parseJsonToolResult(await create.execute(request));
+    expect(replayed).toMatchObject({ id: first.id, owner: 'alice', status: 'in_progress', related: expect.arrayContaining([related.id]) });
+    const stored = (await registryTasks(teamName)).find((task) => task.id === first.id)!;
+    const response = await fetch(`${server.url}/api/teams/${teamName}/tasks`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ subject: request.subject, requirements: request.requirements, owner: request.owner, creationCommand: stored.creationCommand }) });
+    expect(await response.json()).toMatchObject({ outcome: 'REPLAY', task: { id: first.id, owner: 'alice', status: 'in_progress' } });
+    expectNoTaskFiles(claudeDir, teamName);
+  });
 
-    // An unkeyed replay of the same intent is still collapsed, but by the task board's
-    // content dedup (same owner/subject/createdBy within 10 minutes), which is the
-    // authoritative duplicate signal for creates that carry no command identity.
-    const legacyDocsReplay = parseJsonToolResult(
-      await taskCreateFromMessage.execute({
-        claudeDir,
-        teamName,
-        messageId: 'msg-user-1',
-        subject: 'Legacy unkeyed docs task',
-      })
-    );
-    expect(legacyDocsReplay.id).toBe(legacyDocs.id);
-    expect(taskFiles(claudeDir, teamName)).toHaveLength(4);
+  it('does not adopt a local task when the registry is available', async () => {
+    const teamName = 'no-file-adoption';
+    const claudeDir = makeTeam(teamName);
+    const taskDir = path.join(claudeDir, 'tasks', teamName);
+    fs.mkdirSync(taskDir, { recursive: true });
+    const taskFile = path.join(taskDir, '42.json');
+    const original = JSON.stringify({ id: '42', subject: 'Local task', status: 'pending' });
+    fs.writeFileSync(taskFile, original);
+    const tools = collectTools();
+    await expect(tools.get('task_get')!.execute({ teamName, claudeDir, taskId: '42' })).rejects.toThrow();
+    const created = parseJsonToolResult(await tools.get('task_create')!.execute({
+      teamName, claudeDir, subject: 'Registry task', requirements: ['FR-1'],
+      commandId: '22222222-2222-4222-8222-222222222222',
+    }));
+    expect(created.id).not.toBe('42');
+    expect(await registryTasks(teamName)).toHaveLength(1);
+    expect(fs.readFileSync(taskFile, 'utf8')).toBe(original);
+  });
+
+  it('does not read or mutate canonical task files when registry access fails', async () => {
+    const teamName = 'no-file-fallback';
+    const claudeDir = makeTeam(teamName);
+    const taskDir = path.join(claudeDir, 'tasks', teamName);
+    fs.mkdirSync(taskDir, { recursive: true });
+    const taskFile = path.join(taskDir, '42.json');
+    const localTask = JSON.stringify({ id: '42', subject: 'Must not be read', status: 'pending' });
+    fs.writeFileSync(taskFile, localTask);
+    await server.stop();
+    server = await startControlServer({ failStatus: 503 });
+    vi.stubEnv('AGENT_TEAMS_BOUND_CONTROL_URL', server.url);
+    const tools = collectTools();
+    await expect(tools.get('task_get')!.execute({ teamName, claudeDir, taskId: '42' })).rejects.toThrow();
+    await expect(tools.get('task_create')!.execute({ teamName, claudeDir, subject: 'Must fail closed', requirements: ['FR-1'] })).rejects.toThrow();
+    expect(fs.readFileSync(taskFile, 'utf8')).toBe(localTask);
+    expect(fs.readdirSync(taskDir)).toEqual(['42.json']);
   });
 });

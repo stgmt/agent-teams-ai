@@ -208,6 +208,21 @@ vi.mock(
   }
 );
 
+// These fixtures model teams of this app profile; ownership itself is covered by
+// TeamProvisioningServiceProfileOwnership.test.ts.
+vi.mock(
+  '@main/services/team/provisioning/TeamProvisioningProfileOwnership',
+  async (importOriginal) => ({
+    ...(await importOriginal<
+      typeof import('@main/services/team/provisioning/TeamProvisioningProfileOwnership')
+    >()),
+    createTeamProfileOwnership: () => ({
+      isManagedByThisProfile: () => Promise.resolve(true),
+      isManagedByThisProfileSync: () => true,
+    }),
+  })
+);
+
 import {
   killTmuxPaneForCurrentPlatformSync,
   listRuntimeProcessTableForCurrentPlatform,
@@ -1253,6 +1268,8 @@ function createClaudeLogsRun(overrides: Record<string, unknown> = {}) {
     memberSpawnStatuses: new Map(),
     activeCrossTeamReplyHints: [],
     pendingInboxRelayCandidates: [],
+    pendingLeadSendMessages: new Map(),
+    leadSendMessageSeq: 0,
     pendingApprovals: new Map(),
     mcpConfigPath: null,
     bootstrapSpecPath: null,
@@ -3176,6 +3193,7 @@ describe('TeamProvisioningService', () => {
       (svc as any).aliveRunByTeam.set('runtime-team', 'run-1');
       (svc as any).runs.set('run-1', {
         runId: 'run-1',
+        teamName: 'runtime-team',
         child: { pid: 111 },
         request: { model: 'gpt-5.4' },
         processKilled: false,
@@ -3473,6 +3491,7 @@ describe('TeamProvisioningService', () => {
       (svc as any).aliveRunByTeam.set('runtime-team', 'run-1');
       (svc as any).runs.set('run-1', {
         runId: 'run-1',
+        teamName: 'runtime-team',
         child: { pid: 111 },
         request: { model: 'gpt-5.4' },
         processKilled: false,
@@ -3535,6 +3554,7 @@ describe('TeamProvisioningService', () => {
       (svc as any).aliveRunByTeam.set('runtime-team', 'run-1');
       (svc as any).runs.set('run-1', {
         runId: 'run-1',
+        teamName: 'runtime-team',
         child: { pid: 111 },
         request: { model: 'gpt-5.4' },
         processKilled: false,
@@ -3674,6 +3694,7 @@ describe('TeamProvisioningService', () => {
         (svc as any).aliveRunByTeam.set('runtime-team', 'run-1');
         (svc as any).runs.set('run-1', {
           runId: 'run-1',
+          teamName: 'runtime-team',
           child: { pid: 111 },
           request: { model: 'gpt-5.4' },
           processKilled: false,
@@ -3735,6 +3756,7 @@ describe('TeamProvisioningService', () => {
       (svc as any).aliveRunByTeam.set('runtime-team', 'run-1');
       (svc as any).runs.set('run-1', {
         runId: 'run-1',
+        teamName: 'runtime-team',
         child: { pid: 111 },
         request: { model: 'gpt-5.4' },
         processKilled: false,
@@ -3792,6 +3814,7 @@ describe('TeamProvisioningService', () => {
       (svc as any).aliveRunByTeam.set('runtime-team', 'run-1');
       (svc as any).runs.set('run-1', {
         runId: 'run-1',
+        teamName: 'runtime-team',
         child: { pid: 111 },
         request: { model: 'gpt-5.4' },
         processKilled: false,
@@ -3873,6 +3896,7 @@ describe('TeamProvisioningService', () => {
       (svc as any).aliveRunByTeam.set('runtime-team', 'run-1');
       (svc as any).runs.set('run-1', {
         runId: 'run-1',
+        teamName: 'runtime-team',
         child: { pid: 111 },
         request: { model: 'gpt-5.4' },
         processKilled: false,
@@ -3947,6 +3971,7 @@ describe('TeamProvisioningService', () => {
       (svc as any).aliveRunByTeam.set('runtime-team', 'run-1');
       (svc as any).runs.set('run-1', {
         runId: 'run-1',
+        teamName: 'runtime-team',
         child: { pid: 111 },
         request: { model: 'gpt-5.4' },
         processKilled: false,
@@ -4006,6 +4031,7 @@ describe('TeamProvisioningService', () => {
       (svc as any).aliveRunByTeam.set('runtime-team', 'run-1');
       (svc as any).runs.set('run-1', {
         runId: 'run-1',
+        teamName: 'runtime-team',
         child: { pid: 111 },
         request: { model: 'gpt-5.4' },
         processKilled: false,
@@ -4198,6 +4224,7 @@ describe('TeamProvisioningService', () => {
       (svc as any).aliveRunByTeam.set('runtime-team', 'run-1');
       (svc as any).runs.set('run-1', {
         runId: 'run-1',
+        teamName: 'runtime-team',
         child: { pid: 111 },
         request: { model: 'gpt-5.4' },
         processKilled: false,
@@ -4235,6 +4262,7 @@ describe('TeamProvisioningService', () => {
       (svc as any).aliveRunByTeam.set('runtime-team', 'run-1');
       (svc as any).runs.set('run-1', {
         runId: 'run-1',
+        teamName: 'runtime-team',
         child: { pid: 111 },
         request: { model: 'gpt-5.4' },
         processKilled: false,
@@ -4264,6 +4292,7 @@ describe('TeamProvisioningService', () => {
       (svc as any).aliveRunByTeam.set('runtime-team', 'run-1');
       (svc as any).runs.set('run-1', {
         runId: 'run-1',
+        teamName: 'runtime-team',
         child: { pid: 111 },
         request: { model: 'gpt-5.4' },
         processKilled: false,
@@ -4295,6 +4324,7 @@ describe('TeamProvisioningService', () => {
       (svc as any).aliveRunByTeam.set('runtime-team', 'run-1');
       (svc as any).runs.set('run-1', {
         runId: 'run-1',
+        teamName: 'runtime-team',
         child: { pid: 111 },
         request: { model: 'gpt-5.4' },
         processKilled: false,
@@ -4329,6 +4359,7 @@ describe('TeamProvisioningService', () => {
       (svc as any).aliveRunByTeam.set('runtime-team', 'run-1');
       (svc as any).runs.set('run-1', {
         runId: 'run-1',
+        teamName: 'runtime-team',
         child: { pid: 111 },
         request: { model: 'gpt-5.4' },
         processKilled: false,
@@ -4588,6 +4619,7 @@ describe('TeamProvisioningService', () => {
         (svc as any).aliveRunByTeam.set('runtime-team', 'run-1');
         (svc as any).runs.set('run-1', {
           runId: 'run-1',
+          teamName: 'runtime-team',
           child: { pid: 111 },
           request: { model: 'gpt-5.4' },
           processKilled: false,
@@ -4691,6 +4723,7 @@ describe('TeamProvisioningService', () => {
       (svc as any).aliveRunByTeam.set('runtime-team', 'run-1');
       (svc as any).runs.set('run-1', {
         runId: 'run-1',
+        teamName: 'runtime-team',
         child: { pid: 111 },
         request: { model: 'gpt-5.4' },
         processKilled: false,
@@ -4883,6 +4916,7 @@ describe('TeamProvisioningService', () => {
       (svc as any).aliveRunByTeam.set('runtime-team', 'run-1');
       (svc as any).runs.set('run-1', {
         runId: 'run-1',
+        teamName: 'runtime-team',
         child: { pid: 111 },
         request: { model: 'gpt-5.4' },
         processKilled: false,
@@ -4912,6 +4946,7 @@ describe('TeamProvisioningService', () => {
       (svc as any).aliveRunByTeam.set('runtime-team', 'run-1');
       (svc as any).runs.set('run-1', {
         runId: 'run-1',
+        teamName: 'runtime-team',
         child: { pid: 111 },
         request: { providerId: 'codex', model: 'gpt-5.4', providerBackendId: 'codex-native' },
         processKilled: false,
@@ -5011,6 +5046,7 @@ describe('TeamProvisioningService', () => {
       (svc as any).aliveRunByTeam.set('runtime-team', 'run-1');
       (svc as any).runs.set('run-1', {
         runId: 'run-1',
+        teamName: 'runtime-team',
         child: { pid: 111 },
         request: { model: 'gpt-5.4' },
         processKilled: false,
@@ -5142,6 +5178,7 @@ describe('TeamProvisioningService', () => {
       (svc as any).aliveRunByTeam.set('nice-team', 'run-1');
       (svc as any).runs.set('run-1', {
         runId: 'run-1',
+        teamName: 'nice-team',
         child: { pid: 111 },
         request: { model: 'gpt-5.4' },
         processKilled: false,
@@ -5263,6 +5300,7 @@ describe('TeamProvisioningService', () => {
       (svc as any).aliveRunByTeam.set('nice-team', 'run-1');
       (svc as any).runs.set('run-1', {
         runId: 'run-1',
+        teamName: 'nice-team',
         child: { pid: 111 },
         request: { model: 'gpt-5.4' },
         processKilled: false,
@@ -14170,19 +14208,20 @@ describe('TeamProvisioningService', () => {
         ]),
       };
 
-      await expect(
-        svc.deliverOpenCodeMemberMessage(teamName, {
-          memberName: 'bob',
-          text: 'must wait for committed bootstrap evidence',
-          messageId: 'msg-live-lane-without-committed-evidence',
-        })
-      ).resolves.toMatchObject({
+      const result = await svc.deliverOpenCodeMemberMessage(teamName, {
+        memberName: 'bob',
+        text: 'must wait for committed bootstrap evidence',
+        messageId: 'msg-live-lane-without-committed-evidence',
+      });
+      expect(result).toMatchObject({
         delivered: false,
         reason: 'opencode_runtime_not_active',
         diagnostics: [
           expect.stringContaining('OpenCode runtime bootstrap is not confirmed for bob'),
         ],
       });
+      // This setup arms no bootstrap wake, so the deferral stays unflagged and still warns.
+      expect(result).not.toHaveProperty('deferredUntilBootstrap');
       expect(sendMessageToMember).not.toHaveBeenCalled();
     });
 
@@ -14243,19 +14282,20 @@ describe('TeamProvisioningService', () => {
         sessions: [],
       });
 
-      await expect(
-        svc.deliverOpenCodeMemberMessage(teamName, {
-          memberName: 'bob',
-          text: 'must wait for bootstrap',
-          messageId: 'msg-before-bootstrap-checkin',
-        })
-      ).resolves.toMatchObject({
+      const result = await svc.deliverOpenCodeMemberMessage(teamName, {
+        memberName: 'bob',
+        text: 'must wait for bootstrap',
+        messageId: 'msg-before-bootstrap-checkin',
+      });
+      expect(result).toMatchObject({
         delivered: false,
         reason: 'opencode_runtime_not_active',
         diagnostics: [
           expect.stringContaining('OpenCode runtime bootstrap is not confirmed for bob'),
         ],
       });
+      // This setup arms no bootstrap wake, so the deferral stays unflagged and still warns.
+      expect(result).not.toHaveProperty('deferredUntilBootstrap');
       expect(sendMessageToMember).not.toHaveBeenCalled();
       await expect(readOpenCodeRuntimeLaneIndex(tempTeamsBase, teamName)).resolves.toMatchObject({
         lanes: {
@@ -14335,19 +14375,20 @@ describe('TeamProvisioningService', () => {
         'utf8'
       );
 
-      await expect(
-        svc.deliverOpenCodeMemberMessage(teamName, {
-          memberName: 'bob',
-          text: 'must not deliver to empty durable lane',
-          messageId: 'msg-stale-empty-manifest',
-        })
-      ).resolves.toMatchObject({
+      const result = await svc.deliverOpenCodeMemberMessage(teamName, {
+        memberName: 'bob',
+        text: 'must not deliver to empty durable lane',
+        messageId: 'msg-stale-empty-manifest',
+      });
+      expect(result).toMatchObject({
         delivered: false,
         reason: 'opencode_runtime_not_active',
         diagnostics: [
           expect.stringContaining('runtime manifest has no committed runtime evidence'),
         ],
       });
+      // Evidence not ready is not the armed bootstrap wait: it must keep warning.
+      expect(result).not.toHaveProperty('deferredUntilBootstrap');
       expect(sendMessageToMember).not.toHaveBeenCalled();
       await expect(readOpenCodeRuntimeLaneIndex(tempTeamsBase, teamName)).resolves.toMatchObject({
         lanes: {
@@ -14428,19 +14469,20 @@ describe('TeamProvisioningService', () => {
         'utf8'
       );
 
-      await expect(
-        svc.deliverOpenCodeMemberMessage(teamName, {
-          memberName: 'bob',
-          text: 'wait until runtime check-in',
-          messageId: 'msg-fresh-empty-manifest',
-        })
-      ).resolves.toMatchObject({
+      const result = await svc.deliverOpenCodeMemberMessage(teamName, {
+        memberName: 'bob',
+        text: 'wait until runtime check-in',
+        messageId: 'msg-fresh-empty-manifest',
+      });
+      expect(result).toMatchObject({
         delivered: false,
         reason: 'opencode_runtime_not_active',
         diagnostics: [
           expect.stringContaining('OpenCode runtime bootstrap evidence is not ready for bob'),
         ],
       });
+      // Evidence not ready is not the armed bootstrap wait: it must keep warning.
+      expect(result).not.toHaveProperty('deferredUntilBootstrap');
       expect(sendMessageToMember).not.toHaveBeenCalled();
       await expect(readOpenCodeRuntimeLaneIndex(tempTeamsBase, teamName)).resolves.toMatchObject({
         lanes: {
@@ -21060,7 +21102,7 @@ describe('TeamProvisioningService', () => {
             prepare: vi.fn(),
             launch: adapterLaunch,
             reconcile: vi.fn(),
-            stop: vi.fn(),
+            stop: vi.fn(async (input: TeamRuntimeStopInput) => successfulRuntimeStop(input)),
           } as any,
         ])
       );
@@ -21128,7 +21170,7 @@ describe('TeamProvisioningService', () => {
             prepare: vi.fn(),
             launch: adapterLaunch,
             reconcile: vi.fn(),
-            stop: vi.fn(),
+            stop: vi.fn(async (input: TeamRuntimeStopInput) => successfulRuntimeStop(input)),
           } as any,
         ])
       );
@@ -28113,6 +28155,14 @@ describe('TeamProvisioningService', () => {
     const worktreeGitDir = path.join(repoDir, '.git', 'worktrees', 'alice');
     fs.mkdirSync(worktreeDir, { recursive: true });
     fs.mkdirSync(worktreeGitDir, { recursive: true });
+    // A real Git repository and linked worktree have HEAD/config metadata.
+    // Empty .git directories are intentionally not promoted to trusted roots.
+    fs.writeFileSync(path.join(repoDir, '.git', 'HEAD'), 'ref: refs/heads/main\n');
+    fs.writeFileSync(path.join(repoDir, '.git', 'config'), '[core]\n');
+    fs.writeFileSync(path.join(worktreeGitDir, 'HEAD'), 'ref: refs/heads/main\n');
+    fs.writeFileSync(path.join(repoDir, '.git', 'HEAD'), 'ref: refs/heads/main\n', 'utf8');
+    fs.writeFileSync(path.join(repoDir, '.git', 'config'), '[core]\n', 'utf8');
+    fs.writeFileSync(path.join(worktreeGitDir, 'HEAD'), 'ref: refs/heads/main\n', 'utf8');
     fs.writeFileSync(path.join(worktreeDir, '.git'), `gitdir: ${worktreeGitDir}\n`, 'utf8');
     fs.writeFileSync(path.join(worktreeGitDir, 'commondir'), '../..\n', 'utf8');
     fs.writeFileSync(

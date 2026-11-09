@@ -19,6 +19,7 @@ vi.mock('../../../../src/main/services/team/TeamFsWorkerClient', () => ({
 }));
 
 import { TeamConfigReader } from '../../../../src/main/services/team/TeamConfigReader';
+import { TeamMetaStore } from '../../../../src/main/services/team/TeamMetaStore';
 import { createPersistedLaunchSummaryProjection } from '../../../../src/main/services/team/TeamLaunchSummaryProjection';
 
 function createDeferred<T>(): {
@@ -546,6 +547,74 @@ describe('TeamConfigReader', () => {
     expect(second?.name).toBe('Cached Config Team');
     expect(third?.name).toBe('Cached Config Team');
     expect(readFileSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('refreshes registry metadata without a config.json change and fails closed on corruption', async () => {
+    const teamName = 'registry-metadata';
+    const teamDir = path.join(tempDir, teamName);
+    const configPath = path.join(teamDir, 'config.json');
+    const metaPath = path.join(teamDir, 'team.meta.json');
+    await fs.mkdir(teamDir, { recursive: true });
+    await fs.writeFile(configPath, JSON.stringify({ name: teamName, members: [] }));
+    const metadata = (spec: string) => JSON.stringify({
+      version: 1, cwd: tempDir, createdAt: 1,
+      specBindings: [{ project: 'owner/project', spec }],
+      registryTeamId: 'team-1',
+    });
+    await fs.writeFile(metaPath, metadata('first'));
+    const reader = new TeamConfigReader();
+    expect(await reader.getRegistryBindingState(teamName)).toMatchObject({
+      status: 'verified', binding: { specBindings: [{ project: 'owner/project', spec: 'first' }] },
+    });
+    await fs.writeFile(metaPath, metadata('second'));
+    expect(await reader.getRegistryBindingState(teamName)).toMatchObject({
+      status: 'verified', binding: { specBindings: [{ project: 'owner/project', spec: 'second' }] },
+    });
+    await fs.writeFile(metaPath, '{');
+    expect(await reader.getRegistryBindingState(teamName)).toEqual({ status: 'unavailable' });
+    expect((await reader.getConfigSnapshot(teamName))?.name).toBe(teamName);
+  });
+
+  it('does not replace an explicit incomplete config binding with metadata', async () => {
+    const teamDir = path.join(tempDir, 'explicit-scope');
+    await fs.mkdir(teamDir, { recursive: true });
+    await fs.writeFile(path.join(teamDir, 'config.json'), JSON.stringify({
+      name: 'explicit-scope', members: [], specProject: 'owner/project',
+    }));
+    await fs.writeFile(path.join(teamDir, 'team.meta.json'), JSON.stringify({
+      version: 1, cwd: tempDir, createdAt: 1,
+      specBindings: [{ project: 'owner/project', spec: 'old-spec' }],
+    }));
+    expect(await new TeamConfigReader().getRegistryBindingState('explicit-scope')).toEqual({
+      status: 'unavailable',
+    });
+  });
+
+  it('fails closed if registry metadata changes while the binding is being read', async () => {
+    const teamDir = path.join(tempDir, 'binding-race');
+    await fs.mkdir(teamDir, { recursive: true });
+    await fs.writeFile(path.join(teamDir, 'config.json'), JSON.stringify({
+      name: 'binding-race', members: [],
+    }));
+    const metaPath = path.join(teamDir, 'team.meta.json');
+    const payload = (spec: string) => JSON.stringify({
+      version: 1, cwd: tempDir, createdAt: 1,
+      specBindings: [{ project: 'owner/project', spec }],
+    });
+    await fs.writeFile(metaPath, payload('first'));
+    const metaStore = new TeamMetaStore();
+    const originalRead = metaStore.getMeta.bind(metaStore);
+    vi.spyOn(metaStore, 'getMeta').mockImplementation(async (...args) => {
+      const value = await originalRead(...args);
+      await fs.writeFile(metaPath, payload('changed-spec'));
+      return value;
+    });
+    const reader = new TeamConfigReader(undefined, metaStore);
+    expect(await reader.getRegistryBindingState('binding-race')).toEqual({ status: 'unavailable' });
+    vi.restoreAllMocks();
+    expect(await reader.getRegistryBindingState('binding-race')).toMatchObject({
+      status: 'verified', binding: { specBindings: [{ project: 'owner/project', spec: 'changed-spec' }] },
+    });
   });
 
   it('uses fingerprint-validated snapshot cache without rereading unchanged config content', async () => {

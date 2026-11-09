@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { LifecycleSnapshotFeed } from '../../../../src/features/team-provisioning/core/domain/LifecycleSnapshotFeed';
 import { TeamDefinitionExistsError } from '../../../../src/features/team-provisioning/main/adapters/output/NodeTeamDefinitionStore';
 import { createDesktopTeamRuntime } from '../../../../src/features/team-provisioning/main/composition/createDesktopTeamRuntime';
+import { NativeTeamOperationActivity, ObservedTeamOperationQueue } from '../../../../src/features/team-provisioning/main/composition/NativeTeamOperationActivity';
 
 import type {
   MemberLifecycleSnapshot,
@@ -119,8 +120,10 @@ function harness(
   };
   const deps: DesktopTeamRuntimeDependencies = {
     currentContext: () => owner,
-    lifecycle: { commands, runs, watch: () => feed },
+    lifecycle: { activity: new NativeTeamOperationActivity(), commands, runs, watch: () => feed },
     definitions,
+    claimTeam: vi.fn(async () => undefined),
+    clearStoppedLaneStopBackoff: vi.fn(),
     progressHistory: history,
     bootstrapRuntime,
     ...(options.launchAdmission ? { launchAdmission: options.launchAdmission } : {}),
@@ -147,7 +150,46 @@ function collect(): {
   return { progress, onProgress: (entry) => progress.push(entry) };
 }
 
+function deferredVoid() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((resolvePromise) => {
+    resolve = () => resolvePromise(undefined);
+  });
+  return { promise, resolve };
+}
+
 describe('desktop team runtime over the native lifecycle', () => {
+  it('reports queued and running work until every operation settles', async () => {
+    const activity = new NativeTeamOperationActivity();
+    const queue = new ObservedTeamOperationQueue(activity);
+    const firstGate = deferredVoid();
+    const secondGate = deferredVoid();
+    const first = queue.run('team', () => firstGate.promise);
+    const second = queue.run('team', () => secondGate.promise);
+    expect(activity.has(' Team ')).toBe(true);
+    firstGate.resolve();
+    await first;
+    expect(activity.has('team')).toBe(true);
+    secondGate.resolve();
+    await second;
+    expect(activity.has('team')).toBe(false);
+  });
+
+  it('requires the profile claim before a launch and aborts on claim failure', async () => {
+    const { runtime, deps, commands } = harness();
+    vi.mocked(deps.claimTeam).mockRejectedValueOnce(new Error('claim failed'));
+    await expect(runtime.launchTeam({ teamName, cwd: '/TEST/cwd' }, collect().onProgress))
+      .rejects.toThrow('claim failed');
+    expect(deps.claimTeam).toHaveBeenCalledWith(teamName, 'launch');
+    expect(commands.launch).not.toHaveBeenCalled();
+  });
+
+  it('routes backoff clearing to the runtime owner', () => {
+    const { runtime, deps } = harness();
+    runtime.clearStoppedLaneStopBackoff(teamName);
+    expect(deps.clearStoppedLaneStopBackoff).toHaveBeenCalledWith(teamName);
+  });
+
   it('launches a saved definition and streams progress for the admitted run', async () => {
     const { runtime, definitions, commands } = harness();
     const { progress, onProgress } = collect();

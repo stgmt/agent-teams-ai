@@ -69,6 +69,141 @@ describe('applyElectronDevPathOverrides', () => {
     expect(fs.existsSync(claudeRoot)).toBe(true);
   });
 
+  it('allows an isolated profile already selected by Electron CLI while guarding the normal profile', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-teams-cli-profile-'));
+    tempDirs.push(tempRoot);
+    const appData = path.join(tempRoot, 'application-data');
+    const normal = path.join(appData, 'Agent Teams AI');
+    const isolated = path.join(tempRoot, 'isolated-user-data');
+    const setPath = vi.fn();
+    const app = {
+      setPath,
+      getName: () => 'Agent Teams AI',
+      commandLine: { hasSwitch: (name: string) => name === 'user-data-dir' },
+      getPath: (name: string) => {
+        if (name === 'appData') return appData;
+        if (name === 'userData' || name === 'sessionData') return isolated;
+        if (name === 'logs') return path.join(isolated, 'logs');
+        if (name === 'crashDumps') return path.join(isolated, 'crashes');
+        throw new Error(`Unexpected Electron path ${name}`);
+      },
+    };
+    expect(
+      applyElectronDevPathOverrides(app, {
+        [AGENT_TEAMS_ELECTRON_USER_DATA_DIR_ENV]: isolated,
+      }).userDataDir
+    ).toBe(isolated);
+    expect(setPath).toHaveBeenCalledTimes(4);
+    expect(fs.existsSync(normal)).toBe(false);
+    setPath.mockClear();
+    expect(() =>
+      applyElectronDevPathOverrides(app, {
+        [AGENT_TEAMS_ELECTRON_USER_DATA_DIR_ENV]: normal,
+      })
+    ).toThrow(/overlaps regular userData/);
+    expect(setPath).not.toHaveBeenCalled();
+    expect(fs.existsSync(normal)).toBe(false);
+  });
+
+  it.skipIf(process.platform !== 'win32')(
+    'uses absolute APPDATA when Electron cannot return appData before ready on Windows',
+    () => {
+      const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-teams-early-appdata-'));
+      tempDirs.push(tempRoot);
+      const appData = path.join(tempRoot, 'regular-appdata');
+      const regularProfile = path.join(appData, 'Agent Teams AI');
+      const isolated = path.join(tempRoot, 'isolated');
+      const previousAppData = process.env.APPDATA;
+      process.env.APPDATA = appData;
+      try {
+        const setPath = vi.fn();
+        const app = {
+          setPath,
+          getName: () => 'Agent Teams AI',
+          commandLine: { hasSwitch: (name: string) => name === 'user-data-dir' },
+          getPath: (name: string): string => {
+            if (name === 'appData') throw new Error("Failed to get 'appData' path");
+            if (name === 'userData') return isolated;
+            throw new Error(`Unexpected Electron path: ${name}`);
+          },
+        };
+        expect(
+          applyElectronDevPathOverrides(app, {
+            [AGENT_TEAMS_ELECTRON_USER_DATA_DIR_ENV]: isolated,
+          }).userDataDir
+        ).toBe(isolated);
+        expect(setPath).toHaveBeenCalledTimes(4);
+        setPath.mockClear();
+        expect(() =>
+          applyElectronDevPathOverrides(app, {
+            [AGENT_TEAMS_ELECTRON_USER_DATA_DIR_ENV]: regularProfile,
+          })
+        ).toThrow(/overlaps regular userData/);
+        expect(setPath).not.toHaveBeenCalled();
+        expect(fs.existsSync(regularProfile)).toBe(false);
+        process.env.APPDATA = 'relative-appdata';
+        expect(() =>
+          applyElectronDevPathOverrides(app, {
+            [AGENT_TEAMS_ELECTRON_USER_DATA_DIR_ENV]: isolated,
+          })
+        ).toThrow("Failed to get 'appData' path");
+      } finally {
+        if (previousAppData === undefined) delete process.env.APPDATA;
+        else process.env.APPDATA = previousAppData;
+      }
+    }
+  );
+
+  it.skipIf(process.platform !== 'win32')(
+    'handles an unavailable early Windows userData path without weakening regular-profile isolation',
+    () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-teams-early-userdata-'));
+      tempDirs.push(root);
+      const appData = path.join(root, 'normal-appdata');
+      const regular = path.join(appData, 'Agent Teams AI');
+      const isolated = path.join(root, 'isolated');
+      const previousAppData = process.env.APPDATA;
+      process.env.APPDATA = appData;
+      const setPath = vi.fn();
+      const app = {
+        setPath,
+        getName: () => 'Agent Teams AI',
+        getPath: (name: string): string => {
+          throw new Error(`Failed to get '${name}' path`);
+        },
+      };
+      try {
+        expect(
+          applyElectronDevPathOverrides(app, {
+            [AGENT_TEAMS_ELECTRON_USER_DATA_DIR_ENV]: isolated,
+          }).userDataDir
+        ).toBe(isolated);
+        expect(setPath).toHaveBeenCalledTimes(4);
+        expect(fs.existsSync(regular)).toBe(false);
+        setPath.mockClear();
+
+        expect(() =>
+          applyElectronDevPathOverrides(app, {
+            [AGENT_TEAMS_ELECTRON_USER_DATA_DIR_ENV]: regular,
+          })
+        ).toThrow(/overlaps regular userData/);
+        expect(setPath).not.toHaveBeenCalled();
+        expect(fs.existsSync(regular)).toBe(false);
+
+        process.env.APPDATA = 'relative-appdata';
+        expect(() =>
+          applyElectronDevPathOverrides(app, {
+            [AGENT_TEAMS_ELECTRON_USER_DATA_DIR_ENV]: isolated,
+          })
+        ).toThrow("Failed to get 'appData' path");
+        expect(setPath).not.toHaveBeenCalled();
+      } finally {
+        if (previousAppData === undefined) delete process.env.APPDATA;
+        else process.env.APPDATA = previousAppData;
+      }
+    }
+  );
+
   it('fails closed for an explicit relative userData path', () => {
     const setPathCalls: Array<{ name: string; value: string }> = [];
     expect(() =>
@@ -132,7 +267,9 @@ describe('applyElectronDevPathOverrides', () => {
       ).toThrow(/overlaps regular userData/);
       expect(setPath).not.toHaveBeenCalled();
       expect(nativeSpy).toHaveBeenCalled();
-      expect(fs.existsSync(alternateName)).toBe(false);
+      // Windows can genuinely resolve REGULA~1 to the existing profile via an 8.3 alias.
+      // The invariant is that rejecting the alias leaves that profile untouched.
+      expect(fs.readdirSync(regular)).toEqual([]);
     } finally {
       nativeSpy.mockRestore();
     }
@@ -180,6 +317,68 @@ describe('applyElectronDevPathOverrides', () => {
     expect(setPath).toHaveBeenCalledTimes(4);
   });
 
+  it.skipIf(process.platform !== 'darwin' && process.platform !== 'win32')(
+    'rejects a case-only alias of a nonexistent legacy profile',
+    () => {
+      const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-teams-path-case-alias-'));
+      tempDirs.push(tempRoot);
+      const regular = path.join(tempRoot, 'Agent Teams AI');
+      const alias = path.join(tempRoot, 'AGENT-TEAMS-AI');
+      const setPath = vi.fn();
+      expect(() =>
+        applyElectronDevPathOverrides(
+          {
+            setPath,
+            getPath: (name: string) =>
+              name === 'userData' || name === 'sessionData' ? regular : path.join(regular, name),
+          },
+          { [AGENT_TEAMS_ELECTRON_USER_DATA_DIR_ENV]: alias }
+        )
+      ).toThrow(/overlaps regular legacy userData/);
+      expect(setPath).not.toHaveBeenCalled();
+      expect(fs.existsSync(alias)).toBe(false);
+    }
+  );
+
+  it('rejects an explicit Claude root inside a normal Electron profile', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-teams-claude-profile-'));
+    tempDirs.push(tempRoot);
+    const regular = path.join(tempRoot, 'regular-profile');
+    const claudeRoot = path.join(regular, 'data', '.claude');
+    const setPath = vi.fn();
+    expect(() =>
+      applyElectronDevPathOverrides(
+        { setPath, getPath: () => regular },
+        { [AGENT_TEAMS_ELECTRON_CLAUDE_ROOT_ENV]: claudeRoot }
+      )
+    ).toThrow(/Electron isolated Claude root overlaps regular userData/);
+    expect(fs.existsSync(claudeRoot)).toBe(false);
+    expect(setPath).not.toHaveBeenCalled();
+  });
+
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
+    'rejects an existing isolated logs directory that is not writable',
+    () => {
+      const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-teams-profile-readonly-'));
+      tempDirs.push(tempRoot);
+      const userDataDir = path.join(tempRoot, 'isolated');
+      const logs = path.join(userDataDir, 'logs');
+      fs.mkdirSync(logs, { recursive: true });
+      fs.chmodSync(logs, 0o500);
+      const setPath = vi.fn();
+      try {
+        expect(() =>
+          applyElectronDevPathOverrides(
+            { setPath },
+            { [AGENT_TEAMS_ELECTRON_USER_DATA_DIR_ENV]: userDataDir }
+          )
+        ).toThrow(/could not be created/);
+        expect(setPath).not.toHaveBeenCalled();
+      } finally {
+        fs.chmodSync(logs, 0o700);
+      }
+    }
+  );
   it('rejects a junction used as the dev profile root', () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-teams-path-root-link-'));
     tempDirs.push(tempRoot);

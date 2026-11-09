@@ -1,7 +1,32 @@
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+
+const { startControlServer } = require('./helpers/controlServer.js');
+const { resetTaskBackendCache } = require('../src/internal/taskBackendSelection.js');
+const { resetSyncControlRequestChannel } = require('../src/internal/syncControlRequest.js');
+const registryEnvKeys = ['AGENT_TEAMS_BOUND_CONTROL_URL', 'AGENT_TEAMS_BOUND_CONTEXT_JSON', 'AGENT_TEAMS_MCP_CLAUDE_DIR'] as const;
+let registryServer: Awaited<ReturnType<typeof startControlServer>>;
+let previousEnv: Record<string, string | undefined>;
+
+beforeEach(async () => {
+  previousEnv = Object.fromEntries(registryEnvKeys.map((key) => [key, process.env[key]]));
+  registryServer = await startControlServer();
+  process.env.AGENT_TEAMS_BOUND_CONTROL_URL = registryServer.url;
+  process.env.AGENT_TEAMS_BOUND_CONTEXT_JSON = JSON.stringify({ appInstanceId: 'visualization-test', dataRootFingerprint: 'visualization-test', connectionGeneration: 1 });
+  resetTaskBackendCache();
+});
+
+afterEach(async () => {
+  resetTaskBackendCache();
+  resetSyncControlRequestChannel();
+  await registryServer?.stop();
+  for (const key of registryEnvKeys) {
+    if (previousEnv[key] === undefined) delete process.env[key];
+    else process.env[key] = previousEnv[key];
+  }
+});
 
 const { createController, protocols } = require('../src/index.js');
 
@@ -12,6 +37,7 @@ describe('generated visualization briefing protocol', () => {
   });
   it('includes the identical protocol once in lead/member briefings and supports bounded native composition', async () => {
     directory = mkdtempSync(join(tmpdir(), 'visualization-briefing-test-'));
+    process.env.AGENT_TEAMS_MCP_CLAUDE_DIR = directory;
     const teamDir = join(directory, 'teams', 'sandbox-team');
     mkdirSync(join(teamDir, 'inboxes'), { recursive: true });
     mkdirSync(join(directory, 'tasks', 'sandbox-team'), { recursive: true });

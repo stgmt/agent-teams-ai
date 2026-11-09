@@ -17,6 +17,8 @@ import {
 } from '@shared/utils/teamRuntimeSelection';
 import { isAbsolute } from 'path';
 
+import { resolveTeamSpecBinding, TeamSpecBindingError } from './registry/TeamSpecBinding';
+
 import type {
   EffortLevel,
   TeamCreateConfigRequest,
@@ -30,6 +32,20 @@ const PROVIDER_BACKEND_ERROR =
 
 export class TeamRequestValidationError extends Error {
   readonly name = 'TeamRequestValidationError';
+}
+
+/** Reject ambiguous launch requests before admission can replay persisted work. */
+export function validateBootstrapOnlyLaunchRequest(input: {
+  bootstrapOnly?: unknown;
+  prompt?: unknown;
+}): string | null {
+  if (input.bootstrapOnly !== undefined && input.bootstrapOnly !== true) {
+    return 'bootstrapOnly must be true when provided';
+  }
+  if (input.bootstrapOnly === true && typeof input.prompt === 'string' && input.prompt.trim()) {
+    return 'Bootstrap-only launch must not contain a work prompt';
+  }
+  return null;
 }
 
 export function assertProvisioningTeamName(value: unknown): string {
@@ -249,6 +265,8 @@ export function parseCreateMembers(
 
 export function parseLaunchRequest(teamName: string, body: unknown): TeamLaunchRequest {
   const payload = body && typeof body === 'object' ? (body as Record<string, unknown>) : {};
+  const bootstrapError = validateBootstrapOnlyLaunchRequest(payload);
+  if (bootstrapError) throw new TeamRequestValidationError(bootstrapError);
   const providerId = payload.providerId == null ? undefined : parseProviderId(payload.providerId);
   const prompt = assertOptionalString(payload.prompt, 'prompt');
   const providerBackendId = parseLaunchProviderBackendId(providerId, payload.providerBackendId);
@@ -276,6 +294,7 @@ export function parseLaunchRequest(teamName: string, body: unknown): TeamLaunchR
     ...(prompt && {
       prompt,
     }),
+    ...(payload.bootstrapOnly === true ? { bootstrapOnly: true as const } : {}),
     ...(model && {
       model,
     }),
@@ -306,6 +325,19 @@ export function parseLaunchRequest(teamName: string, body: unknown): TeamLaunchR
   };
 }
 
+function optionalTeamSpecBinding(
+  binding: Pick<TeamCreateRequest, 'specProject' | 'specSlug'>,
+  teamName: string
+): { project: string; spec: string } | undefined {
+  if (binding.specProject === undefined && binding.specSlug === undefined) return undefined;
+  try {
+    return resolveTeamSpecBinding(binding, teamName);
+  } catch (error) {
+    if (error instanceof TeamSpecBindingError) throw new TeamRequestValidationError(error.message);
+    throw error;
+  }
+}
+
 export function parseCreateTeamRequest(body: unknown): TeamCreateConfigRequest {
   const payload = body && typeof body === 'object' ? (body as Record<string, unknown>) : {};
   const runtimeSelectionVersion = normalizeRuntimeSelectionVersion(payload.runtimeSelectionVersion);
@@ -317,6 +349,15 @@ export function parseCreateTeamRequest(body: unknown): TeamCreateConfigRequest {
     throw new TeamRequestValidationError('Explicit model/backend requires a provider');
   }
   const teamName = assertProvisioningTeamName(payload.teamName);
+  const project = assertOptionalString(payload.specProject, 'specProject');
+  const spec = assertOptionalString(payload.specSlug, 'specSlug');
+  if (
+    (Object.hasOwn(payload, 'specProject') || Object.hasOwn(payload, 'specSlug')) &&
+    (!project || !spec)
+  ) {
+    throw new TeamRequestValidationError('specProject and specSlug must both be non-empty');
+  }
+  const binding = optionalTeamSpecBinding({ specProject: project, specSlug: spec }, teamName);
   const providerId = payload.providerId == null ? undefined : parseProviderId(payload.providerId);
   const providerBackendId = parseLaunchProviderBackendId(providerId, payload.providerBackendId);
   const displayName = assertOptionalString(payload.displayName, 'displayName');
@@ -334,6 +375,7 @@ export function parseCreateTeamRequest(body: unknown): TeamCreateConfigRequest {
 
   const request: TeamCreateConfigRequest = {
     teamName,
+    ...(binding ? { specProject: binding.project, specSlug: binding.spec } : {}),
     runtimeSelectionVersion,
     members: parseCreateMembers(payload.members, providerId ?? 'anthropic'),
     ...(displayName ? { displayName } : {}),
@@ -403,6 +445,9 @@ export function parseDraftLaunchCreateRequest(
   body: unknown
 ): TeamCreateRequest {
   const payload = getObjectPayload(body);
+  const bootstrapError = validateBootstrapOnlyLaunchRequest(payload);
+  if (bootstrapError) throw new TeamRequestValidationError(bootstrapError);
+  if (payload.bootstrapOnly) throw new TeamRequestValidationError('Finish team setup first');
   normalizeRuntimeSelectionVersion(payload.runtimeSelectionVersion);
   const teamName = Object.hasOwn(payload, 'teamName')
     ? assertProvisioningTeamName(payload.teamName)
@@ -449,8 +494,11 @@ export function parseDraftLaunchCreateRequest(
     assertOptionalExtraCliArgs(extraCliArgs);
   }
 
+  const binding = optionalTeamSpecBinding(savedRequest, teamName);
+
   return {
     teamName,
+    ...(binding ? { specProject: binding.project, specSlug: binding.spec } : {}),
     runtimeSelectionVersion: normalizeRuntimeSelectionVersion(savedRequest.runtimeSelectionVersion),
     displayName: savedRequest.displayName,
     description: savedRequest.description,

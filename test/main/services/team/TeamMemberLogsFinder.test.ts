@@ -1413,7 +1413,7 @@ describe('TeamMemberLogsFinder', () => {
             content: [
               {
                 type: 'tool_use',
-                name: 'TaskUpdate',
+                name: 'task_start',
                 input: { team_name: teamName, taskId: '1', status: 'in_progress' },
               },
             ],
@@ -1476,7 +1476,7 @@ describe('TeamMemberLogsFinder', () => {
             content: [
               {
                 type: 'tool_use',
-                name: 'TaskUpdate',
+                name: 'task_start',
                 input: { team_name: teamName, taskId: '10', status: 'pending' },
               },
             ],
@@ -1589,7 +1589,7 @@ describe('TeamMemberLogsFinder', () => {
             content: [
               {
                 type: 'tool_use',
-                name: 'TaskUpdate',
+                name: 'task_start',
                 input: { team_name: teamName, taskId: '10', status: 'pending' },
               },
             ],
@@ -1797,8 +1797,8 @@ describe('TeamMemberLogsFinder', () => {
             content: [
               {
                 type: 'tool_use',
-                name: 'TaskUpdate',
-                input: { taskId: '9', status: 'in_progress' },
+                name: 'task_start',
+                input: { taskId: '9' },
               },
             ],
           },
@@ -1824,8 +1824,8 @@ describe('TeamMemberLogsFinder', () => {
             content: [
               {
                 type: 'tool_use',
-                name: 'TaskUpdate',
-                input: { taskId: '9', status: 'in_progress' },
+                name: 'task_start',
+                input: { taskId: '9' },
               },
             ],
           },
@@ -1843,6 +1843,59 @@ describe('TeamMemberLogsFinder', () => {
     expect(
       logsForA.some((l) => l.kind === 'subagent' && l.memberName?.toLowerCase() === 'bob')
     ).toBe(false);
+  });
+
+  it('does not attribute board work from built-in personal task markers', async () => {
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'claude-team-personal-only-'));
+    setClaudeBasePathOverride(tmpDir);
+
+    const teamName = 'personal-team';
+    const projectPath = '/Users/test/personal-proj';
+    const projectId = '-Users-test-personal-proj';
+    const sessionId = 'session-personal';
+    await fs.mkdir(path.join(tmpDir, 'teams', teamName), { recursive: true });
+    await fs.writeFile(
+      path.join(tmpDir, 'teams', teamName, 'config.json'),
+      JSON.stringify({
+        name: teamName,
+        projectPath,
+        members: [{ name: 'team-lead', agentType: 'team-lead' }],
+      }),
+      'utf8'
+    );
+
+    const projectRoot = path.join(tmpDir, 'projects', projectId);
+    await fs.mkdir(path.join(projectRoot, sessionId, 'subagents'), { recursive: true });
+    await fs.writeFile(
+      path.join(projectRoot, sessionId, 'subagents', 'agent-p1.jsonl'),
+      [
+        JSON.stringify({
+          timestamp: '2026-01-01T00:00:01.000Z',
+          type: 'user',
+          message: { role: 'user', content: `You are p1, a developer on team "${teamName}" (${teamName}).` },
+        }),
+        JSON.stringify({
+          timestamp: '2026-01-01T00:00:02.000Z',
+          type: 'assistant',
+          message: {
+            role: 'assistant',
+            content: [
+              { type: 'tool_use', name: 'TaskCreate', input: { subject: 'Private note' } },
+              {
+                type: 'tool_use',
+                name: 'TaskUpdate',
+                input: { taskId: '9', status: 'in_progress' },
+              },
+            ],
+          },
+        }),
+      ].join('\n') + '\n',
+      'utf8'
+    );
+
+    const finder = new TeamMemberLogsFinder();
+
+    await expect(finder.findLogsForTask(teamName, '9')).resolves.toHaveLength(0);
   });
 
   it('detects structured task markers and ignores legacy teamctl command lines', async () => {
@@ -1901,9 +1954,32 @@ describe('TeamMemberLogsFinder', () => {
 
     const finder = new TeamMemberLogsFinder();
 
-    await expect(finder.hasTaskUpdateMarker(structuredPath, 'task-42')).resolves.toBe(true);
-    await expect(finder.hasTaskUpdateMarker(legacyPath, 'task-42')).resolves.toBe(false);
-    await expect(finder.hasTaskUpdateMarker(noisePath, 'task-42')).resolves.toBe(false);
+    await expect(finder.hasBoardTaskMarker(structuredPath, 'task-42')).resolves.toBe(true);
+    await expect(finder.hasBoardTaskMarker(legacyPath, 'task-42')).resolves.toBe(false);
+    await expect(finder.hasBoardTaskMarker(noisePath, 'task-42')).resolves.toBe(false);
+  });
+
+  it('ignores built-in personal TaskUpdate markers as board evidence', async () => {
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'claude-team-personal-marker-'));
+    const personalPath = path.join(tmpDir, 'personal.jsonl');
+    await fs.writeFile(
+      personalPath,
+      JSON.stringify({
+        timestamp: '2026-01-01T00:00:00.000Z',
+        type: 'assistant',
+        message: {
+          role: 'assistant',
+          content: [
+            { type: 'tool_use', name: 'TaskUpdate', input: { taskId: '1', status: 'completed' } },
+          ],
+        },
+      }) + '\n',
+      'utf8'
+    );
+
+    const finder = new TeamMemberLogsFinder();
+
+    await expect(finder.hasBoardTaskMarker(personalPath, '1')).resolves.toBe(false);
   });
 
   it('detects fully-qualified agent-teams task markers in JSONL', async () => {
@@ -1931,7 +2007,7 @@ describe('TeamMemberLogsFinder', () => {
 
     const finder = new TeamMemberLogsFinder();
 
-    await expect(finder.hasTaskUpdateMarker(qualifiedPath, 'task-42')).resolves.toBe(true);
+    await expect(finder.hasBoardTaskMarker(qualifiedPath, 'task-42')).resolves.toBe(true);
   });
 
   it('findLogFileRefsForTask returns correct refs for a task', async () => {
@@ -1979,7 +2055,7 @@ describe('TeamMemberLogsFinder', () => {
             content: [
               {
                 type: 'tool_use',
-                name: 'TaskUpdate',
+                name: 'task_start',
                 input: { taskId: '5', status: 'in_progress' },
               },
             ],
@@ -2104,12 +2180,12 @@ describe('TeamMemberLogsFinder', () => {
               { type: 'tool_use', name: 'TaskGet', input: { taskId: 'ignored-task' } },
               {
                 type: 'tool_use',
-                name: 'TaskUpdate',
+                name: 'task_start',
                 input: { taskId: fullTaskId.slice(0, 8), status: 'completed' },
               },
               {
                 type: 'tool_use',
-                name: 'TaskUpdate',
+                name: 'task_start',
                 input: { taskId: 'wrong-team-task', teamName: 'other-team', status: 'completed' },
               },
             ],
@@ -2129,7 +2205,7 @@ describe('TeamMemberLogsFinder', () => {
             content: [
               {
                 type: 'tool_use',
-                name: 'TaskUpdate',
+                name: 'task_start',
                 input: { taskId: 'no-team-task', status: 'completed' },
               },
             ],
@@ -2205,7 +2281,7 @@ describe('TeamMemberLogsFinder', () => {
           message: {
             role: 'assistant',
             content: [
-              { type: 'tool_use', name: 'TaskUpdate', input: { taskId: '7', status: 'completed' } },
+              { type: 'tool_use', name: 'task_start', input: { taskId: '7', status: 'completed' } },
             ],
           },
         }),
@@ -2228,7 +2304,7 @@ describe('TeamMemberLogsFinder', () => {
           message: {
             role: 'assistant',
             content: [
-              { type: 'tool_use', name: 'TaskUpdate', input: { taskId: '7', status: 'completed' } },
+              { type: 'tool_use', name: 'task_start', input: { taskId: '7', status: 'completed' } },
             ],
           },
         }),
@@ -2289,7 +2365,7 @@ describe('TeamMemberLogsFinder', () => {
             content: [
               {
                 type: 'tool_use',
-                name: 'TaskUpdate',
+                name: 'task_start',
                 input: { taskId: '3', status: 'in_progress' },
               },
             ],

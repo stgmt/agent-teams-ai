@@ -9,69 +9,80 @@ interface WorkflowStep {
   run?: string;
 }
 
-interface ReleaseWorkflow {
-  jobs?: {
-    'verify-public-runtime'?: {
-      strategy?: { matrix?: { include?: Array<Record<string, string>> } };
-    };
-    'release-win'?: {
-      strategy?: { matrix?: { include?: Array<Record<string, string>> } };
-      steps?: WorkflowStep[];
-    };
-  };
+interface WorkflowJob {
+  strategy?: { matrix?: { include?: Array<Record<string, string>> } };
+  steps?: WorkflowStep[];
 }
 
-describe('Windows release workflow', () => {
-  it('builds and publishes native x64 and ARM64 installers', async () => {
+interface ReleaseWorkflow {
+  jobs?: Record<string, WorkflowJob>;
+}
+
+describe('Windows x64 packaging workflows', () => {
+  it('builds and publishes only the native Windows x64 installer', async () => {
     const source = await readFile('.github/workflows/release.yml', 'utf8');
     const workflow = parse(source) as ReleaseWorkflow;
+    const jobs = workflow.jobs ?? {};
     const runtimeVerificationTargets =
-      workflow.jobs?.['verify-public-runtime']?.strategy?.matrix?.include;
-    const releaseJob = workflow.jobs?.['release-win'];
+      jobs['verify-public-runtime']?.strategy?.matrix?.include;
+    const releaseJob = jobs['release-win'];
     const targets = releaseJob?.strategy?.matrix?.include;
 
     expect(targets).toEqual([
       {
         arch: 'x64',
-        runner: 'windows-latest',
+        runner: 'windows-2022',
         runtime_platform: 'win32-x64',
         bundle_directory: 'win-unpacked',
       },
+    ]);
+    expect(runtimeVerificationTargets).toEqual([
       {
-        arch: 'arm64',
-        runner: 'windows-11-arm',
-        runtime_platform: 'win32-arm64',
-        bundle_directory: 'win-arm64-unpacked',
+        platform: 'win32-x64',
+        runner: 'windows-2022',
       },
     ]);
-    expect(runtimeVerificationTargets).toContainEqual({
-      platform: 'win32-arm64',
-      runner: 'windows-11-arm',
-    });
+    expect(jobs['release-mac']).toBeUndefined();
+    expect(jobs['release-linux']).toBeUndefined();
 
     const commands = (releaseJob?.steps ?? []).map((step) => step.run ?? '').join('\n');
     expect(commands).toContain('stage-runtime.mjs --platform ${{ matrix.runtime_platform }}');
     expect(commands).toContain(
       'stage-terminal-platform-runtime.mjs --platform ${{ matrix.runtime_platform }}'
     );
-    expect(commands).toContain(
-      'stage-opencode-console-wrapper.mjs --platform ${{ matrix.runtime_platform }} --require'
-    );
-    expect(commands).toContain('test -f resources/runtime/opencode-console/opencode.exe');
+    expect(commands).not.toContain('stage-opencode-console-wrapper.mjs');
+    expect(commands).not.toContain('resources/runtime/opencode-console/opencode.exe');
     expect(commands).toContain('pnpm pack:win:${{ matrix.arch }} --publish never');
     expect(commands).toContain(
       'verifyBundle.cjs "release/${{ matrix.bundle_directory }}" win32 ${{ matrix.arch }}'
     );
+    expect(commands).not.toContain('pack:win:arm64');
+    expect(commands).not.toContain('win-arm64-unpacked');
+    const packagedSource = await readFile('.github/workflows/electron-packaged-ci.yml', 'utf8');
+    const packagedWorkflow = parse(packagedSource) as ReleaseWorkflow;
+    const packagedJob = packagedWorkflow.jobs?.['packaged-smoke'];
+    expect(packagedJob?.strategy?.matrix?.include).toEqual([
+      {
+        platform: 'win32-x64',
+        arch: 'x64',
+        os: 'win32',
+        runner: 'windows-2022',
+        pack: 'pack:win:x64',
+        bundle: 'release/win-unpacked',
+      },
+    ]);
+    const packagedCommands = (packagedJob?.steps ?? [])
+      .map((step) => step.run ?? '')
+      .join('\n');
+    expect(packagedCommands).not.toContain('stage-opencode-console-wrapper.mjs');
+    expect(packagedCommands).not.toContain('resources/runtime/opencode-console/opencode.exe');
+    expect(packagedCommands).not.toContain('pack:win:arm64');
 
-    const wrapperStageIndex = commands.indexOf(
-      'stage-opencode-console-wrapper.mjs --platform ${{ matrix.runtime_platform }} --require'
-    );
-    const wrapperVerificationIndex = commands.indexOf(
-      'test -f resources/runtime/opencode-console/opencode.exe'
+    const runtimeStageIndex = commands.indexOf(
+      'stage-runtime.mjs --platform ${{ matrix.runtime_platform }}'
     );
     const packageIndex = commands.indexOf('pnpm pack:win:${{ matrix.arch }} --publish never');
-    expect(wrapperStageIndex).toBeGreaterThanOrEqual(0);
-    expect(wrapperVerificationIndex).toBeGreaterThan(wrapperStageIndex);
-    expect(packageIndex).toBeGreaterThan(wrapperVerificationIndex);
+    expect(runtimeStageIndex).toBeGreaterThanOrEqual(0);
+    expect(packageIndex).toBeGreaterThan(runtimeStageIndex);
   });
 });

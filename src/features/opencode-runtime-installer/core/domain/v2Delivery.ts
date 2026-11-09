@@ -54,6 +54,7 @@ export interface OpenCodeV2InstalledReceipt {
   instance: string;
 }
 const RELEASE = /^(0|[1-9]\d{0,8})\.(0|[1-9]\d{0,8})\.(0|[1-9]\d{0,8})$/;
+const CLI_VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/u;
 const SHA = /^[a-f0-9]{64}$/;
 export const V2_INSTANCE_UUID =
   /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
@@ -115,6 +116,17 @@ export function readOpenCodeV2DeliveryMap(
   lockValue: unknown
 ): Readonly<Record<string, OpenCodeV2DeliveryDescriptor>> | null {
   const lock = record(lockValue);
+  if (Object.hasOwn(lock, 'releaseKind')) {
+    if (
+      lock.releaseKind !== 'windows-x64-claude-only' ||
+      typeof lock.cliVersion !== 'string' ||
+      !CLI_VERSION.test(lock.cliVersion) ||
+      lock.opencodeV2Delivery !== 'off' ||
+      Object.hasOwn(lock, 'opencodeV2')
+    )
+      invalid();
+    return {};
+  }
   if (!Object.hasOwn(lock, 'opencodeV2Delivery')) return null;
   const map = record(lock.opencodeV2Delivery);
   const qualified = record(record(lock.opencodeV2).qualified);

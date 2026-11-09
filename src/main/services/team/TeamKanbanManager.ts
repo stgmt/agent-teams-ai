@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import { atomicWriteSync } from '@main/utils/atomicWrite';
-import { FileReadTimeoutError, readFileUtf8WithTimeout } from '@main/utils/fsRead';
+import { readFileUtf8WithTimeout } from '@main/utils/fsRead';
 import { getTeamsBasePath } from '@main/utils/pathDecoder';
 import { KANBAN_COLUMN_IDS } from '@shared/constants/kanban';
 import { createLogger } from '@shared/utils/logger';
@@ -10,6 +10,9 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { withTeamBoardLockForSyncOperation } from './boardLock';
+import { ExecutionTaskStore } from './execution/ExecutionTaskStore';
+import { resolveTeamSpecBindings } from './registry/TeamSpecBinding';
+import { TeamConfigReader } from './TeamConfigReader';
 
 import type { KanbanColumnId, KanbanState, UpdateKanbanPatch } from '@shared/types';
 
@@ -73,26 +76,79 @@ function validateSafetyState(value: unknown, teamName: string): void {
       !isValidColumn(task.column) ||
       typeof task.movedAt !== 'string' ||
       !Number.isFinite(Date.parse(task.movedAt)) ||
-      (task.reviewer !== undefined && task.reviewer !== null && typeof task.reviewer !== 'string')
+      (task.reviewer !== undefined &&
+        task.reviewer !== null &&
+        typeof task.reviewer !== 'string') ||
+      (task.transitionId !== undefined && typeof task.transitionId !== 'string') ||
+      (task.errorDescription !== undefined && typeof task.errorDescription !== 'string')
     )
       return invalid();
+  }
+  if (value.columnOrder !== undefined) {
+    if (!record(value.columnOrder)) return invalid();
+    for (const [column, ids] of Object.entries(value.columnOrder)) {
+      if (
+        !KANBAN_COLUMN_IDS.includes(column as KanbanColumnId) ||
+        !Array.isArray(ids) ||
+        ids.some((id) => typeof id !== 'string')
+      )
+        return invalid();
+    }
   }
 }
 
 export class TeamKanbanManager {
+  private readonly configReader = new TeamConfigReader();
+  private readonly executionTaskStore = new ExecutionTaskStore();
+
+  private async taskAuthority(teamName: string): Promise<'local' | 'registry'> {
+    const state = await this.configReader.getRegistryBindingState(teamName);
+    if (state.status !== 'verified') {
+      throw new Error(`Cannot verify task authority for team "${teamName}"`);
+    }
+    const binding = state.binding;
+    const registryBacked =
+      resolveTeamSpecBindings(binding, teamName).length > 0 ||
+      (typeof binding.registryTeamId === 'string' && binding.registryTeamId.trim().length > 0) ||
+      (typeof binding.registryRegistrationRequestId === 'string' &&
+        binding.registryRegistrationRequestId.trim().length > 0) ||
+      binding.registryRegistrationCompleted === false;
+    return registryBacked ? 'registry' : 'local';
+  }
+
+  private assertNoPendingExecutionTransitions(teamName: string): void {
+    for (const task of this.executionTaskStore.list(teamName)) {
+      if (Object.prototype.hasOwnProperty.call(task, 'pendingKanbanTransition')) {
+        const transition =
+          task.pendingKanbanTransition?.kind === 'status' ? 'Task status' : 'Review';
+        throw Object.assign(
+          new Error(
+            `KANBAN_TRANSITION_UNCERTAIN: ${transition} transition for task ${task.taskId} has an unknown outcome; inspect the task and board before further changes.`
+          ),
+          { code: 'KANBAN_TRANSITION_UNCERTAIN', taskId: task.taskId }
+        );
+      }
+    }
+  }
+
   private async checkedState(
     teamName: string,
     state: KanbanState,
     observedRaw: string | null | undefined
   ): Promise<KanbanState> {
+    const authority = await this.taskAuthority(teamName);
     const teamDir = path.join(getTeamsBasePath(), teamName);
     return withTeamBoardLockForSyncOperation(
       { teamDir, claudeDir: path.dirname(getTeamsBasePath()) },
       () => {
-        createController({
-          teamName,
-          claudeDir: path.dirname(getTeamsBasePath()),
-        }).kanban.assertKanbanStateConsistent(state);
+        this.assertNoPendingExecutionTransitions(teamName);
+        if (authority === 'local') {
+          createController({
+            teamName,
+            claudeDir: path.dirname(getTeamsBasePath()),
+            localTaskBoard: true,
+          }).kanban.assertKanbanStateConsistent(state);
+        }
         if (observedRaw !== undefined) {
           let currentRaw: string | null;
           try {
@@ -118,7 +174,7 @@ export class TeamKanbanManager {
     );
   }
 
-  async getState(teamName: string, options: { strict?: boolean } = {}): Promise<KanbanState> {
+  async getState(teamName: string, _options: { strict?: boolean } = {}): Promise<KanbanState> {
     const statePath = this.getStatePath(teamName);
 
     let raw: string;
@@ -127,16 +183,12 @@ export class TeamKanbanManager {
       const stat = await fs.promises.stat(statePath);
       observed = true;
       if (!stat.isFile() || stat.size > MAX_KANBAN_STATE_BYTES) {
-        if (options.strict) throw new Error('Kanban safety state is unavailable');
-        return this.checkedState(teamName, createDefaultState(teamName), undefined);
+        throw new Error('Kanban safety state is unavailable');
       }
       raw = await readFileUtf8WithTimeout(statePath, 5_000);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT' && (!options.strict || !observed)) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT' && !observed) {
         return this.checkedState(teamName, createDefaultState(teamName), null);
-      }
-      if (error instanceof FileReadTimeoutError && !options.strict) {
-        return this.checkedState(teamName, createDefaultState(teamName), undefined);
       }
       await this.checkedState(teamName, createDefaultState(teamName), undefined);
       throw error;
@@ -146,10 +198,9 @@ export class TeamKanbanManager {
     try {
       parsed = JSON.parse(raw) as Partial<KanbanState>;
     } catch {
-      if (options.strict) throw new Error('Kanban safety state is corrupt');
-      return this.checkedState(teamName, createDefaultState(teamName), raw);
+      throw new Error('Kanban safety state is corrupt');
     }
-    if (options.strict) validateSafetyState(parsed, teamName);
+    validateSafetyState(parsed, teamName);
     const sanitizedTasks: KanbanState['tasks'] = {};
     if (parsed.tasks && typeof parsed.tasks === 'object') {
       for (const [taskId, value] of Object.entries(parsed.tasks)) {
@@ -276,6 +327,7 @@ export class TeamKanbanManager {
     teamName: string,
     update: (state: KanbanState) => boolean
   ): Promise<void> {
+    const authority = await this.taskAuthority(teamName);
     const teamDir = path.join(getTeamsBasePath(), teamName);
     await withTeamBoardLockForSyncOperation(
       { teamDir, claudeDir: path.dirname(getTeamsBasePath()) },
@@ -293,10 +345,19 @@ export class TeamKanbanManager {
         }
         const parsed: unknown = JSON.parse(raw);
         validateSafetyState(parsed, teamName);
-        const state = createController({
-          teamName,
-          claudeDir: path.dirname(getTeamsBasePath()),
-        }).kanban.readKanbanStateAlreadyLocked() as KanbanState;
+        this.assertNoPendingExecutionTransitions(teamName);
+        const state =
+          authority === 'local'
+            ? (createController({
+                teamName,
+                claudeDir: path.dirname(getTeamsBasePath()),
+                localTaskBoard: true,
+              }).kanban.readKanbanStateAlreadyLocked() as KanbanState)
+            : {
+                ...(parsed as KanbanState),
+                teamName,
+                reviewers: (parsed as KanbanState).reviewers ?? [],
+              };
         if (update(state)) this.writeState(teamName, state);
       }
     );

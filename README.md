@@ -5,11 +5,13 @@
 
 ## What this fork adds
 
-Based on upstream `v2.18.0` (merged up to upstream commit `eb67de958`, 2026-10-25). As far as we could verify on that date, upstream `main` does not contain these fixes:
+This fork merges upstream `v2.18.6` and retains these fork-specific changes:
 
 - **Member Save + Restart works.** Saving a teammate's settings with a restart no longer ends with "Failed to save". The restart waits for the real process exit, a failed restart no longer rolls the roster back, a dead process is no longer reported as online, and a restarted member gets its startup work once.
 - **"Team is not running" notice.** When you write to a Lead whose team is stopped (or whose process just exited), a dialog says so and offers **Launch**, which opens the normal launch dialog. It appears on every message you send to a stopped team, including teams launched over the HTTP API.
 - **Startup work does not block launch confirmation.** A native teammate no longer gets its task queue inside the startup context; the work arrives as messages after the launch is confirmed, so a long first turn cannot hold the confirmation back.
+- **Tasks linked to specifications.** A team can link specifications from the registry and work with their tasks on its board. Existing teams without a registry link retain their local tasks.
+- **Local task files.** Task result files stay on the desktop. Consistent verification when a task is completed directly through the specification server is tracked in [the backlog](https://github.com/stgmt/omp-spec-kit/issues/52).
 
 ## How the fork is maintained
 
@@ -35,7 +37,7 @@ Based on upstream `v2.18.0` (merged up to upstream commit `eb67de958`, 2026-10-2
 </p>
 
 <p align="center">
-  <sub>Free desktop app for AI agent teams. Start with a free model with no auth - no signup, API key, or card - or connect Claude Code, Codex, OpenCode, Cursor, SuperGrok, GitHub Copilot, Z.AI, MiniMax, Kiro, and many more. For coding and broader project work.</sub>
+  <sub>Windows x64 desktop app for AI agent teams. This fork supports Claude Code and Codex; OpenCode is not supported in fork releases.</sub>
 </p>
 
 <!--
@@ -162,7 +164,7 @@ https://github.com/user-attachments/assets/35e27989-726d-4059-8662-bae610e46b42
 
 ## Installation
 
-No prerequisites - the app can detect installed Claude Code, Codex, and OpenCode runtimes. You can also connect Cursor, SuperGrok, GitHub Copilot, Z.AI, MiniMax, and Kiro from the UI.
+The app can detect installed Claude Code and Codex runtimes. OpenCode is not supported in this fork.
 
 <table align="center">
 <tr>
@@ -175,12 +177,42 @@ No prerequisites - the app can detect installed Claude Code, Codex, and OpenCode
   <br />
   <sub>Not code-signed: SmartScreen may warn - click "More info" -> "Run anyway".</sub>
   <br />
-  <sub>Installs over an upstream installation (same app id, same user data). To go back, run upstream's installer.</sub>
+  <sub>Uses the upstream app id and user data. Close older app and controller processes and back up your data before installing; rolling back may require restoring that backup.</sub>
 </td>
 </tr>
 </table>
 
-macOS and Linux: this fork publishes no builds. Build from source (see [Development](#development)) or use [upstream's installers](https://github.com/777genius/agent-teams-ai/releases/latest), which do not include the fork's fixes.
+macOS and Linux: this fork does not publish or validate builds for these platforms. Use [upstream's installers](https://github.com/777genius/agent-teams-ai/releases/latest), which do not include the fork's fixes.
+
+### Claude Code and local models
+
+Install and sign in to Claude Code before launching a team. To use a local model through
+Claude Code, open provider settings and select **Local / compatible endpoint**. Enter an
+Anthropic-compatible API base URL and any token required by that endpoint; a model server
+that only exposes an OpenAI-compatible API needs a compatible gateway.
+
+### Team specifications and tasks
+
+1. Start an [omp-spec-kit registry](https://github.com/stgmt/omp-spec-kit) and give the
+   desktop app a registry credential. By default, the app connects to
+   `http://127.0.0.1:8650/mcp` and reads the token from
+   `~/.spec-registry/mcp-token.txt`. Set `OMP_SPEC_REGISTRY_URL` to use another address,
+   or `OMP_SPEC_REGISTRY_TOKEN_FILE` to use another token file. The
+   `OMP_SPEC_REGISTRY_TOKEN` environment variable is used only if that file is absent or empty.
+2. Open the team, select **Specifications**, and link the specifications it should use.
+   The team lead can create specifications, requirements, and shared tasks through MCP.
+   Tasks created directly through the specification MCP appear on the same board.
+3. Select the intended specification when working with a shared task: two specifications
+   may both contain a task with the same number. Agents' personal tasks stay separate;
+   existing local tasks are not automatically moved to the registry. Personal tasks live
+   in their own isolated list per data root, team, and member, and their numbers are never
+   read as board task references. Runtimes launched outside the native Claude path keep the
+   previous task-tool restrictions.
+
+Task result files stay on the desktop. The app checks required local files when it
+completes a task; direct completion through the registry does not yet have the same
+server-side verification. That work is tracked in
+[omp-spec-kit issue 52](https://github.com/stgmt/omp-spec-kit/issues/52).
 
 ## Table of contents
 
@@ -204,7 +236,7 @@ macOS and Linux: this fork publishes no builds. Build from source (see [Developm
 
 ## What is this
 
-An orchestration layer for AI agent teams across Codex/Claude/OpenCode/Cursor/Grok/GitHub/Kiro/Z.AI/Xiaomi/MiniMax/Kimi...(300+ models, 200+ LLM providers, free models no auth)
+An orchestration layer for AI agent teams, including Claude Code and Codex.
 - **Assemble your team** — create agent teams (using 1 prompt) with different roles that work autonomously in parallel
 - **Sit back and watch** — tasks change status on the kanban board while agents handle everything on their own
 - **Agents talk to each other** — they communicate, create and manage their own tasks, review, leave comments
@@ -218,7 +250,7 @@ An orchestration layer for AI agent teams across Codex/Claude/OpenCode/Cursor/Gr
 - **Task-specific logs and messages** — clearly see agent/runtime logs (tools), actions and messages in isolation for each individual task, making it easy to trace what happened for any assignment
 - **Integrated terminal workspace** — run commands in a visual PTY scoped to each team and project, with local shell tabs, persistent history, autocomplete, and terminal settings
 - **Solo mode** — one-member team: a single agent that creates its own tasks and shows live progress. Saves tokens; can expand to a full team anytime
-- **Multi-provider orchestration** — start with a free model with no auth, auto-detect available Claude Code, Codex, and OpenCode runtimes, or connect Cursor, SuperGrok, GitHub Copilot, Z.AI, MiniMax, Kiro and more, using the subscriptions or API keys you already have
+- **Multi-provider orchestration** — detect available Claude Code and Codex runtimes and connect supported providers using your existing subscriptions or API keys.
 - **Review changes like in Cursor** — see what code each task changed, then approve, reject, or comment
 
 <details>
@@ -264,41 +296,30 @@ An orchestration layer for AI agent teams across Codex/Claude/OpenCode/Cursor/Gr
 
 </details>
 
-## Why not just use Claude Code with pre-configured agents?
-
-We're seeing an interesting trend. First, AI agents started communicating with each other (something Claude and Codex didn't support before). Then we started seeing messenger-style AI assistants like Grok Bot, Meta Muse and OpenAI Dots, where you can create a team (or even multiple teams, as in Grok) and communicate with agents just like in a regular messenger. This is a much more natural and familiar way for people to interact with AI (like with humans).
-
-For the general audience, that might be enough. But people often need to build many/large/complex  projects, and that's where bigger teams of agents become necessary, each with their own roles and responsibilities.
-
-And when you have a lot of teammates, you need a good way to organize and manage them. That's exactly where Agent Teams comes in. You can see everything clearly in a visual interface, understand what's happening across your teams, and easily interact with individual agents.
-
-Sure, you can set up something similar with regular Claude, but keeping track of everything without a proper frontend is difficult, and we are targeting precisely this multi-agent use case.
-
-For us, it's not just about running multi-agent systems. It's about having full visibility into who's doing what, keeping everything organized, and making it easy to interact with your agents.
-
 ## Comparison
 
 | Feature                             | Agent Teams                                                                                             | Gas Town                                                             | Paperclip                                                              | Cursor                                                         | Claude Code CLI                                              | OpenRig |
 | ----------------------------------- | ------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- | ---------------------------------------------------------------------- | -------------------------------------------------------------- | ------------------------------------------------------------ | ------- |
-| **Live team collaboration**         | ✅ █████████░ 9/10 · Agents plan, delegate, work, and review together                                   | ✅ ████████░░ 8/10 · Persistent teams with coordination and recovery | ⚠️ ███████░░░ 7/10 · Durable scheduled agents, less live peer teamwork | ⚠️ ██████░░░░ 6/10 · Parallel agents + subagents, no peer team | ⚠️ ███████░░░ 7/10 · Experimental teams + cross-session messaging; recovery limits | ✅ ████████░░ 8/10 · Persistent roles, delegation, owned-work queues, and review handoffs |
-| **Human control and approvals**     | ✅ Per-action approvals, roles, and notifications                                                       | ✅ Gates, roles, escalation, recovery                                | ✅ Board approvals, roles, pause, stop                                 | ⚠️ Command controls and admin policies                         | ✅ Permissions + hooks                                       | ✅ Native permissions, audited seat policies, typing guard, and stop controls |
+| **Supported desktop platforms**     | Windows x64 (fork releases)                                                                              | macOS · Windows · Linux (CLI binaries)                               | No native desktop app (self-hosted control plane)                        | macOS · Windows · Linux (desktop IDE)                         | macOS · Windows · Linux (CLI)                               | macOS · Linux; Windows via WSL2 (not native) |
+| **Live team collaboration**         | ✅ █████████░ 9/10 · Agents plan, delegate, work, and review together                                   | ✅ ████████░░ 8/10 · Persistent teams with coordination and recovery | ⚠️ ███████░░░ 7/10 · Scheduled agents + MCP task collaboration, less live peer teamwork | ⚠️ ██████░░░░ 6/10 · Parallel agents + subagents, no peer team | ⚠️ ███████░░░ 7/10 · Experimental teams + cross-session messaging; recovery limits | ✅ ████████░░ 8/10 · Persistent roles, delegation, owned-work queues, and review handoffs |
+| **Human control and approvals**     | ✅ Per-action approvals, roles, and notifications                                                       | ✅ Gates, roles, escalation, recovery                                | ✅ Board approvals, roles, pause, stop                                 | ⚠️ Command controls and admin policies                         | ✅ Permissions + hooks                                       | ✅ Runner permission requests, audited policies, typing guard, and stop controls |
 | **Visual team progress**            | ✅ Teammates, tasks, blockers, handoffs, activity, logs                                                 | ⚠️ Agent tree + feed panels                                          | ⚠️ Org chart and run status, not a task/log map                        | ⚠️ Agents Window, no shared peer-team map                      | ⚠️ Terminal team panel, no graphical UI                      | ✅ TUI topology graph, seat state, missions, and activity feed |
-| **Team workspace**                  | ✅ Tasks, code, terminal, review, and teammates in one app                                              | ⚠️ Mail/feed/dashboard across tools                                  | ⚠️ Board + task chats, less live teammate view                         | ⚠️ Agents Window, no peer team workspace                       | ❌ No desktop UI                                             | ⚠️ TUI coordination + tmux terminals; optional maintenance web UI |
-| **Easy setup**                      | ✅ Start free, no signup or API key                                                                     | ❌ Manual CLI stack                                                  | ⚠️ `npx` onboarding + browser app                                      | ⚠️ App install + account                                       | ⚠️ CLI + env flag                                            | ⚠️ Node + tmux + provider login; guided setup on macOS/Linux |
+| **Team workspace**                  | ✅ Tasks, code, terminal, review, and teammates in one app                                              | ⚠️ Mail/feed/dashboard across tools                                  | ⚠️ Board + task chats, less live teammate view                         | ⚠️ Agents Window, no peer team workspace                       | ❌ No desktop UI                                             | ⚠️ TUI, tmux, task-following terminal views; optional maintenance web UI |
+| **Easy setup**                      | ✅ Desktop installer; configure the providers you use                                                    | ❌ Manual CLI stack                                                  | ⚠️ `npx` onboarding + browser app                                      | ⚠️ App install + account                                       | ⚠️ CLI + env flag                                            | ⚠️ Node + tmux + provider login; guided setup on macOS/Linux |
 | **Agent readiness and recovery**    | ✅ Clear ready/stuck status with launch diagnostics                                                     | ✅ Working/stalled/failed health with recovery controls              | ⚠️ Run status and orphan recovery                                      | ⚠️ Agent status in Agents Window                               | ⚠️ Statuses in terminal, no graphical UI                     | ✅ Readiness checks, snapshots, and explicit per-seat restore outcomes |
 | **Kanban board**                    | ✅ 5 columns, real-time                                                                                 | ❌ Dashboard, not Kanban                                             | ✅ 7 columns, drag-and-drop                                            | ❌                                                             | ❌                                                           | ❌ Owned-work queue and mission views; no Kanban board |
-| **Code review**                     | ✅ Agent review plus accept, reject, and comment in the app                                             | ⚠️ Merge queue, no diff UI                                           | ⚠️ Review gates, not inline code review                                | ✅ Local Agent Review + PR Bugbot                               | ⚠️ Agent review, no review UI                                | ⚠️ Reviewer rigs and proof approvals; no task-level hunk review UI |
+| **Code review**                     | ✅ Agent review plus accept, reject, and comment in the app                                             | ⚠️ Merge queue, no diff UI                                           | ⚠️ Review gates + experimental GitHub review bot; no in-app hunk review                                | ✅ Local Agent Review + PR Bugbot                               | ⚠️ Agent review, no review UI                                | ⚠️ Reviewer rigs and proof approvals; no task-level hunk review UI |
 | **Cross-team communication**        | ✅ Direct agent messages and shared task links across teams                                             | ⚠️ Mailboxes + handoffs                                              | ⚠️ Comments + @mentions                                                | N/A                                                            | ⚠️ Cross-session messaging, no shared cross-team task graph   | ✅ Cross-rig messages, broadcasts, chatrooms, and queue handoffs |
 | **Linked tasks**                    | ✅ Tasks can link to and block each other                                                               | ✅ Task deps + grouped work                                          | ✅ Goals, parent tasks, blockers                                       | ❌                                                             | ✅ Shared task list                                          | ✅ Queue blockers, workflow dependencies, and transactional handoffs |
-| **Agent activity and history**      | ✅ Messages, tool calls, timeline, token use, and cost                                                  | ⚠️ Session recall, feed, metrics                                     | ⚠️ Run transcripts + cost audit                                        | ⚠️ Agent chat + terminal                                       | ⚠️ CLI transcripts + background logs                         | ✅ Activity feed, transcripts, queue audit, and runtime-dependent telemetry |
-| **Organizations & global overview** | ✅ Nested groups, live team/task status, relations, cross-team activity                                 | ⚠️ Coordination hierarchy, no editable org map                       | ✅ Org chart + board governance                                        | ⚠️ Team admin, no live org map                                 | ❌                                                           | ⚠️ Rigs, pods, seats, and topology graph; no editable company org map |
-| **Mixed AI teammates**              | ✅ Claude Code, Codex, OpenCode, Cursor, SuperGrok, GitHub Copilot, Z.AI, MiniMax, and Kiro in one team | ✅ Many providers, terminal-first                                    | ✅ Bring your own agents/runtimes                                      | ⚠️ Multi-model parent + subagents, no peer team                | ⚠️ Claude-only experimental teams                            | ✅ Claude Code, Codex, Pi, and Oh My Pi in mixed rigs |
+| **Agent activity and history**      | ✅ Messages, tool calls, timeline, token use, and cost                                                  | ⚠️ Session recall, feed, metrics                                     | ⚠️ Run transcripts + audited cost ledger (estimates possible)                                        | ⚠️ Agent chat + terminal                                       | ⚠️ CLI transcripts + background logs                         | ✅ Activity feed, transcripts, queue audit, and runtime-dependent telemetry |
+| **Organizations & global overview** | ✅ Nested groups, live team/task status, relations, cross-team activity                                 | ⚠️ Coordination hierarchy, no editable org map                       | ✅ Org chart + board governance                                        | ⚠️ Team admin, no live org map                                 | ❌                                                           | ⚠️ Org/group policies + topology; no editable company org map |
+| **Mixed AI teammates**              | ✅ Claude Code and Codex                                                                                 | ✅ Many providers, terminal-first                                    | ✅ Own runtimes + MCP clients; experimental Runner adapters                                      | ⚠️ Multi-model parent + subagents, no peer team                | ⚠️ Claude-only experimental teams                            | ✅ Claude, Codex, Pi, Oh My Pi + experimental hosted MCP members |
 | **Budget controls**                 | ✅ Budget alerts + hard caps for scheduled runs                                                         | ⚠️ Cost tiers + digest, no hard caps                                 | ✅ Per-agent budgets + hard stops                                      | ⚠️ Usage + cloud spend limits                                  | ⚠️ Usage/org limits + print-mode hard cap                    | ⚠️ Token-burn/provider-window monitoring; no documented spend cap |
 | **Separate agent workspaces**       | ✅ Optional workspace per teammate                                                                      | ✅ Core primitive                                                    | ✅ Worktrees / branches                                                | ✅ Agents Window worktrees                                     | ✅ Built-in for sessions and subagents                       | ⚠️ Per-seat working directories; externally managed Git worktrees |
 | **Terminal**                        | ✅ Built-in visual terminal for team and local commands                                                 | ⚠️ Terminal-based workflow, no built-in terminal                     | ⚠️ Runs commands, no interactive terminal                              | ✅ Built-in IDE terminal                                       | ⚠️ Runs in your terminal                                     | ✅ tmux + herdr/cmux integration; optional maintenance web terminal |
 | **Built-in code editor**            | ✅ With Git support                                                                                     | ❌                                                                   | ❌ Control plane, not editor                                           | ✅ Full IDE                                                    | ❌                                                           | ⚠️ Basic file editor in optional maintenance web UI |
 | **Task attachments**                | ✅ Auto-attach, agents read & attach files                                                              | ❌ Not task-level                                                    | ✅ Docs, attachments, work products                                    | ⚠️ Prompt context, not task attachments                        | ⚠️ Prompt files/images, not task attachments                 | ⚠️ Queue evidence refs, proof media, and Slack file attachments |
-| **Price**                           | **Free OSS UI + free model with no auth**, paid providers optional                                      | Free OSS, runtime plans needed                                       | Free OSS, self-hosted + infra                                          | Free + paid usage                                              | Claude plan or API usage                                     | Free OSS; Apache-2.0; provider usage and hosting costs apply |
+| **Price**                           | **Free OSS UI**, provider costs depend on your access                                                   | Free OSS, runtime plans needed                                       | Free OSS, self-hosted + infra                                          | Free + paid usage                                              | Claude plan or API usage                                     | Free OSS; Apache-2.0; provider usage and hosting costs apply |
 
 
 _Live collaboration scores are qualitative editorial assessments of documented communication, task ownership and dependencies, completion, and review capabilities; they are not benchmark results._
@@ -308,15 +329,15 @@ _Live collaboration scores are qualitative editorial assessments of documented c
 
 <br />
 
-Existing product evidence was checked on August 27, 2026. OpenRig was checked on October 6, 2026 against stable v0.6.5 (`5ea35e93`); newer default-branch features are not assumed to be released. Live collaboration scores are qualitative editorial assessments, not benchmark results.
+Research refreshed November 6, 2026 using published releases and official docs: Agent Teams v2.18.6 (November 5), Gas Town v1.2.1, Paperclip v2026.1023.0, Claude Code v2.1.318, and OpenRig v0.7.8 (November 5). Desktop platform coverage is about native app/CLI support only; web and mobile are excluded. Experimental capabilities are explicitly qualified. Scores are editorial, not live benchmarks. [Updated evidence](docs/research/desktop-comparison-2026-11-06.md).
 
 - **Agent Teams:** [collaboration controller](agent-teams-controller/src/internal), [organizations feature](src/features/organizations/README.md), [terminal workspace](src/features/terminal-workspace/renderer/ui/TerminalWorkspacePanel.tsx), [token usage budgets](src/features/token-usage/contracts/dto.ts), [scheduled run budget cap](src/main/services/schedule/ScheduledTaskExecutor.ts)
 - **Gas Town:** [README](https://github.com/gastownhall/gastown), [provider guide](https://github.com/gastownhall/gastown/blob/main/docs/agent-provider-integration.md), [scheduler](https://github.com/gastownhall/gastown/blob/main/docs/design/scheduler.md), [dashboard source](https://github.com/gastownhall/gastown/blob/main/internal/web/templates/convoy.html), [v1.2.1 release](https://github.com/gastownhall/gastown/releases/tag/v1.2.1)
-- **Paperclip:** [README](https://github.com/paperclipai/paperclip), [adapters](https://github.com/paperclipai/paperclip/blob/master/docs/adapters/overview.md), [heartbeat protocol](https://github.com/paperclipai/paperclip/blob/master/docs/guides/agent-developer/heartbeat-protocol.md), [org chart](https://github.com/paperclipai/paperclip#the-systems), [OrgChart source](https://github.com/paperclipai/paperclip/blob/master/ui/src/pages/OrgChart.tsx), [budgets](https://github.com/paperclipai/paperclip/blob/master/docs/guides/board-operator/costs-and-budgets.md), [runtime services](https://github.com/paperclipai/paperclip/blob/master/docs/guides/board-operator/execution-workspaces-and-runtime-services.md), [Kanban source](https://github.com/paperclipai/paperclip/blob/master/ui/src/components/KanbanBoard.tsx), [work products](https://github.com/paperclipai/paperclip/blob/master/packages/shared/src/validators/work-product.ts), [v2026.824.1 release](https://github.com/paperclipai/paperclip/releases/tag/v2026.824.1)
-- **Cursor:** [terminal](https://cursor.com/docs/agent/tools/terminal), [Cloud Agents](https://cursor.com/docs/cloud-agent), [Agents Window](https://cursor.com/docs/agent/agents-window), [subagents](https://cursor.com/docs/subagents), [Agent Review](https://cursor.com/docs/agent/agent-review), [Bugbot](https://cursor.com/docs/bugbot), [worktrees](https://cursor.com/docs/configuration/worktrees), [models and pricing](https://cursor.com/docs/models-and-pricing), [team pricing](https://cursor.com/docs/account/teams/pricing)
-- **Claude Code CLI:** [CLI](https://code.claude.com/docs/en/cli-usage), [agent teams](https://code.claude.com/docs/en/agent-teams), [cross-session messaging](https://code.claude.com/docs/en/cross-session-messaging), [worktrees](https://code.claude.com/docs/en/worktrees), [subagents](https://code.claude.com/docs/en/sub-agents), [dynamic workflows](https://code.claude.com/docs/en/workflows), [costs](https://code.claude.com/docs/en/costs), [Claude pricing](https://claude.com/pricing), [v2.1.246 release](https://github.com/anthropics/claude-code/releases/tag/v2.1.246)
-- **OpenRig:** [OpenRig v0.6.5 README](https://github.com/mvschwarz/openrig/blob/5ea35e93bca9460db94da0fc31afbc3716ea14ba/README.md), [OpenRig coordination and queue](https://github.com/mvschwarz/openrig/blob/5ea35e93bca9460db94da0fc31afbc3716ea14ba/docs/as-built/architecture/coordination-primitive.md), [OpenRig snapshot and restore](https://github.com/mvschwarz/openrig/blob/5ea35e93bca9460db94da0fc31afbc3716ea14ba/docs/as-built/architecture/lifecycle-snapshot-restore.md), [OpenRig workspace model](https://github.com/mvschwarz/openrig/blob/5ea35e93bca9460db94da0fc31afbc3716ea14ba/docs/as-built/architecture/workspace-primitive.md), [OpenRig basic web editor](https://github.com/mvschwarz/openrig/blob/5ea35e93bca9460db94da0fc31afbc3716ea14ba/packages/ui/src/components/files/FilesWorkspace.tsx); [row-by-row evidence](docs/research/openrig-comparison-2026-10-06.md)
-- **Detailed fact ledger:** [comparison research notes](docs/research/gastown-paperclip-comparison-2026-06-25.md)
+- **Paperclip:** [stable v2026.1023.0 release](https://github.com/paperclipai/paperclip/releases/tag/v2026.1023.0), [README](https://github.com/paperclipai/paperclip), [adapters](https://github.com/paperclipai/paperclip/blob/master/docs/adapters/overview.md), [heartbeat protocol](https://github.com/paperclipai/paperclip/blob/master/docs/guides/agent-developer/heartbeat-protocol.md), [org chart](https://github.com/paperclipai/paperclip#the-systems), [OrgChart source](https://github.com/paperclipai/paperclip/blob/master/ui/src/pages/OrgChart.tsx), [budgets](https://github.com/paperclipai/paperclip/blob/master/docs/guides/board-operator/costs-and-budgets.md), [runtime services](https://github.com/paperclipai/paperclip/blob/master/docs/guides/board-operator/execution-workspaces-and-runtime-services.md), [Kanban source](https://github.com/paperclipai/paperclip/blob/master/ui/src/components/KanbanBoard.tsx), [work products](https://github.com/paperclipai/paperclip/blob/master/packages/shared/src/validators/work-product.ts), [v2026.824.1 release (historical)](https://github.com/paperclipai/paperclip/releases/tag/v2026.824.1)
+- **Cursor:** [desktop downloads](https://cursor.com/download), [terminal](https://cursor.com/docs/agent/tools/terminal), [Cloud Agents](https://cursor.com/docs/cloud-agent), [Agents Window](https://cursor.com/docs/agent/agents-window), [subagents](https://cursor.com/docs/subagents), [Agent Review](https://cursor.com/docs/agent/agent-review), [Bugbot](https://cursor.com/docs/bugbot), [worktrees](https://cursor.com/docs/configuration/worktrees), [models and pricing](https://cursor.com/docs/models-and-pricing), [team pricing](https://cursor.com/docs/account/teams/pricing)
+- **Claude Code CLI:** [supported platforms](https://code.claude.com/docs/en/setup), [CLI](https://code.claude.com/docs/en/cli-usage), [agent teams](https://code.claude.com/docs/en/agent-teams), [cross-session messaging](https://code.claude.com/docs/en/cross-session-messaging), [worktrees](https://code.claude.com/docs/en/worktrees), [subagents](https://code.claude.com/docs/en/sub-agents), [dynamic workflows](https://code.claude.com/docs/en/workflows), [costs](https://code.claude.com/docs/en/costs), [Claude pricing](https://claude.com/pricing), [v2.1.246 release](https://github.com/anthropics/claude-code/releases/tag/v2.1.318)
+- **OpenRig:** [stable v0.7.8 release](https://github.com/mvschwarz/openrig/releases/tag/v0.7.8), [platform requirements](https://github.com/mvschwarz/openrig/blob/main/docs/reference/getting-started.md), [historical v0.6.5 README](https://github.com/mvschwarz/openrig/blob/5ea35e93bca9460db94da0fc31afbc3716ea14ba/README.md), [OpenRig coordination and queue](https://github.com/mvschwarz/openrig/blob/5ea35e93bca9460db94da0fc31afbc3716ea14ba/docs/as-built/architecture/coordination-primitive.md), [OpenRig snapshot and restore](https://github.com/mvschwarz/openrig/blob/5ea35e93bca9460db94da0fc31afbc3716ea14ba/docs/as-built/architecture/lifecycle-snapshot-restore.md), [OpenRig workspace model](https://github.com/mvschwarz/openrig/blob/5ea35e93bca9460db94da0fc31afbc3716ea14ba/docs/as-built/architecture/workspace-primitive.md), [OpenRig basic web editor](https://github.com/mvschwarz/openrig/blob/5ea35e93bca9460db94da0fc31afbc3716ea14ba/packages/ui/src/components/files/FilesWorkspace.tsx); [row-by-row evidence](docs/research/openrig-comparison-2026-10-06.md)
+- **Historical fact ledger (June–August 2026):** [comparison research notes](docs/research/gastown-paperclip-comparison-2026-06-25.md)
 
 </details>
 
@@ -329,11 +350,25 @@ Existing product evidence was checked on August 27, 2026. OpenRig was checked on
 3. **Create a team** — Pick a project, define roles, write a provisioning prompt
 4. **Watch** — Agents spawn, create tasks, and work. You see it all on the kanban board
 
-The desktop app is the main product. The web version is currently in active development.
+The desktop app is the main product. The web version is currently in development.
 
 ---
 
 ## FAQ
+
+<details>
+<summary><strong>Why not just use Claude Code with pre-configured agents?</strong></summary>
+<br />
+We're seeing an interesting trend. First, AI agents started communicating with each other (something Claude and Codex didn't support before). Then we started seeing messenger-style AI assistants like Grok Bot, Meta Muse and OpenAI Dots, where you can create a team (or even multiple teams, as in Grok) and communicate with agents just like in a regular messenger. This is a much more natural and familiar way for people to interact with AI (like with humans).
+
+For the general audience, that might be enough. But people often need to build many/large/complex  projects, and that's where bigger teams of agents become necessary, each with their own roles and responsibilities.
+
+And when you have a lot of teammates, you need a good way to organize and manage them. That's exactly where Agent Teams comes in. You can see everything clearly in a visual interface, understand what's happening across your teams, and easily interact with individual agents.
+
+Sure, you can set up something similar with regular Claude, but keeping track of everything without a proper frontend is difficult, and we are targeting precisely this multi-agent use case.
+
+For us, it's not just about running multi-agent systems. It's about having full visibility into who's doing what, keeping everything organized, and making it easy to interact with your agents.
+</details>
 
 <details>
 <summary><strong>Does it read or upload my code?</strong></summary>
@@ -350,7 +385,7 @@ Yes. Agents send direct messages, create shared tasks, and leave comments - all 
 <details>
 <summary><strong>Is it free?</strong></summary>
 <br />
-Yes. The app is free and open source, and you can start with a free model with no auth - no registration, API keys, or credit card. If you want more models, connect the provider access you already have, including Claude Code, Codex, OpenCode/OpenRouter, Cursor, SuperGrok, GitHub Copilot, Z.AI, MiniMax, and Kiro.
+Yes. The app is free and open source. Provider access, including Claude Code or Codex, may require a subscription or API credentials.
 </details>
 
 <details>
@@ -381,12 +416,12 @@ Some RDP (Remote Desktop Protocol) sessions expose virtual GPU drivers that can 
 
 ## Roadmap (new)
 
-- [ ] Launching 24/7 autonomous teams in the cloud with current UI (in progress)
+- [ ] Launching 24/7 autonomous teams in the cloud (in progress)
 - [ ] Automatic account switching (in progress)
 - [ ] Navigating very complex long tasks without losing context (in progress)
-- [x] Multiple AI runtimes and provider-backed coding agents
-- [ ] A secure universal plugin system regardless of the type of agents
-- [ ] Efficiency and controllability under load with 20-100+ agents in parallel
+- [x] Multiple AI runtimes and provider-backed coding agents (more in progress)
+- [ ] A secure universal plugin system regardless of the type of agents ([in progress](https://github.com/777genius/universal-agent-plugins))
+- [ ] Efficiency and controllability under load with 50-100+ agents in parallel (in progress)
 
 ## Vision
 
@@ -414,7 +449,7 @@ Electron 40, React 19, TypeScript 5, Tailwind CSS 3, Zustand 4. The desktop app 
 
 <br />
 
-**Prerequisites:** Node.js 26.11.1 Current (recommended for source builds) or Node.js 24.16.0 LTS, pnpm 11.22.0
+**Prerequisites:** Node.js 26.12.1 Current (recommended for source builds) or Node.js 24.22.1 LTS, pnpm 11.22.0
 
 On macOS, official Node.js 24 prebuilt binaries require macOS 13.5+.
 Node.js 26 does not bundle Corepack; install the pinned pnpm version separately if `pnpm` is unavailable.
@@ -485,11 +520,7 @@ stronger app-owned lifecycle, diagnostics, and cleanup for normal team launches.
 ### Build for distribution
 
 ```bash
-pnpm dist:mac:arm64  # macOS Apple Silicon (.dmg)
-pnpm dist:mac:x64    # macOS Intel (.dmg)
-pnpm dist:win        # Windows (.exe)
-pnpm dist:linux      # Linux (AppImage/.deb/.rpm/.pacman)
-pnpm dist            # Current platform
+pnpm dist:win  # Windows x64 installer (.exe)
 ```
 
 Distribution scripts run the production build and stage the bundled multimodel runtime from

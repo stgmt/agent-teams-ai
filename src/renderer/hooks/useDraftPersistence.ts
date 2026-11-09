@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
+import { currentCreateTeamDraftGeneration } from '@renderer/services/createTeamDraftGeneration';
 import { draftStorage } from '@renderer/services/draftStorage';
 
 interface UseDraftPersistenceOptions {
@@ -13,9 +14,9 @@ interface UseDraftPersistenceResult {
   value: string;
   setValue: (v: string) => void;
   isSaved: boolean;
-  clearDraft: () => void;
-  /** True once the initial asynchronous draft load has settled. */
+  /** True once persisted text has been read (or the read has failed). */
   isLoaded: boolean;
+  clearDraft: () => void;
 }
 
 export function useDraftPersistence({
@@ -30,6 +31,9 @@ export function useDraftPersistence({
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingValueRef = useRef<{ key: string; value: string } | null>(null);
   const keyRef = useRef(key);
+  const generationRef = useRef(
+    key.startsWith('createTeam:') ? currentCreateTeamDraftGeneration() : undefined
+  );
   const mountedRef = useRef(true);
   const editRevisionRef = useRef(0);
 
@@ -53,9 +57,9 @@ export function useDraftPersistence({
       const pending = pendingValueRef.current;
       pendingValueRef.current = null;
       if (pending.value.length === 0) {
-        void draftStorage.deleteDraft(pending.key);
+        void draftStorage.deleteDraft(pending.key, generationRef.current);
       } else {
-        void draftStorage.saveDraft(pending.key, pending.value);
+        void draftStorage.saveDraft(pending.key, pending.value, generationRef.current);
       }
     }
   }, []);
@@ -82,19 +86,17 @@ export function useDraftPersistence({
     }
     const loadRevision = editRevisionRef.current;
     void (async () => {
-      const draft = await draftStorage.loadDraft(key);
-      if (cancelled) return;
-      if (editRevisionRef.current !== loadRevision) {
-        // A user edit already happened; the late load must not overwrite it,
-        // but hydration is still considered settled.
-        if (mountedRef.current) setIsLoaded(true);
-        return;
+      try {
+        const draft = await draftStorage.loadDraft(key);
+        // A user edit must win over a late load, but hydration still settles.
+        if (cancelled || editRevisionRef.current !== loadRevision) return;
+        if (draft != null && initialValue == null) {
+          setValueState(draft);
+          setIsSaved(true);
+        }
+      } finally {
+        if (!cancelled && mountedRef.current) setIsLoaded(true);
       }
-      if (draft != null && initialValue == null) {
-        setValueState(draft);
-        setIsSaved(true);
-      }
-      if (mountedRef.current) setIsLoaded(true);
     })();
 
     return () => {
@@ -130,11 +132,13 @@ export function useDraftPersistence({
         if (pending == null) return;
 
         if (pending.value.length === 0) {
-          void draftStorage.deleteDraft(pending.key);
+          void draftStorage.deleteDraft(pending.key, generationRef.current);
         } else {
-          void draftStorage.saveDraft(pending.key, pending.value).then(() => {
-            if (mountedRef.current) setIsSaved(true);
-          });
+          void draftStorage
+            .saveDraft(pending.key, pending.value, generationRef.current)
+            .then(() => {
+              if (mountedRef.current) setIsSaved(true);
+            });
         }
       }, debounceMs);
     },
@@ -152,9 +156,9 @@ export function useDraftPersistence({
     setIsSaved(false);
     setIsLoaded(true);
     if (enabled) {
-      void draftStorage.deleteDraft(keyRef.current);
+      void draftStorage.deleteDraft(keyRef.current, generationRef.current);
     }
   }, [enabled]);
 
-  return { value, setValue, isSaved, clearDraft, isLoaded };
+  return { value, setValue, isSaved, isLoaded, clearDraft };
 }

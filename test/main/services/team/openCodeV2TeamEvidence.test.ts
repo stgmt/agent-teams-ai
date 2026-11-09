@@ -1,9 +1,7 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
-import { describe, expect, it } from 'vitest';
-
-import runtimeLock from '../../../../runtime.lock.json';
+import { describe, expect, it, vi } from 'vitest';
 
 import { successfulTools } from './openCodeMixedTeamEvidence';
 import {
@@ -13,6 +11,17 @@ import {
   hasV2TaskCompletion,
   readV2TeamInvocationEvidence,
 } from './openCodeV2TeamEvidence';
+
+// Synthetic lock fixture only exercises the V2 transcript parser; this is not
+// the published runtime.lock.json and makes no release-support claim.
+vi.mock('../../../../runtime.lock.json', () => ({
+  default: {
+    opencodeV2: {
+      range: { minimum: '2.0.0', below: '3.0.0' },
+      qualified: { 'win32-x64': ['2.0.32'] },
+    },
+  },
+}));
 
 // Produced by SDK normalizeV2Transcript + OpenCodeLogProjector from a synthetic
 // native DTO. This is protocol evidence, never a live execution/authority claim.
@@ -43,36 +52,27 @@ const checkMessage = (value: unknown) =>
 const checkCommand = (value: unknown) =>
   hasV2CommandInvocationWithOuterMarker(read(value), command);
 
-describe('V2 composite team evidence', () => {
-  // Generation evidence follows the pinned range; a runtime without V2 qualifies no version.
-  it.each([
-    ...new Set([
-      runtimeLock.opencodeV2.range.minimum,
-      ...Object.values(runtimeLock.opencodeV2.qualified).flat(),
-    ]),
-  ])(
-    'accepts the actual canonical producer shape for %s without inventing child results',
-    (version) => {
-      const value = fixture();
-      value.runtime.version = version;
-      const evidence = read(value);
-      expect(classifyTeamTranscriptGeneration(value)).toBe('v2');
-      expect(hasV2TaskCompletion(evidence, { taskId: task.id }, task)).toBe(true);
-      expect(hasV2Message(evidence, { to: message.to, text: message.text }, message)).toBe(true);
-      expect(hasV2CommandInvocationWithOuterMarker(evidence, command)).toBe(true);
-      // The V1 reader still excludes metadata child IDs/results, as it must.
-      expect(successfulTools(value).map((call) => call.name)).toEqual(['execute']);
-      expect(
-        assistant(value)
-          .toolCalls.slice(1)
-          .every(
-            (call: { callId: unknown; output: unknown }) =>
-              call.callId === null && call.output === null
-          )
-      ).toBe(true);
-      expect(evidence).toEqual({ generation: 'v2' });
-    }
-  );
+describe('synthetic V2 composite team evidence', () => {
+  it('accepts the synthetic canonical producer shape without inventing child results', () => {
+    const value = fixture();
+    value.runtime.version = '2.0.32';
+    const evidence = read(value);
+    expect(classifyTeamTranscriptGeneration(value)).toBe('v2');
+    expect(hasV2TaskCompletion(evidence, { taskId: task.id }, task)).toBe(true);
+    expect(hasV2Message(evidence, { to: message.to, text: message.text }, message)).toBe(true);
+    expect(hasV2CommandInvocationWithOuterMarker(evidence, command)).toBe(true);
+    // The V1 reader still excludes metadata child IDs/results, as it must.
+    expect(successfulTools(value).map((call) => call.name)).toEqual(['execute']);
+    expect(
+      assistant(value)
+        .toolCalls.slice(1)
+        .every(
+          (call: { callId: unknown; output: unknown }) =>
+            call.callId === null && call.output === null
+        )
+    ).toBe(true);
+    expect(evidence).toEqual({ generation: 'v2' });
+  });
 
   it('preserves positive legacy classification and refuses failed/unknown V2 reads', () => {
     expect(classifyTeamTranscriptGeneration({ ok: true })).toBe('v1');

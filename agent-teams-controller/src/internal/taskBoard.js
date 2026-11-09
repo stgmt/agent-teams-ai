@@ -7,6 +7,7 @@ const startupWork = require('./startupWork.js');
 const taskBriefingGate = require('./taskBriefingGate.js');
 const taskArtifact = require('./taskArtifact.js');
 const { buildDeferredTaskQueueText } = require('./deferredTaskQueue.js');
+const taskOwnershipGuards = require('./taskOwnershipGuards.js');
 
 // Application boundary for task-board lifecycle writes.
 // Keep this thin so existing task, review, and kanban behavior remains stable.
@@ -19,88 +20,92 @@ function reconcileTaskCreation(context, flags) {
   return tasks.reconcileTaskCreation(context, flags);
 }
 
-function getTask(context, taskId) {
-  return tasks.getTask(context, taskId);
+function getTask(context, taskId, scope) {
+  return tasks.getTask(context, taskId, scope);
 }
 
-function getTaskComment(context, taskId, commentId) {
-  return tasks.getTaskComment(context, taskId, commentId);
+function getTaskComment(context, taskId, commentId, scope) {
+  return tasks.getTaskComment(context, taskId, commentId, scope);
 }
 
-function listTasks(context) {
-  return tasks.listTasks(context);
+function listTasks(context, scope) {
+  return tasks.listTasks(context, scope);
 }
 
 function listTaskInventory(context, filters) {
   return tasks.listTaskInventory(context, filters);
 }
 
-function listDeletedTasks(context) {
-  return tasks.listDeletedTasks(context);
+function listDeletedTasks(context, scope) {
+  return tasks.listDeletedTasks(context, scope);
 }
 
-function resolveTaskId(context, taskRef) {
-  return tasks.resolveTaskId(context, taskRef);
+function resolveTaskId(context, taskRef, scope) {
+  return tasks.resolveTaskId(context, taskRef, scope);
 }
 
-function setTaskStatus(context, taskId, status, actor) {
-  return tasks.setTaskStatus(context, taskId, status, actor);
+function resolveTaskActor(context, actor) {
+  return taskOwnershipGuards.resolveTaskActor(context, actor);
 }
 
-function startTask(context, taskId, actor) {
-  return tasks.startTask(context, taskId, actor);
+function setTaskStatus(context, taskId, status, actor, scope) {
+  return tasks.setTaskStatus(context, taskId, status, actor, scope ? { scope } : {});
 }
 
-function completeTask(context, taskId, actor) {
-  return tasks.completeTask(context, taskId, actor);
+function startTask(context, taskId, actor, scope) {
+  return tasks.startTask(context, taskId, actor, scope ? { scope } : {});
 }
 
-function softDeleteTask(context, taskId, actor) {
-  return tasks.softDeleteTask(context, taskId, actor);
+function completeTask(context, taskId, actor, scope) {
+  return tasks.completeTask(context, taskId, actor, scope ? { scope } : {});
 }
 
-function restoreTask(context, taskId, actor) {
-  return tasks.restoreTask(context, taskId, actor);
+function softDeleteTask(context, taskId, actor, scope) {
+  return tasks.softDeleteTask(context, taskId, actor, scope ? { scope } : {});
 }
 
-function setTaskOwner(context, taskId, owner, actor) {
-  return tasks.setTaskOwner(context, taskId, owner, actor);
+function restoreTask(context, taskId, actor, scope) {
+  return tasks.restoreTask(context, taskId, actor, scope ? { scope } : {});
 }
 
-function updateTaskFields(context, taskId, fields) {
-  return tasks.updateTaskFields(context, taskId, fields);
+function setTaskOwner(context, taskId, owner, actor, scope) {
+  return tasks.setTaskOwner(context, taskId, owner, actor, scope);
 }
 
-function addTaskComment(context, taskId, flags) {
-  return tasks.addTaskComment(context, taskId, flags);
+function updateTaskFields(context, taskId, fields, scope) {
+  return tasks.updateTaskFields(context, taskId, fields, scope);
 }
 
-function attachTaskFile(context, taskId, flags) {
-  return tasks.attachTaskFile(context, taskId, flags);
+function addTaskComment(context, taskId, flags, scope) {
+  return tasks.addTaskComment(context, taskId, flags, scope);
 }
 
-function attachCommentFile(context, taskId, commentId, flags) {
-  return tasks.attachCommentFile(context, taskId, commentId, flags);
+function attachTaskFile(context, taskId, flags, scope) {
+  return tasks.attachTaskFile(context, taskId, flags, scope);
 }
 
-function addTaskAttachmentMeta(context, taskId, meta) {
-  return tasks.addTaskAttachmentMeta(context, taskId, meta);
+function attachCommentFile(context, taskId, commentId, flags, scope) {
+  return tasks.attachCommentFile(context, taskId, commentId, flags, scope);
 }
 
-function removeTaskAttachment(context, taskId, attachmentId) {
-  return tasks.removeTaskAttachment(context, taskId, attachmentId);
+function addTaskAttachmentMeta(context, taskId, meta, scope) {
+  return tasks.addTaskAttachmentMeta(context, taskId, meta, scope);
 }
 
-function setNeedsClarification(context, taskId, value) {
-  return tasks.setNeedsClarification(context, taskId, value);
+function removeTaskAttachment(context, taskId, attachmentId, scope) {
+  return tasks.removeTaskAttachment(context, taskId, attachmentId, scope);
 }
 
-function linkTask(context, taskId, targetId, linkType) {
-  return tasks.linkTask(context, taskId, targetId, linkType);
+function setNeedsClarification(context, taskId, value, scope) {
+  return tasks.setNeedsClarification(context, taskId, value, scope);
 }
 
-function unlinkTask(context, taskId, targetId, linkType) {
-  return tasks.unlinkTask(context, taskId, targetId, linkType);
+function linkTask(context, taskId, targetId, linkType, scope) {
+  return tasks.linkTask(context, taskId, targetId, linkType, scope);
+}
+
+function unlinkTask(context, taskId, targetId, linkType, scope) {
+  return tasks.unlinkTask(context, taskId, targetId, linkType, scope);
 }
 
 // The app's native bootstrap context sets deferTaskQueue: Actionable work in the startup
@@ -120,6 +125,10 @@ function deferredTaskBriefing(context, memberName) {
 
 function deliverStartupWork(context, memberName, options) {
   return startupWork.deliverStartupWork(context, memberName, options);
+}
+
+function deliverStartupWorkAsync(context, memberName, options) {
+  return startupWork.deliverStartupWorkAsync(context, memberName, options);
 }
 
 function leadBriefing(context) {
@@ -142,6 +151,21 @@ function requestTaskBriefing(context, memberName) {
 
 function getKanbanState(context) {
   return kanban.getKanbanState(context);
+}
+
+function inspectPendingTransition(context, taskId) {
+  return kanban.inspectPendingTransition(context, taskId);
+}
+
+function resolvePendingTransition(context, taskId, transitionId, snapshotHash, mode, contextHash) {
+  return kanban.resolvePendingTransition(
+    context,
+    taskId,
+    transitionId,
+    snapshotHash,
+    mode,
+    contextHash
+  );
 }
 
 function setKanbanColumn(context, taskId, column, options) {
@@ -198,6 +222,7 @@ module.exports = {
   completeTask,
   createTask,
   getKanbanState,
+  inspectPendingTransition,
   getTask,
   getTaskComment,
   leadBriefing,
@@ -208,6 +233,7 @@ module.exports = {
   listTasks,
   deferredTaskBriefing,
   deliverStartupWork,
+  deliverStartupWorkAsync,
   memberBriefing,
   removeReviewer,
   removeTaskAttachment,
@@ -216,7 +242,9 @@ module.exports = {
   requestChanges,
   requestReview,
   requestTaskBriefing,
+  resolveTaskActor,
   resolveTaskId,
+  resolvePendingTransition,
   restoreTask,
   setKanbanColumn,
   setNeedsClarification,

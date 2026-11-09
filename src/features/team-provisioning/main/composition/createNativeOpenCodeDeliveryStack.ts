@@ -50,6 +50,7 @@ export interface NativeOpenCodeDeliveryStackSources {
   launchState: Pick<TeamLaunchStateStore, 'read' | 'write'>;
   /** Team liveness as the runtime owner reports it, by team name. */
   isTeamAlive(teamName: string): boolean;
+  isManagedByThisProfile(teamName: string): Promise<boolean>;
   runs: NativeSecondaryRuntimeRunStore;
   openCodeAdapter(): TeamLaunchRuntimeAdapter | null;
   /** The lane's message bridge; the only thing that can accept a prompt. */
@@ -130,9 +131,13 @@ export interface NativeOpenCodeDeliveryStack {
   /** The messaging surface the root binds: relay a member's inbox, and status. */
   deliveryPort: NativeOpenCodeMemberDeliveryPort;
   /** One wake scheduler for the whole app; two would double every retry. */
+  clearStoppedLaneStopBackoff(teamName: string): void;
   scheduler: OpenCodePromptDeliveryWatchdogScheduler;
   /** The delivery service itself, for the paths that send directly. */
-  deliver(teamName: string, input: OpenCodeMemberMessageDeliveryInput): Promise<OpenCodeMemberInboxDelivery>;
+  deliver(
+    teamName: string,
+    input: OpenCodeMemberMessageDeliveryInput
+  ): Promise<OpenCodeMemberInboxDelivery>;
   /** Everything the scan passes need, over the same adapters as the delivery path. */
   watchdogDeps: NativeOpenCodeDeliveryWatchdogDependencies;
 }
@@ -155,9 +160,11 @@ export function createNativeOpenCodeDeliveryStack(
   const getOpenCodeRuntimeAdapter = () => sources.openCodeAdapter();
   const stoppedLanes = createNativeOpenCodeStoppedTeamLaneCleanup({
     teamsBasePath: sources.teamsBasePath,
+    isManagedByThisProfile: (teamName) => sources.isManagedByThisProfile(teamName),
     queue: sources.queue,
     readConfig: (teamName) => sources.config.read(teamName),
-    readMembersMeta: async (teamName) => (await sources.membersMeta.getMeta(teamName))?.members ?? [],
+    readMembersMeta: async (teamName) =>
+      (await sources.membersMeta.getMeta(teamName))?.members ?? [],
     canDeliverToOpenCodeRuntimeForTeam: (teamName) => isLive(teamName),
     getOpenCodeRuntimeAdapter,
     deleteSecondaryRuntimeRun: (teamName, laneId) =>
@@ -182,7 +189,8 @@ export function createNativeOpenCodeDeliveryStack(
   const { identity } = recovery;
   const pidMemory = createNativeOpenCodeRuntimePidMemory({
     store: sources.launchState,
-    invalidateRuntimeSnapshotCaches: (teamName) => sources.invalidateRuntimeSnapshotCaches(teamName),
+    invalidateRuntimeSnapshotCaches: (teamName) =>
+      sources.invalidateRuntimeSnapshotCaches(teamName),
     emitTeamChange: (event) => sources.emitTeamChange(event),
     logDebug: (message) => sources.logger.debug(message),
     now: nowIso,
@@ -203,7 +211,8 @@ export function createNativeOpenCodeDeliveryStack(
     getPermissionListingAdapter: () => sources.permissionListingAdapter(),
     store: sources.launchState,
     syncToolApprovals: (input) => sources.syncToolApprovals(input),
-    invalidateRuntimeSnapshotCaches: (teamName) => sources.invalidateRuntimeSnapshotCaches(teamName),
+    invalidateRuntimeSnapshotCaches: (teamName) =>
+      sources.invalidateRuntimeSnapshotCaches(teamName),
     emitMemberSpawnChange: (input) => sources.emitMemberSpawnChange(input),
     logger: { warn: (m) => sources.logger.warn(m), debug: (m) => sources.logger.debug(m) },
     now: nowIso,
@@ -279,9 +288,9 @@ export function createNativeOpenCodeDeliveryStack(
     resolveCurrentRuntimeRunId: (teamName, laneId) =>
       identity.resolveCurrentOpenCodeRuntimeRunId(teamName, laneId),
     resolveTrackedBootstrapRunId: (input) =>
-      sources.runs.getSecondaryRuntimeRuns(input.teamName).find(
-        (entry) => entry.laneId === input.laneId
-      )?.runId === input.runId
+      sources.runs
+        .getSecondaryRuntimeRuns(input.teamName)
+        .find((entry) => entry.laneId === input.laneId)?.runId === input.runId
         ? input.runId
         : null,
     hasCommittedBootstrapSession: (input) => bootstrap.hasCommittedBootstrapSession(input),
@@ -327,9 +336,11 @@ export function createNativeOpenCodeDeliveryStack(
 
   const deliveryPort = createNativeOpenCodeMemberDeliveryPort({
     teamsBasePath: sources.teamsBasePath,
+    isManagedByThisProfile: (teamName) => sources.isManagedByThisProfile(teamName),
     readConfig: (teamName) => sources.config.read(teamName),
     readTeamMeta: (teamName) => sources.teamMeta.getMeta(teamName),
-    readMetaMembers: async (teamName) => (await sources.membersMeta.getMeta(teamName))?.members ?? [],
+    readMetaMembers: async (teamName) =>
+      (await sources.membersMeta.getMeta(teamName))?.members ?? [],
     readSecondaryRuntimeRuns: async (teamName) => sources.runs.getSecondaryRuntimeRuns(teamName),
     getCurrentOpenCodeRuntimeRunId: (teamName, laneId) =>
       sources.runs.getSecondaryRuntimeRuns(teamName).find((entry) => entry.laneId === laneId)
@@ -373,11 +384,13 @@ export function createNativeOpenCodeDeliveryStack(
 
   const scheduler = new OpenCodePromptDeliveryWatchdogScheduler({
     canDeliverToTeamRuntime: (teamName) => isLive(teamName),
-    recoverBeforeDelivery: async ({ teamName, memberName }) =>
-      recovery.facade.tryRecoverOpenCodeRuntimeLaneForConfiguredMemberBeforeDelivery({
+    recoverBeforeDelivery: async ({ teamName, memberName }) => {
+      if (!(await sources.isManagedByThisProfile(teamName))) return false;
+      return recovery.facade.tryRecoverOpenCodeRuntimeLaneForConfiguredMemberBeforeDelivery({
         teamName,
         memberName,
-      }),
+      });
+    },
     relay: async ({ teamName, memberName, messageId, isCurrent }) => {
       const result = await deliveryPort.relayOpenCodeMemberInboxMessages(teamName, memberName, {
         onlyMessageId: messageId,
@@ -396,8 +409,7 @@ export function createNativeOpenCodeDeliveryStack(
     },
     isLaneActive: ({ teamName, laneId }) =>
       identity.isOpenCodeRuntimeLaneIndexActive(teamName, laneId),
-    isRecordNotFoundError: (error) =>
-      /ENOENT|not found|no such file/i.test(getErrorMessage(error)),
+    isRecordNotFoundError: (error) => /ENOENT|not found|no such file/i.test(getErrorMessage(error)),
     info: (message) => sources.logger.info(message),
     warn: (message) => sources.logger.warn(message),
     debug: (message) => sources.logger.debug(message),
@@ -427,6 +439,7 @@ export function createNativeOpenCodeDeliveryStack(
       identity.isOpenCodeRuntimeRecipient(teamName, memberName),
     deliveryPort,
     scheduler,
+    clearStoppedLaneStopBackoff: (teamName) => stoppedLanes.clearStopBackoff(teamName),
     deliver: (teamName, input) => service.deliver(teamName, input),
     watchdogDeps: {
       teamsBasePath: sources.teamsBasePath,

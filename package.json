@@ -1,7 +1,7 @@
 {
   "name": "agent-teams-ai",
   "type": "module",
-  "version": "2.18.2-tokenplan.4",
+  "version": "2.18.6-tokenplan.0",
   "dynamicFlags": {
     "showSponsorFluxion": true
   },
@@ -58,13 +58,13 @@
     "pack:win:arm64": "node ./scripts/electron-builder/dist.mjs --win --arm64",
     "pack:win:x64": "node ./scripts/electron-builder/dist.mjs --win --x64",
     "pack:linux": "node ./scripts/electron-builder/dist.mjs --linux",
-    "dist": "pnpm build && node ./scripts/stage-runtime.mjs && node ./scripts/stage-terminal-platform-runtime.mjs && node ./scripts/stage-opencode-console-wrapper.mjs && node ./scripts/electron-builder/dist.mjs",
+    "dist": "pnpm dist:win",
     "dist:mac": "pnpm build && node ./scripts/stage-runtime.mjs && node ./scripts/stage-terminal-platform-runtime.mjs && node ./scripts/electron-builder/dist.mjs --mac",
     "dist:mac:arm64": "pnpm build && node ./scripts/stage-runtime.mjs --platform darwin-arm64 && node ./scripts/stage-terminal-platform-runtime.mjs --platform darwin-arm64 && node ./scripts/electron-builder/dist.mjs --mac --arm64",
     "dist:mac:x64": "pnpm build && node ./scripts/stage-runtime.mjs --platform darwin-x64 && node ./scripts/stage-terminal-platform-runtime.mjs --platform darwin-x64 && node ./scripts/electron-builder/dist.mjs --mac --x64",
-    "dist:win": "pnpm build && node ./scripts/stage-runtime.mjs --platform win32-x64 && node ./scripts/stage-terminal-platform-runtime.mjs --platform win32-x64 && node ./scripts/stage-opencode-console-wrapper.mjs --platform win32-x64 --require && node ./scripts/electron-builder/dist.mjs --win --x64",
+    "dist:win": "pnpm build && node ./scripts/stage-runtime.mjs --platform win32-x64 && node ./scripts/stage-terminal-platform-runtime.mjs --platform win32-x64 && node ./scripts/electron-builder/dist.mjs --win --x64",
     "dist:win:arm64": "pnpm build && node ./scripts/stage-runtime.mjs --platform win32-arm64 && node ./scripts/stage-terminal-platform-runtime.mjs --platform win32-arm64 && node ./scripts/stage-opencode-console-wrapper.mjs --platform win32-arm64 --require && node ./scripts/electron-builder/dist.mjs --win --arm64",
-    "dist:win:x64": "pnpm build && node ./scripts/stage-runtime.mjs --platform win32-x64 && node ./scripts/stage-terminal-platform-runtime.mjs --platform win32-x64 && node ./scripts/stage-opencode-console-wrapper.mjs --platform win32-x64 --require && node ./scripts/electron-builder/dist.mjs --win --x64",
+    "dist:win:x64": "pnpm dist:win",
     "dist:linux": "pnpm build && node ./scripts/stage-runtime.mjs --platform linux-x64 && node ./scripts/stage-terminal-platform-runtime.mjs --platform linux-x64 && node ./scripts/electron-builder/dist.mjs --linux",
     "smoke:packaged": "node ./scripts/electron-builder/smokePackagedApp.cjs",
     "preview": "electron-vite preview",
@@ -190,6 +190,7 @@
     "@radix-ui/react-tooltip": "^1.2.8",
     "@sentry/electron": "^7.10.0",
     "@sentry/react": "^10.45.0",
+    "@tanstack/react-table": "9.3.1",
     "@tanstack/react-virtual": "^3.13.24",
     "@terminal-platform/design-tokens": "file:vendor/terminal-platform/sdk/terminal-platform-design-tokens-0.1.0.tgz",
     "@terminal-platform/foundation": "file:vendor/terminal-platform/sdk/terminal-platform-foundation-0.1.0.tgz",
@@ -289,7 +290,7 @@
     "@vitest/coverage-v8": "^3.2.5",
     "autoprefixer": "^10.4.17",
     "better-sqlite3-node": "npm:better-sqlite3@12.10.1",
-    "electron": "^44.9.3",
+    "electron": "^44.10.1",
     "electron-builder": "26.17.0",
     "electron-vite": "^5.0.0",
     "eslint": "^9.39.4",
@@ -373,6 +374,17 @@
           "!**/agent-teams-opencode-v2-support-*.zip",
           "!**/opencode-v2-engine-manifest.json"
         ]
+      },
+      {
+        "from": "resources/git",
+        "to": "git",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "resources/MANAGED_GIT_THIRD_PARTY.md",
+        "to": "MANAGED_GIT_THIRD_PARTY.md"
       },
       {
         "from": "resources/terminal-platform",

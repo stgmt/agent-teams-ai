@@ -9,6 +9,19 @@ export function verifyExternalOpenCodeV2Base(
   lock: unknown,
   platformKey: string
 ): boolean {
+  if (
+    lock && typeof lock === 'object' && 'releaseKind' in lock &&
+    lock.releaseKind === 'windows-x64-claude-only'
+  ) {
+    if (platformKey !== 'win32-x64')
+      throw new Error(`Windows Claude-only runtime does not support ${platformKey}`);
+    if (!('sourceCommit' in lock) || typeof lock.sourceCommit !== 'string' ||
+        !('version' in lock) || typeof lock.version !== 'string' ||
+        fs.readFileSync(path.join(runtime, 'COMMIT_SHA'), 'utf8').trim() !== lock.sourceCommit ||
+        fs.readFileSync(path.join(runtime, 'VERSION'), 'utf8').trim() !== lock.version)
+      throw new Error('Windows Claude-only runtime source identity mismatch');
+    return false;
+  }
   const descriptors = readOpenCodeV2DeliveryMap(lock);
   if (descriptors === null) return false;
   const descriptor = descriptors[platformKey];

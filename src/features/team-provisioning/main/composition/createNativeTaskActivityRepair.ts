@@ -16,6 +16,7 @@ import type { PersistedTeamLaunchSnapshot } from '@shared/types';
  */
 export interface NativeTaskActivityRepairSources {
   /** Closes the intervals of a team whose process died without finishing them. */
+  isManagedByThisProfile(teamName: string): Promise<boolean>;
   intervals: TaskActivityRepairServicePort;
   /** Snapshot the launch was last published with. */
   readLaunchState(teamName: string): Promise<PersistedTeamLaunchSnapshot | null>;
@@ -51,6 +52,7 @@ export function createNativeTaskActivityRepair(
 
   return {
     async repairStaleTaskActivityIntervalsBeforeSnapshot(teamName) {
+      if (!(await sources.isManagedByThisProfile(teamName))) return;
       await repairStaleTaskActivityIntervalsBeforeSnapshot(teamName, {
         tracking: { repairedTeams, pendingSnapshots: snapshotStore },
         getTrackedRunId: (target) => sources.getTrackedRunId(target),

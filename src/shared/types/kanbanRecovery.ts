@@ -1,3 +1,24 @@
+import type { KanbanState } from './team';
+
+/** Durable evidence for one task/board transition that needs explicit recovery. */
+export interface PendingKanbanTransition {
+  id: string;
+  taskId: string;
+  kind: 'status' | 'review';
+  phase: 'prepared' | 'applied';
+  column: 'review' | 'approved' | 'none';
+  operation?: 'status' | 'request_changes' | 'clear';
+  targetStatus?: 'pending' | 'in_progress' | 'completed' | 'deleted';
+  beforeTaskHash: string;
+  expectedTaskHash: string;
+  beforeBoardHash: string;
+  expectedBoardHash: string;
+  beforeBoardToken: string;
+  targetBoard: KanbanState;
+  contextHash: string;
+  verifyArtifact?: boolean;
+}
+
 export interface PendingKanbanTransitionSnapshot {
   taskId: string;
   contextHash: string;

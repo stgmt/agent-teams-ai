@@ -7,6 +7,8 @@ const taskStore = require('../src/internal/taskStore.js');
 const { readBoardCompletionEpoch } = require('../src/internal/messageStore.js');
 
 const file = (filename, text) => ({ filename, base64Data: Buffer.from(text).toString('base64') });
+const createLocalController = (options) =>
+  createController({ ...options, localTaskBoard: true });
 
 describe('required task artifacts', () => {
   let dir, desktop, agent, task;
@@ -30,8 +32,8 @@ describe('required task artifacts', () => {
         ],
       })
     );
-    desktop = createController({ teamName: 'fixture', claudeDir: dir }).taskBoard;
-    agent = createController({
+    desktop = createLocalController({ teamName: 'fixture', claudeDir: dir }).taskBoard;
+    agent = createLocalController({
       teamName: 'fixture',
       claudeDir: dir,
       allowUserMessageSender: false,
@@ -155,12 +157,7 @@ describe('required task artifacts', () => {
     const read = fs.readFileSync;
     let injected = false;
     const spy = vi.spyOn(fs, 'readFileSync').mockImplementation((target, ...args) => {
-      if (
-        !injected &&
-        typeof target === 'string' &&
-        path.resolve(target) === boardPath &&
-        new Error().stack.includes('at Object.setKanbanColumn')
-      ) {
+      if (!injected && typeof target === 'string' && path.resolve(target) === boardPath) {
         injected = true;
         throw Object.assign(new Error('board read EIO'), { code: 'EIO' });
       }
@@ -315,7 +312,7 @@ describe('required task artifacts', () => {
     expect(
       desktop.updateTaskFields(other.id, { description: 'unrelated writer' }).description
     ).toBe('unrelated writer');
-    const reopened = createController({ teamName: 'fixture', claudeDir: dir }).taskBoard;
+    const reopened = createLocalController({ teamName: 'fixture', claudeDir: dir }).taskBoard;
     expect(() => reopened.getKanbanState()).toThrow(/unknown outcome/);
   });
 
@@ -345,7 +342,7 @@ describe('required task artifacts', () => {
     const taskPath = path.join(dir, 'tasks', 'fixture', `${task.id}.json`);
     const taskBefore = fs.readFileSync(taskPath, 'utf8');
     const boardBefore = fs.readFileSync(boardPath, 'utf8');
-    const api = createController({ teamName: 'fixture', claudeDir: dir }).kanban;
+    const api = createLocalController({ teamName: 'fixture', claudeDir: dir }).kanban;
     const checked = api.inspectPendingTransition(task.id);
     expect(checked).toMatchObject({ taskId: task.id, column: 'review', mode: 'publish' });
     expect(fs.readFileSync(taskPath, 'utf8')).toBe(taskBefore);
@@ -396,7 +393,7 @@ describe('required task artifacts', () => {
       } finally {
         spy.mockRestore();
       }
-      const api = createController({ teamName: 'fixture', claudeDir: dir }).kanban;
+      const api = createLocalController({ teamName: 'fixture', claudeDir: dir }).kanban;
       const checked = api.inspectPendingTransition(task.id);
       expect(checked.mode).toBe('publish');
       if (condition === 'missing') fs.unlinkSync(artifactPath);
@@ -437,7 +434,7 @@ describe('required task artifacts', () => {
     } finally {
       spy.mockRestore();
     }
-    const api = createController({ teamName: 'fixture', claudeDir: dir }).kanban;
+    const api = createLocalController({ teamName: 'fixture', claudeDir: dir }).kanban;
     const checked = api.inspectPendingTransition(task.id);
     expect(checked.mode).toBe('publish');
     const taskPath = path.join(dir, 'tasks', 'fixture', `${task.id}.json`);
@@ -472,7 +469,7 @@ describe('required task artifacts', () => {
     } finally {
       spy.mockRestore();
     }
-    const api = createController({ teamName: 'fixture', claudeDir: dir }).kanban;
+    const api = createLocalController({ teamName: 'fixture', claudeDir: dir }).kanban;
     expect(api.inspectPendingTransition(task.id).mode).toBe('publish');
     const taskPath = path.join(dir, 'tasks', 'fixture', `${task.id}.json`);
     const complete = fs.readFileSync(taskPath, 'utf8');
@@ -514,7 +511,7 @@ describe('required task artifacts', () => {
       const inboxPath = path.join(teamDir, 'inboxes', 'lead.json');
       const inbox = fs.existsSync(inboxPath) ? JSON.parse(fs.readFileSync(inboxPath, 'utf8')) : [];
       expect(inbox.some((row) => String(row.messageId || '').startsWith('board-complete:'))).toBe(false);
-      const context = createController({ teamName: 'fixture', claudeDir: dir }).context;
+      const context = createLocalController({ teamName: 'fixture', claudeDir: dir }).context;
       expect(() => readBoardCompletionEpoch(context.paths)).toThrow(/KANBAN_TRANSITION_UNCERTAIN/);
     }
   );
@@ -536,7 +533,7 @@ describe('required task artifacts', () => {
       } finally {
         spy.mockRestore();
       }
-      const api = createController({ teamName: 'fixture', claudeDir: dir }).kanban;
+      const api = createLocalController({ teamName: 'fixture', claudeDir: dir }).kanban;
       const checked = api.inspectPendingTransition(task.id);
       expect(checked.mode).toBe('publish');
       const boardPath = path.join(dir, 'teams', 'fixture', 'kanban-state.json');
@@ -579,7 +576,7 @@ describe('required task artifacts', () => {
     } finally {
       spy.mockRestore();
     }
-    const api = createController({ teamName: 'fixture', claudeDir: dir }).kanban;
+    const api = createLocalController({ teamName: 'fixture', claudeDir: dir }).kanban;
     const checked = api.inspectPendingTransition(task.id);
     expect(checked.mode).toBe('publish');
     const boardPath = path.join(dir, 'teams', 'fixture', 'kanban-state.json');
@@ -615,7 +612,7 @@ describe('required task artifacts', () => {
     } finally {
       spy.mockRestore();
     }
-    const api = createController({ teamName: 'fixture', claudeDir: dir }).kanban;
+    const api = createLocalController({ teamName: 'fixture', claudeDir: dir }).kanban;
     const checked = api.inspectPendingTransition(task.id);
     expect(checked.mode).toBe('clear');
     const boardPath = path.join(dir, 'teams', 'fixture', 'kanban-state.json');
@@ -644,7 +641,7 @@ describe('required task artifacts', () => {
     } finally {
       failed.mockRestore();
     }
-    const api = createController({ teamName: 'fixture', claudeDir: dir }).kanban;
+    const api = createLocalController({ teamName: 'fixture', claudeDir: dir }).kanban;
     const checked = api.inspectPendingTransition(task.id);
     const boardPath = path.join(dir, 'teams', 'fixture', 'kanban-state.json');
     const rename = fs.renameSync;

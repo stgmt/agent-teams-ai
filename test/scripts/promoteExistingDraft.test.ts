@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -8,31 +8,32 @@ import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { parse } from 'yaml';
 
+import type { AppUpdater as AppUpdaterBase } from 'electron-updater/out/AppUpdater';
+import type { ElectronHttpExecutor as ElectronHttpExecutorType } from 'electron-updater/out/electronHttpExecutor';
+import type { GenericProvider as GenericProviderType } from 'electron-updater/out/providers/GenericProvider';
+import type { parseUpdateInfo as ParseUpdateInfo } from 'electron-updater/out/providers/Provider';
+
 import {
   buildUpdaterFeeds,
-  getMacUpdaterMinimumSystemVersion,
   getPromotionLayout,
   parsePromotionConfig,
 } from '../../scripts/ci/promote-existing-draft.mjs';
 
 const temporaryDirectories: string[] = [];
 const require = createRequire(import.meta.url);
-const nodeOs: typeof import('node:os') = require('node:os');
-const {
-  AppUpdater,
-}: typeof import('electron-updater/out/AppUpdater') = require('electron-updater/out/AppUpdater');
-const {
-  GenericProvider,
-}: typeof import('electron-updater/out/providers/GenericProvider') = require('electron-updater/out/providers/GenericProvider');
-const {
-  ElectronHttpExecutor,
-}: typeof import('electron-updater/out/electronHttpExecutor') = require('electron-updater/out/electronHttpExecutor');
-const {
-  parseUpdateInfo,
-}: typeof import('electron-updater/out/providers/Provider') = require('electron-updater/out/providers/Provider');
+const { AppUpdater }: { AppUpdater: typeof AppUpdaterBase } = require('electron-updater/out/AppUpdater');
+const { GenericProvider }: { GenericProvider: typeof GenericProviderType } = require(
+  'electron-updater/out/providers/GenericProvider'
+);
+const { ElectronHttpExecutor }: { ElectronHttpExecutor: typeof ElectronHttpExecutorType } = require(
+  'electron-updater/out/electronHttpExecutor'
+);
+const { parseUpdateInfo }: { parseUpdateInfo: typeof ParseUpdateInfo } = require(
+  'electron-updater/out/providers/Provider'
+);
 
-// Use the real updater's eligibility/check pipeline. Only metadata transport and
-// app lifecycle are replaced; no Electron process, server or download is needed.
+// Exercise the real updater's metadata and eligibility pipeline without an
+// Electron process, network server, or artifact download.
 class FeedCompatibilityUpdater extends AppUpdater {
   constructor(
     private readonly feed: string,
@@ -57,9 +58,9 @@ class FeedCompatibilityUpdater extends AppUpdater {
   protected override getUpdateInfoAndProvider() {
     const url = new URL('https://release-compatibility.invalid/');
     return Promise.resolve({
-      info: parseUpdateInfo(this.feed, 'latest-mac.yml', url),
+      info: parseUpdateInfo(this.feed, 'latest.yml', url),
       provider: new GenericProvider({ provider: 'generic', url: url.href }, this, {
-        platform: 'darwin',
+        platform: 'win32',
         isUseMultipleRangeRequest: false,
         executor: new ElectronHttpExecutor(() => undefined),
       }),
@@ -90,17 +91,249 @@ afterEach(async () => {
   );
 });
 
+type PromotionFixtureResult = {
+  result: { status: number | null; stdout: string; stderr: string };
+  state: {
+    id: number;
+    tag_name: string;
+    draft: boolean;
+    latestTag: string | null;
+    assets: Array<{ id: number; name: string; size: number; digest: string }>;
+  };
+  calls: string[][];
+  outputDirectory: string;
+  tag: string;
+};
+
+async function runFakePromotion(
+  overrides: Record<string, string> = {}
+): Promise<PromotionFixtureResult> {
+  const root = await makeTemporaryDirectory('promote-e2e-');
+  const fixtures = path.join(root, 'fixtures');
+  const outputDirectory = path.join(root, 'output');
+  const bin = path.join(root, 'bin');
+  await Promise.all([mkdir(fixtures), mkdir(outputDirectory), mkdir(bin)]);
+  await writeFile(path.join(root, 'package.json'), JSON.stringify({ type: 'commonjs' }));
+
+  const version = '9.9.9';
+  const tag = `v${version}`;
+  const targetCommit = 'a'.repeat(40);
+  const layout = getPromotionLayout(version);
+  const sourceName = layout.sourceAssets[0];
+  const blockmapName = `${sourceName}.blockmap`;
+  const sourceBytes = Buffer.from(`fixture:${sourceName}`);
+  const blockmapBytes = Buffer.from(`fixture:${blockmapName}`);
+  await writeFile(path.join(fixtures, sourceName), sourceBytes);
+  const statePath = path.join(root, 'release-state.json');
+  await writeFile(
+    statePath,
+    JSON.stringify({
+      id: 123,
+      tag_name: tag,
+      target_commitish: targetCommit,
+      name: tag,
+      body: 'Release notes',
+      draft: true,
+      latestTag: null,
+      nextAssetId: 3,
+      assets: [
+        {
+          id: 1,
+          name: sourceName,
+          digest: `sha256:${createHash('sha256').update(sourceBytes).digest('hex')}`,
+          size: sourceBytes.length,
+        },
+        {
+          id: 2,
+          name: blockmapName,
+          digest: `sha256:${createHash('sha256').update(blockmapBytes).digest('hex')}`,
+          size: blockmapBytes.length,
+        },
+      ],
+    })
+  );
+
+  const fetchHookPath = path.join(root, 'fetch-hook.cjs');
+  await writeFile(
+    fetchHookPath,
+    `const fs = require('node:fs');
+global.fetch = async (input, init = {}) => {
+  const url = new URL(typeof input === 'string' ? input : input.url);
+  const state = JSON.parse(fs.readFileSync(process.env.FAKE_RELEASE_STATE, 'utf8'));
+  const json = value => new Response(JSON.stringify(value), {
+    status: 200,
+    headers: { 'content-type': 'application/json' },
+  });
+  if (url.hostname === 'api.github.com' && url.pathname.endsWith('/releases/latest')) {
+    if (!state.latestTag) return new Response(null, { status: 404 });
+    return json({
+      id: state.id,
+      tag_name: state.latestTag,
+      draft: false,
+      prerelease: false,
+    });
+  }
+  if (url.hostname === 'api.github.com' && url.pathname.includes('/releases/tags/')) {
+    return json({
+      id: state.id,
+      tag_name: state.tag_name,
+      draft: state.draft,
+      prerelease: false,
+    });
+  }
+  if (url.hostname === 'github.com' && url.pathname.includes('/releases/')) {
+    if (url.pathname.includes('/releases/latest/download/') && !state.latestTag) {
+      return new Response(null, { status: 404 });
+    }
+    return new Response(null, { status: 200 });
+  }
+  return new Response(null, { status: 404 });
+};
+`
+  );
+
+  const fakeGhPath = path.join(bin, 'gh');
+  await writeFile(
+    fakeGhPath,
+    `#!/usr/bin/env node
+const crypto = require('node:crypto');
+const fs = require('node:fs');
+const path = require('node:path');
+const args = process.argv.slice(2);
+fs.appendFileSync(process.env.FAKE_GH_LOG, JSON.stringify(args) + '\\n');
+const readState = () => JSON.parse(fs.readFileSync(process.env.FAKE_RELEASE_STATE, 'utf8'));
+const writeState = state => fs.writeFileSync(process.env.FAKE_RELEASE_STATE, JSON.stringify(state));
+const apiRelease = state => ({
+  id: state.id,
+  tag_name: state.tag_name,
+  target_commitish: state.target_commitish,
+  draft: state.draft,
+  assets: state.assets,
+});
+if (args[0] === 'release' && args[1] === 'view') {
+  const state = readState();
+  process.stdout.write(JSON.stringify({
+    body: state.body,
+    isDraft: state.draft,
+    isPrerelease: false,
+    targetCommitish: state.target_commitish,
+    name: state.name,
+    tagName: state.tag_name,
+  }));
+  process.exit(0);
+}
+if (args[0] === 'api' && args[1].includes('/commits/')) {
+  process.stdout.write(process.env.FAKE_TARGET_COMMIT + '\\n');
+  process.exit(0);
+}
+if (args[0] === 'api' && args[1].endsWith('/releases/latest')) {
+  const state = readState();
+  if (!state.latestTag) process.exit(1);
+  process.stdout.write(state.latestTag + '\\n');
+  process.exit(0);
+}
+if (args[0] === 'api' && args[1].includes('/releases/tags/')) {
+  process.stdout.write(JSON.stringify(apiRelease(readState())));
+  process.exit(0);
+}
+if (args[0] === 'api' && args[1] === '--method') {
+  const state = readState();
+  const apiPath = args[3];
+  if (!apiPath.endsWith('/releases/' + state.id)) process.exit(1);
+  state.draft = args.includes('draft=true');
+  if (state.draft) state.latestTag = null;
+  writeState(state);
+  process.stdout.write(JSON.stringify(apiRelease(state)));
+  process.exit(0);
+}
+if (args[0] === 'api' && args[1].includes('/releases/')) {
+  process.stdout.write(JSON.stringify(apiRelease(readState())));
+  process.exit(0);
+}
+if (args[0] === 'release' && args[1] === 'download') {
+  const pattern = args[args.indexOf('--pattern') + 1];
+  const directory = args[args.indexOf('--dir') + 1];
+  fs.copyFileSync(path.join(process.env.FAKE_FIXTURES, pattern), path.join(directory, pattern));
+  process.exit(0);
+}
+if (args[0] === 'release' && args[1] === 'upload') {
+  const state = readState();
+  const filePath = args[3];
+  const name = path.basename(filePath);
+  let bytes = fs.readFileSync(filePath);
+  if (process.env.FAKE_CORRUPT_UPLOAD === 'true' && name === 'latest.yml') {
+    bytes = Buffer.concat([bytes, Buffer.from('corrupt')]);
+  }
+  state.assets = state.assets.filter(asset => asset.name !== name);
+  state.assets.push({
+    id: state.nextAssetId++,
+    name,
+    size: bytes.length,
+    digest: 'sha256:' + crypto.createHash('sha256').update(bytes).digest('hex'),
+  });
+  writeState(state);
+  process.exit(0);
+}
+if (args[0] === 'release' && args[1] === 'edit') {
+  const state = readState();
+  state.draft = false;
+  state.latestTag = process.env.FAKE_LATEST_TAG || state.tag_name;
+  writeState(state);
+  process.exit(0);
+}
+process.stderr.write('Unexpected gh call: ' + args.join(' ') + '\\n');
+process.exit(1);
+`
+  );
+  await chmod(fakeGhPath, 0o755);
+
+  const logPath = path.join(root, 'gh.log');
+  const scriptPath = path.resolve('scripts/ci/promote-existing-draft.mjs');
+  const result = spawnSync(process.execPath, [scriptPath], {
+    cwd: path.resolve('.'),
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      PATH: `${bin}:${process.env.PATH}`,
+      NODE_OPTIONS: [process.env.NODE_OPTIONS, `--require="${fetchHookPath}"`]
+        .filter(Boolean)
+        .join(' '),
+      RELEASE_REPOSITORY: 'example/release-sandbox',
+      RELEASE_TAG: tag,
+      PROMOTE_DRY_RUN: 'false',
+      PUBLISH_RELEASE: 'true',
+      PROMOTION_OUTPUT_DIR: outputDirectory,
+      FAKE_FIXTURES: fixtures,
+      FAKE_GH_LOG: logPath,
+      FAKE_RELEASE_STATE: statePath,
+      FAKE_TARGET_COMMIT: targetCommit,
+      ...overrides,
+    },
+  });
+  const state = JSON.parse(await readFile(statePath, 'utf8')) as PromotionFixtureResult['state'];
+  const calls = (await readFile(logPath, 'utf8'))
+    .trim()
+    .split('\n')
+    .map((line) => JSON.parse(line) as string[]);
+  return { result, state, calls, outputDirectory, tag };
+}
 describe('promote-existing-draft', () => {
-  it('defines every stable, legacy, and updater source once', () => {
+  it('defines only Windows x64 source and updater aliases', () => {
     const layout = getPromotionLayout('2.9.0');
 
-    expect(layout.sourceAssets).toHaveLength(10);
-    expect(Object.keys(layout.stableAliases)).toHaveLength(8);
-    expect(Object.keys(layout.legacyStableAliases)).toHaveLength(7);
-    expect(Object.keys(layout.legacyUpdaterAliases)).toHaveLength(6);
-    expect(layout.sourceAssets).toContain('Agent.Teams.AI-2.9.0-arm64-mac.zip');
-    expect(layout.sourceAssets).toContain('Agent.Teams.AI.Setup.2.9.0.exe');
-    expect(layout.sourceAssets).toContain('Agent.Teams.AI.Setup.2.9.0-arm64.exe');
+    expect(layout.sourceAssets).toEqual(['Agent.Teams.AI.Setup.2.9.0.exe']);
+    expect(layout.stableAliases).toEqual({
+      'Agent.Teams.AI.Setup.exe': 'Agent.Teams.AI.Setup.2.9.0.exe',
+    });
+    expect(layout.legacyStableAliases).toEqual({
+      'Claude-Agent-Teams-UI-Setup.exe': 'Agent.Teams.AI.Setup.2.9.0.exe',
+    });
+    expect(layout.legacyUpdaterAliases).toEqual({
+      'Claude.Agent.Teams.UI.Setup.2.9.0.exe': 'Agent.Teams.AI.Setup.2.9.0.exe',
+    });
+    expect(layout.feedSources).toEqual({
+      windowsX64: 'Agent.Teams.AI.Setup.2.9.0.exe',
+    });
   });
 
   it('rejects ambiguous publication settings', () => {
@@ -114,222 +347,156 @@ describe('promote-existing-draft', () => {
     ).toThrow('cannot be combined');
   });
 
-  it('builds canonical updater feeds from exact artifact bytes', async () => {
+  it('builds only latest.yml from exact Windows x64 artifact bytes', async () => {
     const directory = await makeTemporaryDirectory('promote-feeds-');
     const layout = getPromotionLayout('2.9.0');
-    for (const sourceName of layout.sourceAssets) {
-      await writeFile(path.join(directory, sourceName), `fixture:${sourceName}`);
-    }
+    const assetPath = path.join(directory, layout.feedSources.windowsX64);
+    const assetBytes = Buffer.from(`fixture:${layout.feedSources.windowsX64}`);
+    await writeFile(assetPath, assetBytes);
 
     const feeds = await buildUpdaterFeeds({
       directory,
       version: '2.9.0',
       releaseDate: '2026-07-19T00:00:00.000Z',
       feedSources: layout.feedSources,
-      macMinimumSystemVersion: '13.0',
     });
 
-    const windowsBytes = Buffer.from(`fixture:${layout.feedSources.windowsX64}`);
-    const windowsSha = createHash('sha512').update(windowsBytes).digest('base64');
-    const windowsArm64Bytes = Buffer.from(`fixture:${layout.feedSources.windowsArm64}`);
-    const windowsArm64Sha = createHash('sha512').update(windowsArm64Bytes).digest('base64');
-    expect(feeds['latest.yml']).toContain('version: 2.9.0');
-    expect(feeds['latest.yml']).toContain(`sha512: ${windowsSha}`);
-    expect(feeds['latest.yml']).toContain(`sha512: ${windowsArm64Sha}`);
-    expect(feeds['latest.yml']).toContain(layout.feedSources.windowsArm64);
-    expect(feeds['latest-linux.yml']).toContain(layout.feedSources.linux);
-    expect(feeds['latest-mac.yml']).toContain(layout.feedSources.macArm64Zip);
-    expect(feeds['latest-mac.yml']).toContain(layout.feedSources.macX64Zip);
-    expect(feeds['latest-mac.yml']).toContain('minimumSystemVersion: 22.0.0');
+    const windowsSha = createHash('sha512').update(assetBytes).digest('base64');
+    expect(Object.keys(feeds)).toEqual(['latest.yml']);
+    expect(parse(feeds['latest.yml'])).toMatchObject({
+      version: '2.9.0',
+      path: layout.feedSources.windowsX64,
+      sha512: windowsSha,
+      files: [{ url: layout.feedSources.windowsX64, sha512: windowsSha, size: assetBytes.length }],
+    });
   });
 
-  it('embeds migration notes as a safe YAML scalar in every platform feed', async () => {
+  it('embeds migration notes as a safe YAML scalar in the x64 feed', async () => {
     const directory = await makeTemporaryDirectory('promote-notes-');
     const layout = getPromotionLayout('2.17.10');
-    for (const sourceName of layout.sourceAssets) {
-      await writeFile(path.join(directory, sourceName), `fixture:${sourceName}`);
-    }
+    await writeFile(
+      path.join(directory, layout.feedSources.windowsX64),
+      `fixture:${layout.feedSources.windowsX64}`
+    );
     const releaseNotes =
-      '## macOS: manual install\nUse the "DMG" once.\n\n```yaml\nversion: other\n```';
+      '## Windows: manual install\nUse the "Setup" once.\n\n```yaml\nversion: other\n```';
     const feeds = await buildUpdaterFeeds({
       directory,
       version: '2.17.10',
       releaseDate: '2026-10-09T00:00:00.000Z',
       feedSources: layout.feedSources,
       releaseNotes,
-      macMinimumSystemVersion: '13.0',
     });
-    for (const rawFeed of Object.values(feeds)) {
-      expect(parse(rawFeed)).toMatchObject({ version: '2.17.10', releaseNotes });
-    }
+
+    expect(Object.keys(feeds)).toEqual(['latest.yml']);
+    expect(parse(feeds['latest.yml'])).toMatchObject({ version: '2.17.10', releaseNotes });
   });
 
-  it.each(['', undefined, '13.5', '14.0'])('rejects an unmapped macOS floor: %s', (floor) => {
-    expect(() => getMacUpdaterMinimumSystemVersion(floor)).toThrow(
-      'Unsupported release macOS minimum'
+  it('feeds the Windows x64 update through electron-updater eligibility checks', async () => {
+    const directory = await makeTemporaryDirectory('updater-compatibility-TEST-');
+    const layout = getPromotionLayout('9.9.9');
+    await writeFile(
+      path.join(directory, layout.feedSources.windowsX64),
+      `fixture:${layout.feedSources.windowsX64}`
     );
+    const feeds = await buildUpdaterFeeds({
+      directory,
+      version: '9.9.9',
+      releaseDate: '2026-09-28T00:00:00.000Z',
+      feedSources: layout.feedSources,
+    });
+    const updater = new FeedCompatibilityUpdater(feeds['latest.yml'], directory);
+    const available = vi.fn();
+    const unavailable = vi.fn();
+    updater.on('update-available', available);
+    updater.on('update-not-available', unavailable);
+    const result = await updater.checkForUpdates();
+    expect(result?.isUpdateAvailable).toBe(true);
+    expect(available).toHaveBeenCalledTimes(1);
+    expect(unavailable).not.toHaveBeenCalled();
   });
 
-  it.each([
-    { macMinimum: '13.0', darwin: '21.6.0', eligible: false },
-    { macMinimum: '13.0', darwin: '22.0.0', eligible: true },
-    { macMinimum: '12.0', darwin: '21.6.0', eligible: true },
-  ])(
-    'real updater eligibility for release macOS $macMinimum on Darwin $darwin',
-    async ({ macMinimum, darwin, eligible }) => {
-      const directory = await makeTemporaryDirectory('updater-compatibility-TEST-');
-      const layout = getPromotionLayout('9.9.9');
-      for (const sourceName of layout.sourceAssets) {
-        await writeFile(path.join(directory, sourceName), `fixture:${sourceName}`);
-      }
-      const feeds = await buildUpdaterFeeds({
-        directory,
-        version: '9.9.9',
-        releaseDate: '2026-09-28T00:00:00.000Z',
-        feedSources: layout.feedSources,
-        macMinimumSystemVersion: macMinimum,
+  // The fake gh executable uses a POSIX shebang and PATH separator.
+  it.skipIf(process.platform === 'win32')(
+    'publishes and verifies only Windows x64 updater assets',
+    async () => {
+      const { result, state, calls, outputDirectory, tag } = await runFakePromotion();
+      const version = tag.slice(1);
+      const layout = getPromotionLayout(version);
+      const outputNames = (await readdir(outputDirectory)).sort();
+      const expectedNames = [
+        layout.sourceAssets[0],
+        ...Object.keys(layout.stableAliases),
+        ...Object.keys(layout.legacyStableAliases),
+        ...Object.keys(layout.legacyUpdaterAliases),
+        'latest.yml',
+      ].sort();
+
+      expect(result.status, result.stderr).toBe(0);
+      expect(state.draft).toBe(false);
+      expect(state.latestTag).toBe(tag);
+      expect(outputNames).toEqual(expectedNames);
+      const releaseAssetNames = [...expectedNames, `${layout.sourceAssets[0]}.blockmap`].sort();
+      expect(state.assets.map((asset) => asset.name).sort()).toEqual(releaseAssetNames);
+      expect(state.assets.find((asset) => asset.name === layout.sourceAssets[0])?.id).toBe(1);
+      expect(
+        state.assets.find((asset) => asset.name === `${layout.sourceAssets[0]}.blockmap`)?.id
+      ).toBe(2);
+      expect(calls.filter((args) => args[0] === 'release' && args[1] === 'download')).toHaveLength(
+        1
+      );
+      expect(calls.filter((args) => args[0] === 'release' && args[1] === 'upload')).toHaveLength(
+        4
+      );
+      expect(
+        calls.some(
+          (args) =>
+            args[0] === 'release' &&
+            args[1] === 'edit' &&
+            args.includes('--draft=false') &&
+            args.includes('--latest')
+        )
+      ).toBe(true);
+      expect(parse(await readFile(path.join(outputDirectory, 'latest.yml'), 'utf8'))).toMatchObject({
+        version,
+        releaseNotes: 'Release notes',
       });
-      vi.spyOn(nodeOs, 'release').mockReturnValue(darwin);
-      const updater = new FeedCompatibilityUpdater(feeds['latest-mac.yml'], directory);
-      const available = vi.fn();
-      const unavailable = vi.fn();
-      updater.on('update-available', available);
-      updater.on('update-not-available', unavailable);
-      const result = await updater.checkForUpdates();
-      expect(result?.isUpdateAvailable).toBe(eligible);
-      expect(available).toHaveBeenCalledTimes(eligible ? 1 : 0);
-      expect(unavailable).toHaveBeenCalledTimes(eligible ? 0 : 1);
     }
   );
 
-  // The dry run fakes the gh CLI with a shebang script named `gh` and prepends
-  // its directory with a colon separator - neither works on Windows, where the
-  // real gh would be used against a repository that does not exist.
   it.skipIf(process.platform === 'win32')(
-    'runs an isolated end-to-end dry run with verified release assets',
+    'refuses to publish when an uploaded Windows x64 asset fails integrity verification',
     async () => {
-      const root = await makeTemporaryDirectory('promote-e2e-');
-      const fixtures = path.join(root, 'fixtures');
-      const output = path.join(root, 'output');
-      const bin = path.join(root, 'bin');
-      await Promise.all([mkdir(fixtures), mkdir(output), mkdir(bin)]);
-      // The generated extensionless CLI uses CommonJS. Do not inherit a
-      // package scope from a shared temporary directory on hosted machines.
-      await writeFile(path.join(root, 'package.json'), JSON.stringify({ type: 'commonjs' }));
+      const { result, state, calls } = await runFakePromotion({ FAKE_CORRUPT_UPLOAD: 'true' });
 
-      const version = '9.9.9';
-      const tag = `v${version}`;
-      const targetCommit = 'a'.repeat(40);
-      const layout = getPromotionLayout(version);
-      const assets = [];
-      for (const sourceName of layout.sourceAssets) {
-        const contents = Buffer.from(`fixture:${sourceName}`);
-        await writeFile(path.join(fixtures, sourceName), contents);
-        assets.push({
-          name: sourceName,
-          digest: `sha256:${createHash('sha256').update(contents).digest('hex')}`,
-          size: contents.length,
-        });
-      }
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain('Uploaded release asset integrity mismatch: latest.yml');
+      expect(state.draft).toBe(true);
+      expect(state.latestTag).toBeNull();
+      expect(calls.some((args) => args[0] === 'release' && args[1] === 'edit')).toBe(false);
+    }
+  );
 
-      const fakeGhPath = path.join(bin, 'gh');
-      await writeFile(
-        fakeGhPath,
-        `#!/usr/bin/env node
-const fs = require('node:fs');
-const path = require('node:path');
-const args = process.argv.slice(2);
-fs.appendFileSync(process.env.FAKE_GH_LOG, JSON.stringify(args) + '\\n');
-if (args[0] === 'release' && args[1] === 'view') {
-  process.stdout.write(process.env.FAKE_RELEASE_JSON);
-  process.exit(0);
-}
-if (args[0] === 'api' && args[1].includes('/commits/')) {
-  process.stdout.write(process.env.FAKE_TARGET_COMMIT + '\\n');
-  process.exit(0);
-}
-if (args[0] === 'api' && args[1].includes('/contents/package.json?ref=')) {
-  process.stdout.write(JSON.stringify({ build: { mac: { minimumSystemVersion: '13.0' } } }));
-  process.exit(0);
-}
-if (args[0] === 'release' && args[1] === 'download') {
-  const pattern = args[args.indexOf('--pattern') + 1];
-  const directory = args[args.indexOf('--dir') + 1];
-  fs.copyFileSync(path.join(process.env.FAKE_FIXTURES, pattern), path.join(directory, pattern));
-  process.exit(0);
-}
-process.stderr.write('Unexpected gh call: ' + args.join(' ') + '\\n');
-process.exit(1);
-`
-      );
-      await chmod(fakeGhPath, 0o755);
-
-      const release = {
-        body: 'Release notes',
-        assets,
-        isDraft: true,
-        isPrerelease: false,
-        targetCommitish: targetCommit,
-        name: tag,
-        tagName: tag,
-      };
-      const logPath = path.join(root, 'gh.log');
-      const scriptPath = path.resolve('scripts/ci/promote-existing-draft.mjs');
-      const result = spawnSync(process.execPath, [scriptPath], {
-        cwd: path.resolve('.'),
-        encoding: 'utf8',
-        env: {
-          ...process.env,
-          PATH: `${bin}:${process.env.PATH}`,
-          RELEASE_REPOSITORY: 'example/release-sandbox',
-          RELEASE_TAG: tag,
-          PROMOTE_DRY_RUN: 'true',
-          PROMOTION_OUTPUT_DIR: output,
-          FAKE_FIXTURES: fixtures,
-          FAKE_GH_LOG: logPath,
-          FAKE_RELEASE_JSON: JSON.stringify(release),
-          FAKE_TARGET_COMMIT: targetCommit,
-        },
+  it.skipIf(process.platform === 'win32')(
+    'redrafts a release if latest-tag verification fails after publication',
+    async () => {
+      const { result, state, calls, tag } = await runFakePromotion({
+        FAKE_LATEST_TAG: 'v9.9.8',
       });
 
-      expect(result.status, result.stderr).toBe(0);
-      expect(result.stdout).toContain('"dryRun": true');
-      expect(await readFile(path.join(output, 'Agent.Teams.AI-arm64.dmg'), 'utf8')).toBe(
-        `fixture:Agent.Teams.AI-${version}-arm64.dmg`
-      );
-      expect(await readFile(path.join(output, 'Agent.Teams.AI.Setup-arm64.exe'), 'utf8')).toBe(
-        `fixture:Agent.Teams.AI.Setup.${version}-arm64.exe`
-      );
-      expect(await readFile(path.join(output, 'latest.yml'), 'utf8')).toContain(
-        `Agent.Teams.AI.Setup.${version}.exe`
-      );
-      expect(await readFile(path.join(output, 'latest-linux.yml'), 'utf8')).toContain(
-        `Agent.Teams.AI-${version}.AppImage`
-      );
-      expect(await readFile(path.join(output, 'latest-mac.yml'), 'utf8')).toContain(
-        `Agent.Teams.AI-${version}-x64-mac.zip`
-      );
-
-      for (const feedName of ['latest.yml', 'latest-linux.yml', 'latest-mac.yml']) {
-        expect(parse(await readFile(path.join(output, feedName), 'utf8'))).toMatchObject({
-          releaseNotes: release.body,
-        });
-      }
-
-      const calls = (await readFile(logPath, 'utf8'))
-        .trim()
-        .split('\n')
-        .map((line) => JSON.parse(line) as string[]);
-      expect(calls.filter((args) => args[0] === 'release' && args[1] === 'download')).toHaveLength(
-        10
-      );
-      expect(calls.some((args) => args[0] === 'release' && args[1] === 'upload')).toBe(false);
-      expect(calls.some((args) => args[0] === 'release' && args[1] === 'edit')).toBe(false);
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain(`expected ${tag}`);
+      expect(state.draft).toBe(true);
+      expect(state.latestTag).toBeNull();
       expect(calls).toContainEqual([
         'api',
-        `repos/example/release-sandbox/contents/package.json?ref=${targetCommit}`,
-        '--jq',
-        '.content | @base64d',
+        '--method',
+        'PATCH',
+        'repos/example/release-sandbox/releases/123',
+        '-F',
+        'draft=true',
+        '-f',
+        'make_latest=false',
       ]);
     }
   );

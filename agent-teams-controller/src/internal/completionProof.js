@@ -2,12 +2,14 @@ const { tryWithTeamBoardLock } = require('./boardLock.js');
 const path = require('path');
 const kanbanStore = require('./kanbanStore.js');
 const taskStore = require('./taskStore.js');
+const pendingKanbanGuard = require('./pendingKanbanGuard.js');
 
 // A busy or unreadable board must not disable duplicate-message protection.
 function readConsistentCompletionTasks(paths) {
   const tasks = tryWithTeamBoardLock(paths, () => {
     kanbanStore.readKanbanState(paths, path.basename(paths.teamDir));
     const rows = taskStore.listTaskRows(paths);
+    pendingKanbanGuard.assertNoPendingTransitions(paths, taskStore);
     if (rows.anomalies.length) throw new Error('Cannot verify all tasks for message delivery');
     return rows.tasks;
   });

@@ -1,3 +1,4 @@
+import { RuntimeStatusProjectAccessDeniedError } from '@main/services/runtime/runtimeStatusExecutionContext';
 import { isWorkingDirectoryMissingError } from '@main/utils/cliWorkingDirectory';
 import { CLI_PROVIDER_STATUS_UNAVAILABLE_MESSAGE } from '@shared/types/cliInstaller';
 import {
@@ -66,7 +67,7 @@ function getProviderDisplayName(providerId: CliProviderId): string {
     case 'gemini':
       return 'Gemini';
     case 'opencode':
-      return 'OpenCode (200+ models)';
+      return 'OpenCode (200+ providers)';
   }
 }
 
@@ -189,7 +190,7 @@ export function createPendingProviderStatus(providerId: CliProviderId): CliProvi
 
 export function getProviderStatusCheckErrorCode(error: unknown): CliProviderStatusCheckErrorCode {
   if (error instanceof RuntimeStatusCommandError) {
-    return getProviderStatusCheckErrorCode(error.cause);
+    return error.projectAccessDenied ? 'unavailable' : getProviderStatusCheckErrorCode(error.cause);
   }
   if (isWorkingDirectoryMissingError(error)) {
     return 'project_missing';
@@ -212,6 +213,9 @@ export function createRuntimeStatusErrorProviderStatus(
   const message = error instanceof Error ? error.message : String(error);
   const errorCode = getProviderStatusCheckErrorCode(error);
   const isOpenCodeTimeout = providerId === 'opencode' && errorCode === 'timeout';
+  const projectAccessDenied =
+    error instanceof RuntimeStatusProjectAccessDeniedError ||
+    (error instanceof RuntimeStatusCommandError && error.projectAccessDenied !== null);
   if (errorCode === 'project_missing') {
     const projectPath = isWorkingDirectoryMissingError(error) ? error.cwd : message;
     return {
@@ -228,17 +232,21 @@ export function createRuntimeStatusErrorProviderStatus(
     verificationState: 'error',
     statusCheckOutcome: 'transient_error',
     statusCheckErrorCode: errorCode,
-    statusMessage: isOpenCodeTimeout
-      ? 'OpenCode is still loading'
-      : CLI_PROVIDER_STATUS_UNAVAILABLE_MESSAGE,
-    detailMessage: isOpenCodeTimeout
-      ? [
-          'OpenCode is taking longer than expected to load provider status. Your saved connections were not changed. Retry in a moment.',
-          error instanceof RuntimeStatusCommandError ? getRuntimeStatusErrorDetails(error) : null,
-        ]
-          .filter(Boolean)
-          .join('\n\n')
-      : getRuntimeStatusErrorDetails(error),
+    statusMessage: projectAccessDenied
+      ? 'Project folder access denied'
+      : isOpenCodeTimeout
+        ? 'OpenCode is still loading'
+        : CLI_PROVIDER_STATUS_UNAVAILABLE_MESSAGE,
+    detailMessage: projectAccessDenied
+      ? getRuntimeStatusErrorDetails(error)
+      : isOpenCodeTimeout
+        ? [
+            'OpenCode is taking longer than expected to load provider status. Your saved connections were not changed. Retry in a moment.',
+            error instanceof RuntimeStatusCommandError ? getRuntimeStatusErrorDetails(error) : null,
+          ]
+            .filter(Boolean)
+            .join('\n\n')
+        : getRuntimeStatusErrorDetails(error),
   };
 }
 

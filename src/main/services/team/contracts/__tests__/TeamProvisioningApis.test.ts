@@ -54,7 +54,9 @@ import type {
   TeamProvisioningPrepareResult,
   TeamProvisioningProgress,
   TeamRuntimeState,
+  TeamSpecBinding,
   TeamSummary,
+  TeamTask,
   TeamViewSnapshot,
   ToolApprovalSettings,
 } from '@shared/types/team';
@@ -362,12 +364,20 @@ describe('TeamProvisioning API binders', () => {
       readonly suffix: string;
       createdTeamName: string | null;
       renamedDraft: string | null;
+      task: TeamTask;
+      artifactData: string;
+      specBindings: TeamSpecBinding[];
+      dataCalls: string[];
     }
 
     const source: TeamDataSource = {
       suffix: 'bound',
       createdTeamName: null,
       renamedDraft: null,
+      task: { id: 'task-bound', subject: 'Bound task', status: 'pending' },
+      artifactData: 'cHJvb2Y=',
+      specBindings: [],
+      dataCalls: [],
       listTeams(this: TeamDataSource): Promise<TeamSummary[]> {
         return Promise.resolve([
           {
@@ -404,6 +414,163 @@ describe('TeamProvisioning API binders', () => {
         this.renamedDraft = `${oldTeamName}->${newTeamName}-${this.suffix}`;
         return Promise.resolve();
       },
+      listTeamSpecBindings(this: TeamDataSource, teamName: string): Promise<TeamSpecBinding[]> {
+        this.dataCalls.push(`listTeamSpecBindings:${teamName}-${this.suffix}`);
+        return Promise.resolve(this.specBindings);
+      },
+      linkTeamSpec(
+        this: TeamDataSource,
+        teamName: string,
+        binding: TeamSpecBinding
+      ): Promise<TeamSpecBinding[]> {
+        this.dataCalls.push(`linkTeamSpec:${teamName}-${this.suffix}`);
+        this.specBindings = [...this.specBindings, binding];
+        return Promise.resolve(this.specBindings);
+      },
+      getTasks(this: TeamDataSource, teamName: string): Promise<TeamTask[]> {
+        this.dataCalls.push(`getTasks:${teamName}-${this.suffix}`);
+        return Promise.resolve(this.task.status === 'deleted' ? [] : [this.task]);
+      },
+      getDeletedTasks(this: TeamDataSource, teamName: string): Promise<TeamTask[]> {
+        this.dataCalls.push(`getDeletedTasks:${teamName}-${this.suffix}`);
+        return Promise.resolve(this.task.status === 'deleted' ? [this.task] : []);
+      },
+      getTask(this: TeamDataSource, teamName: string, taskId: string): Promise<TeamTask | null> {
+        this.dataCalls.push(`getTask:${teamName}-${this.suffix}`);
+        return Promise.resolve(this.task.id === taskId ? this.task : null);
+      },
+      readTaskArtifactData(
+        this: TeamDataSource,
+        teamName: string,
+        taskId: string,
+        attachmentId: string
+      ): Promise<string | null> {
+        this.dataCalls.push(
+          `readTaskArtifactData:${teamName}-${this.suffix}:${taskId}:${attachmentId}`
+        );
+        return Promise.resolve(
+          this.task.id === taskId && attachmentId === 'attachment-bound' ? this.artifactData : null
+        );
+      },
+      createTask(this: TeamDataSource, teamName, request): Promise<TeamTask> {
+        this.dataCalls.push(`createTask:${teamName}-${this.suffix}`);
+        this.task = {
+          id: `task-${this.suffix}-created`,
+          displayId: '2',
+          subject: request.subject,
+          status: request.startImmediately ? 'in_progress' : 'pending',
+          ...(request.description === undefined ? {} : { description: request.description }),
+          ...(request.owner === undefined ? {} : { owner: request.owner }),
+        };
+        return Promise.resolve(this.task);
+      },
+      createTaskWithOutcome(this: TeamDataSource, teamName, request, executionPatch) {
+        this.dataCalls.push(`createTaskWithOutcome:${teamName}-${this.suffix}`);
+        return this.createTask(teamName, request).then((task) => {
+          if (executionPatch?.sourceMessageId !== undefined) {
+            this.task = {
+              ...task,
+              sourceMessageId: executionPatch.sourceMessageId ?? undefined,
+            };
+          }
+          return { task: this.task, outcome: 'APPLIED' as const };
+        });
+      },
+      updateTaskStatus(this: TeamDataSource, teamName, taskId, status) {
+        this.dataCalls.push(`updateTaskStatus:${teamName}-${this.suffix}`);
+        if (this.task.id === taskId) this.task = { ...this.task, status };
+        return Promise.resolve();
+      },
+      updateTaskStatusWithReceipt(this: TeamDataSource, teamName, taskId, status) {
+        this.dataCalls.push(`updateTaskStatusWithReceipt:${teamName}-${this.suffix}`);
+        return this.updateTaskStatus(teamName, taskId, status).then(() => []);
+      },
+      updateTaskOwner(this: TeamDataSource, teamName, taskId, owner) {
+        this.dataCalls.push(`updateTaskOwner:${teamName}-${this.suffix}`);
+        if (this.task.id === taskId) this.task = { ...this.task, owner: owner ?? undefined };
+        return Promise.resolve();
+      },
+      updateTaskFields(this: TeamDataSource, teamName, taskId, fields) {
+        this.dataCalls.push(`updateTaskFields:${teamName}-${this.suffix}`);
+        if (this.task.id === taskId) {
+          this.task = {
+            ...this.task,
+            ...(fields.subject === undefined ? {} : { subject: fields.subject }),
+            ...(fields.description === undefined ? {} : { description: fields.description }),
+            ...(fields.groupChatId === undefined
+              ? {}
+              : { groupChatId: fields.groupChatId ?? undefined }),
+          };
+        }
+        return Promise.resolve();
+      },
+      applyTaskExecutionPatch(this: TeamDataSource, teamName, taskId, patch) {
+        this.dataCalls.push(`applyTaskExecutionPatch:${teamName}-${this.suffix}`);
+        if (this.task.id === taskId) {
+          this.task = {
+            ...this.task,
+            ...(patch.sourceMessageId === undefined
+              ? {}
+              : { sourceMessageId: patch.sourceMessageId ?? undefined }),
+            ...(patch.pendingKanbanTransition === undefined
+              ? {}
+              : { pendingKanbanTransition: patch.pendingKanbanTransition ?? undefined }),
+          };
+        }
+        return Promise.resolve();
+      },
+      addTaskRelationship(this: TeamDataSource, teamName, taskId, targetId, type) {
+        this.dataCalls.push(`addTaskRelationship:${teamName}-${this.suffix}`);
+        if (this.task.id === taskId) {
+          switch (type) {
+            case 'blockedBy':
+              this.task = {
+                ...this.task,
+                blockedBy: [...new Set([...(this.task.blockedBy ?? []), targetId])],
+              };
+              break;
+            case 'blocks':
+              this.task = {
+                ...this.task,
+                blocks: [...new Set([...(this.task.blocks ?? []), targetId])],
+              };
+              break;
+            case 'related':
+              this.task = {
+                ...this.task,
+                related: [...new Set([...(this.task.related ?? []), targetId])],
+              };
+              break;
+          }
+        }
+        return Promise.resolve();
+      },
+      removeTaskRelationship(this: TeamDataSource, teamName, taskId, targetId, type) {
+        this.dataCalls.push(`removeTaskRelationship:${teamName}-${this.suffix}`);
+        if (this.task.id === taskId) {
+          switch (type) {
+            case 'blockedBy':
+              this.task = {
+                ...this.task,
+                blockedBy: (this.task.blockedBy ?? []).filter((id) => id !== targetId),
+              };
+              break;
+            case 'blocks':
+              this.task = {
+                ...this.task,
+                blocks: (this.task.blocks ?? []).filter((id) => id !== targetId),
+              };
+              break;
+            case 'related':
+              this.task = {
+                ...this.task,
+                related: (this.task.related ?? []).filter((id) => id !== targetId),
+              };
+              break;
+          }
+        }
+        return Promise.resolve();
+      },
     };
 
     const api = bindTeamHttpDataApi(source);
@@ -429,6 +596,78 @@ describe('TeamProvisioning API binders', () => {
     const renameDraftTeam = api.renameDraftTeam.bind(undefined);
     await renameDraftTeam('old-draft', 'new-draft');
     expect(source.renamedDraft).toBe('old-draft->new-draft-bound');
+    const {
+      listTeamSpecBindings,
+      linkTeamSpec,
+      getTasks,
+      getDeletedTasks,
+      getTask,
+      readTaskArtifactData,
+      createTask,
+      createTaskWithOutcome,
+      updateTaskStatus,
+      updateTaskStatusWithReceipt,
+      updateTaskOwner,
+      updateTaskFields,
+      applyTaskExecutionPatch,
+      addTaskRelationship,
+      removeTaskRelationship,
+    } = api;
+    const binding: TeamSpecBinding = { project: 'bound-project', spec: 'bound-spec' };
+    await expect(listTeamSpecBindings('bound-team')).resolves.toEqual([]);
+    await expect(linkTeamSpec('bound-team', binding)).resolves.toEqual([binding]);
+    await expect(getTasks('bound-team')).resolves.toEqual([source.task]);
+    await expect(getDeletedTasks('bound-team')).resolves.toEqual([]);
+    await expect(getTask('bound-team', 'task-bound')).resolves.toBe(source.task);
+    await expect(
+      readTaskArtifactData('bound-team', 'task-bound', 'attachment-bound')
+    ).resolves.toBe(source.artifactData);
+
+    const created = await createTask('bound-team', { subject: 'Created task' });
+    const outcome = await createTaskWithOutcome('bound-team', {
+      subject: 'Replayed task',
+      startImmediately: true,
+    });
+    expect(created.subject).toBe('Created task');
+    expect(outcome).toEqual({ task: source.task, outcome: 'APPLIED' });
+    await updateTaskStatus('bound-team', source.task.id, 'completed');
+    await expect(
+      updateTaskStatusWithReceipt('bound-team', source.task.id, 'pending')
+    ).resolves.toEqual([]);
+    await updateTaskOwner('bound-team', source.task.id, 'owner-bound');
+    await updateTaskFields('bound-team', source.task.id, { subject: 'Updated task' });
+    await applyTaskExecutionPatch('bound-team', source.task.id, {
+      sourceMessageId: 'message-bound',
+      pendingKanbanTransition: null,
+    });
+    await addTaskRelationship('bound-team', source.task.id, 'related-task', 'related');
+    await removeTaskRelationship('bound-team', source.task.id, 'related-task', 'related');
+    expect(source.task).toMatchObject({
+      subject: 'Updated task',
+      status: 'pending',
+      owner: 'owner-bound',
+      sourceMessageId: 'message-bound',
+      related: [],
+    });
+    expect(source.dataCalls).toEqual([
+      'listTeamSpecBindings:bound-team-bound',
+      'linkTeamSpec:bound-team-bound',
+      'getTasks:bound-team-bound',
+      'getDeletedTasks:bound-team-bound',
+      'getTask:bound-team-bound',
+      'readTaskArtifactData:bound-team-bound:task-bound:attachment-bound',
+      'createTask:bound-team-bound',
+      'createTaskWithOutcome:bound-team-bound',
+      'createTask:bound-team-bound',
+      'updateTaskStatus:bound-team-bound',
+      'updateTaskStatusWithReceipt:bound-team-bound',
+      'updateTaskStatus:bound-team-bound',
+      'updateTaskOwner:bound-team-bound',
+      'updateTaskFields:bound-team-bound',
+      'applyTaskExecutionPatch:bound-team-bound',
+      'addTaskRelationship:bound-team-bound',
+      'removeTaskRelationship:bound-team-bound',
+    ]);
   });
 
   it('groups HTTP route controls behind narrow facade ports', async () => {
@@ -584,6 +823,9 @@ describe('TeamProvisioning API binders', () => {
         this.stoppedTeamName = teamName;
         return Promise.resolve();
       },
+      clearStoppedLaneStopBackoff(): void {
+        return undefined;
+      },
       isTeamAlive(this: RuntimeSource, teamName: string): boolean {
         return teamName === this.teamName;
       },
@@ -672,6 +914,7 @@ describe('TeamProvisioning API binders', () => {
           progress: null,
         }),
       stopTeam: () => Promise.resolve(),
+      clearStoppedLaneStopBackoff: () => undefined,
       isTeamAlive: () => true,
       getAliveTeams: () => ['team-bound'],
       getCurrentRunId: () => 'run-bound',
@@ -711,6 +954,7 @@ describe('TeamProvisioning API binders', () => {
     const lifecycleApi = bindTeamMemberLifecycleApi(lifecycleSource);
 
     expect(Object.keys(runtimeApi).sort()).toEqual([
+      'clearStoppedLaneStopBackoff',
       'getAliveTeams',
       'getCurrentRunId',
       'getRuntimeState',

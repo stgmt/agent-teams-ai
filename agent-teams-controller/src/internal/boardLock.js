@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 
 const { withFileLockSync, tryWithFileLockSync } = require('./fileLock.js');
+const { isReadOnlyTaskSnapshot } = require('./taskBackendSelection.js');
 
 // An anchor intentionally groups case/Unicode variants. It must not identify
 // reentrant operations: on some filesystems those variants are different teams.
@@ -121,10 +122,16 @@ function withTeamBoardLock(paths, fn, options = {}) {
   );
 }
 
+// Detached snapshots do not wait behind an app-main async lock holder.
+function withTeamBoardReadLock(paths, fn) {
+  return isReadOnlyTaskSnapshot(paths) ? fn() : withTeamBoardLock(paths, fn);
+}
+
 module.exports = {
   getTeamBoardAnchorScope,
   getTeamBoardLockContext,
   getTeamBoardLockScope,
   tryWithTeamBoardLock,
   withTeamBoardLock,
+  withTeamBoardReadLock,
 };

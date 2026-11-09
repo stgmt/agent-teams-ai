@@ -35,25 +35,13 @@ interface ToolUseInfo {
   filePaths: string[];
 }
 
-type DetectedMechanism = 'TaskUpdate' | 'mcp' | 'none';
+type DetectedMechanism = 'mcp' | 'none';
 
 function extractTaskId(input: Record<string, unknown>): string {
   const rawTaskId = input.taskId ?? input.task_id;
   if (typeof rawTaskId === 'string') return rawTaskId;
   if (typeof rawTaskId === 'number') return String(rawTaskId);
   return '';
-}
-
-function pickDetectedMechanism(
-  current: DetectedMechanism,
-  next: Exclude<DetectedMechanism, 'none'>
-): DetectedMechanism {
-  const priority = {
-    none: 0,
-    TaskUpdate: 1,
-    mcp: 2,
-  } as const;
-  return priority[next] > priority[current] ? next : current;
 }
 
 export class TaskBoundaryParser {
@@ -127,17 +115,12 @@ export class TaskBoundaryParser {
             allToolUsesByLine.get(lineNumber)!.push({ toolUseId, toolName, filePaths });
           }
 
-          // Prefer structured task markers for modern runtime sessions.
-          const taskUpdateBounds = this.extractTaskUpdateBoundaries(content, lineNumber, timestamp);
-          if (taskUpdateBounds.length > 0) {
-            detectedMechanism = pickDetectedMechanism(detectedMechanism, 'TaskUpdate');
-            boundaries.push(...taskUpdateBounds);
-            continue;
-          }
-
+          // Board boundaries come only from app-provided task tools. Built-in
+          // TaskUpdate writes to the agent's private task list and its numeric
+          // ids are unrelated to board ids, so it is never board evidence.
           const mcpBounds = this.extractMcpTaskBoundaries(content, lineNumber, timestamp);
           if (mcpBounds.length > 0) {
-            detectedMechanism = pickDetectedMechanism(detectedMechanism, 'mcp');
+            detectedMechanism = 'mcp';
             boundaries.push(...mcpBounds);
             continue;
           }
@@ -210,53 +193,6 @@ export class TaskBoundaryParser {
     }
 
     return paths;
-  }
-
-  /**
-   * Найти TaskUpdate/proxy_TaskUpdate tool_use блоки.
-   * status: in_progress → start, completed → complete
-   */
-  private extractTaskUpdateBoundaries(
-    content: unknown[],
-    lineNumber: number,
-    timestamp: string
-  ): TaskBoundary[] {
-    const results: TaskBoundary[] = [];
-
-    for (const block of content) {
-      if (!block || typeof block !== 'object') continue;
-      const b = block as Record<string, unknown>;
-      if (b.type !== 'tool_use') continue;
-
-      const rawName = typeof b.name === 'string' ? b.name : '';
-      const toolName = rawName.replace(/^proxy_/, '');
-      if (toolName !== 'TaskUpdate') continue;
-
-      const input = b.input as Record<string, unknown> | undefined;
-      if (!input) continue;
-
-      const taskId = extractTaskId(input);
-      if (!taskId) continue;
-
-      const status = typeof input.status === 'string' ? input.status : '';
-      let event: TaskBoundaryEvent = null;
-      if (status === 'in_progress') event = 'start';
-      else if (status === 'completed') event = 'complete';
-
-      if (event) {
-        const toolUseId = typeof b.id === 'string' ? b.id : undefined;
-        results.push({
-          taskId,
-          event,
-          lineNumber,
-          timestamp,
-          mechanism: 'TaskUpdate',
-          toolUseId,
-        });
-      }
-    }
-
-    return results;
   }
 
   /**

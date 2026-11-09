@@ -16,7 +16,8 @@ vi.mock('@main/utils/directoryPresence', async (importOriginal) => ({
 interface RuntimeStatusMapper {
   mapRuntimeProviderStatus: (
     providerId: CliProviderId,
-    runtimeStatus: unknown
+    runtimeStatus: unknown,
+    options?: { summary?: boolean }
   ) => CliProviderStatus;
   mergeOpenCodeVerification: (provider: CliProviderStatus, snapshot: unknown) => CliProviderStatus;
 }
@@ -40,10 +41,11 @@ interface RuntimeStatusHydrationInternals {
 
 function mapRuntimeProviderStatus(
   providerId: CliProviderId,
-  runtimeStatus: unknown
+  runtimeStatus: unknown,
+  options?: { summary?: boolean }
 ): CliProviderStatus {
   const service = new ClaudeMultimodelBridgeService() as unknown as RuntimeStatusMapper;
-  return service.mapRuntimeProviderStatus(providerId, runtimeStatus);
+  return service.mapRuntimeProviderStatus(providerId, runtimeStatus, options);
 }
 
 function verifiedOpenCodeProvider(): CliProviderStatus {
@@ -68,6 +70,50 @@ function verifiedOpenCodeProvider(): CliProviderStatus {
 }
 
 describe('ClaudeMultimodelBridgeService runtime status mapping', () => {
+  test.each([false, true])(
+    'does not restore a pre-invalidation project catalog (newer read completed=%s)',
+    async (readNewerFirst) => {
+      const service = new ClaudeMultimodelBridgeService();
+      service.invalidateProviderStatusHydrations();
+      const internals = service as unknown as {
+        getProviderStatusFromScopedRuntimeStatus: (
+          binaryPath: string,
+          providerId: CliProviderId,
+          options: { projectPath: string }
+        ) => Promise<CliProviderStatus>;
+        getProviderStatusFromRuntimeStatusCommand: () => Promise<CliProviderStatus>;
+      };
+      let finishOld!: (value: CliProviderStatus) => void;
+      const old = new Promise<CliProviderStatus>((resolve) => {
+        finishOld = resolve;
+      });
+      const before = { ...verifiedOpenCodeProvider(), models: ['TEST/before-install'] };
+      const after = { ...verifiedOpenCodeProvider(), models: ['TEST/after-install'] };
+      const command = vi
+        .spyOn(internals, 'getProviderStatusFromRuntimeStatusCommand')
+        .mockReturnValueOnce(old)
+        .mockResolvedValue(after);
+      const read = () =>
+        internals.getProviderStatusFromScopedRuntimeStatus('/TEST/runtime', 'opencode', {
+          projectPath: path.resolve('TEST-project'),
+        });
+      try {
+        const originalRead = read();
+        await vi.waitFor(() => expect(command).toHaveBeenCalledTimes(1));
+        service.invalidateProviderStatusHydrations();
+        if (readNewerFirst) expect(await read()).toEqual(after);
+        finishOld(before);
+        await originalRead;
+        expect(await read()).toEqual(after);
+        expect(command).toHaveBeenCalledTimes(2);
+      } finally {
+        finishOld(before);
+        service.invalidateProviderStatusHydrations();
+        command.mockRestore();
+      }
+    }
+  );
+
   test.each([' configured-model ', null, undefined, 42, {}, []])(
     'maps only the current typed effective model %j',
     (effectiveDefaultModel) => {
@@ -87,6 +133,21 @@ describe('ClaudeMultimodelBridgeService runtime status mapping', () => {
       expect(provider.defaultModel).toBe('legacy-model');
     }
   );
+  test('reports a missing dynamic catalog as an error after full status hydration', () => {
+    const runtimeStatus = {
+      ...verifiedOpenCodeProvider(),
+      providerId: 'anthropic' as const,
+      runtimeCapabilities: { modelCatalog: { dynamic: true } },
+    };
+
+    expect(
+      mapRuntimeProviderStatus('anthropic', runtimeStatus, { summary: true })
+        .modelCatalogRefreshState
+    ).toBe('loading');
+    expect(mapRuntimeProviderStatus('anthropic', runtimeStatus).modelCatalogRefreshState).toBe(
+      'error'
+    );
+  });
 
   test.each(['pending', 'transient_error', 'model_only'])(
     'does not promote effective model from %s status',
@@ -108,26 +169,30 @@ describe('ClaudeMultimodelBridgeService runtime status mapping', () => {
   )(
     '$providerId mints refresh provenance only from raw affirmative teamLaunch=$teamLaunch, ignoring injected markers',
     ({ providerId, teamLaunch }) => {
-      const provider = mapRuntimeProviderStatus(providerId, {
+      const provider = mapRuntimeProviderStatus(
         providerId,
-        supported: true,
-        authenticated: true,
-        authMethod: 'claude.ai',
-        verificationState: 'verified',
-        statusCheckOutcome: 'authoritative',
-        capabilities: { teamLaunch, oneShot: true, extensions: {} },
-        canLoginFromUi: true,
-        selectedBackendId: null,
-        resolvedBackendId: null,
-        availableBackends: [],
-        externalRuntimeDiagnostics: [],
-        backend: null,
-        statusMessage: null,
-        detailMessage: null,
-        models: ['haiku'],
-        runtimeCapabilities: { modelCatalog: { dynamic: true } },
-        teamLaunchAuthorityRestriction: 'catalog-refresh',
-      });
+        {
+          providerId,
+          supported: true,
+          authenticated: true,
+          authMethod: 'claude.ai',
+          verificationState: 'verified',
+          statusCheckOutcome: 'authoritative',
+          capabilities: { teamLaunch, oneShot: true, extensions: {} },
+          canLoginFromUi: true,
+          selectedBackendId: null,
+          resolvedBackendId: null,
+          availableBackends: [],
+          externalRuntimeDiagnostics: [],
+          backend: null,
+          statusMessage: null,
+          detailMessage: null,
+          models: ['haiku'],
+          runtimeCapabilities: { modelCatalog: { dynamic: true } },
+          teamLaunchAuthorityRestriction: 'catalog-refresh',
+        },
+        { summary: true }
+      );
       expect(provider.capabilities.teamLaunch).toBe(false);
       expect(provider.teamLaunchAuthorityRestriction).toBe(
         teamLaunch ? 'catalog-refresh' : undefined

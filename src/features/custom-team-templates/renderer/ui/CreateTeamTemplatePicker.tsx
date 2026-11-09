@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 
 import { useAppTranslation } from '@features/localization/renderer';
 import { TEAM_TEMPLATES } from '@features/team-templates';
+import { confirm } from '@renderer/components/common/ConfirmDialog';
 import { Button } from '@renderer/components/ui/button';
 import { AlertTriangle, RefreshCw, ShieldCheck } from 'lucide-react';
 
@@ -25,6 +26,7 @@ export interface CreateTeamTemplatePickerProps {
   initialSelection?: string;
   /** True once the persisted template selection has been restored (or confirmed absent). */
   initialSelectionReady?: boolean;
+  confirmBeforeApply?: boolean;
   onApply: (
     draft: CreateTeamTemplateDraft,
     source: 'none' | 'builtin' | 'custom',
@@ -43,9 +45,11 @@ export const CreateTeamTemplatePicker = ({
   open,
   initialSelection,
   initialSelectionReady,
+  confirmBeforeApply = false,
   onApply,
 }: CreateTeamTemplatePickerProps): React.JSX.Element => {
   const { t } = useAppTranslation('team');
+  const { t: tCommon } = useAppTranslation('common');
   const { state, reload } = useCustomTemplateLibrary(open);
 
   const [selection, setSelection] = useState<string>(() =>
@@ -54,11 +58,30 @@ export const CreateTeamTemplatePicker = ({
   // A deliberate user choice always outranks a draft selection that arrives
   // later: draft persistence restores asynchronously, long after mount.
   const userSelectionMadeRef = useRef(false);
+  const confirmationOwner = useRef<AbortController | null>(null);
+  const confirmationPending = useRef(false);
+  const [pending, setPending] = useState(false);
   const [lastCustomSnapshot, setLastCustomSnapshot] = useState<CustomTeamTemplateV1 | null>(null);
 
   // Hydration readiness: while the persisted selection has not been restored,
   // option changes are blocked so they cannot race with the pending restore.
-  const selectionReady = initialSelectionReady ?? true;
+  const hydrated = initialSelectionReady ?? true;
+  const selectionReady = hydrated && !pending;
+
+  useEffect(() => {
+    if (!open || !hydrated) return;
+    const owner = new AbortController();
+    confirmationOwner.current = owner;
+    return () => {
+      owner.abort();
+      confirmationPending.current = false;
+      if (confirmationOwner.current === owner) confirmationOwner.current = null;
+    };
+  }, [open, hydrated]);
+
+  useEffect(() => {
+    if (!open || !hydrated) setPending(false);
+  }, [open, hydrated]);
 
   // Draft persistence restores the saved selection after mount. Adopt it only
   // while the picker still shows its default, so the visible selection matches
@@ -101,32 +124,52 @@ export const CreateTeamTemplatePicker = ({
   const previewCustom = selectedCustom ?? (staleCustomId ? lastCustomSnapshot : null);
 
   const handleSelect = (value: string): void => {
-    if (!selectionReady) return;
-    userSelectionMadeRef.current = true;
-    if (value === selection) return;
+    if (!open || !selectionReady || confirmationPending.current || value === selection) return;
     const result = resolveCreateTeamTemplateDraft(value, {
       builtins: TEAM_TEMPLATES,
       customs,
     });
-    switch (result.status) {
-      case 'none':
-        setSelection(value);
-        onApply(result.draft, 'none', value);
-        return;
-      case 'builtin':
-        setSelection(value);
-        onApply(result.draft, 'builtin', value);
-        return;
-      case 'custom': {
-        const record = customs.find((entry) => entry.templateId === result.templateId) ?? null;
-        setSelection(value);
-        setLastCustomSnapshot(record);
-        onApply(result.draft, 'custom', value);
-        return;
-      }
-      default:
-        return;
+    if (result.status !== 'none' && result.status !== 'builtin' && result.status !== 'custom') {
+      return;
     }
+    const apply = (): void => {
+      userSelectionMadeRef.current = true;
+      setSelection(value);
+      if (result.status === 'custom') {
+        setLastCustomSnapshot(
+          customs.find((entry) => entry.templateId === result.templateId) ?? null
+        );
+      }
+      onApply(result.draft, result.status, value);
+    };
+    if (!confirmBeforeApply) {
+      apply();
+      return;
+    }
+    const owner = confirmationOwner.current;
+    if (!owner || owner.signal.aborted) return;
+    confirmationPending.current = true;
+    setPending(true);
+    void (async () => {
+      try {
+        const accepted = await confirm({
+          title: t('templates.confirmTitle', { defaultValue: 'Apply team template?' }),
+          message: t('templates.confirmMessage', {
+            defaultValue:
+              'This replaces the description, prompt and teammates, resets runtime selection, disables Run after create and Solo team, and enables model sync. Continue?',
+          }),
+          confirmLabel: t('templates.confirmAction', { defaultValue: 'Apply template' }),
+          cancelLabel: tCommon('actions.cancel'),
+          signal: owner.signal,
+        });
+        if (accepted && !owner.signal.aborted) apply();
+      } finally {
+        if (!owner.signal.aborted) {
+          confirmationPending.current = false;
+          setPending(false);
+        }
+      }
+    })();
   };
 
   const optionClass = (active: boolean): string =>

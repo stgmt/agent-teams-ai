@@ -272,6 +272,7 @@ describe('team provisioning stop flow', () => {
     const stopping = stopAllTeamsFlow({
       incrementStopAllTeamsGeneration: () => events.push('generation'),
       getShutdownTrackedTeamNames: () => ['team-a'],
+      getShutdownRunningTeamNames: () => ['team-a'],
       pauseActiveIntervalsForTeam: () => events.push('pause'),
       killTrackedCliProcesses: () => events.push('kill-cli'),
       killTransientProbeProcessesForShutdown: () => events.push('kill-probes'),
@@ -291,6 +292,7 @@ describe('team provisioning stop flow', () => {
         events.push('wait-locks');
       },
       listPersistedTeamNames: () => [],
+      isManagedByThisProfile: async () => true,
       stopPersistentTeamMembers: () => events.push('stop-persisted'),
       cleanupAnthropicApiKeyHelperMaterialForStoppedTeam: async () => undefined,
       logger: { info: vi.fn() },
@@ -386,8 +388,8 @@ describe('team provisioning stop flow', () => {
     }
   });
 
-  it.each(['failed-result', 'throw'] as const)(
-    'retires processes without retrying an initial task-clock %s',
+  it.each(['failed-result', 'pending-transition', 'throw'] as const)(
+    'retires processes before recovering an initial task-clock %s',
     async (mode) => {
       const teamName = 'team-clock-recover';
       const run = makeRun('run-clock', teamName);
@@ -398,21 +400,40 @@ describe('team provisioning stop flow', () => {
       );
       vi.mocked(ports.pauseActiveIntervalsForTeam).mockImplementationOnce(() => {
         if (mode === 'throw') throw new Error('TEST initial clock failure');
-        return { failed: true };
+        return { failed: true, pendingTransition: mode === 'pending-transition' };
       });
-      await expect(stopTeamFlow(teamName, ports)).rejects.toMatchObject({
-        code: 'task_activity_interval_pause_failed_after_stop',
-        pendingTransition: false,
-        message: expect.stringMatching(/inspect the team tasks and task timers/i),
+      vi.mocked(ports.pauseActiveIntervalsForTeam).mockImplementationOnce(() => {
+        expect(run.child?.killed).toBe(true);
+        expect(ports.cleanupRun).toHaveBeenCalledWith(run);
+        expect(ports.cleanupAnthropicApiKeyHelperMaterialForStoppedTeam).toHaveBeenCalledWith(
+          teamName
+        );
+        return { failed: false };
       });
-      expect(ports.pauseActiveIntervalsForTeam).toHaveBeenCalledTimes(1);
-      expect(run.child?.killed).toBe(true);
-      expect(ports.cleanupRun).toHaveBeenCalledWith(run);
-      expect(ports.cleanupAnthropicApiKeyHelperMaterialForStoppedTeam).toHaveBeenCalledWith(
-        teamName
-      );
+      await expect(stopTeamFlow(teamName, ports)).resolves.toBeUndefined();
     }
   );
+
+  it('reports a pending task transition when the final pause cannot settle it', async () => {
+    const teamName = 'team-clock-pending';
+    const run = makeRun('run-clock', teamName);
+    const ports = makePorts(
+      teamName,
+      new Map([[run.runId, run]]),
+      new Map([[teamName, run.runId]])
+    );
+    vi.mocked(ports.pauseActiveIntervalsForTeam).mockReturnValue({
+      failed: true,
+      pendingTransition: true,
+    });
+
+    await expect(stopTeamFlow(teamName, ports)).rejects.toMatchObject({
+      code: 'task_activity_interval_pause_failed_after_stop',
+      pendingTransition: true,
+    });
+    expect(run.child?.killed).toBe(true);
+    expect(ports.cleanupRun).toHaveBeenCalledWith(run);
+  });
 
   it('reports final task-clock failure after cleanup and preserves an original stop failure', async () => {
     const teamName = 'team-clock-final';

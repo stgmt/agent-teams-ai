@@ -16,12 +16,17 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { createMemberDraft } from '@renderer/components/team/members/membersEditorUtils';
+import { currentCreateTeamDraftGeneration } from '@renderer/services/createTeamDraftGeneration';
 import {
   type CreateTeamDraftSnapshot,
   createTeamDraftStorage,
   type SerializedMemberDraft,
 } from '@renderer/services/createTeamDraftStorage';
 import {
+  getStoredCreateTeamEffort,
+  getStoredCreateTeamFastMode,
+  getStoredCreateTeamLimitContext,
+  getStoredCreateTeamSkipPermissions,
   getStoredCreateTeamSyncModelsWithLead,
   setStoredCreateTeamMemberRuntimePreferences,
   setStoredCreateTeamSyncModelsWithLead,
@@ -29,6 +34,7 @@ import {
 import { normalizeTeamMemberMcpPolicy } from '@shared/utils/teamMemberMcpPolicy';
 
 import type { MemberDraft } from '@renderer/components/team/members/membersEditorTypes';
+import type { TeamFastMode } from '@shared/types';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -45,6 +51,10 @@ export interface UseCreateTeamDraftResult {
   ) => void;
   teamName: string;
   setTeamName: (v: string) => void;
+  specProject: string;
+  setSpecProject: (v: string) => void;
+  specSlug: string;
+  setSpecSlug: (v: string) => void;
   members: MemberDraft[];
   setMembers: (v: MemberDraft[]) => void;
   syncModelsWithLead: boolean;
@@ -54,7 +64,7 @@ export interface UseCreateTeamDraftResult {
   cwdMode: 'project' | 'custom';
   setCwdMode: (v: 'project' | 'custom') => void;
   selectedProjectPath: string;
-  setSelectedProjectPath: (v: string) => void;
+  setSelectedProjectPath: (v: string, options?: { explicit?: boolean }) => void;
   customCwd: string;
   setCustomCwd: (v: string) => void;
   soloTeam: boolean;
@@ -63,9 +73,25 @@ export interface UseCreateTeamDraftResult {
   setLaunchTeam: (v: boolean) => void;
   teamColor: string;
   setTeamColor: (v: string) => void;
+  limitContext: boolean;
+  setLimitContext: (v: boolean) => void;
+  skipPermissions: boolean;
+  setSkipPermissions: (v: boolean) => void;
+  selectedEffort: string;
+  setSelectedEffort: (v: string) => void;
+  selectedFastMode: TeamFastMode;
+  setSelectedFastMode: (v: TeamFastMode) => void;
+  organizationPlacementEnabled: boolean;
+  setOrganizationPlacementEnabled: (v: boolean) => void;
+  organizationPlacementOrganizationId: string;
+  setOrganizationPlacementOrganizationId: (v: string) => void;
+  organizationPlacementParentId: string;
+  setOrganizationPlacementParentId: (v: string) => void;
 
   /** `true` after the initial IndexedDB load completes. */
   isLoaded: boolean;
+  /** True only if a previous on-disk creation draft was restored. */
+  restoredFromStorage: boolean;
   /** Clear all draft state and delete the IndexedDB entry. */
   clearDraft: () => void;
 }
@@ -88,6 +114,7 @@ function serializeMembers(members: MemberDraft[]): SerializedMemberDraft[] {
       roleSelection,
       customRole,
       workflow,
+      workflowChips,
       isolation,
       providerId,
       providerBackendId,
@@ -101,6 +128,7 @@ function serializeMembers(members: MemberDraft[]): SerializedMemberDraft[] {
       roleSelection,
       customRole,
       workflow,
+      workflowChips,
       isolation,
       providerId,
       providerBackendId,
@@ -113,13 +141,14 @@ function serializeMembers(members: MemberDraft[]): SerializedMemberDraft[] {
 }
 
 function deserializeMembers(serialized: SerializedMemberDraft[]): MemberDraft[] {
-  return serialized.map((m) =>
-    createMemberDraft({
+  return serialized.map((m) => ({
+    ...createMemberDraft({
       id: m.id,
       name: m.name,
       roleSelection: m.roleSelection,
       customRole: m.customRole,
       workflow: m.workflow,
+      workflowChips: m.workflowChips,
       isolation: m.isolation === 'worktree' ? 'worktree' : undefined,
       providerId: m.providerId,
       providerBackendId: m.providerBackendId,
@@ -127,8 +156,9 @@ function deserializeMembers(serialized: SerializedMemberDraft[]): MemberDraft[] 
       effort: m.effort,
       fastMode: m.fastMode,
       mcpPolicy: normalizeTeamMemberMcpPolicy(m.mcpPolicy),
-    })
-  );
+    }),
+    workflowChips: m.workflowChips,
+  }));
 }
 
 // ---------------------------------------------------------------------------
@@ -136,6 +166,7 @@ function deserializeMembers(serialized: SerializedMemberDraft[]): MemberDraft[] 
 // ---------------------------------------------------------------------------
 
 export function useCreateTeamDraft(): UseCreateTeamDraftResult {
+  const draftGeneration = useRef(currentCreateTeamDraftGeneration());
   const storedSyncModelsWithLead = getStoredCreateTeamSyncModelsWithLead();
 
   // ── State ──────────────────────────────────────────────────────────────
@@ -146,6 +177,8 @@ export function useCreateTeamDraft(): UseCreateTeamDraftResult {
   }>({});
   const runtimeSelectionRef = useRef(runtimeSelection);
   const [teamName, setTeamNameState] = useState('');
+  const [specProject, setSpecProjectState] = useState('');
+  const [specSlug, setSpecSlugState] = useState('');
   const [members, setMembersState] = useState<MemberDraft[]>([]);
   const [syncModelsWithLead, setSyncModelsWithLeadState] = useState(storedSyncModelsWithLead);
   const [teammateWorktreeDefault, setTeammateWorktreeDefaultState] = useState(false);
@@ -155,19 +188,40 @@ export function useCreateTeamDraft(): UseCreateTeamDraftResult {
   const [soloTeam, setSoloTeamState] = useState(false);
   const [launchTeam, setLaunchTeamState] = useState(true);
   const [teamColor, setTeamColorState] = useState('');
+  const [limitContext, setLimitContextState] = useState(getStoredCreateTeamLimitContext);
+  const [skipPermissions, setSkipPermissionsState] = useState(getStoredCreateTeamSkipPermissions);
+  const [selectedEffort, setSelectedEffortState] = useState(getStoredCreateTeamEffort);
+  const [selectedFastMode, setSelectedFastModeState] = useState<TeamFastMode>(
+    getStoredCreateTeamFastMode
+  );
+  const [organizationPlacementEnabled, setOrganizationPlacementEnabledState] = useState(false);
+  const [organizationPlacementOrganizationId, setOrganizationPlacementOrganizationIdState] =
+    useState('');
+  const [organizationPlacementParentId, setOrganizationPlacementParentIdState] = useState('');
   const [isLoaded, setIsLoaded] = useState(false);
+  const [restoredFromStorage, setRestoredFromStorage] = useState(false);
 
   // ── Refs (latest values for debounced callbacks) ───────────────────────
   const teamNameRef = useRef('');
+  const specProjectRef = useRef('');
+  const specSlugRef = useRef('');
   const membersRef = useRef<MemberDraft[]>([]);
   const syncModelsWithLeadRef = useRef(storedSyncModelsWithLead);
   const teammateWorktreeDefaultRef = useRef(false);
   const cwdModeRef = useRef<'project' | 'custom'>('project');
   const selectedProjectPathRef = useRef('');
+  const projectSelectionExplicitRef = useRef(false);
   const customCwdRef = useRef('');
   const soloTeamRef = useRef(false);
   const launchTeamRef = useRef(true);
   const teamColorRef = useRef('');
+  const limitContextRef = useRef(limitContext);
+  const skipPermissionsRef = useRef(skipPermissions);
+  const selectedEffortRef = useRef(selectedEffort);
+  const selectedFastModeRef = useRef(selectedFastMode);
+  const organizationPlacementEnabledRef = useRef(false);
+  const organizationPlacementOrganizationIdRef = useRef('');
+  const organizationPlacementParentIdRef = useRef('');
   const mountedRef = useRef(true);
   const userTouchedRef = useRef(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -186,6 +240,8 @@ export function useCreateTeamDraft(): UseCreateTeamDraftResult {
     return {
       version: 1,
       teamName: teamNameRef.current,
+      specProject: specProjectRef.current,
+      specSlug: specSlugRef.current,
       runtimeSelectionVersion: runtimeSelectionRef.current.version,
       runtimeProviderId: runtimeSelectionRef.current.providerId,
       runtimeModel: runtimeSelectionRef.current.model,
@@ -194,10 +250,18 @@ export function useCreateTeamDraft(): UseCreateTeamDraftResult {
       teammateWorktreeDefault: teammateWorktreeDefaultRef.current,
       cwdMode: cwdModeRef.current,
       selectedProjectPath: selectedProjectPathRef.current,
+      projectSelectionExplicit: projectSelectionExplicitRef.current,
       customCwd: customCwdRef.current,
       soloTeam: soloTeamRef.current,
       launchTeam: launchTeamRef.current,
       teamColor: teamColorRef.current,
+      limitContext: limitContextRef.current,
+      skipPermissions: skipPermissionsRef.current,
+      selectedEffort: selectedEffortRef.current,
+      selectedFastMode: selectedFastModeRef.current,
+      organizationPlacementEnabled: organizationPlacementEnabledRef.current,
+      organizationPlacementOrganizationId: organizationPlacementOrganizationIdRef.current,
+      organizationPlacementParentId: organizationPlacementParentIdRef.current,
       updatedAt: Date.now(),
     };
   }, []);
@@ -212,12 +276,7 @@ export function useCreateTeamDraft(): UseCreateTeamDraftResult {
     if (pendingRef.current != null) {
       const pending = pendingRef.current;
       pendingRef.current = null;
-      const isEmpty = pending.teamName === '' && pending.members.length === 0;
-      if (isEmpty) {
-        void createTeamDraftStorage.deleteSnapshot();
-      } else {
-        void createTeamDraftStorage.saveSnapshot(pending);
-      }
+      void createTeamDraftStorage.saveSnapshot(pending, draftGeneration.current);
     }
   }, []);
 
@@ -235,12 +294,7 @@ export function useCreateTeamDraft(): UseCreateTeamDraftResult {
       pendingRef.current = null;
       if (pending == null) return;
 
-      const isEmpty = pending.teamName === '' && pending.members.length === 0;
-      if (isEmpty) {
-        void createTeamDraftStorage.deleteSnapshot();
-      } else {
-        void createTeamDraftStorage.saveSnapshot(pending);
-      }
+      void createTeamDraftStorage.saveSnapshot(pending, draftGeneration.current);
     }, DEBOUNCE_MS);
   }, [buildSnapshot]);
 
@@ -263,17 +317,29 @@ export function useCreateTeamDraft(): UseCreateTeamDraftResult {
     };
     setRuntimeSelectionState(runtimeSelectionRef.current);
     teamNameRef.current = snap.teamName;
+    specProjectRef.current = snap.specProject ?? '';
+    specSlugRef.current = snap.specSlug ?? '';
     membersRef.current = deserialized;
     syncModelsWithLeadRef.current = nextSyncModelsWithLead;
     teammateWorktreeDefaultRef.current = snap.teammateWorktreeDefault === true;
     cwdModeRef.current = snap.cwdMode;
     selectedProjectPathRef.current = snap.selectedProjectPath;
+    projectSelectionExplicitRef.current = snap.projectSelectionExplicit === true;
     customCwdRef.current = snap.customCwd;
     soloTeamRef.current = snap.soloTeam;
     launchTeamRef.current = snap.launchTeam;
     teamColorRef.current = snap.teamColor;
+    limitContextRef.current = snap.limitContext ?? getStoredCreateTeamLimitContext();
+    skipPermissionsRef.current = snap.skipPermissions ?? getStoredCreateTeamSkipPermissions();
+    selectedEffortRef.current = snap.selectedEffort ?? getStoredCreateTeamEffort();
+    selectedFastModeRef.current = snap.selectedFastMode ?? getStoredCreateTeamFastMode();
+    organizationPlacementEnabledRef.current = snap.organizationPlacementEnabled === true;
+    organizationPlacementOrganizationIdRef.current = snap.organizationPlacementOrganizationId ?? '';
+    organizationPlacementParentIdRef.current = snap.organizationPlacementParentId ?? '';
 
     setTeamNameState(snap.teamName);
+    setSpecProjectState(specProjectRef.current);
+    setSpecSlugState(specSlugRef.current);
     setMembersState(deserialized);
     setSyncModelsWithLeadState(nextSyncModelsWithLead);
     setTeammateWorktreeDefaultState(snap.teammateWorktreeDefault === true);
@@ -283,6 +349,13 @@ export function useCreateTeamDraft(): UseCreateTeamDraftResult {
     setSoloTeamState(snap.soloTeam);
     setLaunchTeamState(snap.launchTeam);
     setTeamColorState(snap.teamColor);
+    setLimitContextState(limitContextRef.current);
+    setSkipPermissionsState(skipPermissionsRef.current);
+    setSelectedEffortState(selectedEffortRef.current);
+    setSelectedFastModeState(selectedFastModeRef.current);
+    setOrganizationPlacementEnabledState(snap.organizationPlacementEnabled === true);
+    setOrganizationPlacementOrganizationIdState(snap.organizationPlacementOrganizationId ?? '');
+    setOrganizationPlacementParentIdState(snap.organizationPlacementParentId ?? '');
   }, []);
 
   // ── Load on mount ──────────────────────────────────────────────────────
@@ -302,6 +375,7 @@ export function useCreateTeamDraft(): UseCreateTeamDraftResult {
 
       if (snapshot != null) {
         applySnapshot(snapshot);
+        setRestoredFromStorage(true);
       }
 
       if (mountedRef.current) setIsLoaded(true);
@@ -340,6 +414,26 @@ export function useCreateTeamDraft(): UseCreateTeamDraftResult {
       userTouchedRef.current = true;
       teamNameRef.current = v;
       setTeamNameState(v);
+      scheduleSave();
+    },
+    [scheduleSave]
+  );
+
+  const setSpecProject = useCallback(
+    (v: string) => {
+      userTouchedRef.current = true;
+      specProjectRef.current = v;
+      setSpecProjectState(v);
+      scheduleSave();
+    },
+    [scheduleSave]
+  );
+
+  const setSpecSlug = useCallback(
+    (v: string) => {
+      userTouchedRef.current = true;
+      specSlugRef.current = v;
+      setSpecSlugState(v);
       scheduleSave();
     },
     [scheduleSave]
@@ -389,9 +483,10 @@ export function useCreateTeamDraft(): UseCreateTeamDraftResult {
   );
 
   const setSelectedProjectPath = useCallback(
-    (v: string) => {
+    (v: string, options?: { explicit?: boolean }) => {
       userTouchedRef.current = true;
       selectedProjectPathRef.current = v;
+      if (options?.explicit) projectSelectionExplicitRef.current = true;
       setSelectedProjectPathState(v);
       scheduleSave();
     },
@@ -438,6 +533,74 @@ export function useCreateTeamDraft(): UseCreateTeamDraftResult {
     [scheduleSave]
   );
 
+  const setLimitContext = useCallback(
+    (v: boolean): void => {
+      userTouchedRef.current = true;
+      limitContextRef.current = v;
+      setLimitContextState(v);
+      scheduleSave();
+    },
+    [scheduleSave]
+  );
+  const setSkipPermissions = useCallback(
+    (v: boolean): void => {
+      userTouchedRef.current = true;
+      skipPermissionsRef.current = v;
+      setSkipPermissionsState(v);
+      scheduleSave();
+    },
+    [scheduleSave]
+  );
+
+  const setSelectedEffort = useCallback(
+    (v: string): void => {
+      userTouchedRef.current = true;
+      selectedEffortRef.current = v;
+      setSelectedEffortState(v);
+      scheduleSave();
+    },
+    [scheduleSave]
+  );
+  const setSelectedFastMode = useCallback(
+    (v: TeamFastMode): void => {
+      userTouchedRef.current = true;
+      selectedFastModeRef.current = v;
+      setSelectedFastModeState(v);
+      scheduleSave();
+    },
+    [scheduleSave]
+  );
+
+  const setOrganizationPlacementEnabled = useCallback(
+    (v: boolean): void => {
+      userTouchedRef.current = true;
+      organizationPlacementEnabledRef.current = v;
+      setOrganizationPlacementEnabledState(v);
+      scheduleSave();
+    },
+    [scheduleSave]
+  );
+
+  const setOrganizationPlacementOrganizationId = useCallback(
+    (v: string): void => {
+      userTouchedRef.current = true;
+      organizationPlacementOrganizationIdRef.current = v;
+      setOrganizationPlacementOrganizationIdState(v);
+      scheduleSave();
+    },
+    [scheduleSave]
+  );
+
+  const setOrganizationPlacementParentId = useCallback(
+    (v: string): void => {
+      userTouchedRef.current = true;
+      organizationPlacementParentIdRef.current = v;
+      setOrganizationPlacementParentIdState(v);
+      scheduleSave();
+    },
+    [scheduleSave]
+  );
+
   // ── Clear all ──────────────────────────────────────────────────────────
 
   const clearDraft = useCallback(() => {
@@ -447,6 +610,7 @@ export function useCreateTeamDraft(): UseCreateTeamDraftResult {
       timerRef.current = null;
     }
     pendingRef.current = null;
+    setRestoredFromStorage(false);
     // Keep userTouchedRef true so a late IDB load (theoretically impossible
     // since isLoaded gates submit, but defensive) cannot resurrect deleted data.
     userTouchedRef.current = true;
@@ -454,17 +618,29 @@ export function useCreateTeamDraft(): UseCreateTeamDraftResult {
     runtimeSelectionRef.current = {};
     setRuntimeSelectionState({});
     teamNameRef.current = '';
+    specProjectRef.current = '';
+    specSlugRef.current = '';
     membersRef.current = [];
     syncModelsWithLeadRef.current = nextStoredSyncModelsWithLead;
     teammateWorktreeDefaultRef.current = false;
     cwdModeRef.current = 'project';
     selectedProjectPathRef.current = '';
+    projectSelectionExplicitRef.current = false;
     customCwdRef.current = '';
     soloTeamRef.current = false;
     launchTeamRef.current = true;
     teamColorRef.current = '';
+    limitContextRef.current = getStoredCreateTeamLimitContext();
+    skipPermissionsRef.current = getStoredCreateTeamSkipPermissions();
+    selectedEffortRef.current = getStoredCreateTeamEffort();
+    selectedFastModeRef.current = getStoredCreateTeamFastMode();
+    organizationPlacementEnabledRef.current = false;
+    organizationPlacementOrganizationIdRef.current = '';
+    organizationPlacementParentIdRef.current = '';
 
     setTeamNameState('');
+    setSpecProjectState('');
+    setSpecSlugState('');
     setMembersState([]);
     setSyncModelsWithLeadState(nextStoredSyncModelsWithLead);
     setTeammateWorktreeDefaultState(false);
@@ -474,8 +650,15 @@ export function useCreateTeamDraft(): UseCreateTeamDraftResult {
     setSoloTeamState(false);
     setLaunchTeamState(true);
     setTeamColorState('');
+    setLimitContextState(limitContextRef.current);
+    setSkipPermissionsState(skipPermissionsRef.current);
+    setSelectedEffortState(selectedEffortRef.current);
+    setSelectedFastModeState(selectedFastModeRef.current);
+    setOrganizationPlacementEnabledState(false);
+    setOrganizationPlacementOrganizationIdState('');
+    setOrganizationPlacementParentIdState('');
 
-    void createTeamDraftStorage.deleteSnapshot();
+    void createTeamDraftStorage.deleteSnapshot(draftGeneration.current);
   }, []);
 
   return {
@@ -485,6 +668,10 @@ export function useCreateTeamDraft(): UseCreateTeamDraftResult {
     setRuntimeSelection,
     teamName,
     setTeamName,
+    specProject,
+    setSpecProject,
+    specSlug,
+    setSpecSlug,
     members,
     setMembers,
     syncModelsWithLead,
@@ -503,7 +690,22 @@ export function useCreateTeamDraft(): UseCreateTeamDraftResult {
     setLaunchTeam,
     teamColor,
     setTeamColor,
+    limitContext,
+    setLimitContext,
+    skipPermissions,
+    setSkipPermissions,
+    selectedEffort,
+    setSelectedEffort,
+    selectedFastMode,
+    setSelectedFastMode,
+    organizationPlacementEnabled,
+    setOrganizationPlacementEnabled,
+    organizationPlacementOrganizationId,
+    setOrganizationPlacementOrganizationId,
+    organizationPlacementParentId,
+    setOrganizationPlacementParentId,
     isLoaded,
+    restoredFromStorage,
     clearDraft,
   };
 }

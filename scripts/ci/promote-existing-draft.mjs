@@ -1,12 +1,12 @@
-#!/usr/bin/env node
 
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { copyFile, link, mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
+import { copyFile, link, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import { parse } from 'yaml';
 
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = path.resolve(scriptDirectory, '../..');
@@ -15,53 +15,23 @@ const UPDATER_SKIP_MARKER = /\[(skip-updater|test-release|internal-release|no-au
 const SEMVER_TAG = /^v(\d+)\.(\d+)\.(\d+)(?:[-.][A-Za-z0-9.-]+)?$/;
 
 export function getPromotionLayout(version) {
+  const windowsX64 = `Agent.Teams.AI.Setup.${version}.exe`;
   const stableAliases = {
-    'Agent.Teams.AI-arm64.dmg': `Agent.Teams.AI-${version}-arm64.dmg`,
-    'Agent.Teams.AI-x64.dmg': `Agent.Teams.AI-${version}-x64.dmg`,
-    'Agent.Teams.AI.Setup.exe': `Agent.Teams.AI.Setup.${version}.exe`,
-    'Agent.Teams.AI.Setup-arm64.exe': `Agent.Teams.AI.Setup.${version}-arm64.exe`,
-    'Agent.Teams.AI.AppImage': `Agent.Teams.AI-${version}.AppImage`,
-    'agent-teams-ai-amd64.deb': `agent-teams-ai_${version}_amd64.deb`,
-    'agent-teams-ai-x86_64.rpm': `agent-teams-ai-${version}.x86_64.rpm`,
-    'agent-teams-ai.pacman': `agent-teams-ai-${version}.pacman`,
+    'Agent.Teams.AI.Setup.exe': windowsX64,
   };
   const legacyStableAliases = {
-    'Claude-Agent-Teams-UI-arm64.dmg': stableAliases['Agent.Teams.AI-arm64.dmg'],
-    'Claude-Agent-Teams-UI-x64.dmg': stableAliases['Agent.Teams.AI-x64.dmg'],
-    'Claude-Agent-Teams-UI-Setup.exe': stableAliases['Agent.Teams.AI.Setup.exe'],
-    'Claude-Agent-Teams-UI.AppImage': stableAliases['Agent.Teams.AI.AppImage'],
-    'Claude-Agent-Teams-UI-amd64.deb': stableAliases['agent-teams-ai-amd64.deb'],
-    'Claude-Agent-Teams-UI-x86_64.rpm': stableAliases['agent-teams-ai-x86_64.rpm'],
-    'Claude-Agent-Teams-UI.pacman': stableAliases['agent-teams-ai.pacman'],
+    'Claude-Agent-Teams-UI-Setup.exe': windowsX64,
   };
   const legacyUpdaterAliases = {
-    [`Claude.Agent.Teams.UI-${version}-arm64-mac.zip`]: `Agent.Teams.AI-${version}-arm64-mac.zip`,
-    [`Claude.Agent.Teams.UI-${version}-arm64.dmg`]: `Agent.Teams.AI-${version}-arm64.dmg`,
-    [`Claude.Agent.Teams.UI-${version}-mac.zip`]: `Agent.Teams.AI-${version}-x64-mac.zip`,
-    [`Claude.Agent.Teams.UI-${version}.dmg`]: `Agent.Teams.AI-${version}-x64.dmg`,
-    [`Claude.Agent.Teams.UI.Setup.${version}.exe`]: `Agent.Teams.AI.Setup.${version}.exe`,
-    [`Claude.Agent.Teams.UI-${version}.AppImage`]: `Agent.Teams.AI-${version}.AppImage`,
+    [`Claude.Agent.Teams.UI.Setup.${version}.exe`]: windowsX64,
   };
-  const feedSources = {
-    windowsX64: `Agent.Teams.AI.Setup.${version}.exe`,
-    windowsArm64: `Agent.Teams.AI.Setup.${version}-arm64.exe`,
-    linux: `Agent.Teams.AI-${version}.AppImage`,
-    linuxDeb: `agent-teams-ai_${version}_amd64.deb`,
-    linuxRpm: `agent-teams-ai-${version}.x86_64.rpm`,
-    linuxPacman: `agent-teams-ai-${version}.pacman`,
-    macArm64Zip: `Agent.Teams.AI-${version}-arm64-mac.zip`,
-    macArm64Dmg: `Agent.Teams.AI-${version}-arm64.dmg`,
-    macX64Zip: `Agent.Teams.AI-${version}-x64-mac.zip`,
-    macX64Dmg: `Agent.Teams.AI-${version}-x64.dmg`,
-  };
-  const sourceAssets = [
-    ...new Set([
-      ...Object.values(stableAliases),
-      ...Object.values(legacyStableAliases),
-      ...Object.values(legacyUpdaterAliases),
-      ...Object.values(feedSources),
-    ]),
-  ].sort();
+  const feedSources = { windowsX64 };
+  const sourceAssets = [...new Set([
+    ...Object.values(stableAliases),
+    ...Object.values(legacyStableAliases),
+    ...Object.values(legacyUpdaterAliases),
+    ...Object.values(feedSources),
+  ])].sort();
 
   return {
     stableAliases,
@@ -165,95 +135,51 @@ async function describeUpdaterAsset(directory, name) {
   return { name, size: fileStats.size, sha512 };
 }
 
-export function getMacUpdaterMinimumSystemVersion(macMinimumSystemVersion) {
-  // Only the product-version floors we support are mapped. Minor macOS releases
-  // do not have a simple arithmetic relationship to Darwin minor versions.
-  switch (macMinimumSystemVersion) {
-    case '12.0':
-      return '21.0.0';
-    case '13.0':
-      return '22.0.0';
-    default:
-      throw new Error(`Unsupported release macOS minimum: ${macMinimumSystemVersion}`);
-  }
-}
 
 export async function buildUpdaterFeeds({
   directory,
   version,
   releaseDate,
   feedSources,
-  macMinimumSystemVersion,
   releaseNotes = '',
 }) {
-  const darwinMinimumSystemVersion = getMacUpdaterMinimumSystemVersion(macMinimumSystemVersion);
-  const [windowsX64, windowsArm64, linux, macArm64Zip, macArm64Dmg, macX64Zip, macX64Dmg] =
-    await Promise.all([
-      describeUpdaterAsset(directory, feedSources.windowsX64),
-      describeUpdaterAsset(directory, feedSources.windowsArm64),
-      describeUpdaterAsset(directory, feedSources.linux),
-      describeUpdaterAsset(directory, feedSources.macArm64Zip),
-      describeUpdaterAsset(directory, feedSources.macArm64Dmg),
-      describeUpdaterAsset(directory, feedSources.macX64Zip),
-      describeUpdaterAsset(directory, feedSources.macX64Dmg),
-    ]);
-
+  const windowsX64 = await describeUpdaterAsset(directory, feedSources.windowsX64);
   const latest = `version: ${version}
 files:
   - url: ${windowsX64.name}
     sha512: ${windowsX64.sha512}
     size: ${windowsX64.size}
-  - url: ${windowsArm64.name}
-    sha512: ${windowsArm64.sha512}
-    size: ${windowsArm64.size}
 path: ${windowsX64.name}
 sha512: ${windowsX64.sha512}
-releaseDate: '${releaseDate}'
-`;
-  const latestLinux = `version: ${version}
-files:
-  - url: ${linux.name}
-    sha512: ${linux.sha512}
-    size: ${linux.size}
-${(
-  await Promise.all(
-    [feedSources.linuxDeb, feedSources.linuxRpm, feedSources.linuxPacman].map((name) =>
-      describeUpdaterAsset(directory, name)
-    )
-  )
-)
-  .map((asset) => `  - url: ${asset.name}\n    sha512: ${asset.sha512}\n    size: ${asset.size}`)
-  .join('\n')}
-path: ${linux.name}
-sha512: ${linux.sha512}
-releaseDate: '${releaseDate}'
-`;
-  const macFiles = [macArm64Zip, macArm64Dmg, macX64Zip, macX64Dmg];
-  // electron-updater compares this with os.release() (Darwin), not the macOS product version.
-  // Use the release target's minimum, including historical Electron 41 recovery.
-  const latestMac = `version: ${version}
-minimumSystemVersion: ${darwinMinimumSystemVersion}
-files:
-${macFiles
-  .map(
-    (asset) => `  - url: ${asset.name}
-    sha512: ${asset.sha512}
-    size: ${asset.size}`
-  )
-  .join('\n')}
-path: ${macArm64Zip.name}
-sha512: ${macArm64Zip.sha512}
 releaseDate: '${releaseDate}'
 `;
 
   // JSON strings are YAML scalars: preserve Markdown/newlines without injecting feed keys.
   const notes = releaseNotes.trim() ? `releaseNotes: ${JSON.stringify(releaseNotes)}\n` : '';
-  return {
-    'latest.yml': latest + notes,
-    'latest-linux.yml': latestLinux + notes,
-    'latest-mac.yml': latestMac + notes,
-  };
+  return { 'latest.yml': latest + notes };
 }
+async function validateWindowsUpdaterFeed(directory, version, sourceName, feedPath) {
+  const raw = await readFile(feedPath, 'utf8');
+  const feed = parse(raw);
+  if (!feed || typeof feed !== 'object' || Array.isArray(feed)) {
+    throw new Error('Invalid Windows x64 updater feed');
+  }
+  const files = feed.files;
+  const expected = await describeUpdaterAsset(directory, sourceName);
+  if (
+    feed.version !== version ||
+    feed.path !== sourceName ||
+    feed.sha512 !== expected.sha512 ||
+    !Array.isArray(files) ||
+    files.length !== 1 ||
+    files[0]?.url !== sourceName ||
+    files[0]?.size !== expected.size ||
+    files[0]?.sha512 !== expected.sha512
+  ) {
+    throw new Error(`Invalid Windows x64 updater feed: ${feedPath}`);
+  }
+}
+
 
 async function linkOrCopy(source, destination) {
   try {
@@ -372,15 +298,262 @@ async function uploadPreparedFiles(config, filePaths, environment) {
 }
 
 function validatedSourceAssets(release, sourceNames) {
-  const assetsByName = new Map(release.assets.map((asset) => [asset.name, asset]));
+  const assetsByName = new Map();
+  for (const asset of release.assets || []) {
+    if (!asset?.name || assetsByName.has(asset.name)) {
+      throw new Error(`Release contains a missing or duplicate asset name: ${asset?.name || '<empty>'}`);
+    }
+    assetsByName.set(asset.name, asset);
+  }
   for (const sourceName of sourceNames) {
     const asset = assetsByName.get(sourceName);
     if (!asset) throw new Error(`Missing source release asset ${sourceName}`);
+    if (!Number.isSafeInteger(asset.id) || asset.id <= 0) {
+      throw new Error(`Missing asset identity for source release asset ${sourceName}`);
+    }
+    if (!Number.isSafeInteger(asset.size) || asset.size <= 0) {
+      throw new Error(`Missing or invalid size for source release asset ${sourceName}`);
+    }
     if (!/^sha256:[a-f0-9]{64}$/.test(asset.digest || '')) {
       throw new Error(`Missing SHA-256 digest for source release asset ${sourceName}`);
     }
   }
   return assetsByName;
+}
+
+async function describePreparedAsset(filePath) {
+  const [fileStats, sha256] = await Promise.all([
+    stat(filePath),
+    hashFile(filePath, 'sha256', 'hex'),
+  ]);
+  if (!fileStats.isFile() || fileStats.size <= 0) {
+    throw new Error(`Prepared release asset is empty or not a file: ${filePath}`);
+  }
+  return {
+    name: path.basename(filePath),
+    size: fileStats.size,
+    digest: `sha256:${sha256}`,
+  };
+}
+
+function assertReleaseIdentity(release, config, releaseId, resolvedTagCommit) {
+  if (release.id !== releaseId || release.tag_name !== config.tag) {
+    throw new Error(`Release identity changed while promoting ${config.tag}`);
+  }
+  if (release.target_commitish !== resolvedTagCommit) {
+    throw new Error(
+      `${config.tag} release targets ${release.target_commitish}, but the tag resolves to ${resolvedTagCommit}`
+    );
+  }
+}
+
+function assertReleaseEligibility(release) {
+  if (
+    release.prerelease ||
+    UPDATER_SKIP_MARKER.test(`${release.name || ''}\n${release.body || ''}`)
+  ) {
+    throw new Error('Release is prerelease or has an updater skip marker');
+  }
+}
+
+function assertWindowsAssetSnapshot(release, sourceAssets, sourceNames, preparedAssets) {
+  const assetsByName = validatedSourceAssets(release, sourceNames);
+  for (const sourceName of sourceNames) {
+    const original = sourceAssets.get(sourceName);
+    const current = assetsByName.get(sourceName);
+    if (
+      !original ||
+      current.id !== original.id ||
+      current.size !== original.size ||
+      current.digest !== original.digest
+    ) {
+      throw new Error(`Source asset identity changed while promoting ${sourceName}`);
+    }
+  }
+  for (const expected of preparedAssets) {
+    const actual = assetsByName.get(expected.name);
+    if (!actual) throw new Error(`Uploaded release asset is missing: ${expected.name}`);
+    if (
+      !Number.isSafeInteger(actual.id) ||
+      actual.id <= 0 ||
+      actual.size !== expected.size ||
+      actual.digest !== expected.digest
+    ) {
+      throw new Error(`Uploaded release asset integrity mismatch: ${expected.name}`);
+    }
+  }
+}
+
+async function requestPublicResponse(url, method = 'GET') {
+  const response = await fetch(url, {
+    method,
+    redirect: 'follow',
+    ...(method === 'GET' ? { headers: { Accept: 'application/vnd.github+json' } } : {}),
+    signal: AbortSignal.timeout(30_000),
+  });
+  if (!response.ok) {
+    const error = new Error(`Anonymous release check failed: ${url} (HTTP ${response.status})`);
+    error.httpStatus = response.status;
+    throw error;
+  }
+  return response;
+}
+
+async function verifyPublicWindowsReleaseOnce({ config, releaseId, assetNames }) {
+  const apiRoot = `https://api.github.com/repos/${config.repository}`;
+  const assertPublicSnapshot = async () => {
+    const [releaseResponse, latestResponse] = await Promise.all([
+      requestPublicResponse(`${apiRoot}/releases/tags/${config.tag}`),
+      requestPublicResponse(`${apiRoot}/releases/latest`),
+    ]);
+    const [release, latest] = await Promise.all([
+      releaseResponse.json(),
+      latestResponse.json(),
+    ]);
+    for (const [name, value] of [
+      ['published release', release],
+      ['latest release', latest],
+    ]) {
+      if (
+        value.id !== releaseId ||
+        value.tag_name !== config.tag ||
+        value.draft ||
+        value.prerelease
+      ) {
+        throw new Error(`Anonymous ${name} visibility mismatch for ${config.tag}`);
+      }
+    }
+  };
+
+  await assertPublicSnapshot();
+  for (const assetName of assetNames) {
+    const encodedName = encodeURIComponent(assetName);
+    for (const url of [
+      `https://github.com/${config.repository}/releases/download/${config.tag}/${encodedName}`,
+      `https://github.com/${config.repository}/releases/latest/download/${encodedName}`,
+    ]) {
+      await requestPublicResponse(url, 'HEAD');
+    }
+  }
+  await assertPublicSnapshot();
+}
+
+async function verifyPublicWindowsRelease(input) {
+  for (let attempt = 1; attempt <= 6; attempt += 1) {
+    try {
+      await verifyPublicWindowsReleaseOnce(input);
+      return;
+    } catch (error) {
+      const status = error?.httpStatus;
+      const transient =
+        status === 408 ||
+        status === 429 ||
+        (status >= 500 && status <= 599) ||
+        /ECONN|ETIMEDOUT|fetch failed|timed out/i.test(
+          error instanceof Error ? `${error.name} ${error.message}` : String(error)
+        );
+      if (!transient || attempt === 6) throw error;
+      process.stderr.write(
+        `[release-updater-guard] Public Windows verification transient failure; retry ${attempt + 1}/6\n`
+      );
+      await new Promise((resolve) => setTimeout(resolve, 10_000));
+    }
+  }
+}
+
+async function verifyWindowsReleaseAssets({
+  config,
+  environment,
+  releaseId,
+  resolvedTagCommit,
+  sourceAssets,
+  sourceNames,
+  preparedAssets,
+  requirePublished = false,
+}) {
+  const readCurrentRelease = () =>
+    JSON.parse(
+      runGh(
+        ['api', `repos/${config.repository}/releases/tags/${config.tag}`],
+        { capture: true, environment }
+      )
+    );
+  const release = readCurrentRelease();
+  assertReleaseIdentity(release, config, releaseId, resolvedTagCommit);
+  assertReleaseEligibility(release);
+  if (requirePublished && release.draft) {
+    throw new Error(`${config.tag} remains a draft after publication`);
+  }
+  assertWindowsAssetSnapshot(release, sourceAssets, sourceNames, preparedAssets);
+
+  if (requirePublished) {
+    const latestTag = runGh(
+      ['api', `repos/${config.repository}/releases/latest`, '--jq', '.tag_name'],
+      { capture: true, environment }
+    ).trim();
+    if (latestTag !== config.tag) {
+      throw new Error(`Latest published release is ${latestTag || '<none>'}, expected ${config.tag}`);
+    }
+    await verifyPublicWindowsRelease({
+      config,
+      releaseId,
+      assetNames: [...sourceNames, ...preparedAssets.map((asset) => asset.name)],
+    });
+    const finalRelease = readCurrentRelease();
+    assertReleaseIdentity(finalRelease, config, releaseId, resolvedTagCommit);
+    assertReleaseEligibility(finalRelease);
+    if (finalRelease.draft) {
+      throw new Error(`${config.tag} became a draft during public verification`);
+    }
+    assertWindowsAssetSnapshot(finalRelease, sourceAssets, sourceNames, preparedAssets);
+    const currentTagCommit = runGh(
+      ['api', `repos/${config.repository}/commits/${config.tag}`, '--jq', '.sha'],
+      { capture: true, environment }
+    ).trim();
+    if (currentTagCommit !== resolvedTagCommit) {
+      throw new Error(`${config.tag} changed during public release verification`);
+    }
+    const finalLatestTag = runGh(
+      ['api', `repos/${config.repository}/releases/latest`, '--jq', '.tag_name'],
+      { capture: true, environment }
+    ).trim();
+    if (finalLatestTag !== config.tag) {
+      throw new Error(`Latest published release changed during verification: ${finalLatestTag}`);
+    }
+  }
+  return release;
+}
+
+async function redraftIncompleteRelease({
+  config,
+  environment,
+  releaseId,
+  resolvedTagCommit,
+}) {
+  const releasePath = `repos/${config.repository}/releases/${releaseId}`;
+  const release = JSON.parse(
+    runGh(['api', releasePath], { capture: true, environment })
+  );
+  assertReleaseIdentity(release, config, releaseId, resolvedTagCommit);
+  if (release.draft) return;
+  runGh(
+    [
+      'api',
+      '--method',
+      'PATCH',
+      releasePath,
+      '-F',
+      'draft=true',
+      '-f',
+      'make_latest=false',
+    ],
+    { environment }
+  );
+  const redrafted = JSON.parse(runGh(['api', releasePath], { capture: true, environment }));
+  assertReleaseIdentity(redrafted, config, releaseId, resolvedTagCommit);
+  if (!redrafted.draft) {
+    throw new Error(`Failed to return incomplete release ${config.tag} to draft`);
+  }
 }
 
 export async function promoteExistingDraft({
@@ -402,6 +575,8 @@ export async function promoteExistingDraft({
       'Full220 requires publish-full-release.ts with immutable prepared plan and native receipt; legacy feed regeneration is forbidden'
     );
   const layout = getPromotionLayout(config.version);
+  const blockmapName = `${layout.feedSources.windowsX64}.blockmap`;
+  const releaseSourceNames = [...layout.sourceAssets, blockmapName];
   const release = JSON.parse(
     runGh(
       [
@@ -411,7 +586,7 @@ export async function promoteExistingDraft({
         '--repo',
         config.repository,
         '--json',
-        'body,assets,isDraft,isPrerelease,targetCommitish,name,tagName',
+        'body,isDraft,isPrerelease,targetCommitish,name,tagName',
       ],
       { capture: true, environment }
     )
@@ -428,23 +603,22 @@ export async function promoteExistingDraft({
     );
   }
 
-  const releaseManifest = JSON.parse(
+  const releaseIdentity = JSON.parse(
     runGh(
-      [
-        'api',
-        `repos/${config.repository}/contents/package.json?ref=${resolvedTagCommit}`,
-        '--jq',
-        '.content | @base64d',
-      ],
+      ['api', `repos/${config.repository}/releases/tags/${config.tag}`],
       { capture: true, environment }
     )
   );
-  const macMinimumSystemVersion = releaseManifest.build?.mac?.minimumSystemVersion;
-  // Validate before any asset upload or alias mutation. Never use moving main's
-  // minimum when recovering an older release, and never silently omit the floor.
-  getMacUpdaterMinimumSystemVersion(macMinimumSystemVersion);
-
-  const assetsByName = validatedSourceAssets(release, layout.sourceAssets);
+  if (
+    !Number.isSafeInteger(releaseIdentity.id) ||
+    releaseIdentity.id <= 0 ||
+    releaseIdentity.tag_name !== config.tag ||
+    releaseIdentity.target_commitish !== resolvedTagCommit
+  ) {
+    throw new Error(`Release identity or target changed before promoting ${config.tag}`);
+  }
+  const releaseId = releaseIdentity.id;
+  const assetsByName = validatedSourceAssets(releaseIdentity, releaseSourceNames);
 
   const ownsOutputDirectory = !config.outputDirectory;
   const outputDirectory =
@@ -470,23 +644,24 @@ export async function promoteExistingDraft({
         ],
         { environment }
       );
-      const expectedDigest = assetsByName.get(sourceName).digest.slice('sha256:'.length);
-      const actualDigest = await hashFile(path.join(outputDirectory, sourceName), 'sha256', 'hex');
-      if (actualDigest !== expectedDigest) {
+      const sourceAsset = assetsByName.get(sourceName);
+      const sourcePath = path.join(outputDirectory, sourceName);
+      const downloadedStats = await stat(sourcePath);
+      const actualDigest = await hashFile(sourcePath, 'sha256', 'hex');
+      const expectedDigest = sourceAsset.digest.slice('sha256:'.length);
+      if (downloadedStats.size !== sourceAsset.size || actualDigest !== expectedDigest) {
         throw new Error(
-          `SHA-256 mismatch for ${sourceName}: expected ${expectedDigest}, got ${actualDigest}`
+          `SHA-256 or size mismatch for ${sourceName}: expected ${sourceAsset.size} bytes / ${expectedDigest}, got ${downloadedStats.size} bytes / ${actualDigest}`
         );
       }
     }
 
     const aliasPaths = await prepareAliases(outputDirectory, layout);
-
     const feeds = await buildUpdaterFeeds({
       directory: outputDirectory,
       version: config.version,
       releaseDate: now().toISOString(),
       feedSources: layout.feedSources,
-      macMinimumSystemVersion,
       releaseNotes: release.body || '',
     });
     const feedPaths = [];
@@ -495,24 +670,77 @@ export async function promoteExistingDraft({
       await writeFile(feedPath, contents);
       feedPaths.push(feedPath);
     }
+    await validateWindowsUpdaterFeed(
+      outputDirectory,
+      config.version,
+      layout.feedSources.windowsX64,
+      path.join(outputDirectory, 'latest.yml')
+    );
 
+    const preparedPaths = [...aliasPaths, ...feedPaths];
+    const preparedAssets = await Promise.all(preparedPaths.map(describePreparedAsset));
     if (!config.dryRun) {
-      await uploadPreparedFiles(config, [...aliasPaths, ...feedPaths], environment);
+      await uploadPreparedFiles(config, preparedPaths, environment);
+      try {
+        await verifyWindowsReleaseAssets({
+          config,
+          environment,
+          releaseId,
+          resolvedTagCommit,
+          sourceAssets: assetsByName,
+          sourceNames: releaseSourceNames,
+          preparedAssets,
+        });
+      } catch (error) {
+        try {
+          await redraftIncompleteRelease({
+            config,
+            environment,
+            releaseId,
+            resolvedTagCommit,
+          });
+        } catch (redraftError) {
+          throw new AggregateError(
+            [error, redraftError],
+            `Windows asset verification failed and release ${config.tag} could not be safely redrafted`
+          );
+        }
+        throw error;
+      }
     }
 
     if (config.publishRelease) {
-      runGh(
-        ['release', 'edit', config.tag, '--repo', config.repository, '--draft=false', '--latest'],
-        { environment }
-      );
-      runCommand('bash', ['scripts/ci/verify-published-updater-release.sh'], {
-        environment: {
-          ...environment,
-          RELEASE_REPOSITORY: config.repository,
-          RELEASE_TAG: config.tag,
-          REDRAFT_INCOMPLETE_RELEASE: 'true',
-        },
-      });
+      try {
+        runGh(
+          ['release', 'edit', config.tag, '--repo', config.repository, '--draft=false', '--latest'],
+          { environment }
+        );
+        await verifyWindowsReleaseAssets({
+          config,
+          environment,
+          releaseId,
+          resolvedTagCommit,
+          sourceAssets: assetsByName,
+          sourceNames: releaseSourceNames,
+          preparedAssets,
+          requirePublished: true,
+        });
+      } catch (error) {
+        try {
+          await redraftIncompleteRelease({
+            config,
+            environment,
+            releaseId,
+            resolvedTagCommit,
+          });
+        } catch (redraftError) {
+          throw new AggregateError(
+            [error, redraftError],
+            `Windows release verification failed and ${config.tag} could not be safely redrafted`
+          );
+        }
+        throw error;
+      }
     }
 
     const result = {

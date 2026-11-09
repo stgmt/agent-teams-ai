@@ -12,7 +12,12 @@ const recheckSave = vi.hoisted(() => vi.fn());
 const listTemplates = vi.hoisted(() => vi.fn());
 const storeState = vi.hoisted(() => {
   const noop = (): void => undefined;
+  const creationTab = { id: 'team-test', teamsCreationPage: false };
   return {
+    paneLayout: { panes: [{ tabs: [creationTab] }] },
+    openTeamsCreationPage: () => { creationTab.teamsCreationPage = true; },
+    closeTeamsCreationPage: () => { creationTab.teamsCreationPage = false; },
+    getAllPaneTabs: () => [creationTab],
     teams: [
       {
         teamName: 'alpha',
@@ -73,8 +78,11 @@ vi.mock('@renderer/api', () => ({
   },
 }));
 vi.mock('@renderer/store', () => ({
-  useStore: (selector?: (state: typeof storeState) => unknown) =>
-    typeof selector === 'function' ? selector(storeState) : storeState,
+  useStore: Object.assign(
+    (selector?: (state: typeof storeState) => unknown) =>
+      typeof selector === 'function' ? selector(storeState) : storeState,
+    { getState: () => storeState }
+  ),
   getState: () => storeState,
 }));
 vi.mock('zustand/react/shallow', () => ({ useShallow: (selector: unknown) => selector }));
@@ -83,6 +91,13 @@ vi.mock('@features/localization/renderer', () => ({
     t: (key: string, values?: Record<string, unknown>) =>
       values ? `${key}|${Object.values(values).join(',')}` : key,
   }),
+}));
+vi.mock('@renderer/hooks/useCreateTeamDraftAvailability', () => ({
+  hasUnfinishedCreateTeamDraft: async () => false,
+  useCreateTeamDraftAvailability: () => false,
+}));
+vi.mock('@renderer/services/resetCreateTeamDraft', () => ({
+  resetCreateTeamDraft: async () => undefined,
 }));
 vi.mock('@renderer/hooks/useTheme', () => ({ useTheme: () => ({ isLight: false }) }));
 vi.mock('@renderer/hooks/useBranchSync', () => ({ useBranchSync: () => undefined }));
@@ -171,9 +186,9 @@ function alphaCard(): Element {
   return card;
 }
 
-async function renderView(): Promise<void> {
+async function renderView(isActive = true): Promise<void> {
   await act(async () => {
-    root.render(<TeamListView />);
+    root.render(<TeamListView tabId="team-test" isActive={isActive} />);
     await Promise.resolve();
   });
 }
@@ -220,6 +235,7 @@ beforeEach(() => {
     },
   });
   listTemplates.mockResolvedValue({ status: 'empty' });
+  storeState.paneLayout.panes[0].tabs[0].teamsCreationPage = false;
   storeState.openTeamTab = vi.fn();
   host = document.createElement('div');
   document.body.appendChild(host);
@@ -266,6 +282,7 @@ describe('TeamListView custom team template actions', () => {
       await Promise.resolve();
     });
     await flush();
+    await renderView(false);
     expect(getSavedRequest).toHaveBeenCalledWith('alpha');
     expect(host.querySelector('[data-testid="create-team-dialog"]')).not.toBeNull();
     expect(preparePreview).toHaveBeenCalledTimes(1);

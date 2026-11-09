@@ -12,7 +12,8 @@ import {
   stopUnregisteredApp,
 } from '../e2e/anthropic-compatible-status/packaged-default-processes.ts';
 import { verifyExternalOpenCodeV2Base } from '../lib/opencode-v2-base-inventory.mts';
-import { smokeExternalOpenCodeV2Base } from './smokeExternalOpenCodeV2Base.ts';
+// @ts-expect-error Existing Node scripts are untyped.
+import { validateWindowsRuntimeLock } from '../lib/windows-runtime-lock.mjs';
 
 const require = createRequire(import.meta.url);
 const nativePolicy = require('./afterPack.cjs')._internal as {
@@ -223,7 +224,10 @@ export function deliveryIdentity(
   assert.equal(identity.schema, 1);
   assert.equal(identity.platform, platform);
   assert.equal(identity.arch, arch);
-  assert.equal(identity.bunVersion, platform === 'win32' ? '1.4.3' : '1.3.11');
+  assert.equal(
+    identity.bunVersion,
+    platform === 'win32' ? '1.4.3' : platform === 'darwin' ? '1.4.4' : '1.3.11'
+  );
   assert.match(bunSha256, /^[a-f0-9]{64}$/);
   assert.match(entrySha256, /^[a-f0-9]{64}$/);
   assert.equal(identity.bunSha256, bunSha256, 'Declared Bun identity differs from physical bytes');
@@ -360,7 +364,10 @@ async function probe(runtime: string, staged: string, project: string, expectedB
     }
   ).Bun;
   assert(bun, 'Runtime probe must execute using bundled Bun');
-  assert.equal(bun.version, process.platform === 'win32' ? '1.4.3' : '1.3.11');
+  assert.equal(
+    bun.version,
+    process.platform === 'win32' ? '1.4.3' : process.platform === 'darwin' ? '1.4.4' : '1.3.11'
+  );
   const executable = containedFile(runtime, process.execPath);
   assert.equal(
     executable.sha256,
@@ -614,26 +621,26 @@ export async function runProbe(
 }
 
 /**
- * A runtime released without OpenCode V2 ships only its compiled front door, which answers
- * every command itself; its pinned contract must then qualify no V2 version.
+ * A Windows Claude-only runtime ships only its compiled front door and carries no V2 contract.
  */
 export function smokeRuntimeWithoutOpenCodeV2(input: {
   runtime: string;
   frontdoor: { path: string; sha256: string };
   cliVersion: string;
-  opencodeV2: { qualified?: Record<string, unknown> } | undefined;
+  opencodeV2?: unknown;
 }) {
-  const qualified = Object.values(input.opencodeV2?.qualified ?? {});
-  assert(
-    qualified.length > 0 &&
-      qualified.every((versions) => Array.isArray(versions) && versions.length === 0),
-    'A runtime without OpenCode V2 delivery must not be pinned with qualified V2 versions'
-  );
-  for (const relative of ['local-cli', 'bun'])
+  assert.equal(input.opencodeV2, undefined, 'The Windows runtime lock must not pin OpenCode V2');
+  for (const relative of [
+    'local-cli',
+    'bun',
+    'opencode-delivery.json',
+    'opencode-v2-engine-manifest.json',
+  ]) {
     assert(
       !fs.existsSync(path.join(input.runtime, relative)),
-      `Unexpected V2 delivery: ${relative}`
+      `Unexpected OpenCode V2 delivery: ${relative}`
     );
+  }
   const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'packaged-runtime-TEST-')));
   try {
     const env = runtimeEnvironment(process.env, project);
@@ -664,22 +671,22 @@ export function smokeRuntimeWithoutOpenCodeV2(input: {
 
 export async function smokePackagedRuntime(bundle: string, platform: string) {
   assert.equal(platform, process.platform, 'Packaged runtime smoke must use the actual target OS');
-  const platformKey = `${process.platform}-${process.arch}`;
+  assert.equal(platform, 'win32', 'The Windows Claude-only runtime smoke targets Windows');
+  assert.equal(process.arch, 'x64', 'The Windows Claude-only runtime smoke targets x64');
+  const platformKey = 'win32-x64';
   const runtime = containedDirectory(
     bundle,
-    path.join(
-      fs.realpathSync(bundle),
-      ...(platform === 'darwin' ? ['Contents', 'Resources'] : ['resources']),
-      'runtime'
-    )
+    path.join(fs.realpathSync(bundle), 'resources', 'runtime')
   );
   const staged = containedDirectory(repoRoot, path.join(repoRoot, 'resources/runtime'));
   const lock = JSON.parse(fs.readFileSync(path.join(repoRoot, 'runtime.lock.json'), 'utf8')) as {
     version: string;
     cliVersion: string;
+    sourceCommit: string;
     assets: Record<string, { sha256: string; binaryName: string }>;
-    opencodeV2?: { qualified?: Record<string, unknown> };
+    opencodeV2?: unknown;
   };
+  validateWindowsRuntimeLock(lock);
   const asset = lock.assets[platformKey];
   assert(asset && /^[a-f0-9]{64}$/.test(asset.sha256), 'Missing immutable runtime archive pin');
   assert.equal(
@@ -690,68 +697,22 @@ export async function smokePackagedRuntime(bundle: string, platform: string) {
     .readFileSync(stagedFile(runtime, staged, 'COMMIT_SHA').path, 'utf8')
     .trim();
   assert.match(sourceCommit, /^[a-f0-9]{40}$/);
+  assert.equal(sourceCommit, lock.sourceCommit);
   const frontdoor = stagedFile(runtime, staged, asset.binaryName);
   const externalSupport = verifyExternalOpenCodeV2Base(runtime, lock, platformKey);
-  if (externalSupport) {
-    verifyExternalOpenCodeV2Base(staged, lock, platformKey);
-  }
-  if (!fs.existsSync(path.join(runtime, 'opencode-delivery.json'))) {
-    const evidence = smokeRuntimeWithoutOpenCodeV2({
-      runtime,
-      frontdoor,
-      cliVersion: lock.cliVersion,
-      opencodeV2: lock.opencodeV2,
-    });
-    console.log(
-      `[smokePackagedRuntime] OK ${platform}: ${JSON.stringify({ runtimeVersion: lock.version, archiveSha256: asset.sha256, sourceCommit, frontdoor, openCodeV2: 'not shipped', evidence })}`
-    );
-    return;
-  }
-  const bunEntry = process.platform === 'win32' ? 'bun/bun.exe' : 'bun/bun';
-  const executable = stagedFile(runtime, staged, bunEntry);
-  const entry = stagedFile(runtime, staged, 'local-cli/cli.js');
-  const deliveryFile = stagedFile(runtime, staged, 'opencode-delivery.json');
-  const delivery = deliveryIdentity(
-    JSON.parse(fs.readFileSync(deliveryFile.path, 'utf8')),
-    process.platform,
-    process.arch,
-    executable.sha256,
-    entry.sha256
+  assert.equal(externalSupport, false, 'The Windows Claude-only runtime must not ship V2 support');
+  assert(
+    !fs.existsSync(path.join(runtime, 'opencode-delivery.json')),
+    'The Windows Claude-only runtime must not include OpenCode V2 delivery metadata'
   );
-  await compatible(executable.path);
-  if (externalSupport) {
-    smokeExternalOpenCodeV2Base(frontdoor.path, runtimeEnvironment);
-    console.log(
-      `[smokePackagedRuntime] OK ${platform}: ${JSON.stringify({ runtimeVersion: lock.version, sourceCommit, frontdoor, delivery, openCodeV2: 'external support; base availability only, optional engine execution requires its separate smoke' })}`
-    );
-    return;
-  }
-  const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'packaged-runtime-TEST-')));
-  let evidence: unknown;
-  try {
-    const env = runtimeEnvironment(process.env, project);
-    fs.writeFileSync(path.join(project, '.test-only'), 'packaged-runtime-native-v1\n');
-    evidence = await runProbe(
-      executable.path,
-      [
-        '--no-env-file',
-        fileURLToPath(import.meta.url),
-        '--probe',
-        runtime,
-        staged,
-        project,
-        executable.sha256,
-        process.platform,
-        process.arch,
-      ],
-      env,
-      project
-    );
-  } finally {
-    fs.rmSync(project, { recursive: true, force: true });
-  }
+  const evidence = smokeRuntimeWithoutOpenCodeV2({
+    runtime,
+    frontdoor,
+    cliVersion: lock.cliVersion,
+    opencodeV2: lock.opencodeV2,
+  });
   console.log(
-    `[smokePackagedRuntime] OK ${platform}: ${JSON.stringify({ runtimeVersion: lock.version, archiveSha256: asset.sha256, sourceCommit, frontdoor, deliveryFile, delivery, entry, evidence, ownedChildrenRemaining: [] })}`
+    `[smokePackagedRuntime] OK ${platform}: ${JSON.stringify({ runtimeVersion: lock.version, archiveSha256: asset.sha256, sourceCommit, frontdoor, openCodeV2: 'not shipped', evidence })}`
   );
 }
 

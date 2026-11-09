@@ -69,6 +69,22 @@ vi.mock('../../../../src/main/services/team/fileLock', () => ({
   withFileLockForSyncOperation: async (_path: string, operation: () => void) => operation(),
 }));
 
+vi.mock('../../../../src/main/services/team/TeamConfigReader', () => ({
+  TeamConfigReader: class {
+    async getRegistryBindingState() {
+      return { status: 'verified', binding: {} };
+    }
+  },
+}));
+
+vi.mock('../../../../src/main/services/team/execution/ExecutionTaskStore', () => ({
+  ExecutionTaskStore: class {
+    list() {
+      return [];
+    }
+  },
+}));
+
 vi.mock('agent-teams-controller', () => ({
   boardLocks: { tryWithTeamBoardLock: (_paths: unknown, operation: () => unknown) => operation() },
   createController: ({ teamName }: { teamName: string }) => ({
@@ -112,14 +128,11 @@ describe('TeamKanbanManager', () => {
     });
   });
 
-  it('returns default state on corrupted JSON', async () => {
+  it('rejects corrupted JSON without replacing the board', async () => {
     hoisted.files.set(statePath, '{bad-json');
-    const result = await manager.getState('my-team');
-    expect(result).toEqual({
-      teamName: 'my-team',
-      reviewers: [],
-      tasks: {},
-    });
+    await expect(manager.getState('my-team')).rejects.toThrow('corrupt');
+    expect(hoisted.files.get(statePath)).toBe('{bad-json');
+    expect(hoisted.atomicWrite).not.toHaveBeenCalled();
   });
 
   it('writes review state with movedAt on set_column', async () => {
@@ -217,13 +230,13 @@ describe('TeamKanbanManager', () => {
     });
   });
 
-  it('strict reads propagate timeout while ordinary projection remains compatible', async () => {
+  it('propagates timeout for strict and ordinary reads', async () => {
     hoisted.files.set(statePath, '{"tasks":{}}');
     const abort = Object.assign(new Error('aborted'), { name: 'AbortError' });
     hoisted.readFile.mockRejectedValueOnce(abort);
     await expect(manager.getState('my-team', { strict: true })).rejects.toThrow('Timed out');
     hoisted.readFile.mockRejectedValueOnce(abort);
-    expect(await manager.getState('my-team')).toMatchObject({ tasks: {} });
+    await expect(manager.getState('my-team')).rejects.toThrow('Timed out');
   });
 
   it('strict reads reject disappearance after successful stat', async () => {

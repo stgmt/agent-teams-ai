@@ -7,6 +7,7 @@ import {
 } from '@shared/utils/teamMemberMcpPolicy';
 
 import { isNativeRuntimeProvider } from '../../infrastructure/nativeRuntimeProvider';
+import { personalTaskListId } from '../../infrastructure/personalTaskListId';
 import { rejectAfterOwnedCleanup } from '../../infrastructure/rejectAfterOwnedCleanup';
 import { withoutParentGitSelection } from '../../infrastructure/workspaceEnvironment';
 
@@ -23,9 +24,6 @@ export const APP_OWNED_TEAM_DISALLOWED_TOOLS = [
   'Task',
   'TeamCreate',
   'TeamDelete',
-  'TodoWrite',
-  'TaskCreate',
-  'TaskUpdate',
   'mcp__agent-teams__team_create',
   'mcp__agent-teams__team_update',
   'mcp__agent-teams__team_launch',
@@ -282,6 +280,8 @@ export class NativeClaudeLaunchPlanner implements NodeMemberLaunchPlanner {
       const env = withoutParentGitSelection({
         ...provider.env,
         ...artifacts.env,
+        CLAUDE_CODE_TASK_LIST_ID: personalTaskListId(token),
+        CLAUDE_CODE_ENABLE_TASKS: '1',
         CLAUDE_CODE_BOOTSTRAP_RUN_ID: token.runId,
       });
       // Only the scoped MCP child receives this capability; never the model CLI or its shell tools.

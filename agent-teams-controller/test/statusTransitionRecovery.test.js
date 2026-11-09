@@ -14,7 +14,11 @@ describe('recoverable status transitions that clear a board card', () => {
       name: 'fixture',
       members: [{ name: 'lead', role: 'team-lead' }, { name: 'worker', role: 'developer' }],
     }));
-    controller = createController({ teamName: 'fixture', claudeDir: root });
+    controller = createController({
+      teamName: 'fixture',
+      claudeDir: root,
+      localTaskBoard: true,
+    });
     api = controller.taskBoard;
   });
   afterEach(() => {

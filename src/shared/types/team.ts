@@ -1,6 +1,13 @@
-import type { KanbanRecoveryPatch } from './kanbanRecovery';
+import type { KanbanRecoveryPatch, PendingKanbanTransition } from './kanbanRecovery';
 import type { NotificationTarget, TeamEventType } from './notifications';
 import type { OpenCodeStopHandshakeFailureFacts } from './openCodeStopHandshakeFailure';
+import type {
+  RegistryTaskEntity,
+  RegistryTaskSnapshot,
+  RegistryTaskSource,
+  RegistryTaskStatus,
+  TeamSpecBinding,
+} from './registryTask';
 import type { TaskArtifactFile, TaskArtifactRequirement, TaskAttachmentMeta } from './taskArtifact';
 import type { TaskRef } from './teamBoardTask';
 import type * as TeamProvisioningTypes from './teamProvisioning';
@@ -19,6 +26,7 @@ import type { TeamManagementCommittedChange } from '@features/team-prompt-manage
 export type * from './taskArtifact';
 export type * from './teamBoardTask';
 export type * from './teamProvisioning';
+export type * from './registryTask';
 export type * from './userReplyLink';
 export type {
   AttachmentFileData,
@@ -68,6 +76,11 @@ export interface TeamConfig {
   members?: TeamMember[];
   projectPath?: string;
   projectPathHistory?: string[];
+  /** Cached registry bindings; the registry remains authoritative. */
+  specBindings?: TeamSpecBinding[];
+  registryTeamId?: string;
+  specProject?: string;
+  specSlug?: string;
   leadSessionId?: string;
   sessionHistory?: string[];
   /** ISO timestamp — soft delete marker. If set, the team is considered deleted. */
@@ -102,6 +115,8 @@ export interface TeamSummary {
   lastActivity: string | null;
   projectPath?: string;
   projectPathHistory?: string[];
+  specBindings?: TeamSpecBinding[];
+  registryTeamId?: string;
   leadSessionId?: string;
   sessionHistory?: string[];
   /** Propagated from config.deletedAt — set when the team has been soft-deleted. */
@@ -250,6 +265,15 @@ export interface SourceMessageSnapshot {
   fileReferenceIds?: string[];
 }
 
+/** Provenance of a retried task-creation command. */
+export interface TaskCreationCommand {
+  namespace: string;
+  scopeKey: string;
+  operation: string;
+  commandId: string;
+  payloadHash: string;
+}
+
 export type InboxMessageKind =
   | 'default'
   | 'slash_command'
@@ -314,6 +338,23 @@ export interface TeamTask {
   id: string;
   /** Human-friendly short task label shown in UI. Canonical identity remains `id`. */
   displayId?: string;
+  specProject?: string;
+  specSlug?: string;
+  registryLocalId?: string;
+  registryStatus?: RegistryTaskStatus;
+  registryTask?: RegistryTaskSnapshot;
+  registryEntity?: RegistryTaskEntity;
+  requirements?: string[];
+  dependsOn?: string[];
+  registryRefs?: string[];
+  registryPhase?: string | null;
+  tracking?: string | null;
+  contentHash?: string | null;
+  registrySource?: RegistryTaskSource;
+  registryBody?: string;
+  registryAttributes?: Record<string, unknown>;
+  doneWhen?: string | null;
+  creationCommand?: TaskCreationCommand | { idempotencyKey: string };
   subject: string;
   description?: string;
   descriptionTaskRefs?: TaskRef[];
@@ -360,6 +401,8 @@ export interface TeamTask {
   artifactRequirement?: TaskArtifactRequirement;
   /** Derived review state — computed from historyEvents, not persisted as authority. */
   reviewState?: TeamReviewState;
+  /** Durable evidence for an unresolved task/kanban transition; removed after explicit recovery. */
+  pendingKanbanTransition?: PendingKanbanTransition;
   /** Exact messageId of the user message this task was created from. */
   sourceMessageId?: string;
   /** Snapshot of the source message at creation time (sanitized, no blobs). */
@@ -880,6 +923,8 @@ export interface TeamLaunchRequest extends TeamProvisioningTypes.LocalModelLaunc
   teamName: string;
   cwd: string;
   prompt?: string;
+  /** Explicit opt-in: start the configured runtime without replaying saved one-time work. */
+  bootstrapOnly?: true;
   providerId?: TeamProviderId;
   providerBackendId?: TeamProviderBackendId;
   model?: string;
@@ -913,6 +958,7 @@ export interface ApplicationCommandRequestIdentity {
 export interface TaskFieldUpdates {
   subject?: string;
   description?: string;
+  requirements?: string[];
   groupChatId?: string | null;
   artifactRequired?: boolean;
   artifactExpectedFilename?: string;
@@ -921,9 +967,11 @@ export interface TaskFieldUpdates {
   artifactExpectedRootFingerprint?: string;
 }
 
-export interface CreateTaskRequest {
+type CreateTaskRequestFields = {
   /** Stable for one user intent so transport retries cannot create a second task. */
   command?: ApplicationCommandRequestIdentity;
+  creationCommand?: TaskCreationCommand;
+  tracking?: string;
   groupChatId?: string;
   subject: string;
   description?: string;
@@ -934,7 +982,14 @@ export interface CreateTaskRequest {
   prompt?: string;
   promptTaskRefs?: TaskRef[];
   startImmediately?: boolean;
-}
+};
+
+/** Registry scope is either absent for local tasks or complete for registry tasks. */
+export type CreateTaskRequest = CreateTaskRequestFields &
+  (
+    | { specProject?: never; specSlug?: never; requirements?: never }
+    | { specProject: string; specSlug: string; requirements: string[] }
+  );
 
 export type LeadActivityState = 'active' | 'idle' | 'offline';
 
@@ -1340,6 +1395,8 @@ export interface TeamCreateRequest extends TeamProvisioningTypes.LocalModelLaunc
   /** Read-only saved defaults token returned by getSavedRequest. */
   savedSettingsFingerprint?: string;
   teamName: string;
+  specProject?: string;
+  specSlug?: string;
   displayName?: string;
   description?: string;
   color?: string;
@@ -1363,6 +1420,8 @@ export interface TeamCreateRequest extends TeamProvisioningTypes.LocalModelLaunc
 
 export interface TeamCreateConfigRequest extends TeamProvisioningTypes.RuntimeSelectionVersioned {
   teamName: string;
+  specProject?: string;
+  specSlug?: string;
   displayName?: string;
   description?: string;
   color?: string;

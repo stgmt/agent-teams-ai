@@ -18,12 +18,14 @@ import type {
   TeamProvisioningPreflightApi,
   TeamTaskActivityRepairApi,
 } from '@main/services/team/contracts/TeamProvisioningApis';
+import type { RuntimeRecipientProviderSourcePorts } from '@main/services/team/provisioning/TeamProvisioningRuntimeRecipientResolution';
 import type { TeamConfig } from '@shared/types';
 
 export interface NativeTeamProvisioningApisDependencies {
   runtime: NativeDesktopTeamRuntime;
   preflight: TeamProvisioningPreflightApi;
   taskActivity: TeamTaskActivityRepairApi;
+  recipientSources: RuntimeRecipientProviderSourcePorts;
   /** Removes the member from durable team data after native detach. */
   detachMemberData?(teamName: string, memberName: string): Promise<void>;
   /** Production OpenCode member prompt ledger; owns delivery state, not runs. */
@@ -67,7 +69,7 @@ export function createNativeTeamProvisioningApis(
       logs: deps.runtime.logs,
     }),
     claudeLogs: new NativeTeamClaudeLogs(deps.runtime.logs),
-    messaging: buildMessagingApi(lifecycle, deps.openCodeMemberDelivery),
+    messaging: buildMessagingApi(lifecycle, deps.recipientSources, deps.openCodeMemberDelivery),
     toolApproval: new NativeTeamToolApprovalApi({
       runs: lifecycle.runs,
       commands: lifecycle.memberCommands,
@@ -93,6 +95,7 @@ export function createNativeMcpConsumerQuery(
 
 function buildMessagingApi(
   lifecycle: NativeDesktopTeamRuntime['lifecycle'],
+  recipientSources: RuntimeRecipientProviderSourcePorts,
   openCodeMemberDelivery: NativeOpenCodeMemberDeliveryPort | undefined
 ): TeamIpcHandlerApis['messaging'] {
   // The lifecycle owns the ledger driver, so the wake it arms is the same one
@@ -100,7 +103,7 @@ function buildMessagingApi(
   const supervisor = lifecycle.promptDelivery;
   return new NativeTeamMessagingApi({
     runs: lifecycle.runs,
-    settings: lifecycle.settings,
+    recipientSources,
     liveLeadMessages: lifecycle.liveLeadMessages,
     leadOutput: lifecycle.leadOutput,
     sendLeadMessage: lifecycle.sendLeadMessage,
@@ -130,10 +133,10 @@ export interface NativeLanguageChangeNotifierDependencies {
 export function createNativeLanguageChangeNotifier(
   deps: NativeLanguageChangeNotifierDependencies & {
     runtime: Pick<NativeDesktopTeamRuntime, 'runtime' | 'lifecycle'>;
-    openCodeMemberDelivery?: NativeOpenCodeMemberDeliveryPort;
+    messaging: Pick<TeamIpcHandlerApis['messaging'], 'sendMessageToTeam'>;
   }
 ): NativeLanguageChangeNotifier {
-  const messaging = buildMessagingApi(deps.runtime.lifecycle, deps.openCodeMemberDelivery);
+  const messaging = deps.messaging;
   return new NativeLanguageChangeNotifier({
     getAliveTeams: () => deps.runtime.runtime.getAliveTeams(),
     readConfig: (teamName) => deps.readConfig(teamName),
@@ -160,9 +163,7 @@ export function createNativeTeamCrossTeamApi(
     settings: lifecycle.settings,
     inbox: lifecycle.inbox,
     relayLeadInboxMessages: (teamName, options) => lifecycle.relay.relay(teamName, options),
-    ...(deps.openCodeMemberDelivery
-      ? { openCodeMemberDelivery: deps.openCodeMemberDelivery }
-      : {}),
+    ...(deps.openCodeMemberDelivery ? { openCodeMemberDelivery: deps.openCodeMemberDelivery } : {}),
     now: () => Date.parse(deps.now()),
   });
 }

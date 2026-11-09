@@ -4,6 +4,8 @@ import type { TeamCreateRequest } from '@shared/types';
 export interface TeamCopyData extends Pick<
   TeamCreateRequest,
   | 'runtimeSelectionVersion'
+  | 'specProject'
+  | 'specSlug'
   | 'description'
   | 'color'
   | 'prompt'
@@ -28,6 +30,10 @@ export interface ActiveTeamRef {
 
 export interface CreateTeamDialogProps {
   open: boolean;
+  /** Creation-only surface; launching and relaunching keep their separate dialogs. */
+  presentation?: 'dialog' | 'page';
+  /** Hidden Teams pages keep their form, but suspend portaled provider settings. */
+  active?: boolean;
   canCreate: boolean;
   provisioningErrorsByTeam: Record<string, string | null>;
   clearProvisioningError?: (teamName?: string) => void;
@@ -40,6 +46,8 @@ export interface CreateTeamDialogProps {
   defaultProjectPath?: string | null;
   forceDefaultProjectSelection?: boolean;
   onClose: () => void;
+  /** Page Back can return to the originating organization tab; success uses onClose. */
+  onBack?: () => void;
   onCreate: (
     request: TeamCreateRequest,
     placement?: OrganizationPlacementSelection

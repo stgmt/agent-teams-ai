@@ -6,10 +6,12 @@ import { createOpenCodePromptDeliveryLedger } from '@main/services/team/provisio
 import { buildLeadMessageStdinPayload } from '@main/services/team/provisioning/TeamProvisioningLeadAttachments';
 import { TaskChangeLedgerReader } from '@main/services/team/TaskChangeLedgerReader';
 import { TeamInboxReader } from '@main/services/team/TeamInboxReader';
+import { getClaudeBasePath } from '@main/utils/pathDecoder';
 import { createLogger } from '@shared/utils/logger';
 
 import { SendLeadMessage } from '../../core/application/commands/SendLeadMessage';
 import { LeadMemberStartAuthority } from '../../core/application/LeadMemberStartAuthority';
+import { MemberLifecycleRegistry } from '../../core/domain/MemberLifecycleRegistry';
 import { LeadLaneInboxDelivery } from '../adapters/output/LeadLaneInboxDelivery';
 import { NativeClaudeLaunchPlanner } from '../adapters/output/NativeClaudeLaunchPlanner';
 import {
@@ -27,6 +29,7 @@ import { NativeLeadRuntimeRestart } from '../adapters/output/NativeLeadRuntimeRe
 import { NativeMemberInboxRelay } from '../adapters/output/NativeMemberInboxRelay';
 import { createObservedMemberPlanner } from '../adapters/output/NativeObservedMemberPlanner';
 import { NativeOpenCodePromptDeliverySupervisor } from '../adapters/output/NativeOpenCodePromptDeliverySupervisor';
+import { NativeStartupWorkDelivery } from '../adapters/output/NativeStartupWorkDelivery';
 import { NativeTeamLogStore } from '../adapters/output/NativeTeamLogStore';
 import { NativeTeamTaskLedgerReader } from '../adapters/output/NativeTeamTaskLedgerReader';
 import { NativeToolApprovalSettings } from '../adapters/output/NativeToolApprovalSettings';
@@ -57,11 +60,13 @@ import type { LaneLeadDeliveryPort } from '../adapters/output/LeadLaneInboxDeliv
 import type { NativeConfiguredProviderPorts } from '../adapters/output/NativeConfiguredProvider';
 import type { MemberLifecycle } from './createMemberLifecycle';
 import type { AppConnectionContext } from '@features/external-agent-connection/contracts';
+import type { StartupWorkDeliveryController } from '@main/services/team/provisioning/TeamProvisioningStartupWorkDelivery';
 import type { TeamRuntimeAdapterRegistry } from '@main/services/team/runtime';
 import type {
   AttachmentPayload,
   InboxMessage,
   RetryFailedOpenCodeSecondaryLanesResult,
+  TeamTask,
 } from '@shared/types';
 
 export interface NativeTeamLifecycleDependencies {
@@ -75,6 +80,14 @@ export interface NativeTeamLifecycleDependencies {
   teamsRoot: string;
   mcp: ConstructorParameters<typeof NodeNativeLaunchArtifacts>[0]['mcp'];
   inbox: ConstructorParameters<typeof NodeNativeMemberRegistration>[0]['inbox'];
+  /** Registry-authoritative for bound teams; only unbound teams may use local task storage. */
+  readStartupTasks(teamName: string): Promise<TeamTask[]>;
+  /** Snapshot-only controller factory; must not resolve tasks independently. */
+  createController(input: {
+    teamName: string;
+    claudeDir: string;
+    readOnlyTaskSnapshot: TeamTask[];
+  }): StartupWorkDeliveryController;
   controlUrl(): Promise<string>;
   briefing(settings: Readonly<ConfiguredMemberLaunch>): Promise<string>;
   /** Adapter for OpenCode lanes; omitted keeps OpenCode unsupported by native launch. */
@@ -113,6 +126,7 @@ export interface OrphanedRunRecovery {
 
 export interface NativeTeamLifecycle {
   owner: Readonly<AppConnectionContext>;
+  activity: MemberLifecycle['activity'];
   runs: TeamRunRegistryRead;
   commands: LifecycleCommands;
   queries: LifecycleQueries;
@@ -213,6 +227,7 @@ export function createNativeTeamLifecycle(
     (!Number.isSafeInteger(deps.relayIntervalMs) || deps.relayIntervalMs < 1)
   )
     throw new Error('Relay polling interval must be a positive integer');
+  const registry = deps.registry ?? new MemberLifecycleRegistry(deps.owner);
   const authority = new LeadMemberStartAuthority();
   const settings = new NodeTeamLaunchSettings({ ...deps.settings, teamsRoot: deps.teamsRoot });
   const provider = new NativeConfiguredProvider(deps.provider);
@@ -241,6 +256,17 @@ export function createNativeTeamLifecycle(
     requireProviderAuth: deps.requireProviderAuth === true,
   });
   const logs = new NativeTeamLogStore({ teamsRoot: deps.teamsRoot });
+  const startupWorkDelivery = new NativeStartupWorkDelivery({
+    registry,
+    contextInvalidationSignal: (expected) => deps.contextInvalidationSignal(expected),
+    withExpectedContext: (expected, operation) => deps.withExpectedContext(expected, operation),
+    createController: (input) => deps.createController(input),
+    readTasks: (teamName) => deps.readStartupTasks(teamName),
+    getClaudeBasePath,
+    appendDiagnostic: (run, memberName, text) =>
+      logs.append(run.runId, run.teamName, `[${memberName}] ${text}`),
+    logger: createLogger('team-provisioning:startup-work'),
+  });
   const toolApprovalSettings = new NativeToolApprovalSettings();
   let writeApprovalLine: (
     token: Readonly<MemberProcessToken>,
@@ -285,12 +311,13 @@ export function createNativeTeamLifecycle(
   const launchPublication = new NativeLaunchPublication(deps.teamsRoot);
   const lifecycle = createMemberLifecycle({
     owner: deps.owner,
-    ...(deps.registry ? { registry: deps.registry } : {}),
+    registry,
     settings,
     authority,
     runtime: routing.runtime,
     laneGroups: routing.laneGroups,
     registerConfiguredMember: (run, launch) => config.addMember(run, launch),
+    onMemberConnected: (launch, token) => startupWorkDelivery.confirmed(launch, token),
     ...(deps.onRuntimeFailure
       ? { reportRuntimeFailure: (input) => deps.onRuntimeFailure?.(input) }
       : {}),
@@ -312,6 +339,7 @@ export function createNativeTeamLifecycle(
         toolApprovalSettings.initializeForLaunch(run.teamName, lead?.launch.skipPermissions);
       },
       release: async (run) => {
+        startupWorkDelivery.release(run);
         configuredProvidersByRun.delete(run.runId);
         // Wakes belong to the run that armed them: a released team drops its
         // timers before anything else is torn down.
@@ -466,17 +494,20 @@ export function createNativeTeamLifecycle(
   const commands = createBoundLifecycleCommands({
     owner: deps.owner,
     source: {
-      launchCurrent: async (...args) => {
-        const receipt = await lifecycle.teams.launchCurrent(...args);
-        // A live team must be swept for due deliveries whether or not inbox
-        // polling was enabled: a relay the app scheduled itself is not an inbox
-        // write, so nothing else would re-arm it.
-        promptDelivery?.start();
-        return receipt;
-      },
-      stop: (run) => lifecycle.teams.stop(run),
-      restart: (target, signal) => lifecycle.commands.restart(target, signal),
-      skip: (target, signal) => lifecycle.commands.skip(target, signal),
+      launchCurrent: async (...args) =>
+        lifecycle.activity.run(args[1], async () => {
+          const receipt = await lifecycle.teams.launchCurrent(...args);
+          // A live team must be swept for due deliveries whether or not inbox
+          // polling was enabled: a relay the app scheduled itself is not an inbox
+          // write, so nothing else would re-arm it.
+          promptDelivery?.start();
+          return receipt;
+        }),
+      stop: (run) => lifecycle.activity.run(run.teamName, () => lifecycle.teams.stop(run)),
+      restart: (target, signal) =>
+        lifecycle.activity.run(target.teamName, () => lifecycle.commands.restart(target, signal)),
+      skip: (target, signal) =>
+        lifecycle.activity.run(target.teamName, () => lifecycle.commands.skip(target, signal)),
     },
     load: async (run, signal) => (await settings.capture(run, signal)).members,
     invalidationSignal: (expected) => deps.contextInvalidationSignal(expected),
@@ -486,16 +517,23 @@ export function createNativeTeamLifecycle(
     restartMember: commands.restartMember,
     skipMember: commands.skipMember,
     detachMember: (team, memberName) =>
-      deps.withExpectedContext(team, () => lifecycle.commands.detach(team, memberName)),
+      lifecycle.activity.run(team.teamName, () =>
+        deps.withExpectedContext(team, () => lifecycle.commands.detach(team, memberName))
+      ),
     attachMember: (team, memberName, reason) =>
-      deps.withExpectedContext(team, () => lifecycle.commands.attach(team, memberName, reason)),
+      lifecycle.activity.run(team.teamName, () =>
+        deps.withExpectedContext(team, () => lifecycle.commands.attach(team, memberName, reason))
+      ),
     retryFailedLanes: (run) =>
-      deps.withExpectedContext(run, () => lifecycle.commands.retryFailedLanes(run)),
+      lifecycle.activity.run(run.teamName, () =>
+        deps.withExpectedContext(run, () => lifecycle.commands.retryFailedLanes(run))
+      ),
     answerLanePermission: (input) =>
       deps.withExpectedContext(input.run, () => lifecycle.commands.answerLanePermission(input)),
   };
   return {
     owner: Object.freeze({ ...deps.owner }),
+    activity: lifecycle.activity,
     runs,
     logs,
     liveLeadMessages,
@@ -549,7 +587,7 @@ export function createNativeTeamLifecycle(
     },
     snapshot: (teamName) => lifecycle.snapshot(teamName),
     watch: (teamName) => lifecycle.watch(teamName),
-    stopConfigured: (run) => lifecycle.teams.stop(run),
+    stopConfigured: (run) => lifecycle.activity.run(run.teamName, () => lifecycle.teams.stop(run)),
     shutdown: async () => {
       promptDelivery?.stop();
       leadRelay.dispose();
@@ -562,14 +600,16 @@ export function createNativeTeamLifecycle(
       }
     },
     launchConfigured: (run) =>
-      deps.withExpectedContext(run, async () => {
-        const receipt = await lifecycle.teams.launchConfigured(
-          run,
-          async (signal) => (await settings.capture(run, signal)).members
-        );
-        if (deps.relayIntervalMs) startRelays(run.teamName, deps.relayIntervalMs);
-        promptDelivery?.start();
-        return Object.freeze({ run: receipt.run });
-      }),
+      lifecycle.activity.run(run.teamName, () =>
+        deps.withExpectedContext(run, async () => {
+          const receipt = await lifecycle.teams.launchConfigured(
+            run,
+            async (signal) => (await settings.capture(run, signal)).members
+          );
+          if (deps.relayIntervalMs) startRelays(run.teamName, deps.relayIntervalMs);
+          promptDelivery?.start();
+          return Object.freeze({ run: receipt.run });
+        })
+      ),
   };
 }

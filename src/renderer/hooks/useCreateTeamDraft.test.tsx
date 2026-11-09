@@ -18,7 +18,7 @@ vi.mock('@renderer/services/createTeamDraftStorage', () => ({
   },
 }));
 
-import { useCreateTeamDraft } from './useCreateTeamDraft';
+import { useCreateTeamDraft, type UseCreateTeamDraftResult } from './useCreateTeamDraft';
 
 const HookProbe = ({ onLoaded }: { onLoaded: () => void }): React.JSX.Element | null => {
   const draft = useCreateTeamDraft();
@@ -47,6 +47,17 @@ const HookProbeWithDraft = ({
 
   return null;
 };
+
+async function renderLoadedDraft(
+  root: ReturnType<typeof createRoot>,
+  onLoaded: (draft: ReturnType<typeof useCreateTeamDraft>) => void
+): Promise<void> {
+  await act(async () => {
+    root.render(React.createElement(HookProbeWithDraft, { onLoaded }));
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+}
 
 describe('useCreateTeamDraft', () => {
   beforeEach(() => {
@@ -194,6 +205,80 @@ describe('useCreateTeamDraft', () => {
     }
   );
 
+  it('preserves registry-only inputs across unmount and remount, then clears them', async () => {
+    loadSnapshotMock.mockResolvedValue(null);
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    let root = createRoot(host);
+    let loadedDraft: UseCreateTeamDraftResult | null = null;
+    const render = async () => {
+      await act(async () => {
+        root.render(
+          React.createElement(HookProbeWithDraft, {
+            onLoaded: (draft) => {
+              loadedDraft = draft;
+            },
+          })
+        );
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+    };
+    await render();
+    act(() => {
+      loadedDraft?.setSpecProject('project-alpha');
+      loadedDraft?.setSpecSlug('delivery-plan');
+    });
+    act(() => root.unmount());
+    const saved = saveSnapshotMock.mock.calls.at(-1)?.[0];
+    expect(saved).toEqual(
+      expect.objectContaining({
+        teamName: '',
+        members: [],
+        specProject: 'project-alpha',
+        specSlug: 'delivery-plan',
+      })
+    );
+    expect(deleteSnapshotMock).not.toHaveBeenCalled();
+
+    loadSnapshotMock.mockResolvedValue(saved);
+    loadedDraft = null;
+    root = createRoot(host);
+    await render();
+    expect(loadedDraft).toEqual(
+      expect.objectContaining({ specProject: 'project-alpha', specSlug: 'delivery-plan' })
+    );
+    act(() => loadedDraft?.clearDraft());
+    expect(loadedDraft).toEqual(expect.objectContaining({ specProject: '', specSlug: '' }));
+    expect(deleteSnapshotMock).toHaveBeenCalledOnce();
+    act(() => root.unmount());
+  });
+
+  it('keeps fresh registry input when the initial draft load finishes late', async () => {
+    let finishLoad!: (value: unknown) => void;
+    const promise = new Promise<unknown>((resolve) => {
+      finishLoad = resolve;
+    });
+    loadSnapshotMock.mockReturnValue(promise);
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    let currentDraft: UseCreateTeamDraftResult | undefined;
+    const Probe = () => {
+      currentDraft = useCreateTeamDraft();
+      return null;
+    };
+    act(() => root.render(React.createElement(Probe)));
+    act(() => currentDraft?.setSpecProject('fresh-project'));
+    await act(async () => {
+      finishLoad({ specProject: 'old-project', specSlug: 'old-spec' });
+      await Promise.resolve();
+    });
+    expect(currentDraft?.specProject).toBe('fresh-project');
+    expect(currentDraft?.specSlug).toBe('');
+    act(() => root.unmount());
+  });
+
   it('preserves per-member MCP policy in saved create-team drafts', async () => {
     loadSnapshotMock.mockResolvedValue({
       version: 1,
@@ -270,7 +355,177 @@ describe('useCreateTeamDraft', () => {
             },
           }),
         ],
+      }),
+      expect.any(Number)
+    );
+  });
+
+  it('restores organization placement and working directory when the team name is still empty', async () => {
+    loadSnapshotMock.mockResolvedValue(null);
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    let root = createRoot(host);
+    let draft: ReturnType<typeof useCreateTeamDraft> | null = null;
+    await renderLoadedDraft(root, (value) => {
+      draft = value;
+    });
+    act(() => {
+      draft?.setOrganizationPlacementEnabled(true);
+      draft?.setOrganizationPlacementOrganizationId('organization-1');
+      draft?.setOrganizationPlacementParentId('department-1');
+      draft?.setSelectedProjectPath('/sandbox/project-A');
+      root.unmount();
+    });
+    const snapshot = saveSnapshotMock.mock.calls.at(-1)?.[0];
+    expect(snapshot).toEqual(
+      expect.objectContaining({
+        teamName: '',
+        organizationPlacementEnabled: true,
+        organizationPlacementOrganizationId: 'organization-1',
+        organizationPlacementParentId: 'department-1',
+        selectedProjectPath: '/sandbox/project-A',
       })
     );
+    expect(deleteSnapshotMock).not.toHaveBeenCalled();
+
+    loadSnapshotMock.mockResolvedValue(snapshot);
+    draft = null;
+    root = createRoot(host);
+    await renderLoadedDraft(root, (value) => {
+      draft = value;
+    });
+    expect(draft).toEqual(
+      expect.objectContaining({
+        teamName: '',
+        organizationPlacementEnabled: true,
+        organizationPlacementOrganizationId: 'organization-1',
+        organizationPlacementParentId: 'department-1',
+        selectedProjectPath: '/sandbox/project-A',
+        restoredFromStorage: true,
+      })
+    );
+    act(() => root.unmount());
+  });
+
+  it('restores legacy snapshots that omit the newer organization fields', async () => {
+    loadSnapshotMock.mockResolvedValue({
+      version: 1,
+      teamName: 'legacy-team',
+      members: [],
+      cwdMode: 'project',
+      selectedProjectPath: '',
+      customCwd: '',
+      soloTeam: false,
+      launchTeam: false,
+      teamColor: '',
+      updatedAt: Date.now(),
+    });
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    let draft: ReturnType<typeof useCreateTeamDraft> | null = null;
+    await act(async () => {
+      root.render(
+        React.createElement(HookProbeWithDraft, {
+          onLoaded: (value) => {
+            draft = value;
+          },
+        })
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(draft).toEqual(
+      expect.objectContaining({
+        teamName: 'legacy-team',
+        organizationPlacementEnabled: false,
+        organizationPlacementOrganizationId: '',
+        organizationPlacementParentId: '',
+      })
+    );
+    act(() => root.unmount());
+  });
+
+  it('persists copied permission, context, effort and fast-mode settings without replacing global defaults', async () => {
+    loadSnapshotMock.mockResolvedValue(null);
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    let root = createRoot(host);
+    let draft: ReturnType<typeof useCreateTeamDraft> | null = null;
+    await renderLoadedDraft(root, (value) => {
+      draft = value;
+    });
+    act(() => {
+      draft?.setSkipPermissions(false);
+      draft?.setLimitContext(true);
+      draft?.setSelectedEffort('high');
+      draft?.setSelectedFastMode('off');
+      root.unmount();
+    });
+    const saved = saveSnapshotMock.mock.calls.at(-1)?.[0];
+    expect(saved).toMatchObject({
+      skipPermissions: false,
+      limitContext: true,
+      selectedEffort: 'high',
+      selectedFastMode: 'off',
+    });
+    loadSnapshotMock.mockResolvedValue(saved);
+    draft = null;
+    root = createRoot(host);
+    await renderLoadedDraft(root, (value) => {
+      draft = value;
+    });
+    const readDraft: () => ReturnType<typeof useCreateTeamDraft> | null = () => draft;
+    expect(readDraft()).toMatchObject({
+      skipPermissions: false,
+      limitContext: true,
+      selectedEffort: 'high',
+      selectedFastMode: 'off',
+    });
+    act(() => root.unmount());
+  });
+
+  it('retains per-member workflow file chips across unmount and restored snapshot', async () => {
+    const workflowChip = {
+      id: 'chip-1',
+      filePath: '/fixtures/README.md',
+      fileName: 'README.md',
+      fromLine: null,
+      toLine: null,
+      codeText: 'Sample',
+      language: 'markdown',
+    };
+    loadSnapshotMock.mockResolvedValue(null);
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    let root = createRoot(host);
+    let draft: ReturnType<typeof useCreateTeamDraft> | null = null;
+    await renderLoadedDraft(root, (value) => {
+      draft = value;
+    });
+    act(() => {
+      draft?.setMembers([
+        {
+          id: 'member-1',
+          name: 'alice',
+          roleSelection: 'developer',
+          customRole: '',
+          workflow: 'Review 📄README.md',
+          workflowChips: [workflowChip],
+        },
+      ]);
+      root.unmount();
+    });
+    const stored = saveSnapshotMock.mock.calls.at(-1)?.[0];
+    expect(stored.members[0].workflowChips).toEqual([workflowChip]);
+    loadSnapshotMock.mockResolvedValue(stored);
+    draft = null;
+    root = createRoot(host);
+    await renderLoadedDraft(root, (value) => {
+      draft = value;
+    });
+    const readRestoredDraft: () => ReturnType<typeof useCreateTeamDraft> | null = () => draft;
+    expect(readRestoredDraft()?.members[0]?.workflowChips).toEqual([workflowChip]);
+    act(() => root.unmount());
   });
 });

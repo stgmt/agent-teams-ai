@@ -1,5 +1,6 @@
 const taskStore = require('./taskStore.js');
 const runtimeHelpers = require('./runtimeHelpers.js');
+const pendingKanbanGuard = require('./pendingKanbanGuard.js');
 
 function normalizeActorName(value) {
     return typeof value === 'string' && value.trim() ? value.trim() : '';
@@ -13,6 +14,21 @@ function assertKnownTaskActor(context, value, label) {
     return runtimeHelpers.assertExplicitTeamMemberName(context.paths, value, label, {
         allowLeadAliases: true,
     });
+}
+
+// Same member and lead-alias rules as assertKnownTaskActor, without throwing, so
+// callers can word their own error. leadName is the configured lead, if any.
+function resolveTaskActor(context, actor) {
+    return {
+        memberName: runtimeHelpers.resolveExplicitTeamMemberName(context.paths, actor, {
+            allowLeadAliases: true,
+        }),
+        leadName: runtimeHelpers.resolveExplicitTeamMemberName(
+            context.paths,
+            runtimeHelpers.inferLeadName(context.paths),
+            { allowLeadAliases: false }
+        ),
+    };
 }
 
 function resolveAgentTaskMutationActor(context, actor, action) {
@@ -100,9 +116,13 @@ function assertTaskNotDeleted(task, action) {
     }
 }
 
-function readMutableTask(context, taskId, action) {
-    const task = taskStore.readTask(context.paths, taskId, { includeDeleted: true });
+function readMutableTask(context, taskId, action, scope) {
+    const task = taskStore.readTask(context.paths, taskId, {
+        includeDeleted: true,
+        ...(scope ? { scope } : {}),
+    });
     assertTaskNotDeleted(task, action);
+    pendingKanbanGuard.assertNoPendingKanbanTransition(task);
     return task;
 }
 
@@ -136,4 +156,5 @@ module.exports = {
     isSameTaskMember,
     normalizeActorName,
     readMutableTask,
+    resolveTaskActor,
 };

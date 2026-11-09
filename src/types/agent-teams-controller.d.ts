@@ -10,6 +10,7 @@ declare module 'agent-teams-controller' {
   export interface TaskFieldUpdates {
     subject?: string;
     description?: string;
+    requirements?: string[];
     groupChatId?: string | null;
     artifactRequired?: boolean;
     artifactExpectedFilename?: string;
@@ -26,47 +27,170 @@ declare module 'agent-teams-controller' {
     base64Data: string;
   }
 
+  export interface ControllerTaskScope {
+    project: string;
+    spec: string;
+  }
+
+  export type ControllerTaskRecord = Record<string, unknown> & {
+    id: string;
+    displayId?: string;
+    subject: string;
+    status: string;
+    owner?: string | null | undefined;
+    comments?: ControllerTaskCommentRecord[];
+    attachments?: ControllerTaskAttachmentRecord[];
+    historyEvents?: Record<string, unknown>[];
+  };
+
+  export type ControllerTaskCommentRecord = Record<string, unknown> & {
+    id: string;
+    author: string;
+    text: string;
+    createdAt: string;
+    type: string;
+  };
+  export type ControllerTaskAttachmentRecord = Record<string, unknown> & {
+    id: string;
+    filePath?: string;
+  };
+  export interface ControllerTaskCommentResult extends Record<string, unknown> {
+    commentId: string;
+    taskId: string;
+    subject: string;
+    owner: string | null | undefined;
+    task: ControllerTaskRecord;
+    comment: ControllerTaskCommentRecord;
+  }
+  export type ControllerTaskMutationResult = Record<string, unknown> & {
+    task: ControllerTaskRecord;
+  };
+
+  export interface ControllerTaskMutationOptions {
+    scope?: ControllerTaskScope;
+    trustedInternalWrite?: boolean;
+  }
+
   export interface ControllerContextOptions {
     teamName: string;
     claudeDir?: string;
     allowUserMessageSender?: boolean;
+    /** Use the local task board only for a controller without a desktop binding. */
+    localTaskBoard?: true;
+    /** Short-lived full-task snapshot for reads only; every canonical task write is rejected. */
+    readOnlyTaskSnapshot?: ReadonlyArray<import('@shared/types').TeamTask>;
   }
 
   export interface ControllerTaskReadApi {
-    getTask(taskId: string): unknown;
+    getTask(taskId: string, scope?: ControllerTaskScope): ControllerTaskRecord;
     getTaskComment(
       taskId: string,
-      commentId: string
+      commentId: string,
+      scope?: ControllerTaskScope
     ): {
-      comment: Record<string, unknown>;
+      comment: ControllerTaskCommentRecord;
       task: {
         id: string;
         displayId: string;
         subject: string;
         status: string;
-        owner: string | null;
+        owner: string | null | undefined;
         commentCount: number;
       };
     };
-    listTasks(): unknown[];
-    listTaskInventory(filters?: Record<string, unknown>): unknown[];
-    listDeletedTasks(): unknown[];
-    resolveTaskId(taskRef: string): string;
-    setTaskStatus(taskId: string, status: string, actor?: string): unknown;
-    startTask(taskId: string, actor?: string): unknown;
-    completeTask(taskId: string, actor?: string): unknown;
-    softDeleteTask(taskId: string, actor?: string): unknown;
-    restoreTask(taskId: string, actor?: string): unknown;
-    setTaskOwner(taskId: string, owner: string | null, actor?: string): unknown;
-    updateTaskFields(taskId: string, fields: TaskFieldUpdates): unknown;
-    addTaskComment(taskId: string, flags: Record<string, unknown>): unknown;
-    attachTaskFile(taskId: string, flags: Record<string, unknown>): unknown;
-    attachCommentFile(taskId: string, commentId: string, flags: Record<string, unknown>): unknown;
-    addTaskAttachmentMeta(taskId: string, meta: Record<string, unknown>): unknown;
-    removeTaskAttachment(taskId: string, attachmentId: string): unknown;
-    setNeedsClarification(taskId: string, value: string | null): unknown;
-    linkTask(taskId: string, targetId: string, linkType: string): unknown;
-    unlinkTask(taskId: string, targetId: string, linkType: string): unknown;
+    listTasks(scope?: ControllerTaskScope): ControllerTaskRecord[];
+    listTaskInventory(filters?: Record<string, unknown>): Record<string, unknown>[];
+    listDeletedTasks(scope?: ControllerTaskScope): ControllerTaskRecord[];
+    resolveTaskId(taskRef: string, scope?: ControllerTaskScope): string;
+  }
+
+  export interface ControllerTaskWriteApi {
+    createTask(flags: Record<string, unknown>): ControllerTaskRecord;
+    setTaskStatus(
+      taskId: string,
+      status: string,
+      actor?: string,
+      scope?: ControllerTaskScope
+    ): ControllerTaskRecord;
+    startTask(taskId: string, actor?: string, scope?: ControllerTaskScope): ControllerTaskRecord;
+    completeTask(taskId: string, actor?: string, scope?: ControllerTaskScope): ControllerTaskRecord;
+    softDeleteTask(
+      taskId: string,
+      actor?: string,
+      scope?: ControllerTaskScope
+    ): ControllerTaskRecord;
+    restoreTask(taskId: string, actor?: string, scope?: ControllerTaskScope): ControllerTaskRecord;
+    setTaskOwner(
+      taskId: string,
+      owner: string | null,
+      actor?: string,
+      scope?: ControllerTaskScope
+    ): ControllerTaskRecord;
+    updateTaskFields(
+      taskId: string,
+      fields: TaskFieldUpdates,
+      scope?: ControllerTaskScope
+    ): ControllerTaskRecord;
+    addTaskComment(
+      taskId: string,
+      flags: Record<string, unknown>,
+      scope?: ControllerTaskScope
+    ): ControllerTaskCommentResult;
+    attachTaskFile(
+      taskId: string,
+      flags: Record<string, unknown>,
+      scope?: ControllerTaskScope
+    ): ControllerTaskMutationResult;
+    attachCommentFile(
+      taskId: string,
+      commentId: string,
+      flags: Record<string, unknown>,
+      scope?: ControllerTaskScope
+    ): ControllerTaskMutationResult;
+    addTaskAttachmentMeta(
+      taskId: string,
+      meta: Record<string, unknown>,
+      scope?: ControllerTaskScope
+    ): ControllerTaskRecord;
+    removeTaskAttachment(
+      taskId: string,
+      attachmentId: string,
+      scope?: ControllerTaskScope
+    ): ControllerTaskRecord;
+    setNeedsClarification(
+      taskId: string,
+      value: string | null,
+      scope?: ControllerTaskScope
+    ): ControllerTaskRecord;
+    linkTask(
+      taskId: string,
+      targetId: string,
+      linkType: string,
+      scope?: ControllerTaskScope
+    ): ControllerTaskRecord;
+    unlinkTask(
+      taskId: string,
+      targetId: string,
+      linkType: string,
+      scope?: ControllerTaskScope
+    ): ControllerTaskRecord;
+  }
+
+  export interface ControllerTaskBoardTaskApi
+    extends ControllerTaskReadApi, ControllerTaskWriteApi {
+    verifyTaskArtifact(taskId: string, scope?: ControllerTaskScope): TaskArtifactProof | null;
+    readTaskArtifactData(
+      taskId: string,
+      attachmentId: string,
+      scope?: ControllerTaskScope
+    ): string | null;
+    setTaskArtifactFile(
+      taskId: string,
+      file: TaskArtifactFile,
+      actor?: string,
+      scope?: ControllerTaskScope
+    ): ControllerTaskRecord;
+    reconcileTaskCreation(flags: Record<string, unknown>): ControllerTaskRecord;
     memberBriefing(
       memberName: string,
       options?: {
@@ -98,71 +222,135 @@ declare module 'agent-teams-controller' {
     };
   }
 
-  export interface ControllerTaskWriteApi {
-    createTask(flags: Record<string, unknown>): unknown;
-    setTaskStatus(taskId: string, status: string, actor?: string): unknown;
-    startTask(taskId: string, actor?: string): unknown;
-    completeTask(taskId: string, actor?: string): unknown;
-    softDeleteTask(taskId: string, actor?: string): unknown;
-    restoreTask(taskId: string, actor?: string): unknown;
-    setTaskOwner(taskId: string, owner: string | null, actor?: string): unknown;
-    updateTaskFields(taskId: string, fields: TaskFieldUpdates): unknown;
-    addTaskComment(taskId: string, flags: Record<string, unknown>): unknown;
-    attachTaskFile(taskId: string, flags: Record<string, unknown>): unknown;
-    attachCommentFile(taskId: string, commentId: string, flags: Record<string, unknown>): unknown;
-    addTaskAttachmentMeta(taskId: string, meta: Record<string, unknown>): unknown;
-    removeTaskAttachment(taskId: string, attachmentId: string): unknown;
-    setNeedsClarification(taskId: string, value: string | null): unknown;
-    linkTask(taskId: string, targetId: string, linkType: string): unknown;
-    unlinkTask(taskId: string, targetId: string, linkType: string): unknown;
-  }
-
-  export interface ControllerTaskBoardTaskApi
-    extends ControllerTaskReadApi, ControllerTaskWriteApi {
-    verifyTaskArtifact(taskId: string): TaskArtifactProof | null;
-    readTaskArtifactData(taskId: string, attachmentId: string): string | null;
-    setTaskArtifactFile(taskId: string, file: TaskArtifactFile, actor?: string): unknown;
-    reconcileTaskCreation(flags: Record<string, unknown>): unknown;
-  }
-
-  export interface ControllerTaskApi extends ControllerTaskBoardTaskApi {
-    /** @deprecated Internal task lifecycle write. Use controller.taskBoard.createTask. */
-    createTask(flags: Record<string, unknown>): unknown;
+  export interface ControllerTaskApi extends ControllerTaskReadApi {
+    createTask(flags: Record<string, unknown>): ControllerTaskRecord;
     /** @deprecated Internal task lifecycle write. Use controller.taskBoard.setTaskStatus. */
-    setTaskStatus(taskId: string, status: string, actor?: string): unknown;
+    setTaskStatus(
+      taskId: string,
+      status: string,
+      actor?: string,
+      options?: ControllerTaskMutationOptions
+    ): ControllerTaskRecord;
     /** @deprecated Internal task lifecycle write. Use controller.taskBoard.startTask. */
-    startTask(taskId: string, actor?: string): unknown;
+    startTask(
+      taskId: string,
+      actor?: string,
+      options?: ControllerTaskMutationOptions
+    ): ControllerTaskRecord;
     /** @deprecated Internal task lifecycle write. Use controller.taskBoard.completeTask. */
-    completeTask(taskId: string, actor?: string): unknown;
+    completeTask(
+      taskId: string,
+      actor?: string,
+      options?: ControllerTaskMutationOptions
+    ): ControllerTaskRecord;
     /** @deprecated Internal task lifecycle write. Use controller.taskBoard.softDeleteTask. */
-    softDeleteTask(taskId: string, actor?: string): unknown;
+    softDeleteTask(
+      taskId: string,
+      actor?: string,
+      options?: ControllerTaskMutationOptions
+    ): ControllerTaskRecord;
     /** @deprecated Internal task lifecycle write. Use controller.taskBoard.restoreTask. */
-    restoreTask(taskId: string, actor?: string): unknown;
+    restoreTask(
+      taskId: string,
+      actor?: string,
+      options?: ControllerTaskMutationOptions
+    ): ControllerTaskRecord;
     /** @deprecated Internal task lifecycle write. Use controller.taskBoard.setTaskOwner. */
-    setTaskOwner(taskId: string, owner: string | null, actor?: string): unknown;
+    setTaskOwner(
+      taskId: string,
+      owner: string | null,
+      actor?: string,
+      scope?: ControllerTaskScope
+    ): ControllerTaskRecord;
     /** @deprecated Internal task lifecycle write. Use controller.taskBoard.updateTaskFields. */
-    updateTaskFields(taskId: string, fields: TaskFieldUpdates): unknown;
+    updateTaskFields(
+      taskId: string,
+      fields: TaskFieldUpdates,
+      scope?: ControllerTaskScope
+    ): ControllerTaskRecord;
     /** @deprecated Internal task lifecycle write. Use controller.taskBoard.addTaskComment. */
-    addTaskComment(taskId: string, flags: Record<string, unknown>): unknown;
+    addTaskComment(
+      taskId: string,
+      flags: Record<string, unknown>,
+      scope?: ControllerTaskScope
+    ): ControllerTaskCommentResult;
     /** @deprecated Internal task lifecycle write. Use controller.taskBoard.attachTaskFile. */
-    attachTaskFile(taskId: string, flags: Record<string, unknown>): unknown;
+    attachTaskFile(
+      taskId: string,
+      flags: Record<string, unknown>,
+      scope?: ControllerTaskScope
+    ): ControllerTaskMutationResult;
     /** @deprecated Internal task lifecycle write. Use controller.taskBoard.attachCommentFile. */
-    attachCommentFile(taskId: string, commentId: string, flags: Record<string, unknown>): unknown;
+    attachCommentFile(
+      taskId: string,
+      commentId: string,
+      flags: Record<string, unknown>,
+      scope?: ControllerTaskScope
+    ): ControllerTaskMutationResult;
     /** @deprecated Internal task lifecycle write. Use controller.taskBoard.addTaskAttachmentMeta. */
-    addTaskAttachmentMeta(taskId: string, meta: Record<string, unknown>): unknown;
+    addTaskAttachmentMeta(
+      taskId: string,
+      meta: Record<string, unknown>,
+      scope?: ControllerTaskScope
+    ): ControllerTaskRecord;
     /** @deprecated Internal task lifecycle write. Use controller.taskBoard.removeTaskAttachment. */
-    removeTaskAttachment(taskId: string, attachmentId: string): unknown;
+    removeTaskAttachment(
+      taskId: string,
+      attachmentId: string,
+      scope?: ControllerTaskScope
+    ): ControllerTaskRecord;
     /** @deprecated Internal task lifecycle write. Use controller.taskBoard.setNeedsClarification. */
-    setNeedsClarification(taskId: string, value: string | null): unknown;
+    setNeedsClarification(
+      taskId: string,
+      value: string | null,
+      scope?: ControllerTaskScope
+    ): ControllerTaskRecord;
     /** @deprecated Internal task lifecycle write. Use controller.taskBoard.linkTask. */
-    linkTask(taskId: string, targetId: string, linkType: string): unknown;
+    linkTask(
+      taskId: string,
+      targetId: string,
+      linkType: string,
+      scope?: ControllerTaskScope
+    ): ControllerTaskRecord;
     /** @deprecated Internal task lifecycle write. Use controller.taskBoard.unlinkTask. */
-    unlinkTask(taskId: string, targetId: string, linkType: string): unknown;
+    unlinkTask(
+      taskId: string,
+      targetId: string,
+      linkType: string,
+      scope?: ControllerTaskScope
+    ): ControllerTaskRecord;
+    reconcileTaskCreation(flags: Record<string, unknown>): ControllerTaskRecord;
+    memberBriefing(
+      memberName: string,
+      options?: {
+        runtimeProvider?: 'native' | 'opencode' | 'codex';
+        includeActiveProcesses?: boolean;
+        includeChatVisualizationProtocol?: boolean;
+      }
+    ): Promise<string>;
+    leadBriefing(): Promise<string>;
+    taskBriefing(memberName: string): Promise<string>;
   }
 
+  export type KanbanTransitionRecoveryMode = 'cancel' | 'publish' | 'clear' | 'conflict';
+  export interface PendingKanbanTransitionInspection {
+    taskId: string;
+    contextHash: string;
+    transitionId: string;
+    column: string;
+    currentColumn: string | null;
+    targetStatus?: string;
+    phase: 'prepared' | 'applied';
+    operation?: string;
+    mode: KanbanTransitionRecoveryMode;
+    reason?: 'artifact_invalid';
+    snapshotHash: string;
+  }
   export interface ControllerKanbanReadApi {
     getKanbanState(): unknown;
     listReviewers(): string[];
+    assertKanbanStateConsistent(state?: unknown): unknown;
+    inspectPendingTransition(taskId: string): PendingKanbanTransitionInspection;
   }
 
   export interface ControllerKanbanWriteApi {
@@ -171,22 +359,20 @@ declare module 'agent-teams-controller' {
     addReviewer(reviewer: string): string[];
     removeReviewer(reviewer: string): string[];
     updateColumnOrder(columnId: string, orderedTaskIds: string[]): unknown;
+    resolvePendingTransition(
+      taskId: string,
+      transitionId: string,
+      snapshotHash: string,
+      mode: Exclude<KanbanTransitionRecoveryMode, 'conflict'>,
+      contextHash: string
+    ): void;
   }
 
   export interface ControllerTaskBoardKanbanApi
     extends ControllerKanbanReadApi, ControllerKanbanWriteApi {}
 
   export interface ControllerKanbanApi extends ControllerTaskBoardKanbanApi {
-    assertKanbanStateConsistent(state: unknown): void;
     readKanbanStateAlreadyLocked(): unknown;
-    inspectPendingTransition(taskId: string): unknown;
-    resolvePendingTransition(
-      taskId: string,
-      transitionId: string,
-      snapshotHash: string,
-      mode: string,
-      contextHash: string
-    ): void;
     /** @deprecated Internal board lifecycle write. Use controller.taskBoard.setKanbanColumn. */
     setKanbanColumn(taskId: string, column: string, options?: Record<string, unknown>): unknown;
     /** @deprecated Internal board lifecycle write. Use controller.taskBoard.clearKanban. */
@@ -220,10 +406,27 @@ declare module 'agent-teams-controller' {
   export interface ControllerTaskBoardApi
     extends ControllerTaskBoardTaskApi, ControllerTaskBoardKanbanApi, ControllerReviewWriteApi {
     /**
-     * Board facts for lead reports, read under the board lock so an unreadable
-     * or ambiguous row surfaces as an error instead of an empty board.
+     * Board facts for lead reports. Snapshot contexts avoid waiting on the board
+     * lock; other contexts retain it so unreadable or ambiguous rows throw.
      */
     readLeadReportFacts(): unknown[];
+    /** Configured member or lead alias, by the task owner rules; leadName is the configured lead. */
+    resolveTaskActor(actor: string): { memberName: string | null; leadName: string | null };
+    /** Snapshot-only hand-over that uses asynchronous inbox persistence. */
+    deliverStartupWorkAsync(
+      memberName: string,
+      options: { launchId: string; isCurrent: () => boolean }
+    ): Promise<{
+      memberName: string;
+      delivered: {
+        taskId: string;
+        displayId: string;
+        kind: 'assignment' | 'review';
+        messageId: string;
+      }[];
+      skipped: { taskId: string; kind: 'assignment' | 'review'; reason: string }[];
+      cancelled?: true;
+    }>;
   }
 
   export interface ControllerMessageApi {
@@ -237,11 +440,11 @@ declare module 'agent-teams-controller' {
     registerProcess(flags: Record<string, unknown>): unknown;
     stopProcess(flags: Record<string, unknown>): unknown;
     unregisterProcess(flags: Record<string, unknown>): unknown;
-    listProcesses(): unknown[];
-  }
-
-  export interface ControllerMaintenanceApi {
-    reconcileArtifacts(flags?: Record<string, unknown>): unknown;
+    /**
+     * `readOnly` leaves processes.json as it is. A stopped row it cannot settle
+     * gets a stable stoppedAt estimate (the row's registeredAt).
+     */
+    listProcesses(flags?: { readOnly?: boolean }): unknown[];
   }
 
   export interface ControllerCrossTeamApi {
@@ -272,6 +475,19 @@ declare module 'agent-teams-controller' {
     runtimeHeartbeat(flags: Record<string, unknown>): Promise<unknown>;
   }
 
+  export interface ControllerTeamSpecBinding {
+    project: string;
+    spec: string;
+  }
+
+  export interface ControllerSpecBindingsApi {
+    listTeamSpecBindings(scopeCredential?: string | null): ControllerTeamSpecBinding[];
+    linkTeamSpec(
+      binding: ControllerTeamSpecBinding,
+      scopeCredential?: string | null
+    ): ControllerTeamSpecBinding[];
+  }
+
   export interface AgentBlocksApi {
     AGENT_BLOCK_TAG: string;
     AGENT_BLOCK_OPEN: string;
@@ -286,9 +502,9 @@ declare module 'agent-teams-controller' {
     kanban: ControllerKanbanApi;
     review: ControllerReviewApi;
     taskBoard: ControllerTaskBoardApi;
+    maintenance: { reconcileArtifacts(flags?: Record<string, unknown>): unknown };
     messages: ControllerMessageApi;
     processes: ControllerProcessApi;
-    maintenance: ControllerMaintenanceApi;
     crossTeam: ControllerCrossTeamApi;
     runtime: ControllerRuntimeApi;
     groupChats: {
@@ -336,6 +552,7 @@ declare module 'agent-teams-controller' {
   export type AgentTeamsMcpToolGroupId =
     | 'team'
     | 'task'
+    | 'teamSpec'
     | 'lead'
     | 'kanban'
     | 'review'
@@ -357,6 +574,7 @@ declare module 'agent-teams-controller' {
   export const protocols: ProtocolsApi;
 
   export const taskTextSignals: TaskTextSignalsApi;
+  export const appScopedSpecBindings: ControllerSpecBindingsApi;
   export const AGENT_TEAMS_MANAGEMENT_TOOL_NAMES: readonly string[];
   export const AGENT_TEAMS_TASK_TOOL_NAMES: readonly string[];
   export const AGENT_TEAMS_LEAD_TOOL_NAMES: readonly string[];

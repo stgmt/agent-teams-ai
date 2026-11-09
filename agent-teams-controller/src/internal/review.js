@@ -1,12 +1,15 @@
+const crypto = require('node:crypto');
 const kanban = require('./kanban.js');
-const kanbanStore = require('./kanbanStore.js');
-const taskStore = require('./taskStore.js');
 const messages = require('./messages.js');
 const runtimeHelpers = require('./runtimeHelpers.js');
 const reviewStateHelpers = require('./reviewState.js');
 const tasks = require('./tasks.js');
 const { withTeamBoardLock } = require('./boardLock.js');
 const { buildReviewRequestText } = require('./reviewRequestMessage.js');
+const taskStore = require('./taskStore.js');
+const pendingKanbanTransition = require('./pendingKanbanTransition.js');
+const taskArtifact = require('./taskArtifact.js');
+const { applyTaskStatus } = require('./taskStatusTransition.js');
 
 function warnNonCritical(message, error) {
   if (typeof console === 'undefined' || typeof console.warn !== 'function') {
@@ -281,8 +284,10 @@ function startReview(context, taskId, flags = {}) {
       throw new Error(`Task #${task.displayId || task.id} is deleted`);
     }
 
+    taskArtifact.verifyTask(context, task);
     const latestReviewEvent = getLatestReviewLifecycleEvent(task);
     const prevReviewState = getEffectiveReviewState(context, task);
+    const targetTask = structuredClone(task);
 
     if (latestReviewEvent && latestReviewEvent.type === 'review_started') {
       assertReviewTransitionAllowed(context, task, 'starting review');
@@ -320,54 +325,42 @@ function startReview(context, taskId, flags = {}) {
           `Task #${task.displayId || task.id} review is already started by ${existingActor}`
         );
       }
-      if (!existingActorValid || !existingMatchesAssigned) {
-        const repairedActor = requestedActor || getReviewStartActor(context, task, flags);
-        const timestamp = new Date().toISOString();
-        kanban.setKanbanColumn(context, task.id, 'review', {
-          transition: 'start_review',
-          updateTask: (t) => {
-            openReviewInterval(t, repairedActor, timestamp);
-            t.historyEvents = tasks.appendHistoryEvent(t.historyEvents, {
-              type: 'review_started',
-              from: prevReviewState,
-              to: 'review',
-              actor: repairedActor,
-              timestamp,
-            });
-            t.reviewState = 'review';
-            return t;
-          },
-        });
-      } else {
-        kanban.setKanbanColumn(context, task.id, 'review', {
-          transition: 'start_review',
-          updateTask: (t) => {
-            openReviewInterval(t, existingActor, latestReviewEvent.timestamp);
-            return t;
-          },
-        });
-      }
-      return { ok: true, taskId: task.id, displayId: task.displayId, column: 'review' };
-    }
-
-    assertReviewTransitionAllowed(context, task, 'starting review');
-    const from = getReviewStartActor(context, task, flags);
-    const timestamp = new Date().toISOString();
-
-    kanban.setKanbanColumn(context, task.id, 'review', {
-      transition: 'start_review',
-      updateTask: (t) => {
-        openReviewInterval(t, from, timestamp);
-        t.historyEvents = tasks.appendHistoryEvent(t.historyEvents, {
+      const repaired = !existingActorValid || !existingMatchesAssigned;
+      const actor = repaired
+        ? requestedActor || getReviewStartActor(context, task, flags)
+        : existingActor;
+      const timestamp = repaired ? new Date().toISOString() : latestReviewEvent.timestamp;
+      openReviewInterval(targetTask, actor, timestamp);
+      if (repaired) {
+        targetTask.historyEvents = tasks.appendHistoryEvent(targetTask.historyEvents, {
           type: 'review_started',
           from: prevReviewState,
           to: 'review',
-          actor: from,
+          actor,
           timestamp,
         });
-        t.reviewState = 'review';
-        return t;
-      },
+        targetTask.reviewState = 'review';
+      }
+    } else {
+      assertReviewTransitionAllowed(context, task, 'starting review');
+      const actor = getReviewStartActor(context, task, flags);
+      const timestamp = new Date().toISOString();
+      openReviewInterval(targetTask, actor, timestamp);
+      targetTask.historyEvents = tasks.appendHistoryEvent(targetTask.historyEvents, {
+        type: 'review_started',
+        from: prevReviewState,
+        to: 'review',
+        actor,
+        timestamp,
+      });
+      targetTask.reviewState = 'review';
+    }
+
+    const reviewer = kanban.getKanbanState(context).tasks?.[task.id]?.reviewer;
+    pendingKanbanTransition.runPendingTransition(context, task, targetTask, {
+      kind: 'review',
+      column: 'review',
+      reviewer,
     });
     return { ok: true, taskId: task.id, displayId: task.displayId, column: 'review' };
   });
@@ -396,19 +389,22 @@ function requestReview(context, taskId, flags = {}) {
       );
     }
 
-    kanban.setKanbanColumn(context, currentTask.id, 'review', {
-      transition: 'request_review',
-      updateTask: (t) => {
-        t.historyEvents = tasks.appendHistoryEvent(t.historyEvents, {
-          type: 'review_requested',
-          from: prevReviewState,
-          to: 'review',
-          ...(nextReviewer ? { reviewer: nextReviewer } : {}),
-          actor: nextFrom,
-        });
-        t.reviewState = 'review';
-        return t;
-      },
+    taskArtifact.verifyTask(context, currentTask);
+    const targetTask = structuredClone(currentTask);
+    targetTask.historyEvents = tasks.appendHistoryEvent(targetTask.historyEvents, {
+      type: 'review_requested',
+      from: prevReviewState,
+      to: 'review',
+      ...(nextReviewer ? { reviewer: nextReviewer } : {}),
+      actor: nextFrom,
+    });
+    targetTask.reviewState = 'review';
+    const board = kanban.getKanbanState(context);
+    pendingKanbanTransition.runPendingTransition(context, currentTask, targetTask, {
+      kind: 'review',
+      column: 'review',
+      reviewer: board.tasks?.[currentTask.id]?.reviewer,
+      verifyArtifact: true,
     });
 
     return {
@@ -472,23 +468,23 @@ function approveReview(context, taskId, flags = {}) {
     }
 
     assertReviewTransitionAllowed(context, currentTask, 'approval');
+    taskArtifact.verifyTask(context, currentTask);
     const timestamp = new Date().toISOString();
-
-    kanban.setKanbanColumn(context, currentTask.id, 'approved', {
-      transition: 'approve_review',
-      updateTask: (t) => {
-        closeReviewIntervals(t, timestamp);
-        t.historyEvents = tasks.appendHistoryEvent(t.historyEvents, {
-          type: 'review_approved',
-          from: prevReviewState,
-          to: 'approved',
-          ...(nextNote ? { note: nextNote } : {}),
-          actor: nextFrom,
-          timestamp,
-        });
-        t.reviewState = 'approved';
-        return t;
-      },
+    const targetTask = structuredClone(currentTask);
+    closeReviewIntervals(targetTask, timestamp);
+    targetTask.historyEvents = tasks.appendHistoryEvent(targetTask.historyEvents, {
+      type: 'review_approved',
+      from: prevReviewState,
+      to: 'approved',
+      ...(nextNote ? { note: nextNote } : {}),
+      actor: nextFrom,
+      timestamp,
+    });
+    targetTask.reviewState = 'approved';
+    pendingKanbanTransition.runPendingTransition(context, currentTask, targetTask, {
+      kind: 'review',
+      column: 'approved',
+      verifyArtifact: true,
     });
 
     if (!suppressTaskComment) {
@@ -567,45 +563,50 @@ function requestChanges(context, taskId, flags = {}) {
     const leadSessionId = resolveLeadSessionId(context, flags);
     const timestamp = new Date().toISOString();
 
-    const reviewComment = taskStore.buildTaskComment(nextComment, {
-      author: nextFrom,
-      type: 'review_request',
-      ...(Array.isArray(flags.taskRefs) ? { taskRefs: flags.taskRefs } : {}),
+    const targetTask = structuredClone(currentTask);
+    closeReviewIntervals(targetTask, timestamp);
+    targetTask.historyEvents = tasks.appendHistoryEvent(targetTask.historyEvents, {
+      type: 'review_changes_requested',
+      from: prevReviewState,
+      to: 'needsFix',
+      ...(nextComment ? { note: nextComment } : {}),
+      actor: nextFrom,
+      timestamp,
     });
-    const beforeStatus = (t) => {
-      closeReviewIntervals(t, timestamp);
-      t.historyEvents = tasks.appendHistoryEvent(t.historyEvents, {
-        type: 'review_changes_requested',
-        from: prevReviewState,
-        to: 'needsFix',
-        ...(nextComment ? { note: nextComment } : {}),
-        actor: nextFrom,
-        timestamp,
-      });
-      t.reviewState = 'needsFix';
-      return t;
+    targetTask.reviewState = 'needsFix';
+    const targetWithStatus = applyTaskStatus(targetTask, 'pending', nextFrom, {}, {
+      nowIso: () => timestamp,
+      closeOpenReviewIntervals: closeReviewIntervals,
+      appendHistoryEvent: tasks.appendHistoryEvent,
+      normalizeTaskReviewState: reviewStateHelpers.normalizeReviewState,
+    });
+    const taskRefs = taskStore.normalizeTaskRefs(flags.taskRefs);
+    const commentEntry = {
+      id: crypto.randomUUID(),
+      author: nextFrom,
+      text: nextComment,
+      createdAt: timestamp,
+      type: 'review_request',
+      ...(taskRefs ? { taskRefs } : {}),
     };
-    const afterStatus = (t) => {
-      t.reviewState = 'needsFix';
-      t.comments = [...(Array.isArray(t.comments) ? t.comments : []), reviewComment];
-      return t;
-    };
-    const state = kanban.getKanbanState(context);
-    let updatedTask;
-    if (tasks.hasKanbanReference(state, currentTask.id)) {
-      updatedTask = kanbanStore.clearKanbanWithTaskTransition(context.paths, context.teamName, currentTask.id, {
-        operation: 'request_changes', targetStatus: 'pending', actor: nextFrom,
-        nextReviewState: 'needsFix', beforeStatus, afterStatus,
-      });
-    } else {
-      taskStore.setTaskStatus(context.paths, currentTask.id, 'pending', nextFrom, {
-        beforeStatus, afterStatus,
-      });
-      updatedTask = tasks.getTask(context, currentTask.id);
-    }
+    targetWithStatus.comments = [
+      ...(Array.isArray(targetWithStatus.comments) ? targetWithStatus.comments : []),
+      commentEntry,
+    ];
+    pendingKanbanTransition.runPendingTransition(
+      context,
+      currentTask,
+      targetWithStatus,
+      {
+        kind: 'status',
+        column: 'none',
+        operation: 'request_changes',
+        targetStatus: 'pending',
+      }
+    );
 
     return {
-      task: updatedTask,
+      task: tasks.getTask(context, currentTask.id),
       from: nextFrom,
       comment: nextComment,
       leadSessionId,

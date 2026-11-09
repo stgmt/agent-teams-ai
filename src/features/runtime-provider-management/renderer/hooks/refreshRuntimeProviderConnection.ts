@@ -1,0 +1,126 @@
+import { api } from '@renderer/api';
+
+import { countCompleteDirectoryConnections } from '../connectedCountObservationPolicy';
+import {
+  getRuntimeProviderDirectoryReadToken,
+  invalidateRuntimeProviderDirectoryScopeReads,
+  markRuntimeProviderDirectoryScopeUnverified,
+  publishRuntimeProviderConnectedCount,
+  publishRuntimeProviderDirectoryCache,
+} from '../runtimeProviderDirectoryCache';
+
+import { DEFAULT_DIRECTORY_FILTER } from './runtimeProviderDirectoryCatalogPolicy';
+import { withUiTimeout } from './runtimeProviderManagementInternals';
+import { presentDirectoryEntry } from './runtimeProviderManagementPresentation';
+
+import type { RuntimeProviderManagementRuntimeId } from '../../contracts';
+
+interface ConnectionRefreshInput {
+  runtimeId: RuntimeProviderManagementRuntimeId;
+  projectPath: string | null;
+  runtimeRevision: string | null;
+  directorySupported: boolean;
+  isContextCurrent: () => boolean;
+  isRuntimeRevisionCurrent: () => boolean;
+  refreshExternal: () => Promise<boolean | void> | boolean | void;
+  refreshView: () => Promise<boolean> | boolean;
+  refreshDirectory: () => Promise<boolean>;
+}
+
+async function refreshSharedDirectory(input: ConnectionRefreshInput): Promise<boolean> {
+  if (!input.directorySupported) return true;
+  // A deep-linked directory may be filtered. Publish an unfiltered summary for
+  // selectors without treating that page as authority or changing its query.
+  const readToken = getRuntimeProviderDirectoryReadToken(input.projectPath);
+  try {
+    const response = await withUiTimeout(
+      api.runtimeProviderManagement.loadProviderDirectory({
+        runtimeId: input.runtimeId,
+        summary: true,
+        projectPath: input.projectPath,
+        query: null,
+        filter: DEFAULT_DIRECTORY_FILTER,
+        limit: 100,
+        cursor: null,
+        refresh: true,
+      }),
+      'Provider metadata refresh timed out'
+    );
+    if (!input.isContextCurrent() || !input.isRuntimeRevisionCurrent()) return false;
+    if (response.error || !response.directory || response.directory.entries.length === 0) {
+      markRuntimeProviderDirectoryScopeUnverified(input.projectPath);
+      return false;
+    }
+    publishRuntimeProviderDirectoryCache({
+      projectPath: input.projectPath,
+      entries: response.directory.entries.map(presentDirectoryEntry),
+      fetchedAt: response.directory.fetchedAt,
+      authoritative: false,
+      runtimeRevision: input.runtimeRevision,
+      readToken,
+    });
+    // This existing post-credential-write summary may be the only complete
+    // read when a full directory refresh fails. Publish an exact display count
+    // without loading models or making another CLI request.
+    const connected = countCompleteDirectoryConnections(response.directory, 'all');
+    if (connected !== null && input.runtimeRevision) {
+      publishRuntimeProviderConnectedCount({
+        projectPath: input.projectPath,
+        readToken,
+        connected,
+        fetchedAt: response.directory.fetchedAt,
+        runtimeRevision: input.runtimeRevision,
+        source: 'summary-all',
+      });
+    }
+    return true;
+  } catch {
+    if (input.isContextCurrent() && input.isRuntimeRevisionCurrent()) {
+      markRuntimeProviderDirectoryScopeUnverified(input.projectPath);
+    }
+    return false;
+  }
+}
+
+/** Refresh observations after a confirmed credential change; the saved change
+ * remains successful even when one of these follow-up reads fails. */
+export async function refreshRuntimeProviderConnection(
+  input: ConnectionRefreshInput
+): Promise<'refreshed' | 'warning' | 'stale'> {
+  // Preserve the existing full cache if the post-write refresh succeeds.
+  // Stale in-flight pre-write reads may no longer publish into this scope.
+  invalidateRuntimeProviderDirectoryScopeReads(input.projectPath);
+  const sharedDirectoryRefresh = refreshSharedDirectory(input);
+  try {
+    const externalRefreshResult = await input.refreshExternal();
+    if (!input.isContextCurrent()) return 'stale';
+    // A failed summary invalidates the scope again. Let it settle before
+    // either replacement read starts, while keeping view and directory parallel.
+    const sharedDirectoryRefreshed = await sharedDirectoryRefresh;
+    if (!input.isContextCurrent()) return 'stale';
+    // Observe both results before downgrading cache authority. Otherwise a
+    // fast view failure can invalidate an in-flight, successful directory read.
+    const [viewResult, directoryResult] = await Promise.allSettled([
+      Promise.resolve().then(() => input.refreshView()),
+      Promise.resolve().then(() => input.refreshDirectory()),
+    ]);
+    if (!input.isContextCurrent() || !input.isRuntimeRevisionCurrent()) return 'stale';
+    if (directoryResult.status === 'rejected') {
+      markRuntimeProviderDirectoryScopeUnverified(input.projectPath);
+    }
+    const viewRefreshed = viewResult.status === 'fulfilled' && viewResult.value === true;
+    const directoryRefreshed =
+      directoryResult.status === 'fulfilled' && directoryResult.value === true;
+    return externalRefreshResult === false ||
+      !viewRefreshed ||
+      !directoryRefreshed ||
+      !sharedDirectoryRefreshed
+      ? 'warning'
+      : 'refreshed';
+  } catch {
+    await sharedDirectoryRefresh;
+    if (!input.isContextCurrent()) return 'stale';
+    markRuntimeProviderDirectoryScopeUnverified(input.projectPath);
+    return 'warning';
+  }
+}

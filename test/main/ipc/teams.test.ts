@@ -34,6 +34,7 @@ import type {
   TeamProvisioningProgress,
   TeamViewSnapshot,
 } from '@shared/types/team';
+import type { SpecRegistryDiscovery, TeamSpecBinding } from '@shared/types/registryTask';
 
 const resolveInputDeclaration = vi.fn<ResolveOpenCodeInputDeclaration>();
 
@@ -210,6 +211,7 @@ import {
   TEAM_DELETE_TASK_ATTACHMENT,
   TEAM_DELETE_TEAM,
   TEAM_DISCARD_QUEUED_USER_MESSAGES,
+  TEAM_DISCOVER_SPEC_REGISTRY,
   TEAM_FORCE_STOP,
   TEAM_GET_AGENT_RUNTIME,
   TEAM_GET_ALL_TASKS,
@@ -242,7 +244,9 @@ import {
   TEAM_LAUNCH_FAILURE_DIAGNOSTICS,
   TEAM_LEAD_ACTIVITY,
   TEAM_LEAD_CONTEXT,
+  TEAM_LINK_SPEC,
   TEAM_LIST,
+  TEAM_LIST_SPEC_BINDINGS,
   TEAM_MEMBER_SPAWN_STATUSES,
   TEAM_PERMANENTLY_DELETE,
   TEAM_PREPARE_PROVISIONING,
@@ -274,6 +278,7 @@ import {
   TEAM_TOOL_APPROVAL_READ_FILE,
   TEAM_TOOL_APPROVAL_RESPOND,
   TEAM_TOOL_APPROVAL_SETTINGS,
+  TEAM_UNLINK_SPEC,
   TEAM_UPDATE_CONFIG,
   TEAM_UPDATE_KANBAN,
   TEAM_UPDATE_KANBAN_COLUMN_ORDER,
@@ -318,6 +323,7 @@ const TEAM_HANDLER_KEYS = [
   TEAM_DELETE_TASK_ATTACHMENT,
   TEAM_DELETE_TEAM,
   TEAM_DISCARD_QUEUED_USER_MESSAGES,
+  TEAM_DISCOVER_SPEC_REGISTRY,
   TEAM_FORCE_STOP,
   TEAM_GET_AGENT_RUNTIME,
   TEAM_GET_ALL_TASKS,
@@ -350,7 +356,9 @@ const TEAM_HANDLER_KEYS = [
   TEAM_LAUNCH_FAILURE_DIAGNOSTICS,
   TEAM_LEAD_ACTIVITY,
   TEAM_LEAD_CONTEXT,
+  TEAM_LINK_SPEC,
   TEAM_LIST,
+  TEAM_LIST_SPEC_BINDINGS,
   TEAM_MEMBER_SPAWN_STATUSES,
   TEAM_PERMANENTLY_DELETE,
   TEAM_PREPARE_PROVISIONING,
@@ -382,6 +390,7 @@ const TEAM_HANDLER_KEYS = [
   TEAM_TOOL_APPROVAL_READ_FILE,
   TEAM_TOOL_APPROVAL_RESPOND,
   TEAM_TOOL_APPROVAL_SETTINGS,
+  TEAM_UNLINK_SPEC,
   TEAM_UPDATE_CONFIG,
   TEAM_UPDATE_KANBAN,
   TEAM_UPDATE_KANBAN_COLUMN_ORDER,
@@ -516,6 +525,16 @@ describe('ipc teams handlers', () => {
         });
         return result;
       }
+    ),
+    discoverSpecRegistry: vi.fn(() =>
+      resolved<SpecRegistryDiscovery>({ url: 'https://registry.example/', projects: [] })
+    ),
+    listTeamSpecBindings: vi.fn((_teamName: string) => resolved<TeamSpecBinding[]>([])),
+    linkTeamSpec: vi.fn(
+      (_teamName: string, _binding: TeamSpecBinding) => resolved<TeamSpecBinding[]>([])
+    ),
+    unlinkTeamSpec: vi.fn(
+      (_teamName: string, _binding: TeamSpecBinding) => resolved<TeamSpecBinding[]>([])
     ),
     listTeams: vi.fn(() => resolved([{ teamName: 'my-team', displayName: 'My Team' }])),
     getTeamData: vi.fn(
@@ -739,6 +758,7 @@ describe('ipc teams handlers', () => {
     ),
     skipMemberForLaunch: vi.fn(() => resolvedUndefined()),
     stopTeam: vi.fn(() => Promise.resolve()),
+    clearStoppedLaneStopBackoff: vi.fn(),
     repairStaleTaskActivityIntervalsBeforeSnapshot: vi.fn(() => Promise.resolve(undefined)),
     attachLiveRosterMember: vi.fn(() => resolvedUndefined()),
     detachLiveRosterMember: vi.fn(() => resolvedUndefined()),
@@ -766,6 +786,7 @@ describe('ipc teams handlers', () => {
     runtime: {
       getRuntimeState: teamHandlerMocks.getRuntimeState,
       stopTeam: teamHandlerMocks.stopTeam,
+      clearStoppedLaneStopBackoff: teamHandlerMocks.clearStoppedLaneStopBackoff,
       isTeamAlive: teamHandlerMocks.isTeamAlive,
       getAliveTeams: teamHandlerMocks.getAliveTeams,
       getCurrentRunId: teamHandlerMocks.getCurrentRunId,
@@ -850,6 +871,17 @@ describe('ipc teams handlers', () => {
     resetTeamWatchScopeForTests();
     handlers.clear();
     vi.clearAllMocks();
+    service.discoverSpecRegistry.mockReset();
+    service.listTeamSpecBindings.mockReset();
+    service.linkTeamSpec.mockReset();
+    service.unlinkTeamSpec.mockReset();
+    service.discoverSpecRegistry.mockResolvedValue({
+      url: 'https://registry.example/',
+      projects: [],
+    });
+    service.listTeamSpecBindings.mockResolvedValue([]);
+    service.linkTeamSpec.mockResolvedValue([]);
+    service.unlinkTeamSpec.mockResolvedValue([]);
     service.listTeams.mockReset();
     service.getTeamData.mockReset();
     service.getAllTasks.mockReset();
@@ -1029,6 +1061,81 @@ describe('ipc teams handlers', () => {
     expect(ipcMain.handle).toHaveBeenCalledTimes(TEAM_HANDLER_KEYS.length);
     expect(new Set(handlers.keys())).toEqual(new Set(TEAM_HANDLER_KEYS));
   });
+  it('routes registry discovery and binding operations through team service APIs', async () => {
+    const binding: TeamSpecBinding = { project: 'owner/project', spec: 'example-spec' };
+    const discovery: SpecRegistryDiscovery = {
+      url: 'https://registry.example/',
+      projects: [{ id: binding.project, specs: [{ slug: binding.spec }] }],
+    };
+    const linkedBindings = [binding];
+    service.discoverSpecRegistry.mockResolvedValueOnce(discovery);
+    service.listTeamSpecBindings.mockResolvedValueOnce(linkedBindings);
+    service.linkTeamSpec.mockResolvedValueOnce(linkedBindings);
+    service.unlinkTeamSpec.mockResolvedValueOnce([]);
+
+    await expect(handlers.get(TEAM_DISCOVER_SPEC_REGISTRY)!({} as never)).resolves.toEqual({
+      success: true,
+      data: discovery,
+    });
+    await expect(
+      handlers.get(TEAM_LIST_SPEC_BINDINGS)!({} as never, 'my-team')
+    ).resolves.toEqual({ success: true, data: linkedBindings });
+    await expect(
+      handlers.get(TEAM_LINK_SPEC)!({} as never, 'my-team', binding)
+    ).resolves.toEqual({ success: true, data: linkedBindings });
+    await expect(
+      handlers.get(TEAM_UNLINK_SPEC)!({} as never, 'my-team', binding)
+    ).resolves.toEqual({ success: true, data: [] });
+
+    expect(service.discoverSpecRegistry).toHaveBeenCalledOnce();
+    expect(service.listTeamSpecBindings).toHaveBeenCalledWith('my-team');
+    expect(service.linkTeamSpec).toHaveBeenCalledWith('my-team', binding);
+    expect(service.unlinkTeamSpec).toHaveBeenCalledWith('my-team', binding);
+    expect(service.createTask).not.toHaveBeenCalled();
+  });
+
+  it('rejects malformed registry IPC input before invoking services', async () => {
+    await expect(
+      handlers.get(TEAM_LIST_SPEC_BINDINGS)!({} as never, '../not-a-team')
+    ).resolves.toMatchObject({ success: false });
+    await expect(
+      handlers.get(TEAM_LINK_SPEC)!({} as never, 'my-team', {
+        project: 'owner/project',
+        spec: '../invalid',
+      })
+    ).resolves.toMatchObject({ success: false });
+    await expect(
+      handlers.get(TEAM_UNLINK_SPEC)!({} as never, 'my-team', {
+        project: 'owner/project',
+        spec: 'example-spec',
+        registryTeamId: 'renderer-controlled',
+      })
+    ).resolves.toMatchObject({ success: false });
+
+    expect(service.listTeamSpecBindings).not.toHaveBeenCalled();
+    expect(service.linkTeamSpec).not.toHaveBeenCalled();
+    expect(service.unlinkTeamSpec).not.toHaveBeenCalled();
+    expect(service.createTask).not.toHaveBeenCalled();
+  });
+
+  it('surfaces registry identity conflicts without a local task fallback', async () => {
+    service.linkTeamSpec.mockRejectedValueOnce(new Error('REGISTRY_IDENTITY_CONFLICT'));
+
+    await expect(
+      handlers.get(TEAM_LINK_SPEC)!({} as never, 'my-team', {
+        project: 'owner/project',
+        spec: 'example-spec',
+      })
+    ).resolves.toEqual({ success: false, error: 'REGISTRY_IDENTITY_CONFLICT' });
+
+    expect(vi.mocked(console.error).mock.calls[0]?.join(' ')).toContain(
+      'REGISTRY_IDENTITY_CONFLICT'
+    );
+    vi.mocked(console.error).mockClear();
+
+    expect(service.linkTeamSpec).toHaveBeenCalledOnce();
+    expect(service.createTask).not.toHaveBeenCalled();
+  });
 
   it('passes artifact settings through the user IPC path but ignores renderer-supplied proof', async () => {
     const handler = handlers.get(TEAM_UPDATE_TASK_FIELDS)!;
@@ -1183,6 +1290,7 @@ describe('ipc teams handlers', () => {
     const board = createController({
       teamName: 'my-team',
       claudeDir: attachmentTestRoot,
+      localTaskBoard: true,
     }).taskBoard;
     const task = board.createTask({ subject: 'Fixture artifact', owner: 'worker' });
     const fields = {
@@ -1759,6 +1867,107 @@ describe('ipc teams handlers', () => {
     }
   );
 
+  it('rejects an unknown provider before writing a user message', async () => {
+    teamHandlerMocks.resolveRuntimeRecipientProviderId.mockResolvedValueOnce(undefined);
+    const sendHandler = handlers.get(TEAM_SEND_MESSAGE);
+    const result = await sendHandler!({} as never, 'my-team', {
+      member: 'missing',
+      text: 'hello',
+    });
+    expect(result).toMatchObject({
+      success: false,
+      error: 'Cannot determine runtime provider for recipient "missing"',
+    });
+    expect(vi.mocked(console.error).mock.calls[0]?.join(' ')).toContain(
+      'Cannot determine runtime provider for recipient "missing"'
+    );
+    vi.mocked(console.error).mockClear();
+    expect(service.sendMessage).not.toHaveBeenCalled();
+    expect(service.sendRuntimeRecipientMessage).not.toHaveBeenCalled();
+  });
+
+  it('rejects an unreachable OpenCode recipient before writing a user message', async () => {
+    const resolveForSend = teamHandlerMocks.resolveRuntimeRecipientProviderId;
+    resolveForSend.mockRejectedValueOnce(
+      new Error('OpenCode runtime recipient bob has no authoritative config identity')
+    );
+    const sendHandler = handlers.get(TEAM_SEND_MESSAGE);
+    expect(sendHandler).toBeDefined();
+
+    const result = (await sendHandler!({} as never, 'my-team', {
+      member: 'bob',
+      text: 'ти де?',
+    })) as { success: boolean; error?: string };
+
+    expect(result).toMatchObject({
+      success: false,
+      error: 'OpenCode runtime recipient bob has no authoritative config identity',
+    });
+    expect(vi.mocked(console.error).mock.calls[0]?.join(' ')).toContain(
+      'OpenCode runtime recipient bob has no authoritative config identity'
+    );
+    vi.mocked(console.error).mockClear();
+    expect(resolveForSend).toHaveBeenCalledWith('my-team', 'bob');
+    expect(service.sendMessage).not.toHaveBeenCalled();
+    expect(service.sendRuntimeRecipientMessage).not.toHaveBeenCalled();
+    expect(teamHandlerMocks.relayOpenCodeMemberInboxMessages).not.toHaveBeenCalled();
+  });
+
+  it('uses the recipient query before delivering an OpenCode direct message', async () => {
+    const resolveForSend = teamHandlerMocks.resolveRuntimeRecipientProviderId;
+    resolveForSend.mockResolvedValueOnce('opencode');
+    teamHandlerMocks.relayOpenCodeMemberInboxMessages.mockResolvedValueOnce({
+      relayed: 1,
+      attempted: 1,
+      delivered: 1,
+      failed: 0,
+      lastDelivery: { delivered: true, accepted: true },
+    });
+    const sendHandler = handlers.get(TEAM_SEND_MESSAGE);
+    expect(sendHandler).toBeDefined();
+
+    const result = (await sendHandler!({} as never, 'my-team', {
+      member: 'bob',
+      text: 'ти де?',
+    })) as { success: boolean; data?: SendMessageResult };
+
+    expect(result.success).toBe(true);
+    expect(resolveForSend).toHaveBeenCalledWith('my-team', 'bob');
+    expect(service.sendRuntimeRecipientMessage).toHaveBeenCalled();
+    expect(teamHandlerMocks.relayOpenCodeMemberInboxMessages).toHaveBeenCalled();
+  });
+
+  it('keeps a user message queued, not delivered, if OpenCode stops after recipient resolution', async () => {
+    const resolveForSend = teamHandlerMocks.resolveRuntimeRecipientProviderId;
+    resolveForSend.mockResolvedValueOnce('opencode');
+    teamHandlerMocks.relayOpenCodeMemberInboxMessages.mockResolvedValueOnce({
+      relayed: 0,
+      attempted: 1,
+      delivered: 0,
+      failed: 1,
+      lastDelivery: { delivered: false, reason: 'opencode_runtime_not_active' },
+    });
+    const sendHandler = handlers.get(TEAM_SEND_MESSAGE);
+    expect(sendHandler).toBeDefined();
+
+    const result = (await sendHandler!({} as never, 'my-team', {
+      member: 'bob',
+      text: 'hello after stop',
+    })) as { success: boolean; data?: SendMessageResult };
+
+    expect(result.success).toBe(true);
+    expect(service.sendRuntimeRecipientMessage).toHaveBeenCalledOnce();
+    expect(result.data?.runtimeDelivery).toMatchObject({
+      providerId: 'opencode',
+      delivered: false,
+      reason: 'opencode_runtime_not_active',
+    });
+    expect(vi.mocked(console.warn).mock.calls[0]?.join(' ')).toContain(
+      'OpenCode runtime delivery after sendMessage failed for teammate "bob": opencode_runtime_not_active'
+    );
+    vi.mocked(console.warn).mockClear();
+  });
+
   it('returns success false on invalid sendMessage args', async () => {
     const sendHandler = handlers.get(TEAM_SEND_MESSAGE);
     expect(sendHandler).toBeDefined();
@@ -2072,6 +2281,22 @@ describe('ipc teams handlers', () => {
     expect(teamHandlerMocks.sendMessageToTeam).not.toHaveBeenCalled();
   });
 
+  it.each(['anthropic', 'codex'] as const)(
+    'queues a message to a stopped %s recipient',
+    async (providerId) => {
+      teamHandlerMocks.isTeamAlive.mockReturnValue(false);
+      teamHandlerMocks.resolveRuntimeRecipientProviderId.mockResolvedValueOnce(providerId);
+      const sendHandler = handlers.get(TEAM_SEND_MESSAGE);
+      const result = await sendHandler!({} as never, 'my-team', {
+        member: 'bob',
+        text: 'hello',
+      });
+      expect(result).toMatchObject({ success: true });
+      expect(service.sendMessage).toHaveBeenCalled();
+      expect(teamHandlerMocks.sendMessageToTeam).not.toHaveBeenCalled();
+    }
+  );
+
   it('uses Agent Teams MCP reply instructions for Codex user direct messages', async () => {
     teamHandlerMocks.resolveRuntimeRecipientProviderId.mockResolvedValueOnce('codex');
     const sendHandler = handlers.get(TEAM_SEND_MESSAGE);
@@ -2102,7 +2327,7 @@ describe('ipc teams handlers', () => {
     expect(request?.text).not.toContain('Reply using the SendMessage tool');
   });
 
-  it.each([['anthropic' as const], ['gemini' as const], [undefined]])(
+  it.each([['anthropic' as const], ['gemini' as const]])(
     'keeps SendMessage reply instructions for %s user direct messages',
     async (providerId) => {
       teamHandlerMocks.resolveRuntimeRecipientProviderId.mockResolvedValueOnce(providerId);
@@ -3190,7 +3415,11 @@ describe('ipc teams handlers', () => {
       const { createController } = createRequire(import.meta.url)(
         '../../../agent-teams-controller/src/index.js'
       );
-      const controller = createController({ teamName: 'my-team', claudeDir: attachmentTestRoot });
+      const controller = createController({
+        teamName: 'my-team',
+        claudeDir: attachmentTestRoot,
+        localTaskBoard: true,
+      });
       const board = controller.taskBoard;
       const task = board.createTask({ subject: 'Recover status', owner: 'worker' });
       board.completeTask(task.id, 'worker');
@@ -5223,6 +5452,68 @@ describe('ipc teams handlers', () => {
         prompt: 'Custom instructions here',
         startImmediately: undefined,
       });
+      const localCall = service.createTask.mock.calls[
+        service.createTask.mock.calls.length - 1
+      ] as unknown as [string, Record<string, unknown>];
+      expect(localCall[1]).not.toHaveProperty('specProject');
+      expect(localCall[1]).not.toHaveProperty('specSlug');
+      expect(localCall[1]).not.toHaveProperty('requirements');
+    });
+
+    it('forwards the complete validated registry scope to task creation', async () => {
+      const handler = handlers.get(TEAM_CREATE_TASK)!;
+      const result = (await handler({} as never, 'my-team', {
+        subject: 'Create canonical task',
+        specProject: ' owner/project ',
+        specSlug: ' example-spec ',
+        requirements: [' FR-1 ', 'AC-2'],
+        registryTeamId: 'renderer-controlled',
+      })) as { success: boolean };
+
+      expect(result.success).toBe(true);
+      expect(service.createTask).toHaveBeenCalledWith(
+        'my-team',
+        expect.objectContaining({
+          subject: 'Create canonical task',
+          specProject: 'owner/project',
+          specSlug: 'example-spec',
+          requirements: ['FR-1', 'AC-2'],
+        })
+      );
+      const lastCall = service.createTask.mock.calls[
+        service.createTask.mock.calls.length - 1
+      ] as unknown as [string, Record<string, unknown>];
+      expect(lastCall[1]).not.toHaveProperty('registryTeamId');
+    });
+
+    it('rejects partial registry task scope before calling the task service', async () => {
+      const handler = handlers.get(TEAM_CREATE_TASK)!;
+      service.createTask.mockClear();
+      const partialRequests = [
+        { subject: 'Partial scope', specProject: 'owner/project' },
+        { subject: 'Partial scope', specProject: 'owner/project', specSlug: 'example-spec' },
+        { subject: 'Partial scope', specSlug: 'example-spec', requirements: ['FR-1'] },
+      ];
+
+      for (const request of partialRequests) {
+        await expect(handler({} as never, 'my-team', request)).resolves.toMatchObject({
+          success: false,
+          error: 'specProject, specSlug, and requirements must be provided together',
+        });
+      }
+
+      await expect(
+        handler({} as never, 'my-team', {
+          subject: 'Invalid requirement',
+          specProject: 'owner/project',
+          specSlug: 'example-spec',
+          requirements: ['FR-1', ''],
+        })
+      ).resolves.toMatchObject({
+        success: false,
+        error: 'requirements[1] must be a non-empty string',
+      });
+      expect(service.createTask).not.toHaveBeenCalled();
     });
 
     it('rejects non-string prompt', async () => {
@@ -5662,6 +5953,62 @@ describe('ipc teams handlers', () => {
       expect(mockTeamDataWorkerClient.invalidateTeamConfig).toHaveBeenCalledWith('my-team');
       messageAttachmentDelete.mockRestore();
       taskAttachmentDelete.mockRestore();
+    });
+
+    it('runs one stop and delete for repeated Move to trash requests and frees the team after each settles', async () => {
+      const deleteHandler = handlers.get(TEAM_DELETE_TEAM)!;
+      let finishDelete!: () => void;
+      let failDelete!: (error: Error) => void;
+      service.deleteTeam.mockImplementationOnce(
+        () =>
+          new Promise<void>((resolve) => {
+            finishDelete = resolve;
+          })
+      );
+
+      const first = deleteHandler({} as never, 'my-team') as Promise<{ success: boolean }>;
+      const repeated = deleteHandler({} as never, 'my-team') as Promise<{ success: boolean }>;
+      await vi.waitFor(() => expect(service.deleteTeam).toHaveBeenCalledTimes(1));
+      expect(teamHandlerMocks.stopTeam).toHaveBeenCalledTimes(1);
+
+      expect(teamHandlerMocks.clearStoppedLaneStopBackoff).not.toHaveBeenCalled();
+      finishDelete();
+      await expect(first).resolves.toMatchObject({ success: true });
+      await expect(repeated).resolves.toMatchObject({ success: true });
+      expect(teamHandlerMocks.stopTeam).toHaveBeenCalledTimes(1);
+      expect(service.deleteTeam).toHaveBeenCalledTimes(1);
+      expect(teamHandlerMocks.clearStoppedLaneStopBackoff).toHaveBeenCalledTimes(1);
+      expect(teamHandlerMocks.clearStoppedLaneStopBackoff).toHaveBeenCalledWith('my-team');
+
+      // A failed request frees the team as well, and both callers see the failure.
+      service.deleteTeam.mockImplementationOnce(
+        () =>
+          new Promise<void>((_resolve, reject) => {
+            failDelete = reject;
+          })
+      );
+      const failing = deleteHandler({} as never, 'my-team') as Promise<{ success: boolean }>;
+      const failingRepeated = deleteHandler({} as never, 'my-team') as Promise<{
+        success: boolean;
+      }>;
+      await vi.waitFor(() => expect(service.deleteTeam).toHaveBeenCalledTimes(2));
+      failDelete(new Error('Team is busy'));
+      await expect(failing).resolves.toMatchObject({ success: false, error: 'Team is busy' });
+      await expect(failingRepeated).resolves.toMatchObject({
+        success: false,
+        error: 'Team is busy',
+      });
+      expect(teamHandlerMocks.stopTeam).toHaveBeenCalledTimes(2);
+      expect(teamHandlerMocks.clearStoppedLaneStopBackoff).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(console.error).mock.calls).toEqual([
+        ['[IPC:teams]', '[teams:deleteTeam] Team is busy'],
+        ['[IPC:teams]', '[teams:deleteTeam] Team is busy'],
+      ]);
+      vi.mocked(console.error).mockClear();
+
+      await expect(deleteHandler({} as never, 'my-team')).resolves.toMatchObject({ success: true });
+      expect(teamHandlerMocks.stopTeam).toHaveBeenCalledTimes(3);
+      expect(service.deleteTeam).toHaveBeenCalledTimes(3);
     });
 
     it('does not delete team files before member work sync is quiesced', async () => {

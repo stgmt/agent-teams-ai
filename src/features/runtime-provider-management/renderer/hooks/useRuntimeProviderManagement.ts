@@ -7,6 +7,7 @@ import {
   recordProviderConnectionEnd,
 } from '@renderer/analytics/productAnalytics';
 import { api } from '@renderer/api';
+import { PROVIDER_UI_TIMEOUT_MS } from '@shared/constants/runtimeLoading';
 
 import {
   getRuntimeProviderConnectTimeoutMs as connectTimeoutMs,
@@ -16,11 +17,15 @@ import {
   supportsScopedDefaultModelInheritance,
 } from '../../core/domain';
 import { saveOpenCodeModelForNewTeams } from '../adapters/createTeamDefaultModelWriter';
+import { getRuntimeProviderDirectoryReadToken, observeRuntimeProviderDirectoryRevision } from '../runtimeProviderDirectoryCache';
 import {
   projectBaseDefaultMutation,
   projectClearedDefaultMutation,
 } from '../view-models/openCodeDefaultModelInheritance';
+import { runtimeProviderDirectoryInteraction } from '../view-models/runtimeProviderDirectoryInteraction';
 
+import { maskRuntimeProviderStateForScope } from './maskRuntimeProviderStateForScope';
+import { refreshRuntimeProviderConnection } from './refreshRuntimeProviderConnection';
 import {
   getProviderConnectErrorDiagnostics,
   normalizeGitHubDeviceAuthorizationUrl,
@@ -29,7 +34,7 @@ import {
   commitDirectoryPageLoad,
   DEFAULT_DIRECTORY_FILTER,
   EMPTY_FULL_CATALOG_WARNING,
-  getAuthoritativeCachedFullDirectory,
+  getCachedDirectoryForInitialPaint,
   shouldKeepVisibleDirectoryRows,
 } from './runtimeProviderDirectoryCatalogPolicy';
 import {
@@ -60,9 +65,11 @@ import {
   applyModelTestResultToModels,
   applyModelTestResultToView,
   buildFailedModelTestResult,
+  refreshAfterModelTest,
   startModelTest,
 } from './runtimeProviderModelTestState';
 import { useModelTestStop, withoutModelTestStart } from './useModelTestStop';
+import { useRuntimeProviderProjectContext } from './useRuntimeProviderProjectContext';
 
 import type { RuntimeProviderConnectionIntent } from '../../core/domain';
 import type {
@@ -85,6 +92,7 @@ interface UseRuntimeProviderManagementOptions {
   directoryPageSize?: number;
   directorySummaryOnEnable?: boolean;
   reuseCachedFullDirectory?: boolean;
+  runtimeRevision?: string | null;
   loadViewOnEnable?: boolean;
   preserveViewRequestOnDisable?: boolean;
   searchDirectoryOnQueryChange?: boolean;
@@ -96,23 +104,17 @@ interface UseRuntimeProviderManagementOptions {
     changeKind: RuntimeProviderChangeKind
   ) => Promise<boolean | void> | boolean | void;
 }
-
 export type RuntimeProviderModelPickerMode = 'use' | 'runtime-default';
 export type RuntimeProviderChangeKind =
   | 'connection'
   | 'credential_removed'
   | 'configuration'
+  | 'model_tested'
   | 'oauth_cancelled';
 
 const MODEL_PAGE_SIZE = 250;
 const MODEL_SEARCH_DEBOUNCE_MS = 300;
 const OAUTH_UI_TIMEOUT_MS = 18 * 60_000;
-const CLEAR_PROJECT_DEFAULT_UI_TIMEOUT_MS = 100_000;
-
-interface ProjectContextSnapshot {
-  path: string | null;
-  generation: number;
-}
 
 export interface RuntimeProviderManagementState {
   view: RuntimeProviderManagementViewDto | null;
@@ -327,6 +329,15 @@ export function useRuntimeProviderManagement(
       .catch(() => undefined);
   }, []);
   const currentProjectPath = normalizeProjectContextPath(options.projectPath);
+  const [renderedProjectPath, setRenderedProjectPath] = useState(currentProjectPath);
+  const [settledRuntimeRevision, setSettledRuntimeRevision] = useState(
+    options.runtimeRevision ?? null
+  );
+  const [renderedRuntimeRevision, setRenderedRuntimeRevision] = useState(settledRuntimeRevision);
+  if (options.runtimeRevision && options.runtimeRevision !== settledRuntimeRevision)
+    setSettledRuntimeRevision(options.runtimeRevision);
+  const currentRuntimeRevision = useRef(settledRuntimeRevision);
+  currentRuntimeRevision.current = settledRuntimeRevision;
   const cancelModelTestBestEffort = useCallback((): void => {
     const requestGroupIds = [...activeModelTestRequestGroupsRef.current.entries()];
     if (requestGroupIds.length === 0) return;
@@ -337,28 +348,10 @@ export function useRuntimeProviderManagement(
       void cancelModelTest({ requestGroupId: `${group}:${token}` }).catch(() => undefined);
     }
   }, []);
-  const projectContextRef = useRef<ProjectContextSnapshot>({
-    path: currentProjectPath,
-    generation: 0,
-  });
-  if (projectContextRef.current.path !== currentProjectPath) {
-    projectContextRef.current = {
-      path: currentProjectPath,
-      generation: projectContextRef.current.generation + 1,
-    };
-  }
-
-  const getProjectContextSnapshot = useCallback(
-    (): ProjectContextSnapshot => projectContextRef.current,
-    []
+  const { getProjectContextSnapshot, isProjectContextCurrent } = useRuntimeProviderProjectContext(
+    currentProjectPath,
+    options.runtimeId
   );
-  const isProjectContextCurrent = useCallback(
-    (snapshot: ProjectContextSnapshot): boolean =>
-      projectContextRef.current.path === snapshot.path &&
-      projectContextRef.current.generation === snapshot.generation,
-    []
-  );
-
   const openModelPickerState = useCallback(
     (providerId: string, mode: RuntimeProviderModelPickerMode): void => {
       cancelModelTestBestEffort();
@@ -383,7 +376,6 @@ export function useRuntimeProviderManagement(
     },
     [cancelModelTestBestEffort]
   );
-
   const closeModelPickerState = useCallback((): void => {
     cancelModelTestBestEffort();
     modelLoadRequestSeq.current += 1;
@@ -405,8 +397,10 @@ export function useRuntimeProviderManagement(
     setTestingModelIds([]);
     setModelTestStartedAt({});
   }, [cancelModelTestBestEffort]);
-
   useEffect(() => {
+    observeRuntimeProviderDirectoryRevision(settledRuntimeRevision);
+    setRenderedProjectPath(currentProjectPath);
+    setRenderedRuntimeRevision(settledRuntimeRevision);
     cancelModelTestBestEffort();
     directoryRequestSeq.current += 1;
     setupFormRequestSeq.current += 1;
@@ -420,7 +414,10 @@ export function useRuntimeProviderManagement(
     setDirectoryError(null);
     setDirectoryErrorDiagnostics(null);
     setDirectorySelectedProviderId(null);
+    appliedInitialProviderRef.current = null;
     setDirectoryLoaded(false);
+    setDirectorySupported(true);
+    setDirectorySummary(options.directorySummaryOnEnable === true);
     setSetupForm(null);
     setSetupFormLoading(false);
     setSetupFormError(null);
@@ -450,8 +447,13 @@ export function useRuntimeProviderManagement(
     setModelResults({});
     setSuccessMessage(null);
     setWarningMessage(null);
-  }, [cancelActiveOAuthBestEffort, cancelModelTestBestEffort, currentProjectPath]);
-
+  }, [
+    cancelActiveOAuthBestEffort,
+    cancelModelTestBestEffort,
+    currentProjectPath,
+    options.directorySummaryOnEnable,
+    settledRuntimeRevision,
+  ]);
   const refresh = useCallback(
     async (input: { silent?: boolean } = {}): Promise<boolean> => {
       if (!options.enabled) {
@@ -513,7 +515,6 @@ export function useRuntimeProviderManagement(
     },
     [getProjectContextSnapshot, isProjectContextCurrent, options.enabled, options.runtimeId]
   );
-
   const loadDirectoryPage = useCallback(
     async (
       input: {
@@ -528,7 +529,6 @@ export function useRuntimeProviderManagement(
       if (!options.enabled || !directorySupported) {
         return true;
       }
-
       const append = input.append === true;
       const refreshDirectoryData = input.refresh === true;
       const query = input.query ?? directoryQuery;
@@ -543,10 +543,13 @@ export function useRuntimeProviderManagement(
         visibleEntryCount: directoryEntriesRef.current.length,
       });
       const projectContext = getProjectContextSnapshot();
+      const readToken = getRuntimeProviderDirectoryReadToken(projectContext.path);
       const requestSeq = directoryRequestSeq.current + 1;
       directoryRequestSeq.current = requestSeq;
       const requestIsCurrent = (): boolean =>
-        directoryRequestSeq.current === requestSeq && isProjectContextCurrent(projectContext);
+        directoryRequestSeq.current === requestSeq &&
+        currentRuntimeRevision.current === settledRuntimeRevision &&
+        isProjectContextCurrent(projectContext);
 
       if (keepVisibleRows) {
         setDirectoryRefreshing(true);
@@ -555,7 +558,6 @@ export function useRuntimeProviderManagement(
       }
       setDirectoryError(null);
       setDirectoryErrorDiagnostics(null);
-
       try {
         const response = await api.runtimeProviderManagement.loadProviderDirectory({
           runtimeId: options.runtimeId,
@@ -567,7 +569,12 @@ export function useRuntimeProviderManagement(
           cursor,
           refresh: refreshDirectoryData,
         });
-        if (!requestIsCurrent()) {
+        // A credential mutation can invalidate this read without changing the
+        // request sequence. Never paint its pre-mutation directory into local state.
+        if (
+          !requestIsCurrent() ||
+          getRuntimeProviderDirectoryReadToken(projectContext.path) !== readToken
+        ) {
           return false;
         }
         if (response.error) {
@@ -597,6 +604,8 @@ export function useRuntimeProviderManagement(
           visibleEntryCount: directoryEntriesRef.current.length,
           directory,
           presentEntry: presentDirectoryEntry,
+          runtimeRevision: settledRuntimeRevision,
+          readToken,
         });
         if (commit.action === 'retain') {
           setWarningMessage(EMPTY_FULL_CATALOG_WARNING);
@@ -611,7 +620,10 @@ export function useRuntimeProviderManagement(
         );
         return true;
       } catch (loadError) {
-        if (requestIsCurrent()) {
+        if (
+          requestIsCurrent() &&
+          getRuntimeProviderDirectoryReadToken(projectContext.path) === readToken
+        ) {
           setDirectoryError(
             loadError instanceof Error ? loadError.message : 'Failed to load provider directory'
           );
@@ -634,6 +646,7 @@ export function useRuntimeProviderManagement(
       options.enabled,
       options.directoryPageSize,
       options.runtimeId,
+      settledRuntimeRevision,
     ]
   );
   const loadDirectoryPageRef = useRef(loadDirectoryPage);
@@ -699,8 +712,8 @@ export function useRuntimeProviderManagement(
     options.loadViewOnEnable,
     options.preserveViewRequestOnDisable,
     refresh,
+    settledRuntimeRevision,
   ]);
-
   useEffect(() => {
     if (!options.enabled) return;
     return api.runtimeProviderManagement.onOAuthProgress?.((event) => {
@@ -719,22 +732,23 @@ export function useRuntimeProviderManagement(
     if (!options.enabled || !directorySupported) {
       return;
     }
-    const cached = getAuthoritativeCachedFullDirectory({
+    const cached = getCachedDirectoryForInitialPaint({
       reuseCachedFullDirectory: options.reuseCachedFullDirectory,
       directoryQuery,
       projectPath: currentProjectPath,
+      runtimeRevision: settledRuntimeRevision,
     });
     if (cached) {
-      directoryEntriesRef.current = cached.entries;
-      setDirectoryEntries(cached.entries);
+      directoryEntriesRef.current = cached.entries.map(presentDirectoryEntry);
+      setDirectoryEntries(directoryEntriesRef.current);
       setDirectoryLoaded(true);
-      setDirectorySummary(false);
+      setDirectorySummary(!cached.authoritative);
       setDirectoryTotalCount(cached.totalCount ?? cached.entries.length);
       setDirectoryNextCursor(cached.nextCursor ?? null);
       setDirectoryError(null);
       setDirectoryErrorDiagnostics(null);
       void loadDirectoryPageRef.current({
-        summary: false,
+        summary: !cached.authoritative,
         refresh: false,
         cursor: null,
       });
@@ -759,6 +773,7 @@ export function useRuntimeProviderManagement(
     directorySupported,
     options.enabled,
     options.reuseCachedFullDirectory,
+    settledRuntimeRevision,
   ]);
 
   useEffect(() => {
@@ -775,7 +790,6 @@ export function useRuntimeProviderManagement(
     );
     return () => window.clearTimeout(timeout);
   }, [debouncedModelQuery, modelPickerProviderId, modelQuery, options.enabled]);
-
   const loadModelsPage = useCallback(
     async (input: { append?: boolean; cursor?: string | null } = {}): Promise<void> => {
       if (!options.enabled || !modelPickerProviderId) {
@@ -810,8 +824,7 @@ export function useRuntimeProviderManagement(
             cursor: input.cursor ?? null,
             requestGroupId: `provider-model-picker:${options.runtimeId}:${projectContext.path ?? ''}:${providerId}`,
           }),
-          'Provider models load timed out',
-          100_000
+          'Provider models load timed out'
         );
         if (!requestIsCurrent()) {
           return;
@@ -875,7 +888,6 @@ export function useRuntimeProviderManagement(
       options.runtimeId,
     ]
   );
-
   const loadModelsPageRef = useRef(loadModelsPage);
   useEffect(() => {
     loadModelsPageRef.current = loadModelsPage;
@@ -904,10 +916,8 @@ export function useRuntimeProviderManagement(
       (provider) => provider.providerId === selectedProviderId
     );
     if (
-      (selectedProvider?.state === 'connected' && selectedProvider.modelCount > 0) ||
-      ((selectedDirectoryProvider?.state === 'connected' ||
-        selectedDirectoryProvider?.metadata.configuredAuthless === true) &&
-        selectedDirectoryProvider.modelCount !== 0)
+      runtimeProviderDirectoryInteraction(selectedProvider).canSelectModels ||
+      runtimeProviderDirectoryInteraction(selectedDirectoryProvider).canSelectModels
     ) {
       const providerId = selectedProvider?.providerId ?? selectedDirectoryProvider!.providerId;
       if (modelPickerProviderId !== providerId) {
@@ -929,7 +939,6 @@ export function useRuntimeProviderManagement(
     selectedProviderId,
     view,
   ]);
-
   const loadMoreDirectory = useCallback(async (): Promise<void> => {
     if (!directoryNextCursor || directoryLoading || directoryRefreshing) {
       return;
@@ -939,7 +948,6 @@ export function useRuntimeProviderManagement(
       cursor: directoryNextCursor,
     });
   }, [directoryLoading, directoryNextCursor, directoryRefreshing, loadDirectoryPage]);
-
   const loadMoreModels = useCallback(async (): Promise<void> => {
     if (!modelsNextCursor || modelsLoading || modelsLoadingMore) {
       return;
@@ -949,7 +957,6 @@ export function useRuntimeProviderManagement(
       cursor: modelsNextCursor,
     });
   }, [loadModelsPage, modelsLoading, modelsLoadingMore, modelsNextCursor]);
-
   const refreshDirectory = useCallback(async (): Promise<void> => {
     setSuccessMessage(null);
     setWarningMessage(null);
@@ -965,7 +972,6 @@ export function useRuntimeProviderManagement(
       await loadModelsPage();
     }
   }, [loadDirectoryPage, loadModelsPage, modelPickerProviderId, refresh]);
-
   const hydrateDirectory = useCallback(async (): Promise<boolean> => {
     if (!options.enabled || !directorySupported || !directorySummary) {
       return false;
@@ -976,7 +982,6 @@ export function useRuntimeProviderManagement(
       cursor: null,
     });
   }, [directorySummary, directorySupported, loadDirectoryPage, options.enabled]);
-
   const selectDirectoryProvider = useCallback(
     (providerId: string): void => {
       setDirectorySelectedProviderId(providerId);
@@ -1000,13 +1005,10 @@ export function useRuntimeProviderManagement(
       const directoryProvider = directoryEntries.find(
         (provider) => provider.providerId === providerId
       );
-      const connected =
-        compactProvider?.state === 'connected' ||
-        directoryProvider?.state === 'connected' ||
-        directoryProvider?.metadata.configuredAuthless === true;
-      const modelCount = compactProvider?.modelCount ?? directoryProvider?.modelCount ?? null;
-
-      if (connected && modelCount !== 0) {
+      if (
+        runtimeProviderDirectoryInteraction(compactProvider).canSelectModels ||
+        runtimeProviderDirectoryInteraction(directoryProvider).canSelectModels
+      ) {
         openModelPickerState(providerId, 'use');
       } else {
         closeModelPickerState();
@@ -1020,7 +1022,6 @@ export function useRuntimeProviderManagement(
       view,
     ]
   );
-
   const searchAllProviders = useCallback((query: string): void => {
     setDirectorySummary(false);
     setDirectoryQuery(query);
@@ -1028,7 +1029,6 @@ export function useRuntimeProviderManagement(
     setDirectoryErrorDiagnostics(null);
     setDirectoryNextCursor(null);
   }, []);
-
   const startConnection = useCallback(
     (providerId: string, intent: RuntimeProviderConnectionIntent): void => {
       setSelectedProviderId(providerId);
@@ -1119,17 +1119,14 @@ export function useRuntimeProviderManagement(
       options.runtimeId,
     ]
   );
-
   const startConnect = useCallback(
     (providerId: string): void => startConnection(providerId, 'connect'),
     [startConnection]
   );
-
   const startReconnect = useCallback(
     (providerId: string): void => startConnection(providerId, 'reconnect'),
     [startConnection]
   );
-
   const updateProviderQuery = useCallback(
     (value: string): void => {
       setProviderQuery(value);
@@ -1148,7 +1145,6 @@ export function useRuntimeProviderManagement(
     },
     [directoryQuery, directorySupported, options.searchDirectoryOnQueryChange]
   );
-
   const updateModelQuery = useCallback((value: string): void => {
     modelLoadRequestSeq.current += 1;
     setModelQuery(value);
@@ -1156,7 +1152,6 @@ export function useRuntimeProviderManagement(
     setModelsLoadingMore(false);
     setModelsNextCursor(null);
   }, []);
-
   const cancelConnect = useCallback((): void => {
     const cancellation = cancelActiveOAuthBestEffort();
     setupFormRequestSeq.current += 1;
@@ -1179,13 +1174,11 @@ export function useRuntimeProviderManagement(
       void cancellation.then(() => onProviderChanged?.('oauth_cancelled')).catch(() => undefined);
     }
   }, [cancelActiveOAuthBestEffort, onProviderChanged]);
-
   const updateApiKeyValue = useCallback((value: string): void => {
     setApiKeyValue(value);
     setSetupSubmitError(null);
     setSetupSubmitErrorDiagnostics(null);
   }, []);
-
   const setAuthOption = useCallback((authOptionId: string): void => {
     setSelectedAuthOptionId(authOptionId);
     setApiKeyValue('');
@@ -1195,7 +1188,6 @@ export function useRuntimeProviderManagement(
     setSetupSubmitError(null);
     setSetupSubmitErrorDiagnostics(null);
   }, []);
-
   const submitOAuthCode = useCallback(async (): Promise<void> => {
     const operationId = activeOAuthOperationRef.current;
     const code = oauthCodeValue.trim();
@@ -1210,7 +1202,6 @@ export function useRuntimeProviderManagement(
     }
     setOAuthCodeValue('');
   }, [oauthCodeValue]);
-
   const setSetupMetadataValue = useCallback((key: string, value: string): void => {
     setSetupMetadata((current) => ({
       ...current,
@@ -1219,7 +1210,6 @@ export function useRuntimeProviderManagement(
     setSetupSubmitError(null);
     setSetupSubmitErrorDiagnostics(null);
   }, []);
-
   const submitConnect = useCallback(
     async (providerId: string): Promise<RuntimeProviderConnectOutcome | null> => {
       if (!setupForm) {
@@ -1247,7 +1237,6 @@ export function useRuntimeProviderManagement(
         setSetupSubmitErrorDiagnostics(null);
         return null;
       }
-
       setSavingProviderId(providerId);
       setError(null);
       setErrorDiagnostics(null);
@@ -1362,36 +1351,28 @@ export function useRuntimeProviderManagement(
         setSetupSubmitError(null);
         setSetupSubmitErrorDiagnostics(null);
         const success = formatProviderConnectSuccess(connectedProvider);
-        try {
-          const externalRefreshResult = await options.onProviderChanged?.('connection');
-          if (!isProjectContextCurrent(projectContext)) {
-            return null;
-          }
-          const [viewRefreshed, directoryRefreshed] = await Promise.all([
-            viewRequestedRef.current ? refresh({ silent: true }) : Promise.resolve(true),
-            loadDirectoryPage({ refresh: true, cursor: null }),
-          ]);
-          if (externalRefreshResult === false || !viewRefreshed || !directoryRefreshed) {
-            setError(null);
-            setErrorDiagnostics(null);
-            setDirectoryError(null);
-            setDirectoryErrorDiagnostics(null);
-            setSuccessMessage(null);
-            setWarningMessage(formatPostOperationRefreshWarning(success));
-          } else {
-            setWarningMessage(null);
-            setSuccessMessage(success);
-          }
-        } catch {
-          if (!isProjectContextCurrent(projectContext)) {
-            return null;
-          }
+        const refreshOutcome = await refreshRuntimeProviderConnection({
+          runtimeId: options.runtimeId,
+          projectPath: projectContext.path,
+          runtimeRevision: settledRuntimeRevision,
+          directorySupported,
+          isContextCurrent: () => isProjectContextCurrent(projectContext),
+          isRuntimeRevisionCurrent: () => currentRuntimeRevision.current === settledRuntimeRevision,
+          refreshExternal: () => options.onProviderChanged?.('connection'),
+          refreshView: () => !viewRequestedRef.current || refresh({ silent: true }),
+          refreshDirectory: () => loadDirectoryPage({ refresh: true, cursor: null }),
+        });
+        if (refreshOutcome === 'stale' || !isProjectContextCurrent(projectContext)) return null;
+        if (refreshOutcome === 'warning') {
           setError(null);
           setErrorDiagnostics(null);
           setDirectoryError(null);
           setDirectoryErrorDiagnostics(null);
           setSuccessMessage(null);
           setWarningMessage(formatPostOperationRefreshWarning(success));
+        } else {
+          setWarningMessage(null);
+          setSuccessMessage(success);
         }
         return {
           status: 'connected',
@@ -1427,6 +1408,7 @@ export function useRuntimeProviderManagement(
     [
       apiKeyValue,
       connectionIntent,
+      directorySupported,
       getProjectContextSnapshot,
       isProjectContextCurrent,
       loadDirectoryPage,
@@ -1437,9 +1419,9 @@ export function useRuntimeProviderManagement(
       setupFormErrorDiagnostics,
       setupMetadata,
       selectedAuthOptionId,
+      settledRuntimeRevision,
     ]
   );
-
   const forgetProvider = useCallback(
     async (providerId: string): Promise<void> => {
       setSavingProviderId(providerId);
@@ -1469,39 +1451,28 @@ export function useRuntimeProviderManagement(
           setView((current) => replaceProvider(current, response.provider!));
         }
         const success = formatCredentialRemovedMessage(response.provider ?? null);
-        try {
-          const externalRefreshResult = await options.onProviderChanged?.('credential_removed');
-          if (!isProjectContextCurrent(projectContext)) {
-            return;
-          }
-          const [viewRefreshed, directoryRefreshed] = await Promise.all([
-            viewRequestedRef.current ? refresh({ silent: true }) : Promise.resolve(true),
-            loadDirectoryPage({ refresh: true, cursor: null }),
-          ]);
-          if (externalRefreshResult === false || !viewRefreshed || !directoryRefreshed) {
-            setError(null);
-            setErrorDiagnostics(null);
-            setDirectoryError(null);
-            setDirectoryErrorDiagnostics(null);
-            setSuccessMessage(null);
-            setWarningMessage(formatPostOperationRefreshWarning(success));
-          } else {
-            setWarningMessage(null);
-            setSuccessMessage(success);
-          }
-        } catch {
-          if (!isProjectContextCurrent(projectContext)) {
-            return;
-          }
+        const refreshOutcome = await refreshRuntimeProviderConnection({
+          runtimeId: options.runtimeId,
+          projectPath: projectContext.path,
+          runtimeRevision: settledRuntimeRevision,
+          directorySupported,
+          isContextCurrent: () => isProjectContextCurrent(projectContext),
+          isRuntimeRevisionCurrent: () => currentRuntimeRevision.current === settledRuntimeRevision,
+          refreshExternal: () => options.onProviderChanged?.('credential_removed'),
+          refreshView: () => !viewRequestedRef.current || refresh({ silent: true }),
+          refreshDirectory: () => loadDirectoryPage({ refresh: true, cursor: null }),
+        });
+        if (refreshOutcome === 'stale' || !isProjectContextCurrent(projectContext)) return;
+        if (refreshOutcome === 'warning') {
           setError(null);
           setErrorDiagnostics(null);
           setDirectoryError(null);
           setDirectoryErrorDiagnostics(null);
           setSuccessMessage(null);
           setWarningMessage(formatPostOperationRefreshWarning(success));
-        }
-        if (!isProjectContextCurrent(projectContext)) {
-          return;
+        } else {
+          setWarningMessage(null);
+          setSuccessMessage(success);
         }
       } catch (forgetError) {
         if (!isProjectContextCurrent(projectContext)) {
@@ -1517,9 +1488,16 @@ export function useRuntimeProviderManagement(
         }
       }
     },
-    [getProjectContextSnapshot, isProjectContextCurrent, loadDirectoryPage, options, refresh]
+    [
+      directorySupported,
+      getProjectContextSnapshot,
+      isProjectContextCurrent,
+      loadDirectoryPage,
+      options,
+      refresh,
+      settledRuntimeRevision,
+    ]
   );
-
   const openModelPicker = useCallback(
     (providerId: string, mode: RuntimeProviderModelPickerMode): void => {
       setSelectedProviderId(providerId);
@@ -1533,21 +1511,17 @@ export function useRuntimeProviderManagement(
     },
     [openModelPickerState]
   );
-
   const openProviderCredentialPage = useCallback(async (providerId: string): Promise<void> => {
     const credentialUrl = getRuntimeProviderCredentialUrl(providerId);
     if (credentialUrl) {
       await api.openExternal(credentialUrl);
     }
   }, []);
-
   const openOAuthAuthorizationUrl = useCallback(async (value: string): Promise<void> => {
     const url = normalizeGitHubDeviceAuthorizationUrl(value);
     if (url) await api.openExternal(url);
   }, []);
-
   const closeModelPicker = closeModelPickerState;
-
   const useModelForNewTeams = useCallback((modelId: string): void => {
     saveOpenCodeModelForNewTeams(modelId);
     setSelectedModelId(modelId);
@@ -1580,6 +1554,14 @@ export function useRuntimeProviderManagement(
         modelProbeGenerationRef.current === probeGeneration &&
         (activeProviderAtStart === null || activeModelPickerProviderRef.current === providerId) &&
         isProjectContextCurrent(projectContext);
+      const recordProbeResult = (result: RuntimeProviderModelTestResultDto): void => {
+        if (isProjectContextCurrent(projectContext))
+          void refreshAfterModelTest(() => onProviderChanged?.('model_tested'));
+        if (!shouldRecordProbeResult()) return;
+        setModelResults((current) => ({ ...current, [modelId]: result }));
+        setModels((current) => applyModelTestResultToModels(current, result));
+        setView((current) => applyModelTestResultToView(current, result));
+      };
       setModelTestStartedAt((current) => startModelTest(current, modelId));
       setTestingModelIds((ids) => (ids.includes(modelId) ? ids : [...ids, modelId]));
       setError(null);
@@ -1605,23 +1587,14 @@ export function useRuntimeProviderManagement(
             setError(response.error.message);
             setErrorDiagnostics(response.error.diagnostics);
           }
-          if (shouldRecordProbeResult()) {
-            setModelResults((current) => ({ ...current, [modelId]: result }));
-            setModels((current) => applyModelTestResultToModels(current, result));
-            setView((current) => applyModelTestResultToView(current, result));
-          }
+          recordProbeResult(result);
           return result;
         }
-        if (response.result && shouldRecordProbeResult()) {
-          const result = response.result;
-          setModelResults((current) => ({ ...current, [modelId]: result }));
-          setModels((current) => applyModelTestResultToModels(current, result));
-          setView((current) => applyModelTestResultToView(current, result));
-        }
-        return (
+        const result =
           response.result ??
-          buildFailedModelTestResult(providerId, modelId, 'Model test response was empty')
-        );
+          buildFailedModelTestResult(providerId, modelId, 'Model test response was empty');
+        recordProbeResult(result);
+        return result;
       } catch (testError) {
         await pendingModelStopsRef.current.get(`${requestGroupId}:${requestToken}`);
         const result = buildFailedModelTestResult(
@@ -1629,11 +1602,7 @@ export function useRuntimeProviderManagement(
           modelId,
           testError instanceof Error ? testError.message : 'Failed to test model'
         );
-        if (shouldRecordProbeResult()) {
-          setModelResults((current) => ({ ...current, [modelId]: result }));
-          setModels((current) => applyModelTestResultToModels(current, result));
-          setView((current) => applyModelTestResultToView(current, result));
-        }
+        recordProbeResult(result);
         return result;
       } finally {
         if (shouldRecordProbeResult()) {
@@ -1645,7 +1614,7 @@ export function useRuntimeProviderManagement(
         }
       }
     },
-    [getProjectContextSnapshot, isProjectContextCurrent, options.runtimeId]
+    [getProjectContextSnapshot, isProjectContextCurrent, onProviderChanged, options.runtimeId]
   );
 
   const setDefaultModel = useCallback(
@@ -1799,7 +1768,7 @@ export function useRuntimeProviderManagement(
             projectPath: normalizedIntendedProjectPath,
           }),
           'Clear project default timed out',
-          CLEAR_PROJECT_DEFAULT_UI_TIMEOUT_MS
+          PROVIDER_UI_TIMEOUT_MS
         );
         if (!isProjectContextCurrent(projectContext)) return;
         if (response.error) {
@@ -1918,7 +1887,6 @@ export function useRuntimeProviderManagement(
     startConnection,
     updateProviderQuery,
   ]);
-
   const state = useMemo<RuntimeProviderManagementState>(
     () => ({
       view,
@@ -2026,7 +1994,6 @@ export function useRuntimeProviderManagement(
       view,
     ]
   );
-
   const actions = useMemo<RuntimeProviderManagementActions>(
     () => ({
       refresh,
@@ -2092,5 +2059,10 @@ export function useRuntimeProviderManagement(
     ]
   );
 
-  return [state, actions];
+  return [
+    renderedProjectPath === currentProjectPath && renderedRuntimeRevision === settledRuntimeRevision
+      ? state
+      : maskRuntimeProviderStateForScope(state),
+    actions,
+  ];
 }

@@ -12,6 +12,7 @@ import {
   launchTeamInnerWithService,
   type TeamProvisioningCreateLaunchOrchestrationServiceHost,
 } from './TeamProvisioningCreateLaunchOrchestration';
+import { claimExistingTeamForLaunch } from './TeamProvisioningProfileOwnership';
 import {
   type TeamProvisioningRequestAdmissionContext,
   teamProvisioningRequestAdmissionContext,
@@ -112,7 +113,9 @@ async function runAdmittedTeamProvisioningRequest<TResult>(
 export function createTeamProvisioningRequestAdmissionBoundary(
   service: TeamProvisioningRequestAdmissionServiceHost,
   readTeamMeta: (teamName: string) => Promise<TeamMetaFile | null> = (teamName) =>
-    new TeamMetaStore().getMeta(teamName)
+    new TeamMetaStore().getMeta(teamName),
+  claimTeamForLaunch: (teamName: string) => Promise<void> = (teamName) =>
+    claimExistingTeamForLaunch(teamName)
 ): TeamProvisioningRequestAdmissionBoundary {
   const admissionContext = teamProvisioningRequestAdmissionContext;
   return {
@@ -130,10 +133,20 @@ export function createTeamProvisioningRequestAdmissionBoundary(
         admissionContext,
         request,
         async (runtime) => {
+          if (request.bootstrapOnly && request.prompt?.trim()) {
+            throw new Error('Bootstrap-only launch must not contain a work prompt');
+          }
+          // Before any spawn and fail-closed: a crash at any later point must
+          // still leave the team recognisable as this profile's on next start.
+          await claimTeamForLaunch(request.teamName);
           const meta = await readTeamMeta(request.teamName);
           return launchTeamInnerWithService(
             service,
-            { ...request, prompt: request.prompt ?? meta?.prompt, ...runtime },
+            {
+              ...request,
+              prompt: request.bootstrapOnly ? undefined : (request.prompt ?? meta?.prompt),
+              ...runtime,
+            },
             onProgress
           );
         },

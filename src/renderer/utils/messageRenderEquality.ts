@@ -129,6 +129,8 @@ export function areInboxMessagesEquivalentForRender(
   if (prev.summary !== next.summary) return false;
   if (prev.color !== next.color) return false;
   if (prev.read !== next.read) return false;
+  if (prev.groupChatId !== next.groupChatId) return false;
+  if (prev.groupDeliverySummary?.recordedAt !== next.groupDeliverySummary?.recordedAt) return false;
   if (prev.relayOfMessageId !== next.relayOfMessageId) return false;
   if (prev.replyChannel !== next.replyChannel) return false;
   if (prev.focusOnly !== next.focusOnly) return false;

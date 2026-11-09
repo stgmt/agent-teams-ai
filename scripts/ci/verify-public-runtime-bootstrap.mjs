@@ -8,17 +8,21 @@ import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
 import { phase } from '../lib/runtime-bootstrap-diagnostics.mts';
-import {
-  getExpectedRuntimeCliVersion,
-  matchesRuntimeCliVersion,
-} from '../lib/runtime-cli-version.mjs';
+import { matchesRuntimeCliVersion } from '../lib/runtime-cli-version.mjs';
+import { validateWindowsRuntimeLock } from '../lib/windows-runtime-lock.mjs';
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(scriptDir, '..', '..');
 const runtimeLock = JSON.parse(fs.readFileSync(path.join(repoRoot, 'runtime.lock.json'), 'utf8'));
-const expectedCliVersion = getExpectedRuntimeCliVersion(runtimeLock);
+validateWindowsRuntimeLock(runtimeLock);
+if (process.platform !== 'win32' || process.arch !== 'x64') {
+  throw new Error(
+    `Public runtime bootstrap verification requires Windows x64, got ${process.platform}/${process.arch}`
+  );
+}
+const expectedCliVersion = runtimeLock.cliVersion;
+const platformKey = 'win32-x64';
 const cacheRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-teams-public-runtime-e2e-'));
-const platformKey = `${process.platform}-${process.arch}`;
 
 function fail(message) {
   throw new Error(`[public-runtime-bootstrap-e2e] ${message}`);

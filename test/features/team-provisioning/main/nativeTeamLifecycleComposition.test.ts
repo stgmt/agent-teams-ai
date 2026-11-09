@@ -43,6 +43,10 @@ describe('native lifecycle composition admission', () => {
     }));
     const lifecycle = createNativeTeamLifecycle({
       owner: context.snapshot(),
+      readStartupTasks: async () => [],
+      createController: () => ({
+        taskBoard: { deliverStartupWorkAsync: async () => ({ delivered: [], skipped: [] }) },
+      }),
       openCodeLeadDelivery: {
         relayOpenCodeMemberInboxMessages,
       } as never,
@@ -217,6 +221,10 @@ describe('native lifecycle composition admission', () => {
     }));
     const lifecycle = createNativeTeamLifecycle({
       owner: context.snapshot(),
+      readStartupTasks: async () => [],
+      createController: () => ({
+        taskBoard: { deliverStartupWorkAsync: async () => ({ delivered: [], skipped: [] }) },
+      }),
       openCodeLeadDelivery: {
         relayOpenCodeMemberInboxMessages,
       } as never,
@@ -303,6 +311,10 @@ describe('native lifecycle composition admission', () => {
     }));
     const lifecycle = createNativeTeamLifecycle({
       owner: context.snapshot(),
+      readStartupTasks: async () => [],
+      createController: () => ({
+        taskBoard: { deliverStartupWorkAsync: async () => ({ delivered: [], skipped: [] }) },
+      }),
       openCodeLeadDelivery: {
         relayOpenCodeMemberInboxMessages,
       } as never,

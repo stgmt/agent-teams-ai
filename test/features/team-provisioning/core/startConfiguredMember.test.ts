@@ -5,7 +5,9 @@ import { OwnedRuntimeCleanupError } from '../../../../src/features/team-provisio
 import { TeamOperationQueue } from '../../../../src/features/team-provisioning/core/application/TeamOperationQueue';
 import { MemberLifecycleRegistry } from '../../../../src/features/team-provisioning/core/domain/MemberLifecycleRegistry';
 
+import type { MemberProcessToken } from '../../../../src/features/team-provisioning/contracts';
 import type {
+  ConfiguredMemberLaunch,
   MemberRuntimeEvents,
   MemberRuntimePort,
   OwnedMemberProcess,
@@ -14,7 +16,14 @@ import type {
 const owner = { appInstanceId: 'app-1', dataRootFingerprint: 'root', connectionGeneration: 1 };
 const run = { ...owner, teamName: 'TEST-team', runId: 'run-1' };
 
-function setup(runtime: MemberRuntimePort, providerId = 'anthropic') {
+function setup(
+  runtime: MemberRuntimePort,
+  providerId = 'anthropic',
+  onMemberConnected?: (
+    launch: Readonly<ConfiguredMemberLaunch>,
+    token: Readonly<MemberProcessToken>
+  ) => Promise<void>
+) {
   const registry = new MemberLifecycleRegistry(owner);
   registry.configureTeam(run, [{ memberName: 'builder', role: 'member' }]);
   let sequence = 0;
@@ -35,6 +44,7 @@ function setup(runtime: MemberRuntimePort, providerId = 'anthropic') {
         };
       },
     },
+    ...(onMemberConnected ? { onMemberConnected } : {}),
     runtime,
   });
   return { registry, commands };
@@ -136,6 +146,51 @@ describe('configured member start command', () => {
     await commands.settled(run, 'builder');
     expect(registry.snapshot(run.teamName).members.builder.phase).toBe('exited');
   });
+  it('notifies startup handover only on the accepted ready connection event', async () => {
+    let events!: MemberRuntimeEvents;
+    let connectedLaunch: Readonly<ConfiguredMemberLaunch> | undefined;
+    let connectedToken: Readonly<MemberProcessToken> | undefined;
+    let notifications = 0;
+    const { registry, commands } = setup(
+      {
+        async spawn() {
+          return {
+            ...processHandle([]),
+            subscribe(listener) {
+              events = listener;
+              return () => undefined;
+            },
+          };
+        },
+      },
+      'anthropic',
+      async (launch, token) => {
+        notifications++;
+        connectedLaunch = launch;
+        connectedToken = token;
+      }
+    );
+
+    await commands.start(run, 'builder');
+    await commands.settled(run, 'builder');
+    expect(registry.snapshot(run.teamName).members.builder.phase).toBe('connecting');
+    expect(notifications).toBe(0);
+
+    events.connected();
+
+    expect(registry.snapshot(run.teamName).members.builder.phase).toBe('ready');
+    expect(notifications).toBe(1);
+    expect(connectedLaunch).toMatchObject({ team: run, memberName: 'builder' });
+    expect(connectedToken).toMatchObject({
+      teamName: run.teamName,
+      memberName: 'builder',
+      runId: run.runId,
+    });
+    registry.snapshot(run.teamName);
+    registry.snapshot(run.teamName);
+    expect(notifications).toBe(1);
+  });
+
 
   it('does not overlap a replacement attempt with the exited process resource release', async () => {
     let events!: MemberRuntimeEvents;

@@ -60,6 +60,10 @@ async function setup(worktree: string, cwd = repo) {
   // РИСК: real Git/config ordering is covered; provider preparation ends before model CLI/authentication.
   const lifecycle = createNativeTeamLifecycle({
     owner: context.snapshot(),
+    readStartupTasks: async () => [],
+    createController: () => ({
+      taskBoard: { deliverStartupWorkAsync: async () => ({ delivered: [], skipped: [] }) },
+    }),
     runtimeRoot: join(root, 'attempts'),
     workspaceRoot: join(root, 'workspaces'),
     teamsRoot,

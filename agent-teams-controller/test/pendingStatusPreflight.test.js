@@ -19,7 +19,11 @@ describe('status changes with an unrelated uncertain review', () => {
         ],
       })
     );
-    controller = createController({ teamName: 'fixture', claudeDir: root });
+    controller = createController({
+      teamName: 'fixture',
+      claudeDir: root,
+      localTaskBoard: true,
+    });
     api = controller.taskBoard;
   });
   afterEach(() => {

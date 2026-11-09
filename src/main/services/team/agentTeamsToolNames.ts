@@ -27,6 +27,28 @@ const TASK_BOUNDARY_TOOL_LINE_PATTERN = new RegExp(
     .join('|')})"`
 );
 
+/**
+ * Built-in runtime task tools write to the agent's own private task list
+ * (`tasks/<list id>/`), never to the team board. Team agents now run with an
+ * isolated personal list, so their numeric task ids have no relationship to a
+ * board task with the same number. Board attribution must ignore these tools;
+ * app-provided task tools (`task_start`, `task_complete`, ...) remain the only
+ * transcript evidence of board work.
+ */
+const BUILTIN_PERSONAL_TASK_TOOL_NAMES = new Set([
+  'taskcreate',
+  'taskupdate',
+  'taskget',
+  'tasklist',
+  'todowrite',
+]);
+
+export function isBuiltinPersonalTaskToolName(rawName: string): boolean {
+  return BUILTIN_PERSONAL_TASK_TOOL_NAMES.has(
+    canonicalizeAgentTeamsToolName(rawName).toLowerCase()
+  );
+}
+
 export function canonicalizeAgentTeamsToolName(rawName: string): string {
   const normalized = rawName.trim().replace(/^proxy_/, '');
 

@@ -278,12 +278,14 @@ it('actual bundled verifier hashes every file with at most eight readers and dra
       files[name] = createHash('sha256').update(bytes).digest('hex');
     }
     const manifest = path.join(root, 'manifest.json');
-    await writeFile(manifest, JSON.stringify({ sdkSha, files }));
+    const appSha = 'b'.repeat(40);
+    await writeFile(manifest, JSON.stringify({ mode: 'candidate_not_public_release', appSha,
+      platform: `${process.platform}-${process.arch}`, runtimeArchiveSha256: 'c'.repeat(64), sdkSha, files }));
     let active = 0, maximum = 0, claimed = 0;
     let fail: Error | null = null;
     const verify = compileFunction(`let preproofStage;const preproofFacts={};
       const BUNDLED_MANIFEST_MAX_BYTES=33554432,BUNDLED_MANIFEST_MAX_ENTRIES=131072;
-      ${compiled};return bundledRuntime;`, ['assert', 'path', 'lstat', 'realpath', 'readFile', 'createHash', 'createReadStream'])(
+      ${compiled};return bundledRuntime;`, ['assert', 'path', 'lstat', 'realpath', 'readFile', 'createHash', 'createReadStream', 'process'])(
       assert, path, async (file: string) => {
         if (file !== manifest) { claimed++; if (fail && file.endsWith('COMMIT_SHA')) throw fail; }
         return lstat(file);
@@ -292,7 +294,7 @@ it('actual bundled verifier hashes every file with at most eight readers and dra
         active++; maximum = Math.max(maximum, active);
         stream.once('close', () => { active--; });
         return stream;
-      }
+      }, { platform: process.platform, arch: process.arch, env: { GITHUB_SHA: appSha } }
     ) as (executable: string, manifest: string) => Promise<{runtimeDigests: Record<string, string>}>;
     const result = await verify(executable, manifest);
     expect(result.runtimeDigests).toEqual(files);
@@ -629,7 +631,8 @@ it('fresh source CLI reaches only the original unqualified-owner guard and rejec
       requiredCommand: 'opencode.sendMessage', expectedCapabilitySnapshotId: null, expectedManifestHighWatermark: null });
     expect(request.body).not.toHaveProperty('prompt');
     expect(request.body).not.toHaveProperty('qualification');
-    expect((await lstat(args[5]!)).mode & 0o777).toBe(0o600);
+    // Windows mode bits do not represent the file's ACL.
+    if (process.platform !== 'win32') expect((await lstat(args[5]!)).mode & 0o777).toBe(0o600);
     await writeFile(args[7]!, JSON.stringify({ schemaVersion: 1, requestId: mismatch ? 'TEST-other' : request.requestId,
       command: request.command, completedAt: new Date().toISOString(), durationMs: 0, diagnostics: [], ok: false, error: { kind: 'runtime_not_ready', retryable: false, message } }) + '\n', { flag: 'wx' });
   };
@@ -817,7 +820,7 @@ it.each(['current-pass', 'current-fail', 'floor', 'windows-best-effort', 'posix-
     }).outputText;
     // Model only the cold V2 namespace check of this unit.
     const fakeFs = `export async function lstat(path) {
-      if (path.endsWith('/opencode/v2')) throw Object.assign(new Error('TEST absent'),{code:'ENOENT'});
+      if (path.replaceAll('\\\\', '/').endsWith('/opencode/v2')) throw Object.assign(new Error('TEST absent'),{code:'ENOENT'});
       return {isDirectory:()=>true,isFile:()=>false,isSymbolicLink:()=>false,nlink:1,dev:1,ino:1};
     }`;
     const fsModule = await import('data:text/javascript,' + encodeURIComponent(fakeFs));

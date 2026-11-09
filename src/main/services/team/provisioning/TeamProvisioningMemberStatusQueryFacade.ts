@@ -1,7 +1,5 @@
-import { getClaudeBasePath } from '@main/utils/pathDecoder';
 import { getErrorMessage } from '@shared/utils/errorHandling';
 import { createLogger } from '@shared/utils/logger';
-import * as agentTeamsControllerModule from 'agent-teams-controller';
 
 import { boundLaunchDiagnostics } from '../progressPayload';
 import { type TeamMembersMetaStore } from '../TeamMembersMetaStore';
@@ -44,7 +42,6 @@ import {
 import { type TeamProvisioningRuntimeSnapshotFacade } from './TeamProvisioningRuntimeSnapshotFacade';
 import { type TeamProvisioningRunTrackingDeliveryHelper } from './TeamProvisioningRunTrackingDelivery';
 import { updateProvisioningProgressMetadata } from './TeamProvisioningSecondaryStopProgress';
-import { deliverStartupWorkAfterConfirmation } from './TeamProvisioningStartupWorkDelivery';
 import { TeamProvisioningTaskActivityCompatibilityFacade } from './TeamProvisioningTaskActivityCompatibilityFacade';
 
 import type {
@@ -55,7 +52,6 @@ import type {
 } from '@shared/types';
 
 const logger = createLogger('Service:TeamProvisioning');
-const { createController } = agentTeamsControllerModule;
 
 export abstract class TeamProvisioningMemberStatusQueryFacade<
   TRun extends ProvisioningRun = ProvisioningRun,
@@ -213,42 +209,6 @@ export abstract class TeamProvisioningMemberStatusQueryFacade<
       next,
       observedAt
     );
-    this.handOverStartupWorkOnFirstConfirmation(run, memberName, previous, next);
-  }
-
-  /**
-   * Hands the member its Actionable work once its launch attempt is confirmed. The startup
-   * context carries no work, so this is the only way a native member learns its tasks.
-   * Every change of a member's launch status passes through
-   * syncMemberTaskActivityForRuntimeTransition (events, transcript proof, the overlay of the
-   * bootstrap state read by every status poll), so the first one that shows the member
-   * confirmed hands the work over, whichever path it came by.
-   */
-  private handOverStartupWorkOnFirstConfirmation(
-    run: TRun,
-    memberName: string,
-    previous: MemberSpawnStatusEntry,
-    next: MemberSpawnStatusEntry
-  ): void {
-    if (previous.bootstrapConfirmed || !next.bootstrapConfirmed) {
-      return;
-    }
-    if (!this.isCurrentTrackedRun(run)) {
-      return;
-    }
-    // A restart inside the same run starts a new attempt: its acceptance time differs.
-    deliverStartupWorkAfterConfirmation(
-      run,
-      memberName,
-      `${run.runId}@${next.firstSpawnAcceptedAt ?? next.updatedAt}`,
-      {
-        createController: (input) => createController(input),
-        getClaudeBasePath,
-        appendMemberBootstrapDiagnostic: (targetRun, targetMember, text) =>
-          this.appendMemberBootstrapDiagnostic(targetRun, targetMember, text),
-        logger,
-      }
-    );
   }
 
   protected createMemberSpawnStatusesSnapshotPorts() {
@@ -265,9 +225,11 @@ export abstract class TeamProvisioningMemberStatusQueryFacade<
 
   /**
    * The write-free projection, for callers that must not disturb a launch (the
-   * HTTP diagnostics route an external monitor polls).
+   * HTTP diagnostics route an external monitor polls), and the answer
+   * `getMemberSpawnStatuses` gives for a team this app profile does not manage.
    *
-   * The IPC/UI path deliberately keeps the writing variant: the persisted-launch
+   * For this profile's teams the IPC/UI path deliberately keeps the writing
+   * variant: the persisted-launch
    * reconcile, the task-activity repair and the expired-launch-grace
    * persistence only ever run from it, and the renderer already backs its poll
    * off during launch. Those maintenance jobs riding a getter is why the two

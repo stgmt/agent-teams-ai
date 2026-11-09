@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readOpenCodeV2DeliveryMap } from '../src/features/opencode-runtime-installer/core/domain/v2Delivery.ts';
+import { validateWindowsRuntimeLock } from './lib/windows-runtime-lock.mjs';
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(scriptDir, '..');
@@ -20,6 +21,7 @@ function fail(message) {
 
 const [command, arg] = process.argv.slice(2);
 const runtimeLock = readRuntimeLock();
+validateWindowsRuntimeLock(runtimeLock);
 const v2Delivery = readOpenCodeV2DeliveryMap(runtimeLock);
 
 switch (command) {
@@ -36,7 +38,7 @@ switch (command) {
     process.stdout.write(`${runtimeLock.releaseRepository}\n`);
     break;
   case 'release-tag':
-    process.stdout.write(`${runtimeLock.releaseTag || runtimeLock.sourceRef}\n`);
+    process.stdout.write(`${runtimeLock.releaseTag}\n`);
     break;
   case 'asset-name': {
     const asset = runtimeLock.assets[arg];

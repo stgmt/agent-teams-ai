@@ -1,7 +1,32 @@
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+
+const { startControlServer } = require('./helpers/controlServer.js');
+const { resetTaskBackendCache } = require('../src/internal/taskBackendSelection.js');
+const { resetSyncControlRequestChannel } = require('../src/internal/syncControlRequest.js');
+const registryEnvKeys = ['AGENT_TEAMS_BOUND_CONTROL_URL', 'AGENT_TEAMS_BOUND_CONTEXT_JSON', 'AGENT_TEAMS_MCP_CLAUDE_DIR'] as const;
+let registryServer: Awaited<ReturnType<typeof startControlServer>>;
+let previousEnv: Record<string, string | undefined>;
+
+beforeEach(async () => {
+  previousEnv = Object.fromEntries(registryEnvKeys.map((key) => [key, process.env[key]]));
+  registryServer = await startControlServer();
+  process.env.AGENT_TEAMS_BOUND_CONTROL_URL = registryServer.url;
+  process.env.AGENT_TEAMS_BOUND_CONTEXT_JSON = JSON.stringify({ appInstanceId: 'roster-test', dataRootFingerprint: 'roster-test', connectionGeneration: 1 });
+  resetTaskBackendCache();
+});
+
+afterEach(async () => {
+  resetTaskBackendCache();
+  resetSyncControlRequestChannel();
+  await registryServer?.stop();
+  for (const key of registryEnvKeys) {
+    if (previousEnv[key] === undefined) delete process.env[key];
+    else process.env[key] = previousEnv[key];
+  }
+});
 
 const { createController } = require('../src/index.js') as {
   createController(options: { teamName: string; claudeDir: string }): {
@@ -20,6 +45,7 @@ describe('member briefing team roster', () => {
     'includes colleagues and excludes removed members for %s',
     async (providerId) => {
       const claudeDir = mkdtempSync(join(tmpdir(), 'member-roster-test-'));
+      process.env.AGENT_TEAMS_MCP_CLAUDE_DIR = claudeDir;
       directories.push(claudeDir);
       const teamDir = join(claudeDir, 'teams', 'sandbox-team');
       mkdirSync(join(teamDir, 'inboxes'), { recursive: true });

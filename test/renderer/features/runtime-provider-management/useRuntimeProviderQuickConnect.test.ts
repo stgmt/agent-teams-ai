@@ -8,7 +8,10 @@ import {
   useRuntimeProviderQuickConnect,
 } from '../../../../src/features/runtime-provider-management/renderer/hooks/useRuntimeProviderQuickConnect';
 import {
+  getRuntimeProviderConnectedCountObservation,
   getRuntimeProviderDirectoryCacheSnapshot,
+  observeRuntimeProviderDirectoryRevision,
+  publishRuntimeProviderDirectoryCache,
   resetRuntimeProviderDirectoryCacheForTests,
 } from '../../../../src/features/runtime-provider-management/renderer/runtimeProviderDirectoryCache';
 
@@ -120,6 +123,96 @@ describe('useRuntimeProviderQuickConnect', () => {
     current = null;
   });
 
+  it('drops a warm cache when an initially unknown binary resolves to a different version', async () => {
+    observeRuntimeProviderDirectoryRevision('runtime-old');
+    publishRuntimeProviderDirectoryCache({
+      projectPath: '/tmp/test-project',
+      entries: directoryResponse('old-provider').directory!.entries,
+      fetchedAt: '2026-11-03T16:00:00.000Z',
+      authoritative: true,
+      runtimeRevision: 'runtime-old',
+    });
+    await renderHarness({ enabled: false, runtimeRevision: null });
+    // The hook mounted during a CLI version check and has no settled identity yet.
+    loadProviderDirectory.mockResolvedValue(directoryResponse('new-provider'));
+    await act(async () => {
+      root.render(React.createElement(Harness, {
+        enabled: true,
+        runtimeRevision: 'runtime-new',
+      }));
+    });
+    expect(current?.entries).toEqual([]);
+    expect(current?.authoritativeLoaded).toBe(false);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(200);
+    });
+    expect(current?.entries.map((entry) => entry.providerId)).toEqual(['new-provider']);
+    expect(getRuntimeProviderDirectoryCacheSnapshot('/tmp/test-project')?.runtimeRevision)
+      .toBe('runtime-new');
+  });
+
+  it('does not seed a new runtime with an old unmounted dashboard snapshot', async () => {
+    observeRuntimeProviderDirectoryRevision('runtime-before-unmount');
+    const oldEntry = directoryResponse('old-runtime-provider').directory!.entries[0]!;
+    publishRuntimeProviderDirectoryCache({
+      projectPath: '/tmp/test-project',
+      entries: [oldEntry],
+      fetchedAt: '2026-11-03T16:00:00.000Z',
+      authoritative: true,
+      runtimeRevision: 'runtime-before-unmount',
+    });
+    loadProviderDirectory.mockResolvedValue(directoryResponse('new-runtime-provider'));
+    await act(async () => {
+      root.render(React.createElement(Harness, { runtimeRevision: 'runtime-after-reopen' }));
+    });
+    expect(current?.entries).toEqual([]);
+    expect(current?.authoritativeLoaded).toBe(false);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(200);
+    });
+    expect(current?.entries.map((entry) => entry.providerId)).toEqual(['new-runtime-provider']);
+    expect(getRuntimeProviderDirectoryCacheSnapshot('/tmp/test-project')).toMatchObject({
+      runtimeRevision: 'runtime-after-reopen',
+      authoritative: false,
+      entries: [{ providerId: 'new-runtime-provider' }],
+    });
+  });
+
+  it('does not commit provider rows from the previous runtime while its replacement loads', async () => {
+    const committedStates: RuntimeProviderQuickConnectDirectoryState[] = [];
+    function RuntimeHarness({ runtimeRevision }: { runtimeRevision: string }) {
+      const state = useRuntimeProviderQuickConnect({
+        enabled: true,
+        projectPath: '/tmp/test-project',
+        runtimeRevision,
+      });
+      React.useLayoutEffect(() => {
+        committedStates.push(state);
+      });
+      return null;
+    }
+    loadProviderDirectory.mockResolvedValueOnce(directoryResponse('old-runtime-provider'));
+    await act(async () => {
+      root.render(React.createElement(RuntimeHarness, { runtimeRevision: 'runtime-old' }));
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(200);
+    });
+    expect(committedStates.at(-1)?.entries[0]?.providerId).toBe('old-runtime-provider');
+
+    committedStates.length = 0;
+    loadProviderDirectory.mockReturnValue(new Promise(() => undefined));
+    await act(async () => {
+      root.render(React.createElement(RuntimeHarness, { runtimeRevision: 'runtime-new' }));
+    });
+
+    expect(committedStates.length).toBeGreaterThan(0);
+    expect(committedStates.every((state) => state.entries.length === 0)).toBe(true);
+    expect(committedStates.every((state) => !state.loaded && state.authoritativePending)).toBe(
+      true
+    );
+  });
+
   it('keeps the automatic dashboard directory on the passive summary route', async () => {
     loadProviderDirectory.mockResolvedValueOnce(directoryResponse('zai-coding-plan'));
     await act(async () => root.render(React.createElement(Harness)));
@@ -154,6 +247,45 @@ describe('useRuntimeProviderQuickConnect', () => {
       authoritative: false,
       entries: [{ providerId: 'zai-coding-plan' }],
     });
+  });
+
+  it('uses a connected-only summary if the existing all-provider summary is truncated', async () => {
+    const revision = JSON.stringify(['ready', '1.2.3', '/bin/opencode']);
+    const all = directoryResponse('openrouter');
+    all.directory!.totalCount = 200;
+    all.directory!.nextCursor = '100';
+    const connected = directoryResponse('openrouter');
+    connected.directory!.filter = 'connected';
+    connected.directory!.entries = [{ ...connected.directory!.entries[0], state: 'connected' }];
+    connected.directory!.fetchedAt = new Date().toISOString();
+    loadProviderDirectory.mockResolvedValueOnce(all).mockResolvedValueOnce(connected);
+
+    await renderHarness({ runtimeRevision: revision });
+    expect(loadProviderDirectory).toHaveBeenCalledTimes(2);
+    expect(loadProviderDirectory.mock.calls[1]?.[0]).toMatchObject({
+      summary: true, filter: 'connected', limit: 100, refresh: false,
+    });
+    expect(getRuntimeProviderConnectedCountObservation('/tmp/test-project')).toMatchObject({
+      connected: 1, source: 'summary-connected', runtimeRevision: revision,
+    });
+    expect(getRuntimeProviderDirectoryCacheSnapshot('/tmp/test-project')?.entries).toMatchObject([
+      { providerId: 'openrouter', state: 'available' },
+    ]);
+  });
+
+  it('falls back to existing all-summary cards if the filtered probe fails', async () => {
+    const revision = JSON.stringify(['ready', '1.2.3', '/bin/opencode']);
+    const all = directoryResponse('openrouter');
+    all.directory!.totalCount = 200;
+    all.directory!.nextCursor = '100';
+    loadProviderDirectory.mockResolvedValueOnce(all).mockResolvedValueOnce({
+      schemaVersion: 1, runtimeId: 'opencode',
+      error: { code: 'unsupported-action', message: 'Unknown filter', recoverable: true },
+    });
+    await renderHarness({ runtimeRevision: revision });
+    expect(loadProviderDirectory).toHaveBeenCalledTimes(2);
+    expect(current?.entries[0]?.providerId).toBe('openrouter');
+    expect(getRuntimeProviderConnectedCountObservation('/tmp/test-project')).toBeNull();
   });
 
   it('does not query OpenCode while the prerequisite is unavailable', async () => {

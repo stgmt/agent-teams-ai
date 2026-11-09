@@ -1,6 +1,5 @@
 const taskStore = require('./taskStore.js');
 const taskArtifact = require('./taskArtifact.js');
-const { readTaskConsistent, listTasksConsistent } = require('./pendingKanbanGuard.js');
 const runtimeHelpers = require('./runtimeHelpers.js');
 const messages = require('./messages.js');
 const messageStore = require('./messageStore.js');
@@ -13,10 +12,13 @@ const { wrapAgentBlock } = require('./agentBlocks.js');
 const { buildCommentNotificationMessage } = require('./taskCommentNotification.js');
 const { findRecentDuplicateTask } = require('./taskCreationDeduplication.js');
 const { isTaskOpen } = require('./taskLifecycle.js');
+const pendingKanbanGuard = require('./pendingKanbanGuard.js');
+const pendingKanbanTransition = require('./pendingKanbanTransition.js');
+const reviewStateHelpers = require('./reviewState.js');
+const { applyTaskStatus } = require('./taskStatusTransition.js');
 const {
     createMemberMessagingProtocol,
-    isCodexMember,
-    isOpenCodeMember,
+    resolveMemberRuntimeProvider,
 } = require('./memberMessagingProtocol.js');
 const {
     assertKnownTaskActor,
@@ -41,6 +43,7 @@ const {
     buildProcessProtocolText,
     appendChatVisualizationProtocol,
 } = require('./briefingProtocols.js');
+
 function mergeMemberRecord(base, overlay) {
     return {
         ...(base && typeof base === 'object' ? base : {}),
@@ -63,12 +66,6 @@ function logNonCritical(message) {
         return;
     }
     console.warn(message);
-}
-
-function resolveMemberRuntimeProvider(member) {
-    if (isOpenCodeMember(member)) return 'opencode';
-    if (isCodexMember(member)) return 'codex';
-    return 'native';
 }
 
 function maybeNotifyPreviousOwnerOnReassignment(context, previousTask, updatedTask, options = {}) {
@@ -322,16 +319,29 @@ function assertTaskCreationCommandScope(context, input) {
     }
 }
 
-function getTask(context, taskId) {
-    return readTaskConsistent(context, taskStore, kanbanStore, taskId);
+function getTask(context, taskId, scope) {
+    return withTeamBoardLock(context.paths, () => {
+        const task = taskStore.readTask(context.paths, taskId, {
+            includeDeleted: true,
+            full: true,
+            ...(scope ? { scope } : {}),
+        });
+        pendingKanbanGuard.assertNoPendingKanbanTransition(task);
+        return task;
+    });
 }
 
-function getTaskComment(context, taskId, commentId) {
+function getTaskComment(context, taskId, commentId, scope) {
     const normalizedCommentId = String(commentId || '').trim();
     if (!normalizedCommentId) {
         throw new Error('Missing commentId');
     }
-    const task = taskStore.readTask(context.paths, taskId, { includeDeleted: true });
+    const task = taskStore.readTask(context.paths, taskId, {
+        includeDeleted: true,
+        full: true,
+        ...(scope ? { scope } : {}),
+    });
+    pendingKanbanGuard.assertNoPendingKanbanTransition(task);
     const comments = Array.isArray(task.comments) ? task.comments : [];
 
     // Exact match first, then prefix match (allows short IDs like first 8 chars)
@@ -354,22 +364,81 @@ function getTaskComment(context, taskId, commentId) {
     };
 }
 
-function listTasks(context) {
-    return listTasksConsistent(context, taskStore, kanbanStore);
+function listTasks(context, scope) {
+    return withTeamBoardLock(context.paths, () => {
+        const result = taskStore.listTasks(context.paths, scope ? { scope } : {});
+        result.forEach((task) => pendingKanbanGuard.assertNoPendingKanbanTransition(task));
+        return result;
+    });
 }
 
-function listDeletedTasks(context) {
-    return taskStore.listTasks(context.paths, { includeDeleted: true }).filter(
-        (task) => task.status === 'deleted'
-    );
+function listDeletedTasks(context, scope) {
+    return withTeamBoardLock(context.paths, () => {
+        const result = taskStore.listTasks(context.paths, {
+            includeDeleted: true,
+            ...(scope ? { scope } : {}),
+        });
+        result.forEach((task) => pendingKanbanGuard.assertNoPendingKanbanTransition(task));
+        return result.filter((task) => task.status === 'deleted');
+    });
 }
-function resolveTaskId(context, taskRef) {
-    return taskStore.resolveTaskRef(context.paths, taskRef, { includeDeleted: true });
+
+function resolveTaskId(context, taskRef, scope) {
+    return taskStore.resolveTaskRef(context.paths, taskRef, {
+        includeDeleted: true,
+        ...(scope ? { scope } : {}),
+    });
+}
+
+function closeOpenReviewIntervals(task, timestamp) {
+    if (!Array.isArray(task.reviewIntervals)) return;
+    task.reviewIntervals = task.reviewIntervals.map((interval) => {
+        if (!interval || interval.completedAt !== undefined) return interval;
+        const startedAt = Date.parse(interval.startedAt);
+        const completedAt = Date.parse(timestamp);
+        return {
+            ...interval,
+            completedAt:
+                Number.isFinite(startedAt) && Number.isFinite(completedAt) && completedAt < startedAt
+                    ? interval.startedAt
+                    : timestamp,
+        };
+    });
+}
+
+function buildStatusTarget(task, status, actor) {
+    return applyTaskStatus(structuredClone(task), status, actor, {}, {
+        nowIso: () => new Date().toISOString(),
+        closeOpenReviewIntervals,
+        appendHistoryEvent: taskStore.appendHistoryEvent,
+        normalizeTaskReviewState: reviewStateHelpers.normalizeReviewState,
+    });
+}
+
+function transitionStatusWithKanban(context, task, status, actor, scope, resetReviewState = false) {
+    pendingKanbanGuard.assertNoPendingKanbanTransition(task);
+    pendingKanbanGuard.assertNoPendingTransitions(context.paths, taskStore);
+    const target = buildStatusTarget(task, status, actor);
+    if (resetReviewState) target.reviewState = 'none';
+    return pendingKanbanTransition.runPendingTransition(context, task, target, {
+        kind: 'status',
+        column: 'none',
+        operation: 'status',
+        targetStatus: status,
+        onlyIfReferenced: true,
+        scope,
+    });
 }
 
 function setTaskStatus(context, taskId, status, actor, options = {}) {
+    const scope = options.scope;
+    const taskReadOptions = {
+        includeDeleted: true,
+        ...(scope ? { scope } : {}),
+    };
     const { task, becameDeleted } = withTeamBoardLock(context.paths, () => {
-        const before = taskStore.readTask(context.paths, taskId, { includeDeleted: true });
+        const before = taskStore.readTask(context.paths, taskId, taskReadOptions);
+        pendingKanbanGuard.assertNoPendingKanbanTransition(before);
         const normalizedStatus = String(status || '').trim();
         if (before.status === 'deleted' && normalizedStatus !== 'deleted') {
             throw new Error(`Task #${before.displayId || before.id} is deleted; use task_restore before changing status`);
@@ -385,12 +454,10 @@ function setTaskStatus(context, taskId, status, actor, options = {}) {
             assertDependenciesResolved(context, before, normalizedStatus);
             if (normalizedStatus === 'completed') taskArtifact.verifyTask(context, before);
         }
-        const state = ['deleted', 'in_progress', 'pending'].includes(normalizedStatus) ? kanbanStore.readKanbanState(context.paths, context.teamName) : null;
-        const task = state && hasKanbanReference(state, before.id)
-            ? kanbanStore.clearKanbanWithTaskTransition(context.paths, context.teamName, before.id, {
-                targetStatus: normalizedStatus, actor: actorForWrite, nextReviewState: 'none',
-            })
-            : taskStore.setTaskStatus(context.paths, taskId, status, actorForWrite);
+        const clearsBoard = ['deleted', 'in_progress', 'pending'].includes(normalizedStatus);
+        const task = clearsBoard
+            ? transitionStatusWithKanban(context, before, normalizedStatus, actorForWrite, scope)
+            : taskStore.setTaskStatus(context.paths, taskId, status, actorForWrite, scope);
         return { task, becameDeleted: before.status !== 'deleted' && task.status === 'deleted' };
     });
     if (task.status === 'completed') {
@@ -437,31 +504,16 @@ function runDeletedTaskFollowUps(context, task) {
     }
 }
 
-function hasKanbanReference(state, taskId) {
-    if (state.tasks && state.tasks[taskId]) {
-        return true;
-    }
-    if (!state.columnOrder || typeof state.columnOrder !== 'object') {
-        return false;
-    }
-    return Object.values(state.columnOrder).some(
-        (orderedTaskIds) =>
-            Array.isArray(orderedTaskIds) && orderedTaskIds.some((entry) => String(entry) === String(taskId))
-    );
-}
 
-function startTask(context, taskId, actor) {
+function startTask(context, taskId, actor, options = {}) {
+    const scope = options.scope;
+    const taskReadOptions = { includeDeleted: true, ...(scope ? { scope } : {}) };
     return withTeamBoardLock(context.paths, () => {
-        const before = taskStore.readTask(context.paths, taskId, { includeDeleted: true });
+        const before = taskStore.readTask(context.paths, taskId, taskReadOptions);
         assertTaskNotDeleted(before, 'starting work');
         const actorForWrite = assertTaskOwnerMutation(context, before, actor, 'start it');
         assertDependenciesResolved(context, before, 'in_progress');
-        const state = kanbanStore.readKanbanState(context.paths, context.teamName);
-        return hasKanbanReference(state, before.id)
-            ? kanbanStore.clearKanbanWithTaskTransition(context.paths, context.teamName, before.id, {
-                targetStatus: 'in_progress', actor: actorForWrite, nextReviewState: 'none',
-            })
-            : taskStore.setTaskStatus(context.paths, taskId, 'in_progress', actorForWrite);
+        return transitionStatusWithKanban(context, before, 'in_progress', actorForWrite, scope);
     });
 }
 
@@ -544,10 +596,10 @@ function notifyUnblockedOwners(context, resolvedTask, options = {}) {
  * the board itself rather than from anyone's good behaviour.
  */
 function notifyLeadWhenBoardCompleted(context, completedTask) {
-    return withTeamBoardLock(context.paths, () => {
     let tasks;
     try {
-        tasks = listTasksConsistent(context, taskStore, kanbanStore);
+        tasks = taskStore.listTasks(context.paths);
+        pendingKanbanGuard.assertNoPendingTransitions(context.paths, taskStore);
     } catch {
         return;
     }
@@ -591,7 +643,6 @@ function notifyLeadWhenBoardCompleted(context, completedTask) {
     } catch (error) {
         warnNonCritical(`[tasks] board-completion notice failed for task ${completedTask.id}`, error);
     }
-    });
 }
 
 function runCompletedTaskFollowUps(context, task) {
@@ -607,58 +658,55 @@ function runCompletedTaskFollowUps(context, task) {
     }
 }
 
-function completeTask(context, taskId, actor) {
-    return setTaskStatus(context, taskId, 'completed', actor);
+function completeTask(context, taskId, actor, options = {}) {
+    return setTaskStatus(context, taskId, 'completed', actor, options);
 }
 
-function softDeleteTask(context, taskId, actor) {
+function softDeleteTask(context, taskId, actor, options = {}) {
+    const scope = options.scope;
+    const taskReadOptions = { includeDeleted: true, ...(scope ? { scope } : {}) };
     const { task, becameDeleted } = withTeamBoardLock(context.paths, () => {
-        const before = taskStore.readTask(context.paths, taskId, { includeDeleted: true });
+        const before = taskStore.readTask(context.paths, taskId, taskReadOptions);
         const actorForWrite = assertTaskOwnerMutation(context, before, actor, 'delete it', {
             allowLeadOverride: true,
         });
-        const state = kanbanStore.readKanbanState(context.paths, context.teamName);
-        const task = hasKanbanReference(state, before.id)
-            ? kanbanStore.clearKanbanWithTaskTransition(context.paths, context.teamName, before.id, {
-                targetStatus: 'deleted', actor: actorForWrite, nextReviewState: 'none',
-            })
-            : taskStore.setTaskStatus(context.paths, taskId, 'deleted', actorForWrite);
+        const task = transitionStatusWithKanban(context, before, 'deleted', actorForWrite, scope);
         return { task, becameDeleted: before.status !== 'deleted' };
     });
-    if (becameDeleted) {
-        runDeletedTaskFollowUps(context, task);
-    }
+    if (becameDeleted) runDeletedTaskFollowUps(context, task);
     return task;
 }
 
-function restoreTask(context, taskId, actor) {
+function restoreTask(context, taskId, actor, options = {}) {
+    const scope = options.scope;
+    const taskReadOptions = { includeDeleted: true, ...(scope ? { scope } : {}) };
     return withTeamBoardLock(context.paths, () => {
-        const before = taskStore.readTask(context.paths, taskId, { includeDeleted: true });
+        const before = taskStore.readTask(context.paths, taskId, taskReadOptions);
         if (before.status !== 'deleted') {
             throw new Error(`Task #${before.displayId || before.id} is not deleted; task_restore only restores deleted tasks`);
         }
         const actorForWrite = assertTaskOwnerMutation(context, before, actor, 'restore it', {
             allowLeadOverride: true,
         });
-        const state = kanbanStore.readKanbanState(context.paths, context.teamName);
-        return hasKanbanReference(state, before.id)
-            ? kanbanStore.clearKanbanWithTaskTransition(context.paths, context.teamName, before.id, {
-                targetStatus: 'pending', actor: actorForWrite || 'user', nextReviewState: 'none',
-            })
-            : taskStore.setTaskStatus(context.paths, taskId, 'pending', actorForWrite || 'user', {
-                afterStatus: (task) => ({ ...task, reviewState: 'none' }),
-            });
+        return transitionStatusWithKanban(
+            context,
+            before,
+            'pending',
+            actorForWrite || 'user',
+            scope,
+            true
+        );
     });
 }
 
-function setTaskOwner(context, taskId, owner, actor) {
+function setTaskOwner(context, taskId, owner, actor, scope) {
     const { previousTask, updatedTask } = withTeamBoardLock(context.paths, () => {
-        const before = readMutableTask(context, taskId, 'changing owner');
+        const before = readMutableTask(context, taskId, 'changing owner', scope);
         const nextOwner = isClearOwnerValue(owner)
             ? owner
             : assertKnownTaskActor(context, owner, 'task owner');
         const actorForWrite = assertTaskOwnerChange(context, before, nextOwner, actor);
-        const after = taskStore.setTaskOwner(context.paths, taskId, nextOwner, actorForWrite);
+        const after = taskStore.setTaskOwner(context.paths, taskId, nextOwner, actorForWrite, scope);
         return {
             previousTask: before,
             updatedTask: after,
@@ -682,11 +730,11 @@ function setTaskOwner(context, taskId, owner, actor) {
     return updatedTask;
 }
 
-function updateTaskFields(context, taskId, fields) {
-    return taskArtifact.updateTaskFields(context, taskId, fields);
+function updateTaskFields(context, taskId, fields, scope) {
+    return taskArtifact.updateTaskFields(context, taskId, fields, scope);
 }
 
-function addTaskCommentWithOptions(context, taskId, flags, options = {}) {
+function addTaskCommentWithOptions(context, taskId, flags, options = {}, scope) {
     const commentFlags = flags || {};
     const fromRequiredForAgentTool =
         context.allowUserMessageSender === false && options.trustedInternalWrite !== true;
@@ -707,15 +755,21 @@ function addTaskCommentWithOptions(context, taskId, flags, options = {}) {
         }
     );
     const result = withTeamBoardLock(context.paths, () => {
-        readMutableTask(context, taskId, 'adding a comment');
-        const insertResult = taskStore.addTaskComment(context.paths, taskId, commentFlags.text, {
-            author,
-            ...(commentFlags.id ? { id: commentFlags.id } : {}),
-            ...(commentFlags.createdAt ? { createdAt: commentFlags.createdAt } : {}),
-            ...(commentFlags.type ? { type: commentFlags.type } : {}),
-            ...(Array.isArray(commentFlags.taskRefs) ? { taskRefs: commentFlags.taskRefs } : {}),
-            ...(Array.isArray(commentFlags.attachments) ? { attachments: commentFlags.attachments } : {}),
-        });
+        readMutableTask(context, taskId, 'adding a comment', scope);
+        const insertResult = taskStore.addTaskComment(
+            context.paths,
+            taskId,
+            commentFlags.text,
+            {
+                author,
+                ...(commentFlags.id ? { id: commentFlags.id } : {}),
+                ...(commentFlags.createdAt ? { createdAt: commentFlags.createdAt } : {}),
+                ...(commentFlags.type ? { type: commentFlags.type } : {}),
+                ...(Array.isArray(commentFlags.taskRefs) ? { taskRefs: commentFlags.taskRefs } : {}),
+                ...(Array.isArray(commentFlags.attachments) ? { attachments: commentFlags.attachments } : {}),
+            },
+            scope
+        );
         // A comment is evidence or coordination, not a start command. Pending
         // work must move to in_progress only through the explicit task_start
         // operation, so blocker/busy notes cannot accidentally consume a turn.
@@ -741,17 +795,19 @@ function addTaskCommentWithOptions(context, taskId, flags, options = {}) {
     };
 }
 
-function addTaskComment(context, taskId, flags) {
-    return addTaskCommentWithOptions(context, taskId, flags);
+function addTaskComment(context, taskId, flags, scope) {
+    return addTaskCommentWithOptions(context, taskId, flags, {}, scope);
 }
 
-function attachTaskFile(context, taskId, flags) {
-    const canonicalTaskId = resolveTaskId(context, taskId);
-    withTeamBoardLock(context.paths, () => readMutableTask(context, canonicalTaskId, 'adding an attachment'));
+function attachTaskFile(context, taskId, flags, scope) {
+    const canonicalTaskId = resolveTaskId(context, taskId, scope);
+    withTeamBoardLock(context.paths, () =>
+        readMutableTask(context, canonicalTaskId, 'adding an attachment', scope)
+    );
     const saved = runtimeHelpers.saveTaskAttachmentFile(context.paths, canonicalTaskId, flags);
     const task = withTeamBoardLock(context.paths, () => {
-        readMutableTask(context, canonicalTaskId, 'adding an attachment');
-        return taskStore.addTaskAttachmentMeta(context.paths, canonicalTaskId, saved.meta);
+        readMutableTask(context, canonicalTaskId, 'adding an attachment', scope);
+        return taskStore.addTaskAttachmentMeta(context.paths, canonicalTaskId, saved.meta, scope);
     });
     return {
         ...saved.meta,
@@ -759,13 +815,21 @@ function attachTaskFile(context, taskId, flags) {
     };
 }
 
-function attachCommentFile(context, taskId, commentId, flags) {
-    const canonicalTaskId = resolveTaskId(context, taskId);
-    withTeamBoardLock(context.paths, () => readMutableTask(context, canonicalTaskId, 'adding a comment attachment'));
+function attachCommentFile(context, taskId, commentId, flags, scope) {
+    const canonicalTaskId = resolveTaskId(context, taskId, scope);
+    withTeamBoardLock(context.paths, () =>
+        readMutableTask(context, canonicalTaskId, 'adding a comment attachment', scope)
+    );
     const saved = runtimeHelpers.saveTaskAttachmentFile(context.paths, canonicalTaskId, flags);
     const task = withTeamBoardLock(context.paths, () => {
-        readMutableTask(context, canonicalTaskId, 'adding a comment attachment');
-        return taskStore.addCommentAttachmentMeta(context.paths, canonicalTaskId, commentId, saved.meta);
+        readMutableTask(context, canonicalTaskId, 'adding a comment attachment', scope);
+        return taskStore.addCommentAttachmentMeta(
+            context.paths,
+            canonicalTaskId,
+            commentId,
+            saved.meta,
+            scope
+        );
     });
     return {
         ...saved.meta,
@@ -773,36 +837,41 @@ function attachCommentFile(context, taskId, commentId, flags) {
     };
 }
 
-function addTaskAttachmentMeta(context, taskId, meta) {
+function addTaskAttachmentMeta(context, taskId, meta, scope) {
     return withTeamBoardLock(context.paths, () => {
-        readMutableTask(context, taskId, 'adding an attachment');
-        return taskStore.addTaskAttachmentMeta(context.paths, taskId, meta);
+        readMutableTask(context, taskId, 'adding an attachment', scope);
+        return taskStore.addTaskAttachmentMeta(context.paths, taskId, meta, scope);
     });
 }
 
-function removeTaskAttachment(context, taskId, attachmentId) {
+function removeTaskAttachment(context, taskId, attachmentId, scope) {
     return withTeamBoardLock(context.paths, () => {
-        readMutableTask(context, taskId, 'removing an attachment');
-        return taskStore.removeTaskAttachment(context.paths, taskId, attachmentId);
+        readMutableTask(context, taskId, 'removing an attachment', scope);
+        return taskStore.removeTaskAttachment(context.paths, taskId, attachmentId, scope);
     });
 }
 
-function setNeedsClarification(context, taskId, value) {
+function setNeedsClarification(context, taskId, value, scope) {
     return withTeamBoardLock(context.paths, () => {
-        readMutableTask(context, taskId, 'changing clarification');
-        return taskStore.setNeedsClarification(context.paths, taskId, value == null ? 'clear' : String(value));
+        readMutableTask(context, taskId, 'changing clarification', scope);
+        return taskStore.setNeedsClarification(
+            context.paths,
+            taskId,
+            value == null ? 'clear' : String(value),
+            scope
+        );
     });
 }
 
-function linkTask(context, taskId, targetId, linkType) {
+function linkTask(context, taskId, targetId, linkType, scope) {
     return withTeamBoardLock(context.paths, () =>
-        taskStore.linkTask(context.paths, taskId, targetId, String(linkType))
+        taskStore.linkTask(context.paths, taskId, targetId, String(linkType), scope)
     );
 }
 
-function unlinkTask(context, taskId, targetId, linkType) {
+function unlinkTask(context, taskId, targetId, linkType, scope) {
     return withTeamBoardLock(context.paths, () =>
-        taskStore.unlinkTask(context.paths, taskId, targetId, String(linkType))
+        taskStore.unlinkTask(context.paths, taskId, targetId, String(linkType), scope)
     );
 }
 
@@ -1111,7 +1180,6 @@ module.exports = {
     createTask,
     getTask,
     getTaskComment,
-    hasKanbanReference,
     linkTask,
     listDeletedTasks,
     listTaskInventory,

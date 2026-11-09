@@ -4,6 +4,8 @@ const runtimeHelpers = require('./runtimeHelpers.js');
 const taskStore = require('./taskStore.js');
 const { withTeamBoardLock } = require('./boardLock.js');
 const { assertTaskOwnerMutation, assertTaskNotDeleted } = require('./taskOwnershipGuards.js');
+const pendingKanbanGuard = require('./pendingKanbanGuard.js');
+const { resolveTaskBackend } = require('./taskBackendSelection.js');
 
 const MAX_ARTIFACT_BYTES = 20 * 1024 * 1024;
 const MAX_BASE64_CHARS = Math.ceil(MAX_ARTIFACT_BYTES / 3) * 4;
@@ -34,8 +36,7 @@ function decodeArtifact(file) {
     throw new Error('Artifact content must be valid base64');
   const data = Buffer.from(encoded, 'base64');
   if (data.length > MAX_ARTIFACT_BYTES) throw new Error('Artifact exceeds the 20 MiB limit');
-  if (data.toString('base64') !== encoded) throw new Error('Artifact content must be valid base64');
-  return { filename, data };
+  return { filename, data, base64Data: encoded };
 }
 
 function artifactPath(context, task, attachmentId) {
@@ -99,6 +100,7 @@ function prepareUpdate(context, task, fields) {
   const safeFields = {
     subject: fields.subject,
     description: fields.description,
+    requirements: fields.requirements,
     groupChatId: fields.groupChatId,
   };
   if (fields.artifactProjectPath !== undefined)
@@ -165,7 +167,7 @@ function removePrevious(context, previous, updated) {
   }
 }
 
-function commitPreparedUpdate(context, task, fields) {
+function commitPreparedUpdate(context, task, fields, scope) {
   const prepared = prepareUpdate(context, task, fields);
   const stagedId =
     fields.artifactFile !== undefined
@@ -173,14 +175,14 @@ function commitPreparedUpdate(context, task, fields) {
       : undefined;
   let updated;
   try {
-    updated = taskStore.updateTaskFields(context.paths, task.id, prepared);
+    updated = taskStore.updateTaskFields(context.paths, task.id, prepared, scope);
   } catch (error) {
     if (stagedId && stagedId !== task.artifactRequirement?.proof?.attachmentId) {
       try {
         // A failed write can have committed before reporting an error. Only
         // remove this newly created copy if fresh task metadata proves that it
         // is not referenced; an unreadable task leaves the outcome unknown.
-        const current = taskStore.readTask(context.paths, task.id, { includeDeleted: true });
+        const current = taskStore.readTask(context.paths, task.id, { includeDeleted: true, ...(scope ? { scope } : {}) });
         const referenced =
           current.artifactRequirement?.proof?.attachmentId === stagedId ||
           current.attachments?.some((entry) => entry.id === stagedId);
@@ -198,17 +200,83 @@ function commitPreparedUpdate(context, task, fields) {
   return updated;
 }
 
-function updateTaskFields(context, taskId, fields) {
+function hasArtifactUpdate(fields) {
+  return (
+    fields.artifactRequired !== undefined ||
+    fields.artifactExpectedFilename !== undefined ||
+    fields.artifactFile !== undefined ||
+    fields.artifactProjectPath !== undefined
+  );
+}
+
+function prepareAppBoundUpdate(context, task, fields) {
+  const hasFile = fields.artifactFile !== undefined;
+  const fieldsWithoutFile = { ...fields };
+  delete fieldsWithoutFile.artifactFile;
+  const prepared = prepareUpdate(context, task, fieldsWithoutFile);
+  if (!hasFile) {
+    return {
+      ...prepared,
+      ...(fields.artifactRequired === undefined ? {} : { artifactRequired: fields.artifactRequired }),
+      ...(fields.artifactExpectedFilename === undefined
+        ? {}
+        : { artifactExpectedFilename: fields.artifactExpectedFilename }),
+    };
+  }
+  if (context.allowUserMessageSender === false)
+    throw new Error('Only the user may change artifact requirements');
+  if (task.status === 'completed')
+    throw new Error('Reopen the completed task before changing its artifact');
+  const required =
+    fields.artifactRequired === undefined
+      ? task.artifactRequirement?.required === true
+      : fields.artifactRequired;
+  if (!required) throw new Error('Enable the artifact requirement before attaching a file');
+  const { filename, base64Data } = decodeArtifact(fields.artifactFile);
+  const expectedFilename =
+    fields.artifactExpectedFilename === undefined
+      ? task.artifactRequirement?.expectedFilename
+      : validateFilename(fields.artifactExpectedFilename);
+  if (expectedFilename && expectedFilename !== filename) {
+    throw new Error(`Required artifact filename is ${expectedFilename}`);
+  }
+  return {
+    ...prepared,
+    ...(fields.artifactRequired === undefined ? {} : { artifactRequired: fields.artifactRequired }),
+    ...(fields.artifactExpectedFilename === undefined
+      ? {}
+      : { artifactExpectedFilename: fields.artifactExpectedFilename }),
+    artifactFile: { filename, base64Data },
+  };
+}
+
+function updateTaskFields(context, taskId, fields, scope) {
   return withTeamBoardLock(context.paths, () => {
-    const task = taskStore.readTask(context.paths, taskId, { includeDeleted: true });
+    const task = taskStore.readTask(context.paths, taskId, { includeDeleted: true, ...(scope ? { scope } : {}) });
+    pendingKanbanGuard.assertNoPendingKanbanTransition(task);
     assertTaskNotDeleted(task, 'updating task fields');
-    return commitPreparedUpdate(context, task, fields);
+    const backend = resolveTaskBackend(context.paths);
+    if (backend.kind === 'registry' && hasArtifactUpdate(fields)) {
+      return backend.updateTaskArtifactFields(
+        task.id,
+        prepareAppBoundUpdate(context, task, fields),
+        scope
+      );
+    }
+    if (backend.kind === 'registry-snapshot' && hasArtifactUpdate(fields)) {
+      return backend.updateTaskArtifactFields(task.id, fields, scope);
+    }
+    return commitPreparedUpdate(context, task, fields, scope);
   });
 }
 
-function verifyTask(context, task, includeData = false) {
+function verifyTask(context, task, includeData = false, scope) {
+  const backend = resolveTaskBackend(context.paths);
   const requirement = task.artifactRequirement;
   if (!requirement?.required) return null;
+  if (backend.kind === 'registry') {
+    return verifyAppBoundTask(backend, task, includeData, scope);
+  }
   const proof = requirement.proof;
   if (!proof || !task.attachments?.some((item) => item.id === proof.attachmentId)) {
     throw new Error(
@@ -263,17 +331,48 @@ function verifyTask(context, task, includeData = false) {
   }
 }
 
-function verifyTaskArtifact(context, taskId) {
+function verifyAppBoundTask(backend, task, includeData, scope) {
+  const proof = task.artifactRequirement?.proof;
+  const attachment = task.attachments?.find((item) => item.id === proof?.attachmentId);
+  if (!proof || !attachment) {
+    throw new Error(
+      'A required task artifact has not been attached; use task_set_artifact_file with file bytes'
+    );
+  }
+  try {
+    const artifact = backend.readTaskArtifactData(task.id, proof.attachmentId, scope);
+    if (!artifact) throw new Error('App-owned artifact bytes are unavailable');
+    const { filename, data } = decodeArtifact(artifact);
+    const sha256 = crypto.createHash('sha256').update(data).digest('hex');
+    if (
+      filename !== attachment.filename ||
+      artifact.mimeType !== attachment.mimeType ||
+      artifact.size !== data.length ||
+      artifact.sha256 !== sha256 ||
+      proof.sha256 !== sha256 ||
+      proof.size !== data.length ||
+      attachment.size !== data.length
+    ) {
+      throw new Error('Artifact has changed; attach it again');
+    }
+    const checked = { attachmentId: proof.attachmentId, sha256, size: data.length };
+    return includeData ? { proof: checked, base64Data: artifact.base64Data } : checked;
+  } catch (error) {
+    throw new Error(`Required task artifact cannot be verified: ${error.message}`);
+  }
+}
+
+function verifyTaskArtifact(context, taskId, scope) {
   return withTeamBoardLock(context.paths, () =>
-    verifyTask(context, taskStore.readTask(context.paths, taskId))
+    verifyTask(context, taskStore.readTask(context.paths, taskId, scope ? { scope } : {}), false, scope)
   );
 }
 
-function readTaskArtifactData(context, taskId, attachmentId) {
+function readTaskArtifactData(context, taskId, attachmentId, scope) {
   return withTeamBoardLock(context.paths, () => {
     let task;
     try {
-      task = taskStore.readTask(context.paths, taskId);
+      task = taskStore.readTask(context.paths, taskId, scope ? { scope } : {});
     } catch (error) {
       if (error.code === 'TASK_NOT_FOUND') return null;
       throw error;
@@ -283,20 +382,36 @@ function readTaskArtifactData(context, taskId, attachmentId) {
       task.artifactRequirement.proof?.attachmentId !== attachmentId
     )
       return null;
-    return verifyTask(context, task, true).base64Data;
+    return verifyTask(context, task, true, scope).base64Data;
   });
 }
 
-function setTaskArtifactFile(context, taskId, file, actor) {
+
+function setTaskArtifactFile(context, taskId, file, actor, scope) {
   return withTeamBoardLock(context.paths, () => {
-    const task = taskStore.readTask(context.paths, taskId);
+    const task = taskStore.readTask(context.paths, taskId, scope ? { scope } : {});
+    pendingKanbanGuard.assertNoPendingKanbanTransition(task);
     assertTaskNotDeleted(task, 'attaching an artifact');
     assertTaskOwnerMutation(context, task, actor, 'attach an artifact');
     if (!task.artifactRequirement?.required)
       throw new Error('This task does not require an artifact');
+    if (task.status === 'completed')
+      throw new Error('Reopen the completed task before changing its artifact');
+    const backend = resolveTaskBackend(context.paths);
+    if (backend.kind === 'registry-snapshot') {
+      return backend.setTaskArtifactFile(task.id, file, scope);
+    }
+    if (backend.kind === 'registry') {
+      const { filename, base64Data } = decodeArtifact(file);
+      return backend.setTaskArtifactFile(
+        task.id,
+        { filename, base64Data },
+        scope
+      );
+    }
     return commitPreparedUpdate({ ...context, allowUserMessageSender: true }, task, {
       artifactFile: file,
-    });
+    }, scope);
   });
 }
 

@@ -1,3 +1,27 @@
+const { startControlServer } = require('./helpers/controlServer.js');
+const { resetTaskBackendCache } = require('../src/internal/taskBackendSelection.js');
+const { resetSyncControlRequestChannel } = require('../src/internal/syncControlRequest.js');
+
+let registryServer;
+let registryPreviousEnv;
+const registryEnvKeys = ['AGENT_TEAMS_BOUND_CONTROL_URL', 'AGENT_TEAMS_BOUND_CONTEXT_JSON', 'AGENT_TEAMS_MCP_CLAUDE_DIR'];
+beforeEach(async () => {
+  registryPreviousEnv = Object.fromEntries(registryEnvKeys.map((key) => [key, process.env[key]]));
+  registryServer = await startControlServer();
+  process.env.AGENT_TEAMS_BOUND_CONTROL_URL = registryServer.url;
+  process.env.AGENT_TEAMS_BOUND_CONTEXT_JSON = JSON.stringify({ appInstanceId: 'controller-consumer-test', dataRootFingerprint: 'controller-consumer-root', connectionGeneration: 1 });
+  resetTaskBackendCache();
+});
+afterEach(async () => {
+  resetTaskBackendCache();
+  resetSyncControlRequestChannel();
+  if (registryServer) await registryServer.stop();
+  for (const key of registryEnvKeys) {
+    if (registryPreviousEnv[key] === undefined) delete process.env[key];
+    else process.env[key] = registryPreviousEnv[key];
+  }
+});
+
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -16,6 +40,7 @@ describe('issue-618 dependency transitions', () => {
   let sequence = 0;
   beforeEach(() => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'issue618-controller-'));
+    process.env.AGENT_TEAMS_MCP_CLAUDE_DIR = dir;
     fs.mkdirSync(path.join(dir, 'teams', 'fixture'), { recursive: true });
     fs.writeFileSync(path.join(dir, 'teams', 'fixture', 'config.json'), JSON.stringify({
       name: 'fixture', members: [{ name: 'alice', role: 'team-lead' }, { name: 'bob', role: 'developer' }],
@@ -23,26 +48,31 @@ describe('issue-618 dependency transitions', () => {
     tasks = createController({ teamName: 'fixture', claudeDir: dir }).taskBoard;
   });
   afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
-  const snapshot = () => Object.fromEntries(fs.readdirSync(dir, { recursive: true })
-    .filter((file) => fs.statSync(path.join(dir, file)).isFile())
-    .map((file) => [file, fs.readFileSync(path.join(dir, file), 'utf8')]));
-  const create = (blockedBy = []) => tasks.createTask({ subject: `Fixture task ${++sequence}`, owner: 'bob', blockedBy });
+  const snapshot = () => ({
+    tasks: tasks.listTasks({ includeDeleted: true }),
+    files: Object.fromEntries(fs.readdirSync(dir, { recursive: true })
+      .filter((file) => fs.statSync(path.join(dir, file)).isFile())
+      .map((file) => [file, fs.readFileSync(path.join(dir, file), 'utf8')])),
+  });
+  const create = (blockedBy = []) => tasks.createTask({ requirements: ['FR-1'], subject: `Fixture task ${++sequence}`, owner: 'bob', blockedBy });
   const inbox = (owner) => {
     const file = path.join(dir, 'teams', 'fixture', 'inboxes', `${owner}.json`);
     return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : [];
   };
-  const rewrite = (task, patch) => {
-    const file = path.join(dir, 'tasks', 'fixture', `${task.id}.json`);
-    fs.writeFileSync(file, JSON.stringify({ ...JSON.parse(fs.readFileSync(file, 'utf8')), ...patch }));
+  const rewrite = async (task, patch) => {
+    const response = await fetch(`${registryServer.url}/api/teams/fixture/tasks/${task.id}`, {
+      method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify(patch),
+    });
+    expect(response.ok).toBe(true);
   };
 
   describe.each(transitions)('%s', (_name, status, transition) => {
-    it.each(['pending', 'in_progress'])('refuses %s blockers without changing any fixture file', (blockerStatus) => {
+    it.each(['pending', 'in_progress'])('refuses %s blockers without changing registry tasks or fixture files', async (blockerStatus) => {
       const blocker = create();
       tasks.setTaskStatus(blocker.id, blockerStatus, 'bob');
       const dependent = create([blocker.id]);
       // Include kanban and already-inconsistent protected states in the snapshot.
-      rewrite(dependent, { status });
+      await rewrite(dependent, { status });
       fs.writeFileSync(path.join(dir, 'teams', 'fixture', 'kanban-state.json'), JSON.stringify({
         tasks: { [dependent.id]: { column: 'review' } }, columnOrder: { review: [dependent.id] },
       }));
@@ -51,29 +81,21 @@ describe('issue-618 dependency transitions', () => {
       expect(snapshot()).toEqual(before);
     });
 
-    it.each(['review', 'needsFix'])('keeps completed blockers in %s open', (reviewState) => {
+    it.each(['review', 'needsFix'])('keeps completed blockers in %s open', async (reviewState) => {
       const blocker = create();
       const dependent = create([blocker.id]);
-      rewrite(blocker, { status: 'completed', reviewState });
+      await rewrite(blocker, { status: 'completed', reviewState });
       const before = snapshot();
       expect(() => transition(tasks, dependent.id)).toThrow(/unresolved dependencies/);
       expect(snapshot()).toEqual(before);
     });
 
-    it.each(['{', 'null', 'false', '0', '{}'])('rejects unreadable blocker %s without writes', (payload) => {
-      const blocker = create();
-      const dependent = create([blocker.id]);
-      fs.writeFileSync(path.join(dir, 'tasks', 'fixture', `${blocker.id}.json`), payload);
-      const before = snapshot();
-      expect(() => transition(tasks, dependent.id)).toThrow(/Cannot read task/);
-      expect(snapshot()).toEqual(before);
-    });
 
-    it.each(['completed', 'deleted', 'missing', 'empty'])('allows %s dependencies', (resolution) => {
+    it.each(['completed', 'deleted', 'missing', 'empty'])('allows %s dependencies', async (resolution) => {
       const blocker = create();
       const dependent = create(resolution === 'empty' ? [] : [blocker.id]);
       if (resolution === 'completed' || resolution === 'deleted') tasks.setTaskStatus(blocker.id, resolution, 'bob');
-      if (resolution === 'missing') fs.unlinkSync(path.join(dir, 'tasks', 'fixture', `${blocker.id}.json`));
+      if (resolution === 'missing') await rewrite(dependent, { blockedBy: ['999999'] });
       expect(transition(tasks, dependent.id).status).toBe(status);
     });
 
@@ -113,14 +135,6 @@ describe('issue-618 dependency transitions', () => {
     expect(tasks.startTask(dependent.id, 'bob').status).toBe('in_progress');
   });
 
-  it('does not resolve a malformed canonical file through another task display ID', () => {
-    const blocker = create();
-    const dependent = create([blocker.id]);
-    const other = create();
-    rewrite(other, { displayId: blocker.id, status: 'completed' });
-    fs.writeFileSync(path.join(dir, 'tasks', 'fixture', `${blocker.id}.json`), 'null');
-    expect(() => tasks.startTask(dependent.id, 'bob')).toThrow(/Cannot read task/);
-  });
 
   it('preserves administrative transitions, restore and owner checks', () => {
     const blocker = create();

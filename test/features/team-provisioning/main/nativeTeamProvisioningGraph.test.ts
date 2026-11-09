@@ -1,13 +1,18 @@
 // @vitest-environment node
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+
+import { createController as createAgentTeamsController } from 'agent-teams-controller';
+import { getClaudeBasePath, setClaudeBasePathOverride } from '@main/utils/pathDecoder';
+import { TeamTaskReader } from '@main/services/team/TeamTaskReader';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createNativeTeamProvisioningGraph } from '../../../../src/features/team-provisioning/main/composition/createNativeTeamProvisioningGraph';
 
 import type { NativeTeamProvisioningGraphDependencies } from '../../../../src/features/team-provisioning/main/composition/createNativeTeamProvisioningGraph';
+const originalClaudeBasePath = getClaudeBasePath();
 
 const owner = {
   appInstanceId: 'TEST-app',
@@ -17,11 +22,20 @@ const owner = {
 
 const directories: string[] = [];
 afterEach(() => {
+  setClaudeBasePathOverride(originalClaudeBasePath);
   for (const directory of directories.splice(0))
     rmSync(directory, { recursive: true, force: true, maxRetries: 20 });
 });
 
-function build(teamsRoot: string, overrides: Partial<NativeTeamProvisioningGraphDependencies> = {}) {
+function build(
+  claudeRoot: string,
+  overrides: Partial<NativeTeamProvisioningGraphDependencies> = {}
+) {
+  setClaudeBasePathOverride(claudeRoot);
+  TeamTaskReader.invalidateAllTasksCache();
+  const teamsRoot = join(claudeRoot, 'teams');
+  mkdirSync(teamsRoot, { recursive: true });
+  const taskReader = new TeamTaskReader();
   const sendMessage = vi.fn(async () => ({}) as never);
   const removeConfigFile = vi.fn(async () => undefined);
   const deps: NativeTeamProvisioningGraphDependencies = {
@@ -43,15 +57,27 @@ function build(teamsRoot: string, overrides: Partial<NativeTeamProvisioningGraph
       workspaceRoot: join(teamsRoot, 'workspace'),
       controlUrl: async () => 'http://127.0.0.1:1',
       briefing: async () => 'TEST briefing',
+      readStartupTasks: (teamName) => taskReader.getTasks(teamName),
+      createController: (input) => createAgentTeamsController(input),
       invalidate: () => undefined,
       contextInvalidationSignal: () => new AbortController().signal,
       withExpectedContext: async (_expected, operation) => operation(),
       definitions: { create: async () => undefined, updateLaunchSettings: async () => undefined },
+      profileOwnership: {
+        isManagedByThisProfile: async () => true,
+        isManagedByThisProfileSync: () => true,
+      },
+      claimTeam: async () => undefined,
+      clearStoppedLaneStopBackoff: () => undefined,
       progressHistory: { findByRunId: async () => undefined },
       listTeamNames: async () => [],
     },
     apisDeps: {
       taskActivity: { repairStaleTaskActivityIntervalsBeforeSnapshot: async () => undefined },
+      recipientSources: {
+        readConfigSnapshot: async () => null,
+        readMembersMeta: async () => [],
+      },
       now: () => '2026-11-02T00:00:00.000Z',
     },
     watchdogDeps: {
@@ -109,9 +135,9 @@ function build(teamsRoot: string, overrides: Partial<NativeTeamProvisioningGraph
 
 describe('production native graph', () => {
   it('answers the shell surface for a team that was never launched', async () => {
-    const teamsRoot = mkdtempSync(join(tmpdir(), 'native-graph-'));
-    directories.push(teamsRoot);
-    const { root } = build(teamsRoot);
+    const claudeRoot = mkdtempSync(join(tmpdir(), 'native-graph-'));
+    directories.push(claudeRoot);
+    const { root } = build(claudeRoot);
 
     await expect(root.getRuntimeState('TEST-team')).resolves.toMatchObject({
       teamName: 'TEST-team',
@@ -126,9 +152,9 @@ describe('production native graph', () => {
   });
 
   it('runs the delivery sweep and the shutdown cancellation over an empty roster', async () => {
-    const teamsRoot = mkdtempSync(join(tmpdir(), 'native-graph-'));
-    directories.push(teamsRoot);
-    const { root } = build(teamsRoot);
+    const claudeRoot = mkdtempSync(join(tmpdir(), 'native-graph-'));
+    directories.push(claudeRoot);
+    const { root } = build(claudeRoot);
 
     await expect(root.scanOpenCodePromptDeliveryWatchdog('TEST-team')).resolves.toBeUndefined();
     await expect(
@@ -137,9 +163,9 @@ describe('production native graph', () => {
   });
 
   it('exposes the transport surface it built instead of a second one', async () => {
-    const teamsRoot = mkdtempSync(join(tmpdir(), 'native-graph-'));
-    directories.push(teamsRoot);
-    const { root } = build(teamsRoot);
+    const claudeRoot = mkdtempSync(join(tmpdir(), 'native-graph-'));
+    directories.push(claudeRoot);
+    const { root } = build(claudeRoot);
 
     expect(Object.keys(root.apis)).not.toHaveLength(0);
     expect(Object.keys(root)).toEqual(

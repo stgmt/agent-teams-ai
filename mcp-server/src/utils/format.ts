@@ -17,11 +17,13 @@ export function jsonTextContent(value: unknown): { content: { type: 'text'; text
  *
  * Only strip from the top-level `task` field; leave other fields intact.
  */
-export function taskWriteResult(result: Record<string, unknown>): Record<string, unknown> {
+export function taskWriteResult<T extends Record<string, unknown>>(
+  result: Record<string, unknown> & { task?: T }
+): Record<string, unknown> {
   const task = result.task;
-  if (task == null || typeof task !== 'object') return result;
+  if (task == null || typeof task !== 'object' || Array.isArray(task)) return result;
 
-  return { ...result, task: slimTask(task as Record<string, unknown>) };
+  return { ...result, task: slimTask(task) };
 }
 
 /**

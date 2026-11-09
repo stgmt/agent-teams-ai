@@ -1,3 +1,27 @@
+const { startControlServer } = require('./helpers/controlServer.js');
+const { resetTaskBackendCache } = require('../src/internal/taskBackendSelection.js');
+const { resetSyncControlRequestChannel } = require('../src/internal/syncControlRequest.js');
+
+let registryServer;
+let registryPreviousEnv;
+const registryEnvKeys = ['AGENT_TEAMS_BOUND_CONTROL_URL', 'AGENT_TEAMS_BOUND_CONTEXT_JSON', 'AGENT_TEAMS_MCP_CLAUDE_DIR'];
+beforeEach(async () => {
+  registryPreviousEnv = Object.fromEntries(registryEnvKeys.map((key) => [key, process.env[key]]));
+  registryServer = await startControlServer();
+  process.env.AGENT_TEAMS_BOUND_CONTROL_URL = registryServer.url;
+  process.env.AGENT_TEAMS_BOUND_CONTEXT_JSON = JSON.stringify({ appInstanceId: 'controller-consumer-test', dataRootFingerprint: 'controller-consumer-root', connectionGeneration: 1 });
+  resetTaskBackendCache();
+});
+afterEach(async () => {
+  resetTaskBackendCache();
+  resetSyncControlRequestChannel();
+  if (registryServer) await registryServer.stop();
+  for (const key of registryEnvKeys) {
+    if (registryPreviousEnv[key] === undefined) delete process.env[key];
+    else process.env[key] = registryPreviousEnv[key];
+  }
+});
+
 const fs = require('fs');
 const http = require('http');
 const os = require('os');
@@ -61,6 +85,7 @@ describe('task_briefing asked by a member while its launch is not confirmed (S1.
     savedControlUrl = process.env.CLAUDE_TEAM_CONTROL_URL;
     delete process.env.CLAUDE_TEAM_CONTROL_URL;
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'task-briefing-gate-'));
+    process.env.AGENT_TEAMS_MCP_CLAUDE_DIR = dir;
     fs.mkdirSync(teamDir(), { recursive: true });
     fs.writeFileSync(
       path.join(teamDir(), 'config.json'),
@@ -75,8 +100,8 @@ describe('task_briefing asked by a member while its launch is not confirmed (S1.
       })
     );
     controller = createController({ teamName: 'fixture', claudeDir: dir });
-    controller.taskBoard.createTask({ subject: 'Reconcile the ledger', owner: 'bob' });
-    controller.taskBoard.createTask({ subject: 'Export the kassa', owner: 'carol' });
+    controller.taskBoard.createTask({ requirements: ['FR-1'], subject: 'Reconcile the ledger', owner: 'bob' });
+    controller.taskBoard.createTask({ requirements: ['FR-1'], subject: 'Export the kassa', owner: 'carol' });
   });
 
   afterEach(async () => {

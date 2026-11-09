@@ -14,7 +14,10 @@ import {
   createNativeProvisioningPreparation,
   type NativeProvisioningPreparationDependencies,
 } from './createNativeProvisioningPreparation';
-import { createNativeRuntimeSurface, type NativeRuntimeSurface } from './createNativeRuntimeSurface';
+import {
+  createNativeRuntimeSurface,
+  type NativeRuntimeSurface,
+} from './createNativeRuntimeSurface';
 import {
   createNativeLanguageChangeNotifier,
   createNativeMcpConsumerQuery,
@@ -42,7 +45,10 @@ export interface NativeTeamProvisioningRootDependencies {
   apisDeps: Omit<NativeTeamProvisioningApisDependencies, 'runtime' | 'preflight'>;
   watchdogDeps: NativeOpenCodeDeliveryWatchdogDependencies;
   prepDeps: NativeProvisioningPreparationDependencies;
-  languageDeps: Omit<NativeLanguageChangeNotifierDependencies, 'runtime' | 'openCodeMemberDelivery'>;
+  languageDeps: Omit<
+    NativeLanguageChangeNotifierDependencies,
+    'runtime' | 'openCodeMemberDelivery'
+  >;
   busyStatus: Pick<NativeOpenCodeDeliveryBusyStatus, 'getBusyStatus'>;
   inboxRelay: Pick<NativeOpenCodeMemberInboxRelay, 'relayOpenCodeMemberInboxMessages'>;
 }
@@ -63,9 +69,12 @@ export interface NativeTeamProvisioningRoot {
   launchTeam: NativeRuntimeSurface['provisioningStart']['launchTeam'];
   cancelProvisioning: NativeRuntimeSurface['provisioningRun']['cancelProvisioning'];
   hasProvisioningRun: NativeRuntimeSurface['provisioningRun']['hasProvisioningRun'];
+  hasTeamOperationInProgress(teamName: string): boolean;
   getRuntimeState: NativeRuntimeSurface['runtime']['getRuntimeState'];
   stopTeam: NativeRuntimeSurface['runtime']['stopTeam'];
   stopAllTeams: () => Promise<readonly { teamName: string; error: string }[]>;
+  isTeamManagedByThisProfile(teamName: string): Promise<boolean>;
+  isTeamManagedByThisProfileSync(teamName: string): boolean;
   isTeamAlive: NativeRuntimeSurface['runtime']['isTeamAlive'];
   getAliveTeams: NativeRuntimeSurface['runtime']['getAliveTeams'];
   getAliveTeamNames: () => string[];
@@ -152,9 +161,7 @@ export function createNativeTeamProvisioningRoot(
   const languageNotifier = createNativeLanguageChangeNotifier({
     ...deps.languageDeps,
     runtime: nativeRuntime,
-    ...(deps.apisDeps.openCodeMemberDelivery
-      ? { openCodeMemberDelivery: deps.apisDeps.openCodeMemberDelivery }
-      : {}),
+    messaging: apis.messaging,
   });
 
   const crossTeam = new NativeCrossTeamMessagingApi({
@@ -178,9 +185,14 @@ export function createNativeTeamProvisioningRoot(
     launchTeam: surface.provisioningStart.launchTeam,
     cancelProvisioning: surface.provisioningRun.cancelProvisioning,
     hasProvisioningRun: surface.provisioningRun.hasProvisioningRun,
+    hasTeamOperationInProgress: (teamName) => nativeRuntime.lifecycle.activity.has(teamName),
     getRuntimeState: surface.runtime.getRuntimeState,
     stopTeam: surface.runtime.stopTeam,
     stopAllTeams: () => nativeRuntime.runtime.stopAllTeams(),
+    isTeamManagedByThisProfile: (teamName) =>
+      nativeRuntime.profileOwnership.isManagedByThisProfile(teamName),
+    isTeamManagedByThisProfileSync: (teamName) =>
+      nativeRuntime.profileOwnership.isManagedByThisProfileSync(teamName),
     isTeamAlive: surface.runtime.isTeamAlive,
     getAliveTeams: surface.runtime.getAliveTeams,
     getAliveTeamNames: () => nativeRuntime.runtime.getAliveTeamNames(),
@@ -189,6 +201,7 @@ export function createNativeTeamProvisioningRoot(
     prepareForProvisioning: (cwd, options) => prep.prepareForProvisioning(cwd, options),
     warmup: () => prep.warmup(),
     scanOpenCodePromptDeliveryWatchdog: async (teamName, mode) => {
+      if (!(await nativeRuntime.profileOwnership.isManagedByThisProfile(teamName))) return;
       if (mode === 'continuity') {
         await watchdog.scanContinuity(teamName);
         return;
@@ -206,11 +219,13 @@ export function createNativeTeamProvisioningRoot(
     },
     relayInboxFileToLiveRecipient: (teamName, memberName) =>
       deps.inboxRelay.relayOpenCodeMemberInboxMessages(teamName, memberName),
-    getMemberSpawnStatuses: (teamName) =>
-      apis.memberLifecycle.getMemberSpawnStatuses(teamName),
+    getMemberSpawnStatuses: (teamName) => apis.memberLifecycle.getMemberSpawnStatuses(teamName),
     getTeamAgentRuntimeSnapshot: (teamName) =>
       apis.diagnostics.getTeamAgentRuntimeSnapshot(teamName),
-    restartLeadRuntime: (input) => nativeRuntime.lifecycle.leadRuntime.restart(input),
+    restartLeadRuntime: (input) =>
+      nativeRuntime.lifecycle.activity.run(input.teamName, () =>
+        nativeRuntime.lifecycle.leadRuntime.restart(input)
+      ),
     assessLeadRuntimeRestart: (input) =>
       nativeRuntime.lifecycle.leadRuntime.assess(input.teamName, {
         providerId: input.providerId,

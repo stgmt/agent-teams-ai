@@ -5,6 +5,35 @@ const path = require('path');
 const { spawn } = require('child_process');
 
 const { createController } = require('../src/index.js');
+const { startControlServer: startRegistryControlServer } = require('./helpers/controlServer.js');
+const { resetTaskBackendCache } = require('../src/internal/taskBackendSelection.js');
+const { resetSyncControlRequestChannel } = require('../src/internal/syncControlRequest.js');
+
+let registryServer;
+let registryPreviousEnv;
+const registryEnvKeys = ['AGENT_TEAMS_BOUND_CONTROL_URL', 'AGENT_TEAMS_BOUND_CONTEXT_JSON', 'AGENT_TEAMS_MCP_CLAUDE_DIR'];
+beforeEach(async () => {
+  registryPreviousEnv = Object.fromEntries(registryEnvKeys.map((key) => [key, process.env[key]]));
+  registryServer = await startRegistryControlServer();
+  process.env.AGENT_TEAMS_BOUND_CONTROL_URL = registryServer.url;
+  process.env.AGENT_TEAMS_BOUND_CONTEXT_JSON = JSON.stringify({
+    appInstanceId: 'controller-test', dataRootFingerprint: 'controller-test-root', connectionGeneration: 1,
+  });
+  resetTaskBackendCache();
+});
+afterEach(async () => {
+  resetTaskBackendCache();
+  resetSyncControlRequestChannel();
+  try {
+    if (registryServer) await registryServer.stop();
+  } finally {
+    registryServer = undefined;
+    for (const key of registryEnvKeys) {
+      if (registryPreviousEnv[key] === undefined) delete process.env[key];
+      else process.env[key] = registryPreviousEnv[key];
+    }
+  }
+});
 
 describe('agent-teams-controller API', () => {
   const tempDirs = [];
@@ -18,8 +47,8 @@ describe('agent-teams-controller API', () => {
   function makeClaudeDir() {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-teams-controller-'));
     tempDirs.push(dir);
+    process.env.AGENT_TEAMS_MCP_CLAUDE_DIR = dir;
     fs.mkdirSync(path.join(dir, 'teams', 'my-team'), { recursive: true });
-    fs.mkdirSync(path.join(dir, 'tasks', 'my-team'), { recursive: true });
     fs.writeFileSync(
       path.join(dir, 'teams', 'my-team', 'config.json'),
       JSON.stringify(
@@ -38,10 +67,8 @@ describe('agent-teams-controller API', () => {
     return dir;
   }
 
-  function readTaskFile(claudeDir, taskId) {
-    return JSON.parse(
-      fs.readFileSync(path.join(claudeDir, 'tasks', 'my-team', `${taskId}.json`), 'utf8')
-    );
+  function readRegistryTask(claudeDir, taskId) {
+    return createController({ teamName: 'my-team', claudeDir }).taskBoard.getTask(taskId);
   }
 
   function readKanbanFile(claudeDir) {
@@ -143,23 +170,148 @@ controller.messages.sendMessage({
     });
   }
 
+  function startBoardLockRaceWorker(mode, claudeDir) {
+    return spawn(
+      process.execPath,
+      [path.join(__dirname, 'helpers', 'boardLockRaceWorker.cjs'), mode, claudeDir],
+      { stdio: ['ignore', 'ignore', 'inherit', 'ipc'] }
+    );
+  }
+
+  function waitForBoardLockWorkerMessage(worker, type, timeoutMs) {
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const finish = (error, message) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        worker.off('message', onMessage);
+        worker.off('error', onError);
+        if (error) reject(error);
+        else resolve(message);
+      };
+      const onMessage = (message) => {
+        if (message?.type === 'error') {
+          finish(new Error(message.message));
+        } else if (message?.type === type) {
+          finish(null, message);
+        }
+      };
+      const onError = (error) => finish(error);
+      const timer = setTimeout(() => finish(null, null), timeoutMs);
+      worker.on('message', onMessage);
+      worker.on('error', onError);
+    });
+  }
+
+  async function stopBoardLockRaceWorker(worker) {
+    if (!worker || worker.exitCode !== null || worker.signalCode !== null) return;
+    await new Promise((resolve) => {
+      worker.once('exit', resolve);
+      worker.kill();
+    });
+  }
+
+  it('does not synchronously wait on an app-main async board lock for snapshot agenda reads', async () => {
+    const claudeDir = makeClaudeDir();
+    const worker = startBoardLockRaceWorker('same-thread-snapshot', claudeDir);
+    try {
+      expect(await waitForBoardLockWorkerMessage(worker, 'locked', 3_000)).not.toBeNull();
+      expect(await waitForBoardLockWorkerMessage(worker, 'complete', 3_000)).toMatchObject({
+        facts: 0,
+        inventory: 0,
+        briefing: true,
+        delivered: 0,
+      });
+      worker.send({ type: 'release' });
+      expect(await waitForBoardLockWorkerMessage(worker, 'released', 3_000)).not.toBeNull();
+    } finally {
+      await stopBoardLockRaceWorker(worker);
+    }
+  });
+
+  it('uses async inbox persistence for snapshot startup handovers while the app-main event loop is active', async () => {
+    const claudeDir = makeClaudeDir();
+    const worker = startBoardLockRaceWorker('same-thread-inbox-snapshot', claudeDir);
+    try {
+      expect(await waitForBoardLockWorkerMessage(worker, 'inbox-locked', 3_000)).not.toBeNull();
+      expect(await waitForBoardLockWorkerMessage(worker, 'event-loop-responsive', 3_000)).not.toBeNull();
+      worker.send({ type: 'release' });
+      expect(await waitForBoardLockWorkerMessage(worker, 'complete', 3_000)).toMatchObject({
+        delivered: 1,
+        duplicateSkips: 1,
+        startupRows: 1,
+        messageId: 'startup-work:inbox-lock-race-1:bob:1:assignment',
+      });
+      expect(await waitForBoardLockWorkerMessage(worker, 'released', 3_000)).not.toBeNull();
+    } finally {
+      await stopBoardLockRaceWorker(worker);
+    }
+  });
+
+  it('retains board locking for child controller agenda reads without a task snapshot', async () => {
+    const claudeDir = makeClaudeDir();
+    const holder = startBoardLockRaceWorker('hold', claudeDir);
+    let child;
+    try {
+      expect(await waitForBoardLockWorkerMessage(holder, 'locked', 3_000)).not.toBeNull();
+      child = startBoardLockRaceWorker('child', claudeDir);
+      expect(await waitForBoardLockWorkerMessage(child, 'complete', 100)).toBeNull();
+      holder.send({ type: 'release' });
+      expect(await waitForBoardLockWorkerMessage(holder, 'released', 3_000)).not.toBeNull();
+      expect(await waitForBoardLockWorkerMessage(child, 'complete', 5_000)).toMatchObject({
+        facts: 0,
+        inventory: 0,
+        briefing: true,
+        delivered: 0,
+      });
+    } finally {
+      if (holder.connected && holder.exitCode === null && holder.signalCode === null)
+        holder.send({ type: 'release' });
+      await Promise.all([stopBoardLockRaceWorker(holder), stopBoardLockRaceWorker(child)]);
+    }
+  });
+
+  it('requires registry requirements and never writes canonical task files', () => {
+    const claudeDir = makeClaudeDir();
+    const controller = createController({ teamName: 'my-team', claudeDir });
+
+    expect(() => controller.tasks.createTask({ subject: 'Missing requirements' }))
+      .toThrow('requirements required');
+    const created = controller.tasks.createTask({
+      subject: 'Registry-backed task',
+      requirements: ['FR-1'],
+    });
+
+    expect(controller.tasks.getTask(created.id).requirements).toEqual(['FR-1']);
+    expect(fs.existsSync(path.join(claudeDir, 'tasks', 'my-team'))).toBe(false);
+  });
+
+  it('deletes and restores a registry-backed task without writing canonical files', () => {
+    const claudeDir = makeClaudeDir();
+    const controller = createController({ teamName: 'my-team', claudeDir });
+    const task = controller.tasks.createTask({ subject: 'Retain task', requirements: ['FR-1'] });
+
+    expect(controller.tasks.softDeleteTask(task.id, 'alice').status).toBe('deleted');
+    expect(controller.tasks.listTasks().some((entry) => entry.id === task.id)).toBe(false);
+    expect(controller.tasks.listDeletedTasks().some((entry) => entry.id === task.id)).toBe(true);
+    expect(controller.tasks.restoreTask(task.id, 'alice').status).toBe('pending');
+    expect(fs.existsSync(path.join(claudeDir, 'tasks', 'my-team'))).toBe(false);
+  });
+
   it('creates tasks and exposes grouped controller modules', () => {
     const claudeDir = makeClaudeDir();
     const controller = createController({ teamName: 'my-team', claudeDir });
 
-    const base = controller.tasks.createTask({ subject: 'Base task', owner: 'bob' });
-    const dependency = controller.tasks.createTask({ subject: 'Dependency task', owner: 'bob' });
-    const created = controller.tasks.createTask({
-      subject: 'Blocked task',
-      owner: 'bob',
-      'blocked-by': `${base.displayId},${dependency.displayId}`,
-      related: base.displayId,
-    });
+    const base = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Base task', owner: 'bob' });
+    const dependency = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Dependency task', owner: 'bob' });
+    const created = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Blocked task',
+    owner: 'bob',
+    'blocked-by': `${base.displayId},${dependency.displayId}`,
+    related: base.displayId, });
 
-    expect(created.id).toMatch(
-      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
-    );
-    expect(created.displayId).toHaveLength(8);
+    expect(created.id).toMatch(/^\d+$/);
+    expect(created.displayId).toBe(created.id);
     expect(created.status).toBe('pending');
     expect(created.reviewState).toBe('none');
     expect(controller.tasks.getTask(base.id).blocks).toEqual([created.id]);
@@ -206,8 +358,8 @@ controller.messages.sendMessage({
   it('deduplicates only an identical keyless task creation payload', () => {
     const claudeDir = makeClaudeDir();
     const controller = createController({ teamName: 'my-team', claudeDir });
-    const firstBlocker = controller.tasks.createTask({ subject: 'First blocker' });
-    const secondBlocker = controller.tasks.createTask({ subject: 'Second blocker' });
+    const firstBlocker = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'First blocker' });
+    const secondBlocker = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Second blocker' });
     const base = {
       subject: 'Prepare the report',
       owner: 'bob',
@@ -216,21 +368,15 @@ controller.messages.sendMessage({
       notifyOwner: false,
     };
 
-    const first = controller.tasks.createTask({
-      ...base,
-      description: 'Use the first data set.',
-      blockedBy: [firstBlocker.id],
-    });
-    const distinct = controller.tasks.createTask({
-      ...base,
-      description: 'Use the second data set.',
-      blockedBy: [secondBlocker.id],
-    });
-    const replay = controller.tasks.createTask({
-      ...base,
-      description: 'Use the first data set.',
-      blockedBy: [firstBlocker.id],
-    });
+    const first = controller.tasks.createTask({ requirements: ['FR-1'], ...base,
+    description: 'Use the first data set.',
+    blockedBy: [firstBlocker.id], });
+    const distinct = controller.tasks.createTask({ requirements: ['FR-1'], ...base,
+    description: 'Use the second data set.',
+    blockedBy: [secondBlocker.id], });
+    const replay = controller.tasks.createTask({ requirements: ['FR-1'], ...base,
+    description: 'Use the first data set.',
+    blockedBy: [firstBlocker.id], });
 
     expect(distinct.id).not.toBe(first.id);
     expect(replay.id).toBe(first.id);
@@ -241,7 +387,7 @@ controller.messages.sendMessage({
     const claudeDir = makeClaudeDir();
     const controller = createController({ teamName: 'my-team', claudeDir });
 
-    const task = controller.taskBoard.createTask({ subject: 'Facade task', owner: 'bob' });
+    const task = controller.taskBoard.createTask({ requirements: ['FR-1'], subject: 'Facade task', owner: 'bob' });
     expect(task.status).toBe('pending');
     expect(task.reviewState).toBe('none');
 
@@ -260,7 +406,7 @@ controller.messages.sendMessage({
 
     expect(approved.status).toBe('completed');
     expect(approved.reviewState).toBe('approved');
-    expect(readTaskFile(claudeDir, task.id).reviewState).toBe('approved');
+    expect(readRegistryTask(claudeDir, task.id).reviewState).toBe('approved');
     expect(readKanbanFile(claudeDir).tasks[task.id].column).toBe('approved');
     expect(() => controller.taskBoard.clearKanban(task.id)).toThrow('reviewState=approved');
 
@@ -274,193 +420,49 @@ controller.messages.sendMessage({
     expect(readKanbanFile(claudeDir).tasks[task.id]).toBeUndefined();
   });
 
-  it('reconciles command task provenance and repairs missing relationship backlinks', () => {
+  it('reconciles registry creation commands and rejects conflicting payloads', () => {
     const claudeDir = makeClaudeDir();
     const controller = createController({ teamName: 'my-team', claudeDir });
-    const dependency = controller.taskBoard.createTask({ subject: 'Dependency' });
-    const related = controller.taskBoard.createTask({ subject: 'Related' });
-    const commandId = '11111111-1111-4111-8111-111111111111';
+    const dependency = controller.taskBoard.createTask({ requirements: ['FR-1'], subject: 'Dependency' });
     const input = {
-      id: commandId,
       subject: 'Command task',
+      requirements: ['FR-1'],
       blockedBy: [dependency.id],
-      related: [related.id],
       createdBy: 'user',
       creationCommand: {
         namespace: 'task-board',
         scopeKey: 'my-team',
         operation: 'task.create',
-        commandId,
+        commandId: '11111111-1111-4111-8111-111111111111',
         payloadHash: 'sha256:payload',
       },
     };
-    controller.taskBoard.createTask(input);
-
-    const dependencyRow = readTaskFile(claudeDir, dependency.id);
-    dependencyRow.blocks = 'legacy-block-value';
-    dependencyRow.status = 'deleted';
-    dependencyRow.deletedAt = new Date().toISOString();
-    fs.writeFileSync(
-      path.join(claudeDir, 'tasks', 'my-team', `${dependency.id}.json`),
-      JSON.stringify(dependencyRow, null, 2)
-    );
-    const relatedRow = readTaskFile(claudeDir, related.id);
-    relatedRow.related = 'legacy-related-value';
-    fs.writeFileSync(
-      path.join(claudeDir, 'tasks', 'my-team', `${related.id}.json`),
-      JSON.stringify(relatedRow, null, 2)
-    );
-
+    const created = controller.taskBoard.createTask(input);
     const reconciled = controller.taskBoard.reconcileTaskCreation(input);
-
+    expect(reconciled.id).toBe(created.id);
     expect(reconciled.creationCommand).toEqual(input.creationCommand);
-    expect(readTaskFile(claudeDir, dependency.id).blocks).toEqual([commandId]);
-    expect(readTaskFile(claudeDir, related.id).related).toEqual([commandId]);
-    expect(() =>
-      controller.taskBoard.reconcileTaskCreation({
-        ...input,
-        creationCommand: { ...input.creationCommand, payloadHash: 'sha256:other' },
-      })
-    ).toThrow(`Task creation command conflict: ${commandId}`);
+    expect(reconciled.blockedBy).toEqual([dependency.id]);
+    expect(() => controller.taskBoard.reconcileTaskCreation({
+      ...input,
+      creationCommand: { ...input.creationCommand, payloadHash: 'sha256:other' },
+    })).toThrow('Task creation command conflict');
+    expect(controller.taskBoard.listTasks()).toHaveLength(2);
   });
 
-  it('backfills logical creation idempotency provenance on same-command reconciliation', () => {
+  it('rejects a creation command scoped to another team before writing', () => {
     const claudeDir = makeClaudeDir();
     const controller = createController({ teamName: 'my-team', claudeDir });
-    const commandId = '12121212-1212-4212-8212-121212121212';
-    const creationCommand = {
-      namespace: 'task-board',
-      scopeKey: 'my-team',
-      operation: 'task.create',
-      commandId,
-      payloadHash: 'sha256:payload',
-    };
-    controller.taskBoard.createTask({
-      id: commandId,
-      subject: 'Pre-idempotency provenance',
-      createdBy: 'user',
-      creationCommand,
-    });
-
-    const reconciled = controller.taskBoard.reconcileTaskCreation({
-      id: commandId,
-      subject: 'Pre-idempotency provenance',
-      createdBy: 'user',
-      creationCommand: { ...creationCommand, idempotencyKey: 'logical-create-key' },
-    });
-
-    expect(reconciled.creationCommand).toEqual({
-      ...creationCommand,
-      idempotencyKey: 'logical-create-key',
-    });
-    expect(readTaskFile(claudeDir, commandId).creationCommand).toEqual(reconciled.creationCommand);
-    expect(() =>
-      controller.taskBoard.reconcileTaskCreation({
-        id: commandId,
-        subject: 'Pre-idempotency provenance',
-        createdBy: 'user',
-        creationCommand: { ...creationCommand, idempotencyKey: 'different-logical-key' },
-      })
-    ).toThrow(`Task creation command conflict: ${commandId}`);
-  });
-
-  it('adopts matching legacy command tasks before completing reconciliation', () => {
-    const claudeDir = makeClaudeDir();
-    const controller = createController({ teamName: 'my-team', claudeDir });
-    const commandId = '22222222-2222-4222-8222-222222222222';
-    controller.taskBoard.createTask({
-      id: commandId,
-      subject: 'Legacy command task',
-      description: 'Original description',
-      createdBy: 'user',
-    });
-    const legacyRow = readTaskFile(claudeDir, commandId);
-    legacyRow.subject = 'Edited subject after the original create';
-    legacyRow.description = 'Edited after the original create';
-    legacyRow.owner = 'new-owner';
-    fs.writeFileSync(
-      path.join(claudeDir, 'tasks', 'my-team', `${commandId}.json`),
-      JSON.stringify(legacyRow, null, 2)
-    );
-    const input = {
-      id: commandId,
-      subject: 'Legacy command task',
-      description: 'Original description',
-      createdBy: 'user',
+    expect(() => controller.taskBoard.createTask({
+      subject: 'Wrong scope',
+      requirements: ['FR-1'],
       creationCommand: {
         namespace: 'task-board',
-        scopeKey: 'my-team',
+        scopeKey: 'another-team',
         operation: 'task.create',
-        commandId,
-        payloadHash: 'sha256:legacy',
+        commandId: '33333333-3333-4333-8333-333333333333',
+        payloadHash: 'sha256:payload',
       },
-    };
-
-    const reconciled = controller.taskBoard.reconcileTaskCreation(input);
-
-    expect(reconciled.creationCommand).toEqual(input.creationCommand);
-    expect(reconciled.subject).toBe('Edited subject after the original create');
-    expect(readTaskFile(claudeDir, commandId).creationCommand).toEqual(input.creationCommand);
-  });
-
-  it('rejects legacy command adoption when the stable creator does not match', () => {
-    const claudeDir = makeClaudeDir();
-    const controller = createController({ teamName: 'my-team', claudeDir });
-    const commandId = '55555555-5555-4555-8555-555555555555';
-    controller.taskBoard.createTask({
-      id: commandId,
-      subject: 'Different legacy command',
-      createdBy: 'agent',
-    });
-
-    expect(() =>
-      controller.taskBoard.reconcileTaskCreation({
-        id: commandId,
-        subject: 'Requested command',
-        createdBy: 'user',
-        creationCommand: {
-          namespace: 'task-board',
-          scopeKey: 'my-team',
-          operation: 'task.create',
-          commandId,
-          payloadHash: 'sha256:legacy',
-        },
-      })
-    ).toThrow(`Task creation command conflict: legacy task ${commandId} does not match payload`);
-  });
-
-  it('rejects mismatched creation provenance before writing a task row', () => {
-    const claudeDir = makeClaudeDir();
-    const controller = createController({ teamName: 'my-team', claudeDir });
-    const taskId = '33333333-3333-4333-8333-333333333333';
-
-    expect(() =>
-      controller.taskBoard.createTask({
-        id: taskId,
-        subject: 'Invalid provenance',
-        creationCommand: {
-          namespace: 'task-board',
-          scopeKey: 'my-team',
-          operation: 'task.create',
-          commandId: '44444444-4444-4444-8444-444444444444',
-          payloadHash: 'sha256:payload',
-        },
-      })
-    ).toThrow('Task creation command conflict: command id does not match task id');
-
-    expect(() =>
-      controller.taskBoard.createTask({
-        id: taskId,
-        subject: 'Wrong scope',
-        creationCommand: {
-          namespace: 'task-board',
-          scopeKey: 'another-team',
-          operation: 'task.create',
-          commandId: taskId,
-          payloadHash: 'sha256:payload',
-        },
-      })
-    ).toThrow('Task creation command conflict: scope does not match team');
+    })).toThrow('Task creation command conflict: scope does not match team');
     expect(controller.taskBoard.listTasks()).toHaveLength(0);
   });
 
@@ -468,7 +470,7 @@ controller.messages.sendMessage({
     const claudeDir = makeClaudeDir();
     const controller = createController({ teamName: 'my-team', claudeDir });
 
-    const task = controller.taskBoard.createTask({ subject: 'Needs review', owner: 'bob' });
+    const task = controller.taskBoard.createTask({ requirements: ['FR-1'], subject: 'Needs review', owner: 'bob' });
     controller.taskBoard.startTask(task.id, 'bob');
     controller.taskBoard.completeTask(task.id, 'bob');
     controller.taskBoard.requestReview(task.id, { from: 'alice', reviewer: 'alice' });
@@ -498,12 +500,10 @@ controller.messages.sendMessage({
     const claudeDir = makeClaudeDir();
     const controller = createController({ teamName: 'my-team', claudeDir });
 
-    const dependency = controller.taskBoard.createTask({ subject: 'Dependency', owner: 'alice' });
-    const blocked = controller.taskBoard.createTask({
-      subject: 'Blocked implementation',
-      owner: 'bob',
-      'blocked-by': dependency.id,
-    });
+    const dependency = controller.taskBoard.createTask({ requirements: ['FR-1'], subject: 'Dependency', owner: 'alice' });
+    const blocked = controller.taskBoard.createTask({ requirements: ['FR-1'], subject: 'Blocked implementation',
+    owner: 'bob',
+    'blocked-by': dependency.id, });
 
     controller.taskBoard.startTask(dependency.id, 'alice');
     controller.taskBoard.completeTask(dependency.id, 'alice');
@@ -547,20 +547,16 @@ controller.messages.sendMessage({
     const readCarolInbox = () =>
       fs.existsSync(carolInboxPath) ? JSON.parse(fs.readFileSync(carolInboxPath, 'utf8')) : [];
 
-    const blocker = controller.taskBoard.createTask({ subject: 'Write the parser', owner: 'bob' });
-    const blocked = controller.taskBoard.createTask({
-      subject: 'Review the parser',
-      owner: 'carol',
-      blockedBy: [blocker.id],
-    });
+    const blocker = controller.taskBoard.createTask({ requirements: ['FR-1'], subject: 'Write the parser', owner: 'bob' });
+    const blocked = controller.taskBoard.createTask({ requirements: ['FR-1'], subject: 'Review the parser',
+    owner: 'carol',
+    blockedBy: [blocker.id], });
     expect(readCarolInbox()).toEqual([]);
 
     // Negative control A: the same assignment without blockers is announced at
     // once, so the guard is not swallowing assignment notices in general.
-    const unblocked = controller.taskBoard.createTask({
-      subject: 'Write the release notes',
-      owner: 'carol',
-    });
+    const unblocked = controller.taskBoard.createTask({ requirements: ['FR-1'], subject: 'Write the release notes',
+    owner: 'carol', });
     expect(readCarolInbox().map((row) => row.summary)).toEqual([
       `New task #${unblocked.displayId} assigned`,
     ]);
@@ -574,31 +570,23 @@ controller.messages.sendMessage({
     expect(afterBlockerCompleted.at(-1).text).toContain('Dependency resolved');
 
     // Negative control C: a deleted blocker is not an open blocker.
-    const droppedBlocker = controller.taskBoard.createTask({
-      subject: 'Dropped spike',
-      owner: 'bob',
-    });
-    const dependsOnDropped = controller.taskBoard.createTask({
-      subject: 'Ship the parser',
-      owner: 'bob',
-      blockedBy: [droppedBlocker.id],
-    });
+    const droppedBlocker = controller.taskBoard.createTask({ requirements: ['FR-1'], subject: 'Dropped spike',
+    owner: 'bob', });
+    const dependsOnDropped = controller.taskBoard.createTask({ requirements: ['FR-1'], subject: 'Ship the parser',
+    owner: 'bob',
+    blockedBy: [droppedBlocker.id], });
     controller.taskBoard.softDeleteTask(droppedBlocker.id, 'alice');
     controller.taskBoard.setTaskOwner(dependsOnDropped.id, 'carol', 'alice');
     expect(readCarolInbox().at(-1).summary).toBe(`Task #${dependsOnDropped.displayId} assigned`);
 
     // Negative control D: a blockedBy id that no longer resolves is not an open
     // blocker either, so a purged row cannot freeze a task forever.
-    const purgedBlocker = controller.taskBoard.createTask({
-      subject: 'Purged spike',
-      owner: 'bob',
-    });
-    const dependsOnPurged = controller.taskBoard.createTask({
-      subject: 'Publish the parser',
-      owner: 'bob',
-      blockedBy: [purgedBlocker.id],
-    });
-    fs.rmSync(path.join(claudeDir, 'tasks', 'my-team', `${purgedBlocker.id}.json`));
+    const purgedBlocker = controller.taskBoard.createTask({ requirements: ['FR-1'], subject: 'Purged spike',
+    owner: 'bob', });
+    const dependsOnPurged = controller.taskBoard.createTask({ requirements: ['FR-1'], subject: 'Publish the parser',
+    owner: 'bob',
+    blockedBy: [purgedBlocker.id], });
+    registryServer.deleteTask(purgedBlocker.id);
     controller.taskBoard.setTaskOwner(dependsOnPurged.id, 'carol', 'alice');
     expect(readCarolInbox().at(-1).summary).toBe(`Task #${dependsOnPurged.displayId} assigned`);
     expect(readCarolInbox()).toHaveLength(4);
@@ -619,12 +607,10 @@ controller.messages.sendMessage({
     const readCarolInbox = () =>
       fs.existsSync(carolInboxPath) ? JSON.parse(fs.readFileSync(carolInboxPath, 'utf8')) : [];
 
-    const blocker = controller.taskBoard.createTask({ subject: 'Spike the parser', owner: 'bob' });
-    const blocked = controller.taskBoard.createTask({
-      subject: 'Review the parser',
-      owner: 'carol',
-      blockedBy: [blocker.id],
-    });
+    const blocker = controller.taskBoard.createTask({ requirements: ['FR-1'], subject: 'Spike the parser', owner: 'bob' });
+    const blocked = controller.taskBoard.createTask({ requirements: ['FR-1'], subject: 'Review the parser',
+    owner: 'carol',
+    blockedBy: [blocker.id], });
     expect(readCarolInbox()).toEqual([]);
 
     controller.taskBoard.softDeleteTask(blocker.id, 'alice');
@@ -642,38 +628,26 @@ controller.messages.sendMessage({
 
     // Negative control B: with another blocker still open the owner is told
     // what is left instead of being told to start.
-    const openBlocker = controller.taskBoard.createTask({
-      subject: 'Draft the schema',
-      owner: 'bob',
-    });
-    const droppedBlocker = controller.taskBoard.createTask({
-      subject: 'Pick the format',
-      owner: 'bob',
-    });
-    controller.taskBoard.createTask({
-      subject: 'Write the migration',
-      owner: 'carol',
-      blockedBy: [openBlocker.id, droppedBlocker.id],
-    });
+    const openBlocker = controller.taskBoard.createTask({ requirements: ['FR-1'], subject: 'Draft the schema',
+    owner: 'bob', });
+    const droppedBlocker = controller.taskBoard.createTask({ requirements: ['FR-1'], subject: 'Pick the format',
+    owner: 'bob', });
+    controller.taskBoard.createTask({ requirements: ['FR-1'], subject: 'Write the migration',
+    owner: 'carol',
+    blockedBy: [openBlocker.id, droppedBlocker.id], });
     controller.taskBoard.softDeleteTask(droppedBlocker.id, 'alice');
     expect(readCarolInbox()).toHaveLength(2);
     expect(readCarolInbox().at(-1).text).toContain('Still waiting on');
     expect(readCarolInbox().at(-1).text).not.toContain('ready to start');
 
     // Negative control C: a dependent that is already finished is not woken.
-    const lateBlocker = controller.taskBoard.createTask({
-      subject: 'Check the fixtures',
-      owner: 'bob',
-    });
-    const finished = controller.taskBoard.createTask({
-      subject: 'Archive the fixtures',
-      owner: 'carol',
-      blockedBy: [lateBlocker.id],
-    });
+    const lateBlocker = controller.taskBoard.createTask({ requirements: ['FR-1'], subject: 'Check the fixtures',
+    owner: 'bob', });
+    const finished = controller.taskBoard.createTask({ requirements: ['FR-1'], subject: 'Archive the fixtures',
+    owner: 'carol',
+    blockedBy: [lateBlocker.id], });
     // Model a legacy inconsistent row; execution APIs now reject open blockers.
-    const finishedPath = path.join(claudeDir, 'tasks', 'my-team', `${finished.id}.json`);
-    const finishedRow = JSON.parse(fs.readFileSync(finishedPath, 'utf8'));
-    fs.writeFileSync(finishedPath, JSON.stringify({ ...finishedRow, status: 'completed' }));
+    registryServer.mutateTask(finished.id, { status: 'completed' });
     controller.taskBoard.softDeleteTask(lateBlocker.id, 'alice');
     expect(readCarolInbox()).toHaveLength(2);
   });
@@ -691,7 +665,7 @@ controller.messages.sendMessage({
     fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
 
     const controller = createController({ teamName: 'my-team', claudeDir });
-    controller.tasks.createTask({ subject: 'Queued task', owner: 'bob' });
+    controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Queued task', owner: 'bob' });
     const briefing = await controller.tasks.memberBriefing('bob');
 
     expect(briefing).toContain('Member briefing for bob on team "my-team" (my-team).');
@@ -1095,54 +1069,42 @@ controller.messages.sendMessage({
     const claudeDir = makeClaudeDir();
     const controller = createController({ teamName: 'my-team', claudeDir });
 
-    const pendingTask = controller.tasks.createTask({
-      subject: 'Queued task',
-      description: 'Do this later',
-      owner: 'bob',
-      prompt: 'Check the migration plan first.',
-    });
-    const activeTask = controller.tasks.createTask({
-      subject: 'Active task',
-      description: 'Resume immediately',
-      owner: 'bob',
-      startImmediately: true,
-    });
-    const completedTask = controller.tasks.createTask({
-      subject: 'Already done',
-      description: 'Completed task description should stay out of compact rows',
-      owner: 'bob',
-    });
+    const pendingTask = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Queued task',
+    description: 'Do this later',
+    owner: 'bob',
+    prompt: 'Check the migration plan first.', });
+    const activeTask = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Active task',
+    description: 'Resume immediately',
+    owner: 'bob',
+    startImmediately: true, });
+    const completedTask = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Already done',
+    description: 'Completed task description should stay out of compact rows',
+    owner: 'bob', });
     controller.tasks.completeTask(completedTask.id, 'bob');
     controller.tasks.addTaskComment(activeTask.id, {
       from: 'bob',
       text: 'Resumed work with latest context.',
     });
-    const needsFixTask = controller.tasks.createTask({
-      subject: 'Fix after review',
-      owner: 'bob',
-      status: 'pending',
-      reviewState: 'needsFix',
-      createdAt: '2026-01-02T00:00:00.000Z',
-      notifyOwner: false,
-    });
-    const reviewTask = controller.tasks.createTask({
-      subject: 'Waiting for review',
-      owner: 'bob',
-      status: 'completed',
-      reviewState: 'review',
-      createdAt: '2026-01-03T00:00:00.000Z',
-      notifyOwner: false,
-    });
-    const approvedTask = controller.tasks.createTask({
-      subject: 'Approved work',
-      owner: 'bob',
-      status: 'completed',
-      reviewState: 'approved',
-      createdAt: '2026-01-04T00:00:00.000Z',
-      notifyOwner: false,
-    });
+    const needsFixTask = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Fix after review',
+    owner: 'bob',
+    status: 'pending',
+    reviewState: 'needsFix',
+    createdAt: '2026-01-02T00:00:00.000Z',
+    notifyOwner: false, });
+    const reviewTask = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Waiting for review',
+    owner: 'bob',
+    status: 'completed',
+    reviewState: 'review',
+    createdAt: '2026-01-03T00:00:00.000Z',
+    notifyOwner: false, });
+    const approvedTask = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Approved work',
+    owner: 'bob',
+    status: 'completed',
+    reviewState: 'approved',
+    createdAt: '2026-01-04T00:00:00.000Z',
+    notifyOwner: false, });
 
-    const reassignedTask = controller.tasks.createTask({ subject: 'Reassigned later' });
+    const reassignedTask = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Reassigned later' });
     controller.tasks.setTaskOwner(reassignedTask.id, 'bob');
 
     expect(pendingTask.status).toBe('pending');
@@ -1206,11 +1168,9 @@ controller.messages.sendMessage({
     const claudeDir = makeClaudeDir();
     const controller = createController({ teamName: 'my-team', claudeDir });
 
-    const task = controller.tasks.createTask({
-      subject: 'Move before work starts',
-      owner: 'alice',
-      createdBy: 'user',
-    });
+    const task = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Move before work starts',
+    owner: 'alice',
+    createdBy: 'user', });
     controller.tasks.setTaskOwner(task.id, 'bob', 'user');
 
     const aliceInbox = JSON.parse(
@@ -1242,13 +1202,11 @@ controller.messages.sendMessage({
     const claudeDir = makeClaudeDir();
     const controller = createController({ teamName: 'my-team', claudeDir });
 
-    const staleTask = controller.tasks.createTask({
-      subject: 'Legacy stale approved task',
-      owner: 'bob',
-      status: 'pending',
-      reviewState: 'approved',
-      notifyOwner: false,
-    });
+    const staleTask = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Legacy stale approved task',
+    owner: 'bob',
+    status: 'pending',
+    reviewState: 'approved',
+    notifyOwner: false, });
 
     const briefing = await controller.tasks.taskBriefing('bob');
     const staleLine = briefing.split('\n').find((line) => line.includes(`#${staleTask.displayId}`));
@@ -1263,140 +1221,10 @@ controller.messages.sendMessage({
     });
   });
 
-  it('reconciles stale kanban rows and linked inbox comments idempotently', () => {
-    const claudeDir = makeClaudeDir();
-    const controller = createController({ teamName: 'my-team', claudeDir });
-    const task = controller.tasks.createTask({
-      subject: 'Ship migration',
-      owner: 'bob',
-    });
-
-    const kanbanPath = path.join(claudeDir, 'teams', 'my-team', 'kanban-state.json');
-    fs.writeFileSync(
-      kanbanPath,
-      JSON.stringify(
-        {
-          teamName: 'my-team',
-          reviewers: [],
-          tasks: {
-            [task.id]: { column: 'review', movedAt: '2026-01-01T00:00:00.000Z', reviewer: null },
-            staleTask: { column: 'approved', movedAt: '2026-01-01T00:00:00.000Z' },
-          },
-          columnOrder: {
-            review: [task.id, 'staleTask'],
-            approved: ['staleTask'],
-          },
-        },
-        null,
-        2
-      )
-    );
-
-    const inboxDir = path.join(claudeDir, 'teams', 'my-team', 'inboxes');
-    fs.mkdirSync(inboxDir, { recursive: true });
-    fs.writeFileSync(
-      path.join(inboxDir, 'bob.json'),
-      JSON.stringify(
-        [
-          {
-            from: 'alice',
-            to: 'bob',
-            summary: `Please revisit #${task.displayId}`,
-            messageId: 'm-1',
-            timestamp: '2026-02-23T10:00:00.000Z',
-            read: false,
-            text: 'Need one more verification pass.',
-          },
-          {
-            from: 'team-lead',
-            to: 'bob',
-            summary: `Comment on #${task.displayId}`,
-            messageId: 'm-2',
-            timestamp: '2026-02-23T11:00:00.000Z',
-            read: false,
-            text:
-              `**Comment on task #${task.displayId}**\n> Ship migration\n\n> Heads up\n\n` +
-              '<agent-block>\nReply to this comment using:\nnode "tool.js" --team my-team task comment 1 --text "..." --from "bob"\n</agent-block>',
-          },
-        ],
-        null,
-        2
-      )
-    );
-
-    const first = controller.maintenance.reconcileArtifacts({ reason: 'manual' });
-    expect(first.staleKanbanEntriesRemoved).toBe(1);
-    expect(first.staleColumnOrderRefsRemoved).toBe(2);
-    expect(first.linkedCommentsCreated).toBe(1);
-
-    const reloaded = controller.tasks.getTask(task.id);
-    expect(reloaded.comments).toHaveLength(1);
-    expect(reloaded.comments[0].id).toBe('msg-m-1');
-    expect(reloaded.comments[0].text).toBe('Need one more verification pass.');
-
-    const cleanedKanban = JSON.parse(fs.readFileSync(kanbanPath, 'utf8'));
-    expect(cleanedKanban.tasks.staleTask).toBeUndefined();
-    expect(cleanedKanban.columnOrder.review).toEqual([task.id]);
-    expect(cleanedKanban.columnOrder.approved).toBeUndefined();
-
-    const second = controller.maintenance.reconcileArtifacts({ reason: 'manual' });
-    expect(second.staleKanbanEntriesRemoved).toBe(0);
-    expect(second.staleColumnOrderRefsRemoved).toBe(0);
-    expect(second.linkedCommentsCreated).toBe(0);
-  });
-
-  it('holds the board lock while reconcileArtifacts syncs linked comments', () => {
-    const taskStore = require('../src/internal/taskStore.js');
-    const { getTeamBoardLockContext } = require('../src/internal/boardLock.js');
-
-    const claudeDir = makeClaudeDir();
-    const controller = createController({ teamName: 'my-team', claudeDir });
-    const task = controller.tasks.createTask({ subject: 'Locked reconcile', owner: 'bob' });
-    const paths = { teamDir: path.join(claudeDir, 'teams', 'my-team') };
-
-    const inboxDir = path.join(claudeDir, 'teams', 'my-team', 'inboxes');
-    fs.mkdirSync(inboxDir, { recursive: true });
-    fs.writeFileSync(
-      path.join(inboxDir, 'bob.json'),
-      JSON.stringify(
-        [
-          {
-            from: 'alice',
-            to: 'bob',
-            summary: `Please revisit #${task.displayId}`,
-            messageId: 'lock-m-1',
-            timestamp: '2026-02-23T10:00:00.000Z',
-            read: false,
-            text: 'Sync this comment under the lock.',
-          },
-        ],
-        null,
-        2
-      )
-    );
-
-    const original = taskStore.addTaskComment;
-    let lockHeldDuringWrite = null;
-    const spy = vi.spyOn(taskStore, 'addTaskComment').mockImplementation((...args) => {
-      // The write must run under the board lock so a concurrent cross-process
-      // mutation cannot be clobbered by reconcile's read-modify-write.
-      lockHeldDuringWrite = getTeamBoardLockContext(paths) !== undefined;
-      return original(...args);
-    });
-
-    try {
-      const result = controller.maintenance.reconcileArtifacts({ reason: 'manual' });
-      expect(result.linkedCommentsCreated).toBe(1);
-      expect(lockHeldDuringWrite).toBe(true);
-    } finally {
-      spy.mockRestore();
-    }
-  });
-
   it('tracks lifecycle history and intervals without duplicate same-status transitions', () => {
     const claudeDir = makeClaudeDir();
     const controller = createController({ teamName: 'my-team', claudeDir });
-    const task = controller.tasks.createTask({ subject: 'Lifecycle task' });
+    const task = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Lifecycle task' });
 
     expect(task.status).toBe('pending');
     expect(task.historyEvents).toHaveLength(1);
@@ -1445,11 +1273,10 @@ controller.messages.sendMessage({
   it('does not treat malformed empty completedAt work intervals as already open', () => {
     const claudeDir = makeClaudeDir();
     const controller = createController({ teamName: 'my-team', claudeDir });
-    const task = controller.tasks.createTask({ subject: 'Malformed work interval' });
-    const taskPath = path.join(claudeDir, 'tasks', 'my-team', `${task.id}.json`);
-    const rawTask = JSON.parse(fs.readFileSync(taskPath, 'utf8'));
-    rawTask.workIntervals = [{ startedAt: '2026-01-01T00:00:00.000Z', completedAt: '' }];
-    fs.writeFileSync(taskPath, JSON.stringify(rawTask, null, 2));
+    const task = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Malformed work interval' });
+    registryServer.mutateTask(task.id, {
+      workIntervals: [{ startedAt: '2026-01-01T00:00:00.000Z', completedAt: '' }],
+    });
 
     controller.tasks.startTask(task.id, 'bob');
     const reloaded = controller.tasks.getTask(task.id);
@@ -1462,7 +1289,7 @@ controller.messages.sendMessage({
   it('tracks owner assignment history without duplicate same-owner events', () => {
     const claudeDir = makeClaudeDir();
     const controller = createController({ teamName: 'my-team', claudeDir });
-    const task = controller.tasks.createTask({ subject: 'Owner history' });
+    const task = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Owner history' });
 
     controller.tasks.setTaskOwner(task.id, 'bob', 'team-lead');
     controller.tasks.setTaskOwner(task.id, 'bob', 'team-lead');
@@ -1477,13 +1304,13 @@ controller.messages.sendMessage({
     expect(ownerEvents[0]).toMatchObject({ to: 'bob', actor: 'team-lead' });
     expect(ownerEvents[1]).toMatchObject({ from: 'bob', to: 'alice', actor: 'team-lead' });
     expect(ownerEvents[2]).toMatchObject({ from: 'alice', actor: 'team-lead' });
-    expect(ownerEvents[2].to).toBeUndefined();
+    expect(controller.tasks.getTask(task.id).owner).toBeUndefined();
   });
 
   it('wraps review instructions in the canonical agent block format used by the UI', () => {
     const claudeDir = makeClaudeDir();
     const controller = createController({ teamName: 'my-team', claudeDir });
-    const task = controller.tasks.createTask({ subject: 'Review me', owner: 'bob' });
+    const task = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Review me', owner: 'bob' });
 
     controller.kanban.addReviewer('alice');
     controller.tasks.completeTask(task.id, 'bob');
@@ -1509,7 +1336,7 @@ controller.messages.sendMessage({
   it('ignores mismatched leadSessionId placeholders on review_request and uses canonical config session', () => {
     const claudeDir = makeClaudeDir();
     const controller = createController({ teamName: 'my-team', claudeDir });
-    const task = controller.tasks.createTask({ subject: 'Review me', owner: 'bob' });
+    const task = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Review me', owner: 'bob' });
 
     controller.kanban.addReviewer('alice');
     controller.tasks.completeTask(task.id, 'bob');
@@ -1532,7 +1359,7 @@ controller.messages.sendMessage({
   it('starts review idempotently after review_request', () => {
     const claudeDir = makeClaudeDir();
     const controller = createController({ teamName: 'my-team', claudeDir });
-    const task = controller.tasks.createTask({ subject: 'Review me', owner: 'bob' });
+    const task = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Review me', owner: 'bob' });
 
     controller.tasks.completeTask(task.id, 'bob');
     controller.review.requestReview(task.id, { from: 'team-lead', reviewer: 'alice' });
@@ -1574,7 +1401,7 @@ controller.messages.sendMessage({
   it('closes review intervals when review is approved or changes are requested', () => {
     const claudeDir = makeClaudeDir();
     const controller = createController({ teamName: 'my-team', claudeDir });
-    const approvedTask = controller.tasks.createTask({ subject: 'Approve review', owner: 'bob' });
+    const approvedTask = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Approve review', owner: 'bob' });
 
     controller.tasks.completeTask(approvedTask.id, 'bob');
     controller.review.requestReview(approvedTask.id, { from: 'team-lead', reviewer: 'alice' });
@@ -1585,7 +1412,7 @@ controller.messages.sendMessage({
     expect(approved.reviewIntervals[0].reviewer).toBe('alice');
     expect(approved.reviewIntervals[0].completedAt).toBeTruthy();
 
-    const changesTask = controller.tasks.createTask({ subject: 'Request changes', owner: 'bob' });
+    const changesTask = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Request changes', owner: 'bob' });
     controller.tasks.completeTask(changesTask.id, 'bob');
     controller.review.requestReview(changesTask.id, { from: 'team-lead', reviewer: 'alice' });
     controller.review.startReview(changesTask.id, { from: 'alice' });
@@ -1602,17 +1429,16 @@ controller.messages.sendMessage({
   it('does not treat malformed empty completedAt review intervals as already open', () => {
     const claudeDir = makeClaudeDir();
     const controller = createController({ teamName: 'my-team', claudeDir });
-    const task = controller.tasks.createTask({ subject: 'Review me', owner: 'bob' });
+    const task = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Review me', owner: 'bob' });
 
     controller.tasks.completeTask(task.id, 'bob');
     controller.review.requestReview(task.id, { from: 'team-lead', reviewer: 'alice' });
 
-    const taskPath = path.join(claudeDir, 'tasks', 'my-team', `${task.id}.json`);
-    const rawTask = JSON.parse(fs.readFileSync(taskPath, 'utf8'));
-    rawTask.reviewIntervals = [
-      { reviewer: 'alice', startedAt: '2026-01-01T00:00:00.000Z', completedAt: '' },
-    ];
-    fs.writeFileSync(taskPath, JSON.stringify(rawTask, null, 2));
+    registryServer.mutateTask(task.id, {
+      reviewIntervals: [
+        { reviewer: 'alice', startedAt: '2026-01-01T00:00:00.000Z', completedAt: '' },
+      ],
+    });
 
     controller.review.startReview(task.id, { from: 'alice' });
     const reloaded = controller.tasks.getTask(task.id);
@@ -1626,7 +1452,7 @@ controller.messages.sendMessage({
   it('records review_start after review_request and surfaces review_in_progress for the reviewer', async () => {
     const claudeDir = makeClaudeDir();
     const controller = createController({ teamName: 'my-team', claudeDir });
-    const task = controller.tasks.createTask({ subject: 'Queued for review', owner: 'bob' });
+    const task = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Queued for review', owner: 'bob' });
 
     controller.tasks.completeTask(task.id, 'bob');
     controller.review.requestReview(task.id, { from: 'team-lead', reviewer: 'alice' });
@@ -1651,10 +1477,8 @@ controller.messages.sendMessage({
   it('uses the assigned reviewer when review_start omits from', async () => {
     const claudeDir = makeClaudeDir();
     const controller = createController({ teamName: 'my-team', claudeDir });
-    const task = controller.tasks.createTask({
-      subject: 'Queued for implicit reviewer',
-      owner: 'bob',
-    });
+    const task = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Queued for implicit reviewer',
+    owner: 'bob', });
 
     controller.tasks.completeTask(task.id, 'bob');
     controller.review.requestReview(task.id, { from: 'team-lead', reviewer: 'alice' });
@@ -1674,24 +1498,20 @@ controller.messages.sendMessage({
     const claudeDir = makeClaudeDir();
     const controller = createController({ teamName: 'my-team', claudeDir });
 
-    const pendingTask = controller.tasks.createTask({ subject: 'Pending task', owner: 'bob' });
+    const pendingTask = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Pending task', owner: 'bob' });
     expect(() => controller.review.approveReview(pendingTask.id, { from: 'alice' })).toThrow(
       'must be completed before approval'
     );
 
-    const completedTask = controller.tasks.createTask({
-      subject: 'Completed but not review',
-      owner: 'bob',
-    });
+    const completedTask = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Completed but not review',
+    owner: 'bob', });
     controller.tasks.completeTask(completedTask.id, 'bob');
     expect(() =>
       controller.review.requestChanges(completedTask.id, { from: 'alice', comment: 'Fix it' })
     ).toThrow('must be in review before requesting changes');
 
-    const deletedTask = controller.tasks.createTask({
-      subject: 'Deleted review task',
-      owner: 'bob',
-    });
+    const deletedTask = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Deleted review task',
+    owner: 'bob', });
     controller.tasks.softDeleteTask(deletedTask.id, 'bob');
     expect(() => controller.review.approveReview(deletedTask.id, { from: 'alice' })).toThrow(
       'is deleted'
@@ -1705,10 +1525,8 @@ controller.messages.sendMessage({
   it('allows direct manual approval kanban shortcut for completed tasks outside review', () => {
     const claudeDir = makeClaudeDir();
     const controller = createController({ teamName: 'my-team', claudeDir });
-    const task = controller.tasks.createTask({
-      subject: 'Completed manual shortcut',
-      owner: 'bob',
-    });
+    const task = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Completed manual shortcut',
+    owner: 'bob', });
 
     controller.tasks.completeTask(task.id, 'bob');
 
@@ -1734,19 +1552,15 @@ controller.messages.sendMessage({
     const claudeDir = makeClaudeDir();
     const controller = createController({ teamName: 'my-team', claudeDir });
 
-    const pendingTask = controller.tasks.createTask({
-      subject: 'Pending implementation',
-      owner: 'bob',
-    });
+    const pendingTask = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Pending implementation',
+    owner: 'bob', });
     expect(() => controller.review.startReview(pendingTask.id, { from: 'alice' })).toThrow(
       'must be completed before starting review'
     );
     expect(controller.tasks.getTask(pendingTask.id).reviewState).toBe('none');
 
-    const completedTask = controller.tasks.createTask({
-      subject: 'Completed without review request',
-      owner: 'bob',
-    });
+    const completedTask = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Completed without review request',
+    owner: 'bob', });
     controller.tasks.completeTask(completedTask.id, 'bob');
     expect(() => controller.review.startReview(completedTask.id, { from: 'alice' })).toThrow(
       'must be in review before starting review'
@@ -1762,18 +1576,14 @@ controller.messages.sendMessage({
     const claudeDir = makeClaudeDir();
     const controller = createController({ teamName: 'my-team', claudeDir });
 
-    const pendingTask = controller.tasks.createTask({
-      subject: 'Kanban bypass pending',
-      owner: 'bob',
-    });
+    const pendingTask = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Kanban bypass pending',
+    owner: 'bob', });
     expect(() => controller.kanban.setKanbanColumn(pendingTask.id, 'approved')).toThrow(
       'must be completed before moving to APPROVED column'
     );
 
-    const completedTask = controller.tasks.createTask({
-      subject: 'Kanban bypass completed',
-      owner: 'bob',
-    });
+    const completedTask = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Kanban bypass completed',
+    owner: 'bob', });
     controller.tasks.completeTask(completedTask.id, 'bob');
     expect(() => controller.kanban.setKanbanColumn(completedTask.id, 'review')).toThrow(
       'must be in review before moving to REVIEW column'
@@ -1792,7 +1602,7 @@ controller.messages.sendMessage({
   it('rejects review_request for already approved tasks until work is reopened', () => {
     const claudeDir = makeClaudeDir();
     const controller = createController({ teamName: 'my-team', claudeDir });
-    const task = controller.tasks.createTask({ subject: 'Approved terminal task', owner: 'bob' });
+    const task = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Approved terminal task', owner: 'bob' });
 
     controller.tasks.completeTask(task.id, 'bob');
     controller.review.requestReview(task.id, { from: 'team-lead', reviewer: 'alice' });
@@ -1809,7 +1619,7 @@ controller.messages.sendMessage({
   it('repairs kanban on idempotent review transitions without duplicate history', () => {
     const claudeDir = makeClaudeDir();
     const controller = createController({ teamName: 'my-team', claudeDir });
-    const task = controller.tasks.createTask({ subject: 'Repair review column', owner: 'bob' });
+    const task = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Repair review column', owner: 'bob' });
 
     controller.tasks.completeTask(task.id, 'bob');
     controller.review.requestReview(task.id, { from: 'team-lead', reviewer: 'alice' });
@@ -1848,7 +1658,7 @@ controller.messages.sendMessage({
   it('throws when starting review on a deleted task', () => {
     const claudeDir = makeClaudeDir();
     const controller = createController({ teamName: 'my-team', claudeDir });
-    const task = controller.tasks.createTask({ subject: 'Deleted task', owner: 'bob' });
+    const task = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Deleted task', owner: 'bob' });
     controller.tasks.softDeleteTask(task.id, 'bob');
 
     expect(() => controller.review.startReview(task.id, { from: 'alice' })).toThrow('is deleted');
@@ -1857,7 +1667,7 @@ controller.messages.sendMessage({
   it('clears stale needsFix reviewState when owner restarts work', async () => {
     const claudeDir = makeClaudeDir();
     const controller = createController({ teamName: 'my-team', claudeDir });
-    const task = controller.tasks.createTask({ subject: 'Needs fix restart', owner: 'bob' });
+    const task = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Needs fix restart', owner: 'bob' });
 
     controller.tasks.completeTask(task.id, 'bob');
     controller.review.requestReview(task.id, { from: 'team-lead', reviewer: 'alice' });
@@ -2135,11 +1945,9 @@ controller.messages.sendMessage({
   it('wakes task owner on regular comment from another member', () => {
     const claudeDir = makeClaudeDir();
     const controller = createController({ teamName: 'my-team', claudeDir });
-    const task = controller.tasks.createTask({
-      subject: 'Investigate',
-      owner: 'bob',
-      notifyOwner: false,
-    });
+    const task = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Investigate',
+    owner: 'bob',
+    notifyOwner: false, });
 
     const commented = controller.tasks.addTaskComment(task.id, {
       from: 'alice',
@@ -2163,11 +1971,9 @@ controller.messages.sendMessage({
       claudeDir,
       allowUserMessageSender: false,
     });
-    const task = appController.tasks.createTask({
-      subject: 'Local model workflow',
-      owner: 'bob',
-      notifyOwner: false,
-    });
+    const task = appController.tasks.createTask({ requirements: ['FR-1'], subject: 'Local model workflow',
+    owner: 'bob',
+    notifyOwner: false, });
     expect(task.status).toBe('pending');
 
     const commented = agentController.tasks.addTaskComment(task.id, {
@@ -2176,7 +1982,7 @@ controller.messages.sendMessage({
     });
 
     expect(commented.task.status).toBe('pending');
-    const persisted = readTaskFile(claudeDir, task.id);
+    const persisted = readRegistryTask(claudeDir, task.id);
     expect(persisted.status).toBe('pending');
     expect(persisted.workIntervals).toBeUndefined();
     const statusEvents = (persisted.historyEvents || []).filter(
@@ -2189,7 +1995,7 @@ controller.messages.sendMessage({
       text: 'More findings.',
     });
     expect(again.task.status).toBe('pending');
-    const persistedAgain = readTaskFile(claudeDir, task.id);
+    const persistedAgain = readRegistryTask(claudeDir, task.id);
     expect(
       (persistedAgain.historyEvents || []).filter((event) => event.type === 'status_changed')
     ).toHaveLength(0);
@@ -2215,11 +2021,9 @@ controller.messages.sendMessage({
     );
     const controller = createController({ teamName: 'my-team', claudeDir });
 
-    const bobTask = controller.tasks.createTask({
-      subject: 'Stays pending',
-      owner: 'bob',
-      notifyOwner: false,
-    });
+    const bobTask = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Stays pending',
+    owner: 'bob',
+    notifyOwner: false, });
 
     controller.tasks.addTaskComment(bobTask.id, { from: 'carol', text: 'Non-owner note.' });
     expect(controller.tasks.getTask(bobTask.id).status).toBe('pending');
@@ -2230,11 +2034,9 @@ controller.messages.sendMessage({
     controller.tasks.addTaskComment(bobTask.id, { from: 'system', text: 'System note.' });
     expect(controller.tasks.getTask(bobTask.id).status).toBe('pending');
 
-    const leadTask = controller.tasks.createTask({
-      subject: 'Lead-owned stays pending',
-      owner: 'alice',
-      notifyOwner: false,
-    });
+    const leadTask = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Lead-owned stays pending',
+    owner: 'alice',
+    notifyOwner: false, });
     controller.tasks.addTaskComment(leadTask.id, { from: 'alice', text: 'Lead planning note.' });
     expect(controller.tasks.getTask(leadTask.id).status).toBe('pending');
 
@@ -2271,7 +2073,7 @@ controller.messages.sendMessage({
     );
 
     const controller = createController({ teamName: 'my-team', claudeDir });
-    const task = controller.tasks.createTask({ subject: 'Review result', notifyOwner: false });
+    const task = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Review result', notifyOwner: false });
 
     const fromProvider = controller.tasks.addTaskComment(task.id, {
       from: 'codex',
@@ -2320,11 +2122,9 @@ controller.messages.sendMessage({
       claudeDir,
       allowUserMessageSender: false,
     });
-    const task = appController.tasks.createTask({
-      subject: 'Reject agent aliases',
-      owner: 'bob',
-      notifyOwner: false,
-    });
+    const task = appController.tasks.createTask({ requirements: ['FR-1'], subject: 'Reject agent aliases',
+    owner: 'bob',
+    notifyOwner: false, });
 
     expect(() =>
       agentController.tasks.addTaskComment(task.id, {
@@ -2376,7 +2176,7 @@ controller.messages.sendMessage({
     );
 
     const controller = createController({ teamName: 'my-team', claudeDir });
-    const task = controller.tasks.createTask({ subject: 'Member named codex', notifyOwner: false });
+    const task = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Member named codex', notifyOwner: false });
 
     const commented = controller.tasks.addTaskComment(task.id, {
       from: 'codex',
@@ -2401,10 +2201,8 @@ controller.messages.sendMessage({
   it('rejects task comments from unknown authors', () => {
     const claudeDir = makeClaudeDir();
     const controller = createController({ teamName: 'my-team', claudeDir });
-    const task = controller.tasks.createTask({
-      subject: 'Reject unknown author',
-      notifyOwner: false,
-    });
+    const task = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Reject unknown author',
+    notifyOwner: false, });
 
     expect(() =>
       controller.tasks.addTaskComment(task.id, {
@@ -2424,10 +2222,8 @@ controller.messages.sendMessage({
       claudeDir,
       allowUserMessageSender: false,
     });
-    const task = appController.tasks.createTask({
-      subject: 'Reserved comment authors',
-      notifyOwner: false,
-    });
+    const task = appController.tasks.createTask({ requirements: ['FR-1'], subject: 'Reserved comment authors',
+    notifyOwner: false, });
 
     const appComment = appController.tasks.addTaskComment(task.id, {
       from: 'user',
@@ -2496,11 +2292,9 @@ controller.messages.sendMessage({
       claudeDir,
       allowUserMessageSender: false,
     });
-    const task = appController.taskBoard.createTask({
-      subject: 'Ownership handoff',
-      owner: 'alice',
-      notifyOwner: false,
-    });
+    const task = appController.taskBoard.createTask({ requirements: ['FR-1'], subject: 'Ownership handoff',
+    owner: 'alice',
+    notifyOwner: false, });
 
     agentController.taskBoard.setTaskOwner(task.id, 'bob', 'team-lead');
 
@@ -2561,15 +2355,11 @@ controller.messages.sendMessage({
       claudeDir,
       allowUserMessageSender: false,
     });
-    const owned = appController.taskBoard.createTask({
-      subject: 'Lead-managed task',
-      owner: 'bob',
-      notifyOwner: false,
-    });
-    const unassigned = appController.taskBoard.createTask({
-      subject: 'Self-claim task',
-      notifyOwner: false,
-    });
+    const owned = appController.taskBoard.createTask({ requirements: ['FR-1'], subject: 'Lead-managed task',
+    owner: 'bob',
+    notifyOwner: false, });
+    const unassigned = appController.taskBoard.createTask({ requirements: ['FR-1'], subject: 'Self-claim task',
+    notifyOwner: false, });
 
     expect(() => agentController.taskBoard.startTask(owned.id)).toThrow(
       'start it requires actor to be your configured teammate name'
@@ -2602,17 +2392,13 @@ controller.messages.sendMessage({
       claudeDir,
       allowUserMessageSender: false,
     });
-    const dependency = appController.tasks.createTask({
-      subject: 'Prepare calculator API',
-      owner: 'bob',
-      notifyOwner: false,
-    });
-    const blocked = appController.tasks.createTask({
-      subject: 'Build calculator UI',
-      owner: 'bob',
-      'blocked-by': dependency.displayId,
-      notifyOwner: false,
-    });
+    const dependency = appController.tasks.createTask({ requirements: ['FR-1'], subject: 'Prepare calculator API',
+    owner: 'bob',
+    notifyOwner: false, });
+    const blocked = appController.tasks.createTask({ requirements: ['FR-1'], subject: 'Build calculator UI',
+    owner: 'bob',
+    'blocked-by': dependency.displayId,
+    notifyOwner: false, });
 
     expect(() => agentController.tasks.completeTask(dependency.id, 'bob')).not.toThrow();
 
@@ -2633,11 +2419,9 @@ controller.messages.sendMessage({
     const claudeDir = makeClaudeDir();
     const controller = createController({ teamName: 'my-team', claudeDir });
 
-    const task = controller.tasks.createTask({
-      subject: 'Implement runtime handoff',
-      owner: 'bob',
-      descriptionTaskRefs: [{ taskId: 'related-task', displayId: 'rel12345', teamName: 'my-team' }],
-    });
+    const task = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Implement runtime handoff',
+    owner: 'bob',
+    descriptionTaskRefs: [{ taskId: 'related-task', displayId: 'rel12345', teamName: 'my-team' }], });
 
     const inboxPath = path.join(claudeDir, 'teams', 'my-team', 'inboxes', 'bob.json');
     const rows = JSON.parse(fs.readFileSync(inboxPath, 'utf8'));
@@ -2657,12 +2441,10 @@ controller.messages.sendMessage({
       allowUserMessageSender: false,
     });
 
-    const task = controller.tasks.createTask({
-      subject: 'Lead-owned runtime task',
-      owner: 'alice',
-      createdBy: 'user',
-      startImmediately: true,
-    });
+    const task = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Lead-owned runtime task',
+    owner: 'alice',
+    createdBy: 'user',
+    startImmediately: true, });
 
     const inboxPath = path.join(claudeDir, 'teams', 'my-team', 'inboxes', 'alice.json');
     const rows = JSON.parse(fs.readFileSync(inboxPath, 'utf8'));
@@ -2682,10 +2464,8 @@ controller.messages.sendMessage({
     fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
     const controller = createController({ teamName: 'my-team', claudeDir });
 
-    controller.tasks.createTask({
-      subject: 'Implement Codex handoff',
-      owner: 'bob',
-    });
+    controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Implement Codex handoff',
+    owner: 'bob', });
 
     const inboxPath = path.join(claudeDir, 'teams', 'my-team', 'inboxes', 'bob.json');
     const rows = JSON.parse(fs.readFileSync(inboxPath, 'utf8'));
@@ -2698,12 +2478,10 @@ controller.messages.sendMessage({
   it('does not wake owner for self-comments and keeps user clarification sticky until explicitly cleared', () => {
     const claudeDir = makeClaudeDir();
     const controller = createController({ teamName: 'my-team', claudeDir });
-    const task = controller.tasks.createTask({
-      subject: 'Need product input',
-      owner: 'bob',
-      needsClarification: 'user',
-      notifyOwner: false,
-    });
+    const task = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Need product input',
+    owner: 'bob',
+    needsClarification: 'user',
+    notifyOwner: false, });
 
     controller.tasks.addTaskComment(task.id, {
       from: 'bob',
@@ -2733,11 +2511,9 @@ controller.messages.sendMessage({
   it('wakes lead owner on comment from another member', () => {
     const claudeDir = makeClaudeDir();
     const controller = createController({ teamName: 'my-team', claudeDir });
-    const task = controller.tasks.createTask({
-      subject: 'Lead-owned task',
-      owner: 'team-lead',
-      notifyOwner: false,
-    });
+    const task = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Lead-owned task',
+    owner: 'team-lead',
+    notifyOwner: false, });
 
     controller.tasks.addTaskComment(task.id, {
       from: 'bob',
@@ -2755,7 +2531,7 @@ controller.messages.sendMessage({
   it('moves review back to pending+needsFix and notifies owner on requestChanges', () => {
     const claudeDir = makeClaudeDir();
     const controller = createController({ teamName: 'my-team', claudeDir });
-    const task = controller.tasks.createTask({ subject: 'Needs revision', owner: 'bob' });
+    const task = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Needs revision', owner: 'bob' });
 
     controller.tasks.completeTask(task.id, 'bob');
     controller.review.requestReview(task.id, { from: 'alice', reviewer: 'alice' });
@@ -2780,7 +2556,7 @@ controller.messages.sendMessage({
   it('ignores mismatched leadSessionId placeholders on review_approve owner notifications', () => {
     const claudeDir = makeClaudeDir();
     const controller = createController({ teamName: 'my-team', claudeDir });
-    const task = controller.tasks.createTask({ subject: 'Approve me', owner: 'bob' });
+    const task = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Approve me', owner: 'bob' });
 
     controller.kanban.addReviewer('alice');
     controller.tasks.completeTask(task.id, 'bob');
@@ -2801,7 +2577,7 @@ controller.messages.sendMessage({
   it('ignores mismatched leadSessionId placeholders on review_request_changes owner notifications', () => {
     const claudeDir = makeClaudeDir();
     const controller = createController({ teamName: 'my-team', claudeDir });
-    const task = controller.tasks.createTask({ subject: 'Needs revision', owner: 'bob' });
+    const task = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Needs revision', owner: 'bob' });
 
     controller.kanban.addReviewer('alice');
     controller.tasks.completeTask(task.id, 'bob');
@@ -2822,15 +2598,18 @@ controller.messages.sendMessage({
     const claudeDir = makeClaudeDir();
     const controller = createController({ teamName: 'my-team', claudeDir });
 
-    const approvedTasks = Array.from({ length: 12 }, (_, index) =>
-      controller.tasks.createTask({
+    const approvedTasks = Array.from({ length: 12 }, (_, index) => {
+      const task = controller.tasks.createTask({
+        requirements: ['FR-1'],
         subject: `Approved ${index + 1}`,
         owner: 'bob',
         status: 'completed',
         reviewState: 'approved',
-        createdAt: `2026-01-${String(index + 1).padStart(2, '0')}T00:00:00.000Z`,
-      })
-    );
+      });
+      const timestamp = `2026-01-${String(index + 1).padStart(2, '0')}T00:00:00.000Z`;
+      registryServer.mutateTask(task.id, { createdAt: timestamp, updatedAt: timestamp });
+      return task;
+    });
 
     const briefing = await controller.tasks.taskBriefing('bob');
     expect(briefing).toContain('Awareness:');
@@ -2838,8 +2617,8 @@ controller.messages.sendMessage({
     expect(briefing).toContain(`#${approvedTasks[2].displayId}`);
     expect(briefing).toContain(`#${approvedTasks[1].displayId}`);
     expect(briefing).toContain(`#${approvedTasks[0].displayId}`);
-    expect(briefing.indexOf(`#${approvedTasks[11].displayId}`)).toBeLessThan(
-      briefing.indexOf(`#${approvedTasks[0].displayId}`)
+    expect(briefing.indexOf(`#${approvedTasks[11].displayId} `)).toBeLessThan(
+      briefing.indexOf(`#${approvedTasks[0].displayId} `)
     );
   });
 
@@ -2847,20 +2626,14 @@ controller.messages.sendMessage({
     const claudeDir = makeClaudeDir();
     const controller = createController({ teamName: 'my-team', claudeDir });
 
-    const queuedTask = controller.tasks.createTask({
-      subject: 'Queued implementation',
-      owner: 'bob',
-      notifyOwner: false,
-    });
-    const unassignedTask = controller.tasks.createTask({
-      subject: 'Needs owner',
-      notifyOwner: false,
-    });
-    const reviewTask = controller.tasks.createTask({
-      subject: 'Needs review pickup',
-      owner: 'bob',
-      notifyOwner: false,
-    });
+    const queuedTask = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Queued implementation',
+    owner: 'bob',
+    notifyOwner: false, });
+    const unassignedTask = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Needs owner',
+    notifyOwner: false, });
+    const reviewTask = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Needs review pickup',
+    owner: 'bob',
+    notifyOwner: false, });
 
     controller.tasks.completeTask(reviewTask.id, 'bob');
     controller.review.requestReview(reviewTask.id, { from: 'alice', reviewer: 'alice' });
@@ -2897,13 +2670,11 @@ controller.messages.sendMessage({
     fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
 
     const controller = createController({ teamName: 'my-team', claudeDir });
-    const reviewTask = controller.tasks.createTask({
-      subject: 'Legacy review assignment',
-      owner: 'bob',
-      status: 'completed',
-      reviewState: 'review',
-      notifyOwner: false,
-    });
+    const reviewTask = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Legacy review assignment',
+    owner: 'bob',
+    status: 'completed',
+    reviewState: 'review',
+    notifyOwner: false, });
 
     fs.writeFileSync(
       path.join(claudeDir, 'teams', 'my-team', 'kanban-state.json'),
@@ -2962,7 +2733,7 @@ controller.messages.sendMessage({
     );
 
     const controller = createController({ teamName: 'my-team', claudeDir });
-    const task = controller.tasks.createTask({ subject: 'Alice owns this', owner: 'alice' });
+    const task = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Alice owns this', owner: 'alice' });
     const aliceBriefing = await controller.tasks.taskBriefing('alice');
     // The Members section lists every member's tasks; the lead queue above it must not.
     const leadQueue = (await controller.tasks.leadBriefing()).split('\nMembers (')[0];
@@ -2994,8 +2765,8 @@ controller.messages.sendMessage({
     );
 
     const controller = createController({ teamName: 'my-team', claudeDir });
-    const aliceTask = controller.tasks.createTask({ subject: 'Alice owns this', owner: 'alice' });
-    const leadTask = controller.tasks.createTask({ subject: 'Lead owns this', owner: 'leadbot' });
+    const aliceTask = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Alice owns this', owner: 'alice' });
+    const leadTask = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Lead owns this', owner: 'leadbot' });
     const aliceBriefing = await controller.tasks.taskBriefing('alice');
     // The Members section lists every member's tasks; the lead queue above it must not.
     const leadQueue = (await controller.tasks.leadBriefing()).split('\nMembers (')[0];
@@ -3027,25 +2798,21 @@ controller.messages.sendMessage({
     );
 
     const controller = createController({ teamName: 'my-team', claudeDir });
-    const leadOwnedTask = controller.tasks.createTask({
-      subject: 'Lead alias owner',
-      owner: 'lead',
-    });
+    const leadOwnedTask = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Lead alias owner',
+    owner: 'lead', });
     expect(leadOwnedTask.owner).toBe('leadbot');
     expect(fs.existsSync(path.join(claudeDir, 'teams', 'my-team', 'inboxes', 'lead.json'))).toBe(
       false
     );
 
-    const reassignedTask = controller.tasks.createTask({
-      subject: 'Reassign alias owner',
-      owner: 'bob',
-    });
+    const reassignedTask = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Reassign alias owner',
+    owner: 'bob', });
     expect(controller.tasks.setTaskOwner(reassignedTask.id, 'team-lead').owner).toBe('leadbot');
 
     controller.kanban.addReviewer('lead');
     expect(controller.kanban.listReviewers()).toEqual(['leadbot']);
 
-    const reviewTask = controller.tasks.createTask({ subject: 'Review alias', owner: 'bob' });
+    const reviewTask = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Review alias', owner: 'bob' });
     controller.tasks.completeTask(reviewTask.id, 'bob');
     controller.review.requestReview(reviewTask.id, { from: 'alice', reviewer: 'lead' });
 
@@ -3089,7 +2856,7 @@ controller.messages.sendMessage({
   it('clears kanban tasks and column order when review tasks leave review', () => {
     const claudeDir = makeClaudeDir();
     const controller = createController({ teamName: 'my-team', claudeDir });
-    const task = controller.tasks.createTask({ subject: 'Column cleanup', owner: 'bob' });
+    const task = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Column cleanup', owner: 'bob' });
 
     controller.tasks.completeTask(task.id, 'bob');
     controller.review.requestReview(task.id, { from: 'team-lead', reviewer: 'alice' });
@@ -3115,10 +2882,8 @@ controller.messages.sendMessage({
   it('clears kanban tasks and column order when task_set_status deletes a review task', () => {
     const claudeDir = makeClaudeDir();
     const controller = createController({ teamName: 'my-team', claudeDir });
-    const task = controller.tasks.createTask({
-      subject: 'Generic status delete cleanup',
-      owner: 'bob',
-    });
+    const task = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Generic status delete cleanup',
+    owner: 'bob', });
 
     controller.tasks.completeTask(task.id, 'bob');
     controller.review.requestReview(task.id, { from: 'team-lead', reviewer: 'alice' });
@@ -3132,123 +2897,41 @@ controller.messages.sendMessage({
     expect(kanbanState.columnOrder).toBeUndefined();
   });
 
-  it('surfaces unreadable task rows as board anomalies', async () => {
+  it('fails closed when the registry returns an invalid task', () => {
     const claudeDir = makeClaudeDir();
-    fs.writeFileSync(path.join(claudeDir, 'tasks', 'my-team', 'broken.json'), '{ bad json', 'utf8');
     const controller = createController({ teamName: 'my-team', claudeDir });
+    const task = controller.taskBoard.createTask({ requirements: ['FR-1'], subject: 'Malformed row' });
+    registryServer.mutateTask(task.id, { status: 'invalid-status' });
 
-    const leadBriefing = await controller.tasks.leadBriefing();
-    expect(leadBriefing).toContain('Board anomalies:');
-    expect(leadBriefing).toContain('unreadable_task (broken)');
-    expect(leadBriefing).toContain('anomalies=1');
+    expect(() => controller.taskBoard.listTasks()).toThrow('invalid status');
+    expect(() => controller.taskBoard.getTask(task.id)).toThrow('invalid status');
   });
 
-  it('keeps a mismatched legacy task listable, gettable, and mutable by its file id', async () => {
+  it('rejects explicit task ids because the registry allocates identity', () => {
     const claudeDir = makeClaudeDir();
     const controller = createController({ teamName: 'my-team', claudeDir });
-    const task = controller.taskBoard.createTask({ subject: 'Legacy mismatch' });
-    const taskPath = path.join(claudeDir, 'tasks', 'my-team', `${task.id}.json`);
-    const foreignTaskId = '11111111-1111-4111-8111-111111111111';
-    const persistedTask = readTaskFile(claudeDir, task.id);
-    persistedTask.id = foreignTaskId;
-    fs.writeFileSync(taskPath, JSON.stringify(persistedTask, null, 2), 'utf8');
-
-    expect(controller.taskBoard.listTasks().map((listedTask) => listedTask.id)).toContain(task.id);
-    expect(controller.taskBoard.getTask(task.id)).toMatchObject({
-      id: task.id,
-      subject: 'Legacy mismatch',
-    });
-    expect(() => controller.taskBoard.getTask(foreignTaskId)).toThrow(
-      `Non-canonical task reference "${foreignTaskId}"`
-    );
-
-    const updated = controller.taskBoard.updateTaskFields(task.id, {
-      description: 'Updated without forking the row',
-    });
-    expect(updated).toMatchObject({
-      id: task.id,
-      description: 'Updated without forking the row',
-    });
-    expect(controller.taskBoard.startTask(task.id, 'bob')).toMatchObject({
-      id: task.id,
-      status: 'in_progress',
-    });
-
-    expect(readTaskFile(claudeDir, task.id)).toMatchObject({
-      id: foreignTaskId,
-      description: 'Updated without forking the row',
-      status: 'in_progress',
-    });
-    expect(fs.existsSync(path.join(claudeDir, 'tasks', 'my-team', `${foreignTaskId}.json`))).toBe(
-      false
-    );
-    expect(() =>
-      controller.taskBoard.createTask({ id: foreignTaskId, subject: 'Duplicate identity' })
-    ).toThrow(`Task id collision: "${foreignTaskId}"`);
-
-    const leadBriefing = await controller.taskBoard.leadBriefing();
-    expect(leadBriefing).toContain('Board anomalies:');
-    expect(leadBriefing).toContain(`task_id_mismatch (${task.id})`);
-    expect(leadBriefing).toContain(`contains id "${foreignTaskId}"`);
-    expect(leadBriefing).toContain(`use canonical task id "${task.id}"`);
+    expect(() => controller.taskBoard.createTask({
+      id: '11111111-1111-4111-8111-111111111111',
+      subject: 'Duplicate identity',
+      requirements: ['FR-1'],
+    })).toThrow('registry allocates task ids');
+    expect(controller.taskBoard.listTasks()).toEqual([]);
   });
 
-  it('fails closed when a mismatched payload id collides with another task file', async () => {
+  it('rejects ambiguous display-id mutations without changing either registry task', () => {
     const claudeDir = makeClaudeDir();
     const controller = createController({ teamName: 'my-team', claudeDir });
-    const mismatched = controller.taskBoard.createTask({ subject: 'Mismatched collision' });
-    const canonical = controller.taskBoard.createTask({ subject: 'Canonical collision target' });
-    const mismatchedPath = path.join(claudeDir, 'tasks', 'my-team', `${mismatched.id}.json`);
-    const mismatchedPayload = readTaskFile(claudeDir, mismatched.id);
-    mismatchedPayload.id = canonical.id;
-    fs.writeFileSync(mismatchedPath, JSON.stringify(mismatchedPayload, null, 2), 'utf8');
-    const beforeMismatched = fs.readFileSync(mismatchedPath, 'utf8');
-    const canonicalPath = path.join(claudeDir, 'tasks', 'my-team', `${canonical.id}.json`);
-    const beforeCanonical = fs.readFileSync(canonicalPath, 'utf8');
+    const first = controller.taskBoard.createTask({ requirements: ['FR-1'], subject: 'First ambiguous task' });
+    const second = controller.taskBoard.createTask({ requirements: ['FR-1'], subject: 'Second ambiguous task' });
+    registryServer.mutateTask(first.id, { displayId: 'shared' });
+    registryServer.mutateTask(second.id, { displayId: 'shared' });
+    const before = controller.taskBoard.listTasks();
 
-    expect(controller.taskBoard.listTasks().map((taskRow) => taskRow.id)).toEqual(
-      expect.arrayContaining([mismatched.id, canonical.id])
-    );
-    expect(() => controller.taskBoard.getTask(mismatched.id)).toThrow('Task identity collision');
+    expect(() => controller.taskBoard.getTask('shared')).toThrow('Ambiguous task reference "shared"');
     expect(() =>
-      controller.taskBoard.updateTaskFields(mismatched.id, { description: 'wrong row' })
-    ).toThrow('Task identity collision');
-    expect(() =>
-      controller.taskBoard.updateTaskFields(canonical.id, { description: 'also unsafe' })
-    ).toThrow('Task identity collision');
-    expect(fs.readFileSync(mismatchedPath, 'utf8')).toBe(beforeMismatched);
-    expect(fs.readFileSync(canonicalPath, 'utf8')).toBe(beforeCanonical);
-
-    const leadBriefing = await controller.taskBoard.leadBriefing();
-    expect(leadBriefing).toContain(`task_id_mismatch (${mismatched.id})`);
-    expect(leadBriefing).toContain(`task_id_collision (${canonical.id})`);
-    expect(leadBriefing).toContain(`"${mismatched.id}.json"`);
-    expect(leadBriefing).toContain(`"${canonical.id}.json"`);
-  });
-
-  it('rejects ambiguous display-id mutations without changing either task file', () => {
-    const claudeDir = makeClaudeDir();
-    const controller = createController({ teamName: 'my-team', claudeDir });
-    const first = controller.taskBoard.createTask({ subject: 'First ambiguous task' });
-    const second = controller.taskBoard.createTask({ subject: 'Second ambiguous task' });
-    const taskPaths = [first.id, second.id].map((taskId) =>
-      path.join(claudeDir, 'tasks', 'my-team', `${taskId}.json`)
-    );
-
-    for (const taskPath of taskPaths) {
-      const payload = JSON.parse(fs.readFileSync(taskPath, 'utf8'));
-      payload.displayId = 'legacy-shared';
-      fs.writeFileSync(taskPath, JSON.stringify(payload, null, 2), 'utf8');
-    }
-    const before = taskPaths.map((taskPath) => fs.readFileSync(taskPath, 'utf8'));
-
-    expect(() => controller.taskBoard.getTask('legacy-shared')).toThrow(
-      'Ambiguous task reference "legacy-shared"'
-    );
-    expect(() =>
-      controller.taskBoard.updateTaskFields('legacy-shared', { description: 'wrong row' })
-    ).toThrow('Ambiguous task reference "legacy-shared"');
-    expect(taskPaths.map((taskPath) => fs.readFileSync(taskPath, 'utf8'))).toEqual(before);
+      controller.taskBoard.updateTaskFields('shared', { description: 'wrong row' })
+    ).toThrow('Ambiguous task reference "shared"');
+    expect(controller.taskBoard.listTasks()).toEqual(before);
   });
 
   it('caps large member briefings and points agents to drill-down tools', async () => {
@@ -3256,19 +2939,17 @@ controller.messages.sendMessage({
     const controller = createController({ teamName: 'my-team', claudeDir });
 
     for (let i = 0; i < 60; i += 1) {
-      controller.tasks.createTask({
-        subject: `Large queue task ${i}`,
-        description: 'x'.repeat(3000),
-        owner: 'bob',
-        status: 'in_progress',
-        comments: Array.from({ length: 8 }, (_, index) => ({
-          id: `comment-${i}-${index}`,
-          author: 'bob',
-          text: 'y'.repeat(1000),
-          createdAt: new Date(Date.UTC(2026, 0, 1, 0, i, index)).toISOString(),
-        })),
-        notifyOwner: false,
-      });
+      controller.tasks.createTask({ requirements: ['FR-1'], subject: `Large queue task ${i}`,
+      description: 'x'.repeat(3000),
+      owner: 'bob',
+      status: 'in_progress',
+      comments: Array.from({ length: 8 }, (_, index) => ({
+        id: `comment-${i}-${index}`,
+        author: 'bob',
+        text: 'y'.repeat(1000),
+        createdAt: new Date(Date.UTC(2026, 0, 1, 0, i, index)).toISOString(),
+      })),
+      notifyOwner: false, });
     }
 
     const briefing = await controller.tasks.taskBriefing('bob');
@@ -3282,7 +2963,7 @@ controller.messages.sendMessage({
   it('resets approved review state when work is reopened to pending', async () => {
     const claudeDir = makeClaudeDir();
     const controller = createController({ teamName: 'my-team', claudeDir });
-    const task = controller.tasks.createTask({ subject: 'Approved then reopened', owner: 'bob' });
+    const task = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Approved then reopened', owner: 'bob' });
 
     controller.tasks.completeTask(task.id, 'bob');
     controller.review.requestReview(task.id, { from: 'alice', reviewer: 'alice' });
@@ -3303,10 +2984,8 @@ controller.messages.sendMessage({
   it('guards direct kanban_clear against active review state while keeping no-op clears safe', () => {
     const claudeDir = makeClaudeDir();
     const controller = createController({ teamName: 'my-team', claudeDir });
-    const task = controller.tasks.createTask({
-      subject: 'Do not unapprove directly',
-      owner: 'bob',
-    });
+    const task = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Do not unapprove directly',
+    owner: 'bob', });
 
     controller.tasks.completeTask(task.id, 'bob');
     controller.review.requestReview(task.id, { from: 'alice', reviewer: 'alice' });
@@ -3328,7 +3007,7 @@ controller.messages.sendMessage({
     fs.mkdirSync(inboxDir, { recursive: true });
     fs.writeFileSync(path.join(inboxDir, 'boob.json'), '[]', 'utf8');
     const controller = createController({ teamName: 'my-team', claudeDir });
-    const task = controller.tasks.createTask({ subject: 'Typo owner guard', owner: 'bob' });
+    const task = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Typo owner guard', owner: 'bob' });
 
     expect(() => controller.tasks.setTaskOwner(task.id, 'boob')).toThrow(
       'Unknown task owner: boob'
@@ -3338,12 +3017,7 @@ controller.messages.sendMessage({
       controller.review.requestReview(task.id, { from: 'alice', reviewer: 'boob' })
     ).toThrow('Unknown reviewer: boob');
 
-    const taskPath = path.join(claudeDir, 'tasks', 'my-team', `${task.id}.json`);
-    const rawTask = JSON.parse(fs.readFileSync(taskPath, 'utf8'));
-    rawTask.owner = 'boob';
-    rawTask.status = 'pending';
-    rawTask.reviewState = 'none';
-    fs.writeFileSync(taskPath, JSON.stringify(rawTask, null, 2));
+    registryServer.mutateTask(task.id, { owner: 'boob', status: 'pending', reviewState: 'none' });
 
     const leadBriefing = await controller.tasks.leadBriefing();
     expect(leadBriefing).toContain(`#${task.displayId}`);
@@ -3354,7 +3028,7 @@ controller.messages.sendMessage({
   it('prevents deleted tasks from being resurrected by normal work tools', () => {
     const claudeDir = makeClaudeDir();
     const controller = createController({ teamName: 'my-team', claudeDir });
-    const task = controller.tasks.createTask({ subject: 'Deleted work guard', owner: 'bob' });
+    const task = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Deleted work guard', owner: 'bob' });
 
     controller.tasks.softDeleteTask(task.id, 'bob');
     const deletedBefore = controller.tasks.getTask(task.id);
@@ -3400,10 +3074,8 @@ controller.messages.sendMessage({
   it('rejects task_restore for non-deleted tasks', () => {
     const claudeDir = makeClaudeDir();
     const controller = createController({ teamName: 'my-team', claudeDir });
-    const task = controller.tasks.createTask({
-      subject: 'Approved task must stay approved',
-      owner: 'bob',
-    });
+    const task = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Approved task must stay approved',
+    owner: 'bob', });
 
     controller.tasks.completeTask(task.id, 'bob');
     controller.review.requestReview(task.id, { from: 'alice', reviewer: 'alice' });
@@ -3419,7 +3091,7 @@ controller.messages.sendMessage({
   it('uses actual kanban overlay for kanbanColumn inventory filters', () => {
     const claudeDir = makeClaudeDir();
     const controller = createController({ teamName: 'my-team', claudeDir });
-    const task = controller.tasks.createTask({ subject: 'Approved without overlay', owner: 'bob' });
+    const task = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Approved without overlay', owner: 'bob' });
 
     controller.tasks.completeTask(task.id, 'bob');
     controller.review.requestReview(task.id, { from: 'alice', reviewer: 'alice' });
@@ -3439,13 +3111,12 @@ controller.messages.sendMessage({
   it('repairs an invalid review_started actor without losing the assigned reviewer', async () => {
     const claudeDir = makeClaudeDir();
     const controller = createController({ teamName: 'my-team', claudeDir });
-    const task = controller.tasks.createTask({ subject: 'Repair reviewer actor', owner: 'bob' });
+    const task = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Repair reviewer actor', owner: 'bob' });
 
     controller.tasks.completeTask(task.id, 'bob');
     controller.review.requestReview(task.id, { from: 'alice', reviewer: 'alice' });
 
-    const taskPath = path.join(claudeDir, 'tasks', 'my-team', `${task.id}.json`);
-    const rawTask = JSON.parse(fs.readFileSync(taskPath, 'utf8'));
+    const rawTask = controller.tasks.getTask(task.id);
     rawTask.historyEvents.push({
       id: 'bad-review-start',
       timestamp: '2026-01-01T00:00:00.000Z',
@@ -3454,7 +3125,7 @@ controller.messages.sendMessage({
       to: 'review',
       actor: 'alicce',
     });
-    fs.writeFileSync(taskPath, JSON.stringify(rawTask, null, 2));
+    registryServer.mutateTask(task.id, { historyEvents: rawTask.historyEvents });
 
     controller.review.startReview(task.id, { from: 'alice' });
     const startedEvents = controller.tasks
@@ -3475,16 +3146,13 @@ controller.messages.sendMessage({
     config.members.push({ name: 'carol', role: 'reviewer' });
     fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
     const controller = createController({ teamName: 'my-team', claudeDir });
-    const task = controller.tasks.createTask({
-      subject: 'Repair mismatched reviewer actor',
-      owner: 'bob',
-    });
+    const task = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Repair mismatched reviewer actor',
+    owner: 'bob', });
 
     controller.tasks.completeTask(task.id, 'bob');
     controller.review.requestReview(task.id, { from: 'alice', reviewer: 'alice' });
 
-    const taskPath = path.join(claudeDir, 'tasks', 'my-team', `${task.id}.json`);
-    const rawTask = JSON.parse(fs.readFileSync(taskPath, 'utf8'));
+    const rawTask = controller.tasks.getTask(task.id);
     rawTask.historyEvents.push({
       id: 'wrong-review-start',
       timestamp: '2026-01-01T00:00:00.000Z',
@@ -3494,7 +3162,10 @@ controller.messages.sendMessage({
       actor: 'carol',
     });
     rawTask.reviewIntervals = [{ reviewer: 'carol', startedAt: '2026-01-01T00:00:00.000Z' }];
-    fs.writeFileSync(taskPath, JSON.stringify(rawTask, null, 2));
+    registryServer.mutateTask(task.id, {
+      historyEvents: rawTask.historyEvents,
+      reviewIntervals: rawTask.reviewIntervals,
+    });
 
     controller.review.startReview(task.id);
     const repairedTask = controller.tasks.getTask(task.id);
@@ -3517,15 +3188,13 @@ controller.messages.sendMessage({
     expect(carolBriefing).not.toContain('reason=review_in_progress');
   });
 
-  it('bounds anomaly and subject rendering on primary queue surfaces', async () => {
+  it('bounds subject rendering and reports stale kanban entries on primary queue surfaces', async () => {
     const claudeDir = makeClaudeDir();
     const controller = createController({ teamName: 'my-team', claudeDir });
     const longSubject = `Long subject ${'x'.repeat(5000)}`;
-    const task = controller.tasks.createTask({
-      subject: longSubject,
-      owner: 'bob',
-      notifyOwner: false,
-    });
+    const task = controller.tasks.createTask({ requirements: ['FR-1'], subject: longSubject,
+    owner: 'bob',
+    notifyOwner: false, });
     const kanbanPath = path.join(claudeDir, 'teams', 'my-team', 'kanban-state.json');
     fs.writeFileSync(
       kanbanPath,
@@ -3542,31 +3211,13 @@ controller.messages.sendMessage({
         2
       )
     );
-    fs.writeFileSync(
-      path.join(claudeDir, 'tasks', 'my-team', 'bad-status.json'),
-      JSON.stringify({ id: 'bad-status', subject: 'Bad status', status: 'inprogress' }, null, 2),
-      'utf8'
-    );
-    for (let index = 0; index < 30; index += 1) {
-      fs.writeFileSync(
-        path.join(claudeDir, 'tasks', 'my-team', `broken-${index}.json`),
-        '{ bad json',
-        'utf8'
-      );
-    }
 
     const briefing = await controller.tasks.leadBriefing();
     expect(briefing).toContain('Board anomalies:');
-    expect(briefing).toContain('Invalid task status "inprogress"');
     expect(briefing).toContain('stale_kanban_task (missing)');
-    expect(briefing).toContain('more board anomaly item(s) omitted');
     expect(briefing).not.toContain('x'.repeat(1000));
 
-    expect(() => controller.tasks.listTaskInventory({ owner: 'bob' })).toThrow(/Cannot verify task/);
-    const cleanDir = makeClaudeDir();
-    const clean = createController({ teamName: 'my-team', claudeDir: cleanDir });
-    clean.tasks.createTask({ subject: longSubject, owner: 'bob', notifyOwner: false });
-    const inventoryRow = clean.tasks.listTaskInventory({ owner: 'bob' })[0];
+    const inventoryRow = controller.tasks.listTaskInventory({ owner: 'bob' })[0];
     expect(inventoryRow.subject).toContain('[truncated]');
     expect(inventoryRow.subject.length).toBeLessThan(300);
   });
@@ -3604,14 +3255,55 @@ controller.messages.sendMessage({
     expect(controller.processes.listProcesses()).toEqual([]);
   });
 
+  it('reports stale processes stopped without writing processes.json on a read-only listing', async () => {
+    const claudeDir = makeClaudeDir();
+    const controller = createController({ teamName: 'my-team', claudeDir });
+    const processesPath = path.join(claudeDir, 'teams', 'my-team', 'processes.json');
+    const original = `${JSON.stringify(
+      [
+        {
+          id: 'live-entry',
+          pid: process.pid,
+          label: 'live',
+          registeredAt: '2024-01-01T00:00:00.000Z',
+        },
+        {
+          id: 'stale-entry',
+          pid: 999999,
+          label: 'stale',
+          registeredAt: '2024-01-02T00:00:00.000Z',
+        },
+        {
+          id: 'stale-unregistered-entry',
+          pid: 999998,
+          label: 'stale without registeredAt',
+        },
+      ],
+      null,
+      2
+    )}\n`;
+    fs.writeFileSync(processesPath, original);
+    const fileMtime = fs.statSync(processesPath).mtime.toISOString();
+
+    const listed = controller.processes.listProcesses({ readOnly: true });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const listedAgain = controller.processes.listProcesses({ readOnly: true });
+
+    expect(listed.map((entry) => [entry.id, entry.alive, entry.stoppedAt])).toEqual([
+      ['live-entry', true, undefined],
+      ['stale-entry', false, '2024-01-02T00:00:00.000Z'],
+      ['stale-unregistered-entry', false, fileMtime],
+    ]);
+    expect(listedAgain).toEqual(listed);
+    expect(fs.readFileSync(processesPath, 'utf8')).toBe(original);
+  });
+
   it('task_add_comment succeeds even when owner notification write fails', () => {
     const claudeDir = makeClaudeDir();
     const controller = createController({ teamName: 'my-team', claudeDir });
-    const task = controller.tasks.createTask({
-      subject: 'Comment resilience',
-      owner: 'bob',
-      notifyOwner: false,
-    });
+    const task = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Comment resilience',
+    owner: 'bob',
+    notifyOwner: false, });
 
     // Make inboxes directory read-only to force notification write failure
     const inboxDir = path.join(claudeDir, 'teams', 'my-team', 'inboxes');
@@ -4099,14 +3791,16 @@ controller.messages.sendMessage({
       ).map((row) => row.text);
     const clock = { now: Date.parse('2026-08-23T10:00:00.000Z') };
     vi.useFakeTimers({ now: clock.now, toFake: ['Date'] });
+    registryServer.setClock(clock.now);
     const advance = (minutes) => {
       clock.now += minutes * 60 * 1000;
       vi.setSystemTime(clock.now);
+      registryServer.setClock(clock.now);
     };
 
     try {
       // Board not complete: nothing is guarded.
-      const task = controller.tasks.createTask({ subject: 'Write summary', owner: 'alice' });
+      const task = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Write summary', owner: 'alice' });
       controller.tasks.startTask(task.id, 'alice');
       advance(1);
       const progress = controller.messages.sendMessage({
@@ -4166,7 +3860,7 @@ controller.messages.sendMessage({
 
       // A real board change (new task) opens a new completion epoch.
       advance(1);
-      const followUp = controller.tasks.createTask({ subject: 'Follow-up', owner: 'alice' });
+      const followUp = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Follow-up', owner: 'alice' });
       controller.tasks.startTask(followUp.id, 'alice');
       controller.tasks.completeTask(followUp.id, 'alice');
       advance(1);
@@ -4208,10 +3902,10 @@ controller.messages.sendMessage({
     expect(first.deduplicated).toBeUndefined();
     expect(second.deduplicated).toBeUndefined();
 
-    const done = controller.tasks.createTask({ subject: 'Done task', owner: 'alice' });
+    const done = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Done task', owner: 'alice' });
     controller.tasks.startTask(done.id, 'alice');
     controller.tasks.completeTask(done.id, 'alice');
-    controller.tasks.createTask({ subject: 'Still open', owner: 'bob' });
+    controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Still open', owner: 'bob' });
     const third = controller.messages.sendMessage({ to: 'user', from: 'alice', text: 'One done' });
     const fourth = controller.messages.sendMessage({ to: 'user', from: 'alice', text: 'Still one open' });
     expect(third.deduplicated).toBeUndefined();
@@ -4268,8 +3962,8 @@ controller.messages.sendMessage({
   it('scopes repeated-message dedup to delivery context and resets it after user input', () => {
     const claudeDir = makeClaudeDir();
     const controller = createController({ teamName: 'my-team', claudeDir });
-    const taskA = controller.tasks.createTask({ subject: 'Task A', notifyOwner: false });
-    const taskB = controller.tasks.createTask({ subject: 'Task B', notifyOwner: false });
+    const taskA = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Task A', notifyOwner: false });
+    const taskB = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Task B', notifyOwner: false });
     const taskRef = (task) => [{ taskId: task.id, displayId: task.displayId, teamName: 'my-team' }];
     const baseTime = Date.parse('2026-08-23T10:00:00.000Z');
 
@@ -4415,8 +4109,8 @@ controller.messages.sendMessage({
     const boardNotices = () =>
       readLeadInbox().filter((row) => String(row.messageId || '').startsWith('board-complete:'));
 
-    const first = controller.tasks.createTask({ subject: 'Write the note', owner: 'bob' });
-    const second = controller.tasks.createTask({ subject: 'Review the note', owner: 'bob' });
+    const first = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Write the note', owner: 'bob' });
+    const second = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Review the note', owner: 'bob' });
 
     controller.tasks.completeTask(first.id, 'bob');
     expect(boardNotices()).toHaveLength(0);
@@ -4436,7 +4130,7 @@ controller.messages.sendMessage({
   it('does not tell the lead about a board it finished itself', () => {
     const claudeDir = makeClaudeDir();
     const controller = createController({ teamName: 'my-team', claudeDir });
-    const own = controller.tasks.createTask({ subject: 'Lead handles it', owner: 'alice' });
+    const own = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Lead handles it', owner: 'alice' });
 
     controller.tasks.completeTask(own.id, 'alice');
 
@@ -4498,7 +4192,7 @@ controller.messages.sendMessage({
     const boardNotices = () =>
       readLeadInbox().filter((row) => String(row.messageId || '').startsWith('board-complete:'));
 
-    const task = controller.tasks.createTask({ subject: 'Write the note', owner: 'bob' });
+    const task = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Write the note', owner: 'bob' });
     controller.tasks.completeTask(task.id, 'bob');
     expect(boardNotices()).toHaveLength(1);
 
@@ -4521,7 +4215,7 @@ controller.messages.sendMessage({
     expect(controller.messages.lookupMessage(boardNotices()[0].messageId).store).toBe('inbox:alice');
 
     // The next task to finish the board still gets its own notice.
-    const second = controller.tasks.createTask({ subject: 'Review the note', owner: 'bob' });
+    const second = controller.tasks.createTask({ requirements: ['FR-1'], subject: 'Review the note', owner: 'bob' });
     controller.tasks.completeTask(second.id, 'bob');
     expect(boardNotices()).toHaveLength(2);
   });

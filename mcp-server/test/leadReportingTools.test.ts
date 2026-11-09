@@ -82,6 +82,30 @@ describe('report fields and confirmed delivery through existing MCP tools', () =
     });
   });
 
+  it('forwards the exact app-admitted request identity for an ordinary reply', async () => {
+    sendMessage.mockResolvedValueOnce({ messageId: 'reply-1', requestMessageId: 'request-42' });
+    const tool = tools().get('message_send')!;
+    const input = {
+      teamName: 'test-team',
+      from: 'team-lead',
+      to: 'user',
+      text: 'The work is underway.',
+      requestMessageId: 'request-42',
+    };
+    expect(tool.parameters.safeParse(input).success).toBe(true);
+    const result = await tool.execute(input);
+    expect(sendMessage).toHaveBeenLastCalledWith({
+      from: 'team-lead',
+      to: 'user',
+      text: input.text,
+      requestMessageId: input.requestMessageId,
+    });
+    expect(JSON.parse(result.content[0].text)).toMatchObject({
+      messageId: 'reply-1',
+      requestMessageId: 'request-42',
+    });
+  });
+
   it('keeps source errors as errors, not successful delivered messages', async () => {
     sendMessage.mockRejectedValueOnce(new Error('Report sources changed; inspect again'));
     await expect(

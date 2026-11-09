@@ -149,6 +149,66 @@ describe('TeamTaskReader', () => {
     expect(tasks[0]).toMatchObject({ artifactRequirement, attachments: [{ id: 'artifact-1' }] });
   });
 
+  it('preserves registry fields and existing artifact metadata on task reads', async () => {
+    await setupTasksRoot();
+    const registryFields = {
+      specProject: 'owner/project',
+      specSlug: 'example',
+      registryLocalId: 'TASK-1',
+      registryStatus: 'blocked',
+      registryTask: {
+        canonicalId: 'example:TASK-1', specSlug: 'example', localId: '1', title: 'Registry task',
+        description: null, creationToken: null, status: 'blocked', phase: null, owner: null,
+        tracking: null, contentHash: null,
+        source: { path: null, startLine: null, startColumn: null, endLine: null, endColumn: null },
+        requirements: ['FR-1'], dependsOn: [], blocks: [], blockedBy: [],
+      },
+      registryEntity: {
+        canonicalId: 'example:TASK-1', specSlug: 'example', localId: '1', kind: 'TASK',
+        title: 'Registry task', body: 'body', attributes: {}, contentHash: null, span: null,
+      },
+      registrySource: { path: null, startLine: null, startColumn: null, endLine: null, endColumn: null },
+      requirements: ['FR-1'],
+      dependsOn: ['TASK-2'],
+      registryRefs: ['example:TASK-2'],
+      registryPhase: null,
+      tracking: 'work',
+      contentHash: null,
+      registryBody: 'body',
+      registryAttributes: { priority: 'high' },
+      doneWhen: null,
+      creationCommand: { namespace: 'agent', scopeKey: 'scope', operation: 'create', commandId: 'cmd', payloadHash: 'hash' },
+    };
+    const artifactRequirement = { required: true, expectedFilename: 'output.txt' };
+    await writeTaskFile('atlas-hq', {
+      id: '1', subject: 'Registry task', status: 'pending', ...registryFields, artifactRequirement,
+    });
+    const tasks = await new TeamTaskReader().getTasks('atlas-hq');
+    expect(tasks[0]).toMatchObject({ ...registryFields, artifactRequirement });
+  });
+
+  it('does not invent registry values for a legacy task', async () => {
+    await setupTasksRoot();
+    await writeTaskFile('atlas-hq', { id: '1', subject: 'Legacy task', status: 'pending' });
+    const [task] = await new TeamTaskReader().getTasks('atlas-hq');
+    expect(task?.specProject).toBeUndefined();
+    expect(task?.requirements).toBeUndefined();
+    expect(task?.registryStatus).toBeUndefined();
+  });
+
+  it('does not promote malformed registry snapshots to typed task data', async () => {
+    await setupTasksRoot();
+    await writeTaskFile('atlas-hq', {
+      id: '1', subject: 'Invalid registry data', status: 'pending',
+      registryStatus: 'not-a-status', registryTask: {}, registryEntity: {}, registrySource: {},
+    });
+    const [task] = await new TeamTaskReader().getTasks('atlas-hq');
+    expect(task?.registryStatus).toBeUndefined();
+    expect(task?.registryTask).toBeUndefined();
+    expect(task?.registryEntity).toBeUndefined();
+    expect(task?.registrySource).toBeUndefined();
+  });
+
   it('does not retain full parsed task payloads in the projection cache', async () => {
     await setupTasksRoot();
     await writeTaskFile('atlas-hq', {

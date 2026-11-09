@@ -16,6 +16,13 @@ const MCP_HTTP_IDENTITY_SERVICE_ENV = 'AGENT_TEAMS_MCP_HTTP_IDENTITY_SERVICE';
 const MCP_HTTP_CLAUDE_DIR_HASH_ENV = 'AGENT_TEAMS_MCP_HTTP_CLAUDE_DIR_HASH';
 const MCP_HTTP_LAUNCH_SPEC_HASH_ENV = 'AGENT_TEAMS_MCP_HTTP_LAUNCH_SPEC_HASH';
 const MCP_HTTP_OWNER_INSTANCE_ID_ENV = 'AGENT_TEAMS_MCP_HTTP_OWNER_INSTANCE_ID';
+function readBearerScopeCredential(header: string | string[] | undefined): string | null {
+  if (typeof header !== 'string' || !header.startsWith('Bearer ')) return null;
+  const credential = header.slice('Bearer '.length);
+  return credential.length > 0 && credential.length <= 512 && credential.trim() === credential
+    ? credential
+    : null;
+}
 
 export type AgentTeamsMcpStartOptions =
   | {
@@ -68,6 +75,13 @@ export function createServer(
   const server = new FastMCP({
     name: 'agent-teams-mcp',
     version: '1.0.0',
+    ...(httpOptions
+      ? {
+          authenticate: (request) => ({
+            appMcpScopeCredential: readBearerScopeCredential(request.headers.authorization),
+          }),
+        }
+      : {}),
     ...(bound && authority
       ? {
           // Patched transport admission covers every method, before CORS and session lookup.
@@ -97,10 +111,13 @@ export function createServer(
       : {}),
   });
 
-  registerTools(server, input.toolProfile);
+  registerTools(server, input.toolProfile, {
+    requestScopedSpecCapability: httpOptions !== null,
+  });
 
   return server;
 }
+
 
 function getArgValue(argv: string[], name: string): string | null {
   const directPrefix = `${name}=`;

@@ -17,6 +17,7 @@ import { registerReviewTools } from './reviewTools';
 import { registerRuntimeTools } from './runtimeTools';
 import { registerTaskTools } from './taskTools';
 import { registerTeamTools } from './teamTools';
+import { registerTeamSpecBindingTools } from './specBindingTools';
 import { registerWorkSyncTools } from './workSyncTools';
 
 const REGISTRATION_BY_GROUP = {
@@ -30,6 +31,7 @@ const REGISTRATION_BY_GROUP = {
   runtime: registerRuntimeTools,
   workSync: registerWorkSyncTools,
   crossTeam: registerCrossTeamTools,
+  teamSpec: registerTeamSpecBindingTools,
 } as const;
 
 export const AGENT_TEAMS_MCP_REGISTRATION_GROUPS = AGENT_TEAMS_MCP_TOOL_GROUPS.map((group) => ({
@@ -40,8 +42,15 @@ export const AGENT_TEAMS_MCP_REGISTRATION_GROUPS = AGENT_TEAMS_MCP_TOOL_GROUPS.m
 export { AGENT_TEAMS_REGISTERED_TOOL_NAMES };
 
 export type McpToolProfile = 'full' | 'management';
+export interface McpToolRegistrationOptions {
+  requestScopedSpecCapability?: boolean;
+}
 
-export function registerTools(server: Pick<FastMCP, 'addTool'>, profile: McpToolProfile = 'full') {
+export function registerTools(
+  server: Pick<FastMCP, 'addTool'>,
+  profile: McpToolProfile = 'full',
+  options: McpToolRegistrationOptions = {}
+) {
   if (profile === 'management') {
     // A fixed boundary, independent of client permission flags or future tool groups.
     const allowed = new Set(AGENT_TEAMS_MANAGEMENT_TOOL_NAMES);
@@ -53,6 +62,12 @@ export function registerTools(server: Pick<FastMCP, 'addTool'>, profile: McpTool
     return;
   }
   for (const group of AGENT_TEAMS_MCP_REGISTRATION_GROUPS) {
-    group.register(server);
+    if (group.id === 'teamSpec') {
+      registerTeamSpecBindingTools(server, {
+        requestScopedCapability: options.requestScopedSpecCapability === true,
+      });
+    } else {
+      group.register(server);
+    }
   }
 }
