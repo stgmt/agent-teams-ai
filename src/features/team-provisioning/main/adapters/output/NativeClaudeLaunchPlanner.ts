@@ -282,7 +282,6 @@ export class NativeClaudeLaunchPlanner implements NodeMemberLaunchPlanner {
         ...artifacts.env,
         CLAUDE_CODE_TASK_LIST_ID: personalTaskListId(token),
         CLAUDE_CODE_ENABLE_TASKS: '1',
-        CLAUDE_CODE_ENABLE_TODO_TOOLS: '1',
         CLAUDE_CODE_BOOTSTRAP_RUN_ID: token.runId,
       });
       // Only the scoped MCP child receives this capability; never the model CLI or its shell tools.

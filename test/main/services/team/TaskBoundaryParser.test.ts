@@ -217,7 +217,7 @@ describe('TaskBoundaryParser', () => {
     expect(result.boundaries[0]?.mechanism).toBe('mcp');
   });
 
-  it('accepts task_id for TaskUpdate and MCP task markers', async () => {
+  it('ignores built-in personal TaskUpdate and keeps app task markers', async () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'task-boundary-parser-'));
     const jsonlPath = path.join(tmpDir, 'task-id-underscore.jsonl');
     await fs.writeFile(
@@ -259,9 +259,46 @@ describe('TaskBoundaryParser', () => {
 
     const result = await new TaskBoundaryParser().parseBoundaries(jsonlPath);
 
-    expect(result.boundaries).toHaveLength(2);
-    expect(result.boundaries.map((entry) => entry.taskId)).toEqual(['task-123', 'task-123']);
-    expect(result.boundaries.map((entry) => entry.event)).toEqual(['start', 'complete']);
+    expect(result.detectedMechanism).toBe('mcp');
+    expect(result.boundaries).toHaveLength(1);
+    expect(result.boundaries[0]?.event).toBe('complete');
+    expect(result.boundaries[0]?.taskId).toBe('task-123');
+  });
+
+  it('keeps an app task boundary that shares a line with a personal TaskUpdate', async () => {
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'task-boundary-parser-'));
+    const jsonlPath = path.join(tmpDir, 'mixed-same-line.jsonl');
+    await fs.writeFile(
+      jsonlPath,
+      JSON.stringify({
+        timestamp: '2026-03-01T10:00:00.000Z',
+        type: 'assistant',
+        message: {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool_use',
+              id: 'tool-personal',
+              name: 'TaskUpdate',
+              input: { taskId: '1', status: 'completed' },
+            },
+            {
+              type: 'tool_use',
+              id: 'tool-board',
+              name: 'task_start',
+              input: { taskId: 'board-task', teamName: 'demo' },
+            },
+          ],
+        },
+      }) + '\n',
+      'utf8'
+    );
+
+    const result = await new TaskBoundaryParser().parseBoundaries(jsonlPath);
+
+    expect(result.boundaries).toHaveLength(1);
+    expect(result.boundaries[0]?.taskId).toBe('board-task');
+    expect(result.boundaries[0]?.mechanism).toBe('mcp');
   });
 
   it('includes every metadata changes path in scoped file paths', async () => {

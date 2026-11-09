@@ -184,6 +184,36 @@ The app can detect installed Claude Code and Codex runtimes. OpenCode is not sup
 
 macOS and Linux: this fork does not publish or validate builds for these platforms. Use [upstream's installers](https://github.com/777genius/agent-teams-ai/releases/latest), which do not include the fork's fixes.
 
+### Claude Code and local models
+
+Install and sign in to Claude Code before launching a team. To use a local model through
+Claude Code, open provider settings and select **Local / compatible endpoint**. Enter an
+Anthropic-compatible API base URL and any token required by that endpoint; a model server
+that only exposes an OpenAI-compatible API needs a compatible gateway.
+
+### Team specifications and tasks
+
+1. Start an [omp-spec-kit registry](https://github.com/stgmt/omp-spec-kit) and give the
+   desktop app a registry credential. By default, the app connects to
+   `http://127.0.0.1:8650/mcp` and reads the token from
+   `~/.spec-registry/mcp-token.txt`. Set `OMP_SPEC_REGISTRY_URL` to use another address,
+   or `OMP_SPEC_REGISTRY_TOKEN_FILE` to use another token file. The
+   `OMP_SPEC_REGISTRY_TOKEN` environment variable is used only if that file is absent or empty.
+2. Open the team, select **Specifications**, and link the specifications it should use.
+   The team lead can create specifications, requirements, and shared tasks through MCP.
+   Tasks created directly through the specification MCP appear on the same board.
+3. Select the intended specification when working with a shared task: two specifications
+   may both contain a task with the same number. Agents' personal tasks stay separate;
+   existing local tasks are not automatically moved to the registry. Personal tasks live
+   in their own isolated list per data root, team, and member, and their numbers are never
+   read as board task references. Runtimes launched outside the native Claude path keep the
+   previous task-tool restrictions.
+
+Task result files stay on the desktop. The app checks required local files when it
+completes a task; direct completion through the registry does not yet have the same
+server-side verification. That work is tracked in
+[omp-spec-kit issue 52](https://github.com/stgmt/omp-spec-kit/issues/52).
+
 ## Table of contents
 
 - [Installation](#installation)

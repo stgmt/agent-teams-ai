@@ -12,6 +12,7 @@ import * as readline from 'readline';
 
 import {
   canonicalizeAgentTeamsToolName,
+  isBuiltinPersonalTaskToolName,
   lineHasAgentTeamsTaskBoundaryToolName,
 } from './agentTeamsToolNames';
 import {
@@ -1141,10 +1142,11 @@ export class TeamMemberLogsFinder {
   }
 
   /**
-   * Fast marker probe for task-related logs.
-   * Prefer structured MCP/TaskUpdate markers for modern sessions.
+   * Fast probe for app task markers in a log.
+   * Built-in TaskUpdate is personal-task bookkeeping and is deliberately not
+   * treated as board evidence.
    */
-  async hasTaskUpdateMarker(filePath: string, taskId: string): Promise<boolean> {
+  async hasBoardTaskMarker(filePath: string, taskId: string): Promise<boolean> {
     const stream = createReadStream(filePath, { encoding: 'utf8' });
     const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
 
@@ -1163,11 +1165,6 @@ export class TeamMemberLogsFinder {
 
     try {
       for await (const line of rl) {
-        if (line.includes('TaskUpdate') && pattern.test(line)) {
-          rl.close();
-          stream.destroy();
-          return true;
-        }
         if (lineHasAgentTeamsTaskBoundaryToolName(line) && pattern.test(line)) {
           rl.close();
           stream.destroy();
@@ -1561,11 +1558,14 @@ export class TeamMemberLogsFinder {
             const b = block as Record<string, unknown>;
             if (b.type !== 'tool_use') continue;
 
-            // Skip read-only task tools — they reference taskId but don't indicate
-            // that this session actually WORKED on the task. Agents commonly call
-            // task_get to check dependencies from other tasks, producing false matches.
+            // Skip built-in personal task tools and read-only task reads. Agents
+            // keep their own private task list; its numeric ids have nothing to do
+            // with board ids, so they must never be read as board references.
+            // Read-only app reads are skipped too: they reference a task id without
+            // showing that this session actually WORKED on it.
             const rawToolName = typeof b.name === 'string' ? b.name : '';
             const toolName = canonicalizeAgentTeamsToolName(rawToolName);
+            if (isBuiltinPersonalTaskToolName(rawToolName)) continue;
             if (toolName === 'task_get' || toolName === 'TaskGet') continue;
 
             const input = b.input as Record<string, unknown> | undefined;

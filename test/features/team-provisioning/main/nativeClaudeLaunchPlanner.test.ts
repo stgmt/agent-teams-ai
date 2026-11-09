@@ -195,7 +195,6 @@ describe('native Claude launch planning with app-owned roster and scoped tools',
     const foreignEnv = {
       CLAUDE_CODE_TASK_LIST_ID: 'TEST-foreign',
       CLAUDE_CODE_ENABLE_TASKS: '0',
-      CLAUDE_CODE_ENABLE_TODO_TOOLS: '0',
     };
     prepareProvider.mockResolvedValue({
       executable: 'TEST-claude.exe',
@@ -236,7 +235,6 @@ describe('native Claude launch planning with app-owned roster and scoped tools',
     for (const plan of [lead, restarted, member, rootPlan, teamPlan]) {
       expect(plan.env).toMatchObject({
         CLAUDE_CODE_ENABLE_TASKS: '1',
-        CLAUDE_CODE_ENABLE_TODO_TOOLS: '1',
       });
       expect(plan.env.CLAUDE_CODE_TASK_LIST_ID).toMatch(/^agts-personal-v1-[a-f0-9]{64}$/);
     }
