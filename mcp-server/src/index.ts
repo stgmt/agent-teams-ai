@@ -6,6 +6,7 @@ import { fileURLToPath } from 'url';
 import { FastMCP } from 'fastmcp';
 
 import { registerTools, type McpToolProfile } from './tools';
+import { registerSpecProxyTools } from './tools/specProxyTools';
 
 const HTTP_TRANSPORT = 'httpStream';
 const STDIO_TRANSPORT = 'stdio';
@@ -232,6 +233,7 @@ async function main(): Promise<void> {
     toolProfile: resolveToolProfile(),
     healthIdentity: buildHttpHealthIdentity(startOptions),
   });
+  await registerSpecProxyTools(server);
   await server.start(startOptions);
 }
 

@@ -429,6 +429,42 @@ declare module 'agent-teams-controller' {
   }
   export const appScopedSpecBindings: ControllerSpecBindingsApi;
 
+  export interface ControllerSpecToolDescriptor {
+    readonly name: string;
+    readonly description: string;
+    readonly inputSchema: Record<string, unknown>;
+  }
+
+  export interface ControllerSpecScope {
+    readonly teamId: string | null;
+    readonly bindings: readonly { project: string; spec: string }[];
+  }
+
+  export interface ControllerSpecGateway {
+    listTools(): Promise<readonly ControllerSpecToolDescriptor[]>;
+    callTool(
+      name: string,
+      args: Record<string, unknown>,
+      signal?: AbortSignal
+    ): Promise<Record<string, unknown>>;
+  }
+
+  export const specGateway: {
+    createTeamSpecGateway(options: {
+      transport: {
+        listTools(): Promise<Record<string, unknown>>;
+        callTool(
+          name: string,
+          args: Record<string, unknown>,
+          operation: string,
+          signal?: AbortSignal
+        ): Promise<Record<string, unknown>>;
+      };
+      readScope(): Promise<ControllerSpecScope>;
+      newRequestId?(): string;
+    }): ControllerSpecGateway;
+  };
+
 
   export interface AgentTeamsController {
     tasks: ControllerTaskApi;
