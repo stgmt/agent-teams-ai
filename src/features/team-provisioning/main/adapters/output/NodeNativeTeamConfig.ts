@@ -103,7 +103,7 @@ function assertReleased(members: NativeTeamConfig[]): void {
   }
 }
 
-/** A legacy PID is not ownership: it may be gone or reused by an unrelated process. */
+/** A stale PID is not ownership: it may be gone or reused by an unrelated process. */
 async function clearStaleLegacyProcessRows(
   members: NativeTeamConfig[],
   signal: AbortSignal
@@ -111,28 +111,38 @@ async function clearStaleLegacyProcessRows(
   for (let index = 0; index < members.length; index++) {
     signal.throwIfAborted();
     const member = members[index];
-    if (
-      typeof member.runtimePid !== 'number' ||
-      member.runtimeProcessBirthId != null ||
-      member.runtimeOperationId != null
-    )
-      continue;
+    if (typeof member.runtimePid !== 'number') continue;
+    // Lanes, sessions and OpenCode rows keep their identity: only direct
+    // process rows are eligible at all.
     const cleaned = clearStaleProcessRuntimeMetadataFromMember(member, {
       memberName: member.name as string,
       runtimePid: member.runtimePid,
       processPaneId: `process:${member.runtimePid}`,
     });
     if (!cleaned.changed) continue;
-    const inspection = await inspectProcessByPid(member.runtimePid);
+    const inspection = await inspectProcessByPid(member.runtimePid).catch(() => null);
     signal.throwIfAborted();
+    if (!inspection) continue;
+    // A native identity survives only while its process does: a killed app
+    // leaves rows whose PID is gone, and those must not wedge the next launch.
+    const liveNative = member.runtimeProcessBirthId != null || member.runtimeOperationId != null;
+    if (inspection.status === 'not_found') {
+      // The shared cleanup keeps the native identity fields; with the process
+      // gone nothing owns them, so release the whole row.
+      const released = { ...cleaned.member };
+      delete released.runtimeProcessBirthId;
+      delete released.runtimeOperationId;
+      members[index] = released;
+      continue;
+    }
+    if (liveNative) continue;
     // Windows shell fallbacks quote/caret-escape flag tokens. Any team marker
     // is ambiguous ownership, not proof that a live PID belongs to someone else.
     if (
-      inspection.status === 'not_found' ||
-      (inspection.status === 'found' &&
-        inspection.command.trim().length > 0 &&
-        !inspection.command.includes('--team-name') &&
-        !inspection.command.includes('--agent-id'))
+      inspection.status === 'found' &&
+      inspection.command.trim().length > 0 &&
+      !inspection.command.includes('--team-name') &&
+      !inspection.command.includes('--agent-id')
     )
       members[index] = cleaned.member;
   }

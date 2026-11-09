@@ -361,12 +361,32 @@ describe('app-owned native team runtime configuration', () => {
     expect(await readFile(configPath, 'utf8')).toBe(before);
   });
 
-  it.each([
-    { runtimeProcessBirthId: 'TEST-native-birth' },
-    { runtimeOperationId: 'TEST-native-operation' },
-    { laneId: 'TEST-opencode-lane' },
-    { provider: 'opencode' },
-  ])('does not recover non-legacy runtime identity %j', async (identity) => {
+  it.each([{ runtimeProcessBirthId: 'TEST-native-birth' }, { runtimeOperationId: 'TEST-native-operation' }])(
+    'releases a native row whose recorded process is gone %j',
+    async (identity) => {
+      const { config, configPath } = await setup();
+      vi.mocked(inspectProcessByPid).mockResolvedValue({ status: 'not_found' });
+      await writeFile(
+        configPath,
+        JSON.stringify({
+          name: run.teamName,
+          members: [{ name: 'builder', runtimePid: 4242, tmuxPaneId: 'process:4242', ...identity }],
+        })
+      );
+
+      await expect(config.prepare(run, new AbortController().signal)).resolves.toBeUndefined();
+      const saved = JSON.parse(await readFile(configPath, 'utf8')) as {
+        members: Record<string, unknown>[];
+      };
+      expect(saved.members[0]?.runtimePid).toBeUndefined();
+      expect(saved.members[0]?.runtimeProcessBirthId).toBeUndefined();
+      expect(saved.members[0]?.runtimeOperationId).toBeUndefined();
+    }
+  );
+
+  it.each([{ laneId: 'TEST-opencode-lane' }, { provider: 'opencode' }])(
+    'does not recover non-legacy lane identity %j',
+    async (identity) => {
     const { config, configPath } = await setup();
     vi.mocked(inspectProcessByPid).mockResolvedValue({ status: 'not_found' });
     const before = JSON.stringify({
@@ -418,8 +438,9 @@ describe('app-owned native team runtime configuration', () => {
     expect(await readFile(configPath, 'utf8')).toBe(concurrent);
   });
 
-  it('refuses an unowned process projection instead of probing or killing its PID', async () => {
+  it('refuses an unowned process projection whose PID is alive and leaves it untouched', async () => {
     const { config, configPath } = await setup();
+    vi.mocked(inspectProcessByPid).mockResolvedValue({ status: 'found', command: 'TEST agent' });
     const before = JSON.stringify({
       name: run.teamName,
       members: [
