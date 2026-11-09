@@ -135,16 +135,23 @@ async function clearStaleLegacyProcessRows(
       members[index] = released;
       continue;
     }
-    if (liveNative) continue;
     // Windows shell fallbacks quote/caret-escape flag tokens. Any team marker
-    // is ambiguous ownership, not proof that a live PID belongs to someone else.
+    // is ambiguous ownership, not proof that a live PID belongs to someone else;
+    // a readable command with no marker at all is a reused PID, which the
+    // recorded native identity no longer covers.
     if (
       inspection.status === 'found' &&
       inspection.command.trim().length > 0 &&
       !inspection.command.includes('--team-name') &&
       !inspection.command.includes('--agent-id')
-    )
-      members[index] = cleaned.member;
+    ) {
+      const released = { ...cleaned.member };
+      if (liveNative) {
+        delete released.runtimeProcessBirthId;
+        delete released.runtimeOperationId;
+      }
+      members[index] = released;
+    }
   }
 }
 

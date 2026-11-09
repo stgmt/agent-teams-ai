@@ -322,6 +322,36 @@ describe('app-owned native team runtime configuration', () => {
     expect(await readFile(configPath, 'utf8')).toBe(before);
   });
 
+  it('releases a native row whose recorded pid now belongs to an unrelated process', async () => {
+    const { config, configPath } = await setup();
+    vi.mocked(inspectProcessByPid).mockResolvedValue({
+      status: 'found',
+      command: 'bun unrelated-native-host.mjs E:\\tmp\\other',
+    });
+    await writeFile(
+      configPath,
+      JSON.stringify({
+        name: run.teamName,
+        members: [
+          {
+            name: 'builder',
+            runtimePid: 61064,
+            runtimeProcessBirthId: 'TEST-birth',
+            runtimeOperationId: 'TEST-operation',
+            tmuxPaneId: 'process:61064',
+          },
+        ],
+      })
+    );
+
+    await expect(config.prepare(run, new AbortController().signal)).resolves.toBeUndefined();
+    const saved = JSON.parse(await readFile(configPath, 'utf8')) as {
+      members: Record<string, unknown>[];
+    };
+    expect(saved.members[0]?.runtimePid).toBeUndefined();
+    expect(saved.members[0]?.runtimeProcessBirthId).toBeUndefined();
+  });
+
   it('keeps a live Windows shell-wrapper process whose ownership flags are caret-escaped', async () => {
     const { config, configPath } = await setup();
     vi.mocked(inspectProcessByPid).mockResolvedValue({
