@@ -190,6 +190,32 @@ describe('native Claude launch planning with app-owned roster and scoped tools',
     }
   );
 
+  it('passes the spec registry endpoint and token into the launched agent environment', async () => {
+    const { planner } = setup();
+    const plan = await planner.prepare(
+      {
+        ...settings,
+        specRegistryEnv: {
+          OMP_SPEC_REGISTRY_URL: 'http://127.0.0.1:8650/mcp',
+          OMP_SPEC_REGISTRY_TOKEN: 'TEST-registry-token',
+        },
+      },
+      token,
+      new AbortController().signal
+    );
+    expect(plan.env).toMatchObject({
+      OMP_SPEC_REGISTRY_URL: 'http://127.0.0.1:8650/mcp',
+      OMP_SPEC_REGISTRY_TOKEN: 'TEST-registry-token',
+    });
+  });
+
+  it('leaves an unbound team without registry variables or spec tools', async () => {
+    const { planner } = setup();
+    const plan = await planner.prepare(settings, token, new AbortController().signal);
+    expect(plan.env).not.toHaveProperty('OMP_SPEC_REGISTRY_URL');
+    expect(plan.env).not.toHaveProperty('OMP_SPEC_REGISTRY_TOKEN');
+  });
+
   it('isolates personal task lists by root, team and member while keeping restart identity stable', async () => {
     const { planner, prepareProvider, artifacts } = setup();
     const foreignEnv = {

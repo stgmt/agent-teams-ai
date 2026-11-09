@@ -280,6 +280,9 @@ export class NativeClaudeLaunchPlanner implements NodeMemberLaunchPlanner {
       const env = withoutParentGitSelection({
         ...provider.env,
         ...artifacts.env,
+        // The agent's own spec MCP server substitutes these two variables; a
+        // team without bindings gets no value here and therefore no spec tools.
+        ...(settings.specRegistryEnv ?? {}),
         CLAUDE_CODE_TASK_LIST_ID: personalTaskListId(token),
         CLAUDE_CODE_ENABLE_TASKS: '1',
         CLAUDE_CODE_BOOTSTRAP_RUN_ID: token.runId,

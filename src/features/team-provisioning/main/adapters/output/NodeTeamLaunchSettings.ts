@@ -26,6 +26,11 @@ interface Dependencies {
   teamsRoot: string;
   metadata: Pick<TeamMetaStore, 'getMeta'>;
   members: Pick<TeamMembersMetaStore, 'getMeta'>;
+  /**
+   * Registry endpoint and token for the spec MCP the agents inherit. Resolved by
+   * the composition root; absent when no registry credential is configured.
+   */
+  specRegistryEnvironment?: () => Promise<Readonly<Record<string, string>> | null>;
 }
 
 interface CapturedTeam {
@@ -275,7 +280,9 @@ export class NodeTeamLaunchSettings implements MemberLaunchSettingsPort {
       throw new Error('Canonical team launch settings changed after admission');
     }
     const member = this.withConfiguredLead(members).find((entry) => entry.name === memberName);
-    return member ? this.resolveMember(run, captured, meta, member) : null;
+    if (!member) return null;
+    const specRegistryEnv = await this.resolveSpecRegistryEnv(meta);
+    return this.resolveMember(run, captured, meta, member, specRegistryEnv);
   }
 
   async runtimeConfiguration(run: TeamRunIdentity): Promise<Readonly<ConfiguredNativeTeam>> {
@@ -285,6 +292,7 @@ export class NodeTeamLaunchSettings implements MemberLaunchSettingsPort {
     if (revision(meta, members) !== captured.configurationRevision) {
       throw new Error('Canonical team launch settings changed after admission');
     }
+    const specRegistryEnv = await this.resolveSpecRegistryEnv(meta);
     return Object.freeze({
       configurationRevision: captured.configurationRevision,
       createdAt: meta.createdAt,
@@ -292,7 +300,7 @@ export class NodeTeamLaunchSettings implements MemberLaunchSettingsPort {
       members: Object.freeze(
         this.withConfiguredLead(members).map((member) =>
           Object.freeze({
-            launch: this.resolveMember(run, captured, meta, member),
+            launch: this.resolveMember(run, captured, meta, member, specRegistryEnv),
             color: member.color,
             joinedAt: member.joinedAt ?? meta.createdAt,
           })
@@ -305,7 +313,8 @@ export class NodeTeamLaunchSettings implements MemberLaunchSettingsPort {
     run: TeamRunIdentity,
     captured: Readonly<CapturedTeam>,
     meta: TeamMetaFile,
-    member: TeamMember
+    member: TeamMember,
+    specRegistryEnv?: Readonly<Record<string, string>>
   ): Readonly<ConfiguredMemberLaunch> {
     const lead = isCanonicalSettingsLeadMember(member);
     const effective = lead
@@ -347,6 +356,7 @@ export class NodeTeamLaunchSettings implements MemberLaunchSettingsPort {
       skipPermissions: meta.skipPermissions !== false,
       limitContext: meta.limitContext === true,
       extraCliArgs: meta.extraCliArgs,
+      ...(specRegistryEnv ? { specRegistryEnv } : {}),
       workingDirectory,
       baseWorkingDirectory,
       worktree: !member.cwd?.trim() ? workspace?.worktree : undefined,
@@ -355,6 +365,31 @@ export class NodeTeamLaunchSettings implements MemberLaunchSettingsPort {
         ? (meta.prompt ?? '')
         : [member.role, member.workflow].filter(Boolean).join('\n\n'),
     });
+  }
+
+  /**
+   * Spec tools are mounted only through the agent's `omp-spec-kit` MCP server,
+   * which reads the registry endpoint and token from its environment. A team
+   * without bindings gets no registry credentials at all, and a missing
+   * credential must not block the launch: the agent simply starts without spec
+   * tools and the app reports the registry error on its own paths.
+   */
+  private async resolveSpecRegistryEnv(
+    meta: TeamMetaFile
+  ): Promise<Readonly<Record<string, string>> | undefined> {
+    if (!meta.specBindings?.length) return undefined;
+    const resolve = this.ports.specRegistryEnvironment;
+    if (!resolve) return undefined;
+    try {
+      const environment = await resolve();
+      if (!environment) return undefined;
+      const entries = Object.entries(environment).filter(
+        ([key, value]) => key.length > 0 && typeof value === 'string' && value.length > 0
+      );
+      return entries.length > 0 ? Object.freeze(Object.fromEntries(entries)) : undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   release(run: TeamRunIdentity): void {

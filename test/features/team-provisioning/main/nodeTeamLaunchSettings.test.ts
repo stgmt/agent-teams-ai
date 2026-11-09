@@ -38,21 +38,73 @@ function documents() {
   };
 }
 
-function setup() {
+function setup(options: {
+  specBindings?: readonly { project: string; spec: string }[];
+  specRegistryEnvironment?: () => Promise<Readonly<Record<string, string>> | null>;
+} = {}) {
   const saved = documents();
+  const meta = options.specBindings
+    ? { ...saved.meta, specBindings: [...options.specBindings] }
+    : saved.meta;
   const settings = new NodeTeamLaunchSettings({
     teamsRoot: process.cwd(),
     metadata: {
-      getMeta: () => Promise.resolve(saved.meta),
+      getMeta: () => Promise.resolve(meta),
     },
     members: {
       getMeta: () => Promise.resolve({ version: 1 as const, members: saved.members }),
     },
+    ...(options.specRegistryEnvironment
+      ? { specRegistryEnvironment: options.specRegistryEnvironment }
+      : {}),
   });
   return { saved, settings };
 }
 
 describe('canonical configured team launch settings', () => {
+  it('gives a spec-bound team the registry endpoint and token its spec MCP substitutes', async () => {
+    const specRegistryEnvironment = vi.fn(async () => ({
+      OMP_SPEC_REGISTRY_URL: 'http://127.0.0.1:8650/mcp',
+      OMP_SPEC_REGISTRY_TOKEN: 'TEST-token',
+    }));
+    const { settings } = setup({
+      specBindings: [{ project: 'stgm/tokenplan', spec: 'registry-check' }],
+      specRegistryEnvironment,
+    });
+    await settings.capture(run);
+    const lead = await settings.findConfiguredMember(run, 'team-lead');
+    expect(lead?.specRegistryEnv).toEqual({
+      OMP_SPEC_REGISTRY_URL: 'http://127.0.0.1:8650/mcp',
+      OMP_SPEC_REGISTRY_TOKEN: 'TEST-token',
+    });
+    expect(specRegistryEnvironment).toHaveBeenCalledTimes(1);
+  });
+
+  it('never hands registry credentials to a team without specification bindings', async () => {
+    const specRegistryEnvironment = vi.fn(async () => ({
+      OMP_SPEC_REGISTRY_URL: 'http://127.0.0.1:8650/mcp',
+      OMP_SPEC_REGISTRY_TOKEN: 'TEST-token',
+    }));
+    const { settings } = setup({ specRegistryEnvironment });
+    await settings.capture(run);
+    const builder = await settings.findConfiguredMember(run, 'builder');
+    expect(builder?.specRegistryEnv).toBeUndefined();
+    expect(specRegistryEnvironment).not.toHaveBeenCalled();
+  });
+
+  it('starts a bound team even when the registry credential cannot be resolved', async () => {
+    const { settings } = setup({
+      specBindings: [{ project: 'stgm/tokenplan', spec: 'registry-check' }],
+      specRegistryEnvironment: async () => {
+        throw new Error('MISSING_TOKEN');
+      },
+    });
+    await settings.capture(run);
+    const builder = await settings.findConfiguredMember(run, 'builder');
+    expect(builder?.specRegistryEnv).toBeUndefined();
+    expect(builder?.memberName).toBe('builder');
+  });
+
   it('captures one revision of the configured roster, including the lead, and resolves inherited settings', async () => {
     const { settings } = setup();
     const team = await settings.capture(run);

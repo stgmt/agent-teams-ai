@@ -26,6 +26,12 @@ export interface ConfiguredMemberLaunch {
   isolation?: 'worktree';
   resumeSessionId?: string; // resumes an existing CLI session instead of starting a new one
   taskLedgerProjectDirectory?: string;
+  /**
+   * Registry endpoint and bearer token for the spec MCP the agent inherits.
+   * Present only for teams that have specification bindings; the agent's
+   * `omp-spec-kit` MCP server substitutes these two variables.
+   */
+  specRegistryEnv?: Readonly<Record<string, string>>;
   worktree?: Readonly<{
     baseRepoPath: string;
     branchName: string;
