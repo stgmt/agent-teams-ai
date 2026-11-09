@@ -48,6 +48,7 @@ function createController(options) {
     crossTeam: bindModule(context, crossTeam),
     runtime: bindModule(context, runtime),
     workSync: bindModule(context, workSync),
+    groupChats: bindModule(context, groupChats),
     maintenance: bindModule(context, maintenance),
     specBindings: appScopedSpecBindings,
   };

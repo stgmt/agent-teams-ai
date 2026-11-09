@@ -3193,6 +3193,7 @@ describe('TeamProvisioningService', () => {
       (svc as any).aliveRunByTeam.set('runtime-team', 'run-1');
       (svc as any).runs.set('run-1', {
         runId: 'run-1',
+        teamName: 'runtime-team',
         child: { pid: 111 },
         request: { model: 'gpt-5.4' },
         processKilled: false,
@@ -3490,6 +3491,7 @@ describe('TeamProvisioningService', () => {
       (svc as any).aliveRunByTeam.set('runtime-team', 'run-1');
       (svc as any).runs.set('run-1', {
         runId: 'run-1',
+        teamName: 'runtime-team',
         child: { pid: 111 },
         request: { model: 'gpt-5.4' },
         processKilled: false,
@@ -3552,6 +3554,7 @@ describe('TeamProvisioningService', () => {
       (svc as any).aliveRunByTeam.set('runtime-team', 'run-1');
       (svc as any).runs.set('run-1', {
         runId: 'run-1',
+        teamName: 'runtime-team',
         child: { pid: 111 },
         request: { model: 'gpt-5.4' },
         processKilled: false,
@@ -3691,6 +3694,7 @@ describe('TeamProvisioningService', () => {
         (svc as any).aliveRunByTeam.set('runtime-team', 'run-1');
         (svc as any).runs.set('run-1', {
           runId: 'run-1',
+          teamName: 'runtime-team',
           child: { pid: 111 },
           request: { model: 'gpt-5.4' },
           processKilled: false,
@@ -3752,6 +3756,7 @@ describe('TeamProvisioningService', () => {
       (svc as any).aliveRunByTeam.set('runtime-team', 'run-1');
       (svc as any).runs.set('run-1', {
         runId: 'run-1',
+        teamName: 'runtime-team',
         child: { pid: 111 },
         request: { model: 'gpt-5.4' },
         processKilled: false,
@@ -3809,6 +3814,7 @@ describe('TeamProvisioningService', () => {
       (svc as any).aliveRunByTeam.set('runtime-team', 'run-1');
       (svc as any).runs.set('run-1', {
         runId: 'run-1',
+        teamName: 'runtime-team',
         child: { pid: 111 },
         request: { model: 'gpt-5.4' },
         processKilled: false,
@@ -3890,6 +3896,7 @@ describe('TeamProvisioningService', () => {
       (svc as any).aliveRunByTeam.set('runtime-team', 'run-1');
       (svc as any).runs.set('run-1', {
         runId: 'run-1',
+        teamName: 'runtime-team',
         child: { pid: 111 },
         request: { model: 'gpt-5.4' },
         processKilled: false,
@@ -3964,6 +3971,7 @@ describe('TeamProvisioningService', () => {
       (svc as any).aliveRunByTeam.set('runtime-team', 'run-1');
       (svc as any).runs.set('run-1', {
         runId: 'run-1',
+        teamName: 'runtime-team',
         child: { pid: 111 },
         request: { model: 'gpt-5.4' },
         processKilled: false,
@@ -4023,6 +4031,7 @@ describe('TeamProvisioningService', () => {
       (svc as any).aliveRunByTeam.set('runtime-team', 'run-1');
       (svc as any).runs.set('run-1', {
         runId: 'run-1',
+        teamName: 'runtime-team',
         child: { pid: 111 },
         request: { model: 'gpt-5.4' },
         processKilled: false,
@@ -4215,6 +4224,7 @@ describe('TeamProvisioningService', () => {
       (svc as any).aliveRunByTeam.set('runtime-team', 'run-1');
       (svc as any).runs.set('run-1', {
         runId: 'run-1',
+        teamName: 'runtime-team',
         child: { pid: 111 },
         request: { model: 'gpt-5.4' },
         processKilled: false,
@@ -4252,6 +4262,7 @@ describe('TeamProvisioningService', () => {
       (svc as any).aliveRunByTeam.set('runtime-team', 'run-1');
       (svc as any).runs.set('run-1', {
         runId: 'run-1',
+        teamName: 'runtime-team',
         child: { pid: 111 },
         request: { model: 'gpt-5.4' },
         processKilled: false,
@@ -4281,6 +4292,7 @@ describe('TeamProvisioningService', () => {
       (svc as any).aliveRunByTeam.set('runtime-team', 'run-1');
       (svc as any).runs.set('run-1', {
         runId: 'run-1',
+        teamName: 'runtime-team',
         child: { pid: 111 },
         request: { model: 'gpt-5.4' },
         processKilled: false,
@@ -4312,6 +4324,7 @@ describe('TeamProvisioningService', () => {
       (svc as any).aliveRunByTeam.set('runtime-team', 'run-1');
       (svc as any).runs.set('run-1', {
         runId: 'run-1',
+        teamName: 'runtime-team',
         child: { pid: 111 },
         request: { model: 'gpt-5.4' },
         processKilled: false,
@@ -4346,6 +4359,7 @@ describe('TeamProvisioningService', () => {
       (svc as any).aliveRunByTeam.set('runtime-team', 'run-1');
       (svc as any).runs.set('run-1', {
         runId: 'run-1',
+        teamName: 'runtime-team',
         child: { pid: 111 },
         request: { model: 'gpt-5.4' },
         processKilled: false,
@@ -4605,6 +4619,7 @@ describe('TeamProvisioningService', () => {
         (svc as any).aliveRunByTeam.set('runtime-team', 'run-1');
         (svc as any).runs.set('run-1', {
           runId: 'run-1',
+          teamName: 'runtime-team',
           child: { pid: 111 },
           request: { model: 'gpt-5.4' },
           processKilled: false,
@@ -4708,6 +4723,7 @@ describe('TeamProvisioningService', () => {
       (svc as any).aliveRunByTeam.set('runtime-team', 'run-1');
       (svc as any).runs.set('run-1', {
         runId: 'run-1',
+        teamName: 'runtime-team',
         child: { pid: 111 },
         request: { model: 'gpt-5.4' },
         processKilled: false,
@@ -4900,6 +4916,7 @@ describe('TeamProvisioningService', () => {
       (svc as any).aliveRunByTeam.set('runtime-team', 'run-1');
       (svc as any).runs.set('run-1', {
         runId: 'run-1',
+        teamName: 'runtime-team',
         child: { pid: 111 },
         request: { model: 'gpt-5.4' },
         processKilled: false,
@@ -4929,6 +4946,7 @@ describe('TeamProvisioningService', () => {
       (svc as any).aliveRunByTeam.set('runtime-team', 'run-1');
       (svc as any).runs.set('run-1', {
         runId: 'run-1',
+        teamName: 'runtime-team',
         child: { pid: 111 },
         request: { providerId: 'codex', model: 'gpt-5.4', providerBackendId: 'codex-native' },
         processKilled: false,
@@ -5028,6 +5046,7 @@ describe('TeamProvisioningService', () => {
       (svc as any).aliveRunByTeam.set('runtime-team', 'run-1');
       (svc as any).runs.set('run-1', {
         runId: 'run-1',
+        teamName: 'runtime-team',
         child: { pid: 111 },
         request: { model: 'gpt-5.4' },
         processKilled: false,
@@ -5159,6 +5178,7 @@ describe('TeamProvisioningService', () => {
       (svc as any).aliveRunByTeam.set('nice-team', 'run-1');
       (svc as any).runs.set('run-1', {
         runId: 'run-1',
+        teamName: 'nice-team',
         child: { pid: 111 },
         request: { model: 'gpt-5.4' },
         processKilled: false,
@@ -5280,6 +5300,7 @@ describe('TeamProvisioningService', () => {
       (svc as any).aliveRunByTeam.set('nice-team', 'run-1');
       (svc as any).runs.set('run-1', {
         runId: 'run-1',
+        teamName: 'nice-team',
         child: { pid: 111 },
         request: { model: 'gpt-5.4' },
         processKilled: false,

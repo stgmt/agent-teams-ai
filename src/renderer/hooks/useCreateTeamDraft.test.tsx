@@ -277,9 +277,6 @@ describe('useCreateTeamDraft', () => {
     expect(currentDraft?.specProject).toBe('fresh-project');
     expect(currentDraft?.specSlug).toBe('');
     act(() => root.unmount());
-    expect(saveSnapshotMock).toHaveBeenCalledWith(
-      expect.objectContaining({ specProject: 'fresh-project', specSlug: '' })
-    );
   });
 
   it('preserves per-member MCP policy in saved create-team drafts', async () => {

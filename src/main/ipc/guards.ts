@@ -126,6 +126,10 @@ export function validateTriggerId(triggerId: unknown): ValidationResult<string> 
 }
 
 export function validateTaskId(taskId: unknown): ValidationResult<string> {
+  // Registry-backed tasks use a namespaced SHA-256 key, not a local task number.
+  if (typeof taskId === 'string' && /^registry-[0-9a-f]{64}$/u.test(taskId)) {
+    return { valid: true, value: taskId };
+  }
   const basic = validateString(taskId, 'taskId', 64);
   if (!basic.valid) {
     return basic;

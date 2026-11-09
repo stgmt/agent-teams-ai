@@ -6,6 +6,24 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { CodexAccountSnapshotDto } from '@features/codex-account/contracts';
 
+// Exercise V2 UI behavior with a qualified test contract, not the release lock.
+vi.mock('../../../../runtime.lock.json', () => ({
+  default: {
+    opencodeV2: {
+      cliVersionPolicy: 'stable-v2-qualified-engine',
+      range: { minimum: '2.0.0', below: '3.0.0' },
+      qualified: {
+        'darwin-arm64': ['2.1.4'],
+        'darwin-x64': ['2.1.4'],
+        'linux-arm64': ['2.1.4'],
+        'linux-x64': ['2.1.4'],
+        'win32-arm64': ['2.1.4'],
+        'win32-x64': ['2.1.4'],
+      },
+    },
+  },
+}));
+
 interface StoreState {
   cliStatus: Record<string, unknown> | null;
   cliStatusLoading: boolean;

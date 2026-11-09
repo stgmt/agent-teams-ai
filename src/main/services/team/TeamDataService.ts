@@ -553,6 +553,12 @@ type TeamRegistryTaskWriterProvider = (
   request: TeamRegistryTaskWriterRequest
 ) => Promise<RegistryTeamTaskWriter>;
 
+interface RegistryTaskWriteTarget {
+  task: TeamTask;
+  writer: RegistryTeamTaskWriter;
+  teamId: string;
+}
+
 interface TaskArtifactRequirementPatch {
   required: boolean;
   expectedFilename?: string;
@@ -754,7 +760,9 @@ export class TeamDataService {
   ): Promise<void> {
     const config = await this.readSnapshotConfig(teamName);
     if (config) {
-      await this.configReader.updateSpecBindings(teamName, bindings);
+      if (!(await this.configReader.updateSpecBindings(teamName, bindings))) {
+        throw new Error('Team configuration is missing or unreadable');
+      }
     }
     await this.teamMetaStore.updateMeta(teamName, (current) => {
       if (!current) throw new Error('Team metadata is missing or unreadable');
@@ -965,7 +973,7 @@ export class TeamDataService {
     teamName: string,
     taskId: string,
     requestedBinding?: RegistryTaskScope
-  ): Promise<{ task: TeamTask; writer: RegistryTeamTaskWriter; teamId: string } | null> {
+  ): Promise<RegistryTaskWriteTarget | null> {
     const authority = await this.readRegistryTaskAuthority(teamName);
     if (!authority.backed) {
       if (requestedBinding) {
@@ -3414,19 +3422,19 @@ export class TeamDataService {
     actor?: string,
     binding?: RegistryTaskScope
   ): Promise<void> {
-    if (status === 'completed') {
-      await this.updateTaskStatusWithReceipt(teamName, taskId, status, actor, undefined, binding);
-      return;
+    const registry = await this.readRegistryTaskForWrite(teamName, taskId, binding);
+    if (!registry) {
+      this.getTaskBoard(teamName, { localTaskBoard: true }).setTaskStatus(taskId, status, actor);
+    } else if (status === 'completed') {
+      await this.withTaskAttestationJournal(teamName, taskId, registry, (current) =>
+        this.updateTaskStatusWithReceiptCore(teamName, taskId, status, actor, undefined, current)
+      );
+    } else {
+      await this.withTaskAttestationJournal(teamName, taskId, registry, async (current) => {
+        await current.writer.replaceStatus({ taskId, to: status, actor });
+      });
     }
-    await this.withTaskAttestationJournal(teamName, taskId, binding, async () => {
-      const registry = await this.readRegistryTaskForWrite(teamName, taskId, binding);
-      if (registry) {
-        await registry.writer.replaceStatus({ taskId, to: status, actor });
-      } else {
-        this.getTaskBoard(teamName, { localTaskBoard: true }).setTaskStatus(taskId, status, actor);
-      }
-      this.invalidateGlobalTaskProjectionCache();
-    });
+    this.invalidateGlobalTaskProjectionCache();
   }
 
   async updateTaskStatusWithReceipt(
@@ -3437,8 +3445,19 @@ export class TeamDataService {
     expectedStatus?: TeamTaskStatus,
     binding?: RegistryTaskScope
   ): Promise<readonly RegistryTaskTransition[]> {
-    return this.withTaskAttestationJournal(teamName, taskId, binding, () =>
-      this.updateTaskStatusWithReceiptCore(teamName, taskId, status, actor, expectedStatus, binding)
+    const registry = await this.readRegistryTaskForWrite(teamName, taskId, binding);
+    if (!registry) {
+      return this.updateTaskStatusWithReceiptCore(
+        teamName,
+        taskId,
+        status,
+        actor,
+        expectedStatus,
+        null
+      );
+    }
+    return this.withTaskAttestationJournal(teamName, taskId, registry, (current) =>
+      this.updateTaskStatusWithReceiptCore(teamName, taskId, status, actor, expectedStatus, current)
     );
   }
 
@@ -3446,11 +3465,10 @@ export class TeamDataService {
     teamName: string,
     taskId: string,
     status: TeamTaskStatus,
-    actor?: string,
-    expectedStatus?: TeamTaskStatus,
-    binding?: RegistryTaskScope
+    actor: string | undefined,
+    expectedStatus: TeamTaskStatus | undefined,
+    registry: RegistryTaskWriteTarget | null
   ): Promise<readonly RegistryTaskTransition[]> {
-    const registry = await this.readRegistryTaskForWrite(teamName, taskId, binding);
     if (!registry) {
       const taskBoard = this.getTaskBoard(teamName, { localTaskBoard: true });
       const task = taskBoard.getTask?.(taskId) as TeamTask | null | undefined;
@@ -3541,19 +3559,31 @@ export class TeamDataService {
   private async withTaskAttestationJournal<T>(
     teamName: string,
     taskId: string,
-    binding: RegistryTaskScope | undefined,
-    operation: () => Promise<T>
+    initial: RegistryTaskWriteTarget,
+    operation: (registry: RegistryTaskWriteTarget) => Promise<T>
   ): Promise<T> {
     let enteredOperation = false;
     try {
       return await this.taskAttestationJournal.run(teamName, async (entries) => {
         enteredOperation = true;
-        const registry = await this.readRegistryTaskForWrite(teamName, taskId, binding);
-        const identities = new Set([
+        const registry = await this.readRegistryTaskForWrite(
+          teamName,
           taskId,
-          registry?.task.id,
-          registry?.task.registryTask?.localId,
-        ]);
+          initial.writer.binding
+        );
+        if (
+          !registry ||
+          registry.teamId !== initial.teamId ||
+          registry.task.id !== initial.task.id ||
+          registry.task.registryTask?.localId !== initial.task.registryTask?.localId
+        ) {
+          throw new RegistryTaskProviderError({
+            code: 'REGISTRY_SCOPE_INCOMPLETE',
+            teamName,
+            message: `Task "${taskId}" registry authority changed before the operation.`,
+          });
+        }
+        const identities = new Set([taskId, registry.task.id, registry.task.registryTask?.localId]);
         if (
           entries.some(
             (entry) => identities.has(entry.taskId) || identities.has(entry.replay.taskId)
@@ -3561,7 +3591,7 @@ export class TeamDataService {
         ) {
           throw this.taskSecurityOutcomeUnknown(taskId);
         }
-        return operation();
+        return operation(registry);
       });
     } catch (error) {
       if (!enteredOperation) throw this.taskSecurityOutcomeUnknown(taskId);
@@ -3727,8 +3757,10 @@ export class TeamDataService {
     fields: TaskFieldUpdates,
     binding?: RegistryTaskScope
   ): Promise<void> {
-    return this.withTaskAttestationJournal(teamName, taskId, binding, () =>
-      this.updateTaskFieldsCore(teamName, taskId, fields, binding)
+    const registry = await this.readRegistryTaskForWrite(teamName, taskId, binding);
+    if (!registry) return this.updateTaskFieldsCore(teamName, taskId, fields, null);
+    return this.withTaskAttestationJournal(teamName, taskId, registry, (current) =>
+      this.updateTaskFieldsCore(teamName, taskId, fields, current)
     );
   }
 
@@ -3736,9 +3768,8 @@ export class TeamDataService {
     teamName: string,
     taskId: string,
     fields: TaskFieldUpdates,
-    binding?: RegistryTaskScope
+    registry: RegistryTaskWriteTarget | null
   ): Promise<void> {
-    const registry = await this.readRegistryTaskForWrite(teamName, taskId, binding);
     if (registry) {
       if (fields.groupChatId !== undefined && fields.groupChatId !== null) {
         await assertTaskGroupChatAssociation(
@@ -3919,15 +3950,7 @@ export class TeamDataService {
     const validatedPatch = validateExecutionTaskPatch(patch);
     const registry = await this.readRegistryTaskForWrite(teamName, taskId, binding);
     if (registry) {
-      await this.withTaskAttestationJournal(teamName, taskId, binding, async () => {
-        const current = await this.readRegistryTaskForWrite(teamName, taskId, binding);
-        if (!current) {
-          throw new RegistryTaskProviderError({
-            code: 'REGISTRY_SCOPE_INCOMPLETE',
-            teamName,
-            message: `Task "${taskId}" registry authority is no longer available.`,
-          });
-        }
+      await this.withTaskAttestationJournal(teamName, taskId, registry, async (current) => {
         await current.writer.applyExecutionPatch(taskId, validatedPatch);
       });
     } else {

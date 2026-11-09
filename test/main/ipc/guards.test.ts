@@ -13,6 +13,7 @@ import {
   validateTeammateName,
   validateTeamName,
 } from '../../../src/main/ipc/guards';
+import { registryTaskId } from '../../../src/main/services/team/registry/RegistryTaskIdentity';
 
 describe('ipc guards', () => {
   it('accepts valid encoded project IDs', () => {
@@ -75,6 +76,14 @@ describe('ipc guards', () => {
     expect(validateTeammateName('alice_1').valid).toBe(true);
     expect(validateTeammateName('team-lead').valid).toBe(false);
     expect(validateTeammateName('user').valid).toBe(false);
+  });
+
+  it('accepts generated registry task IDs without accepting other overlong IDs', () => {
+    const id = registryTaskId({ project: 'owner/project', spec: 'example', localId: 'TASK-901' });
+    expect(validateTaskId(id)).toEqual({ valid: true, value: id });
+    expect(validateTaskId('x'.repeat(65)).valid).toBe(false);
+    expect(validateTaskId(`registry-${'g'.repeat(64)}`).valid).toBe(false);
+    expect(validateTaskId(`${id}/../escape`).valid).toBe(false);
   });
 
   it('rejects traversal and invalid chars for team-related fields', () => {

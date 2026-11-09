@@ -1,4 +1,22 @@
 import { getLatestQualifiedOpenCodeV2Version } from '@features/opencode-compatibility';
+
+// This suite exercises a qualified V2 release, independently of the shipped lock.
+vi.mock('../../../../runtime.lock.json', () => ({
+  default: {
+    opencodeV2: {
+      cliVersionPolicy: 'stable-v2-qualified-engine',
+      range: { minimum: '2.0.0', below: '3.0.0' },
+      qualified: {
+        'darwin-arm64': ['2.1.4'],
+        'darwin-x64': ['2.1.4'],
+        'linux-arm64': ['2.1.4'],
+        'linux-x64': ['2.1.4'],
+        'win32-arm64': ['2.1.4'],
+        'win32-x64': ['2.1.4'],
+      },
+    },
+  },
+}));
 vi.mock('@shared/utils/logger', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@shared/utils/logger')>();
   return {
@@ -55,6 +73,7 @@ import { collectWindowsNativeOpenCodeBinaryCandidates } from '@main/services/inf
 import { ensureOpenCodeBridgeRuntimeBinaryEnv } from '@main/services/runtime/openCodeBridgeRuntimeEnv';
 import { setAppDataBasePath } from '@main/utils/pathDecoder';
 
+import { OpenCodeV2SupportInstaller } from '@features/opencode-runtime-installer/main';
 /** Native selection/package fixtures start with V2 support already installed; ZIP transport has its own suite. */
 function createNativeOnlyInstaller(): OpenCodeRuntimeInstallerService {
   return new OpenCodeRuntimeInstallerService({
@@ -416,7 +435,28 @@ describe('OpenCodeRuntimeInstallerService resolver', () => {
     process.env.PATH = path.dirname(binaryPath);
     execCliMock.mockResolvedValue({ stdout: '2.9.0\n', stderr: '' });
 
-    await expect(new OpenCodeRuntimeInstallerService().getReadinessStatus()).resolves.toMatchObject(
+    const platform = process.platform;
+    const arch = process.arch;
+    const platformKey = `${platform}-${arch}`;
+    const version = '0.0.157';
+    const descriptor = {
+      schemaVersion: 1, runtimeVersion: version, sourceCommit: 'a'.repeat(40), bridgeProtocol: 1,
+      platform, arch, requiredBunVersion: '1.3.0', engineVersions: ['2.1.4'],
+      archive: {
+        file: `agent-teams-opencode-v2-support-${platformKey}-v${version}.zip`,
+        kind: 'zip', sha256: 'b'.repeat(64), bytes: 1, entries: 2, expandedBytes: 1,
+      },
+      manifest: { file: 'opencode-v2-engine-manifest.json', sha256: 'c'.repeat(64), bytes: 1, files: 1 },
+    };
+    const support = new OpenCodeV2SupportInstaller({
+      lock: {
+        version, assets: { [platformKey]: {} },
+        opencodeV2: { qualified: { [platformKey]: ['2.1.4'] } },
+        opencodeV2Delivery: { [platformKey]: descriptor },
+      },
+      cacheRoot: () => path.join(tempRoot!, 'missing-v2-support'),
+    });
+    await expect(new OpenCodeRuntimeInstallerService(support).getReadinessStatus()).resolves.toMatchObject(
       {
         installed: true,
         binaryPath,

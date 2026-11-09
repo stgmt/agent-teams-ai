@@ -1934,14 +1934,23 @@ describe('TaskChangeComputer', () => {
   it('does not unconditionally fold macOS path case without filesystem evidence', async () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'task-change-computer-'));
     const logPath = path.join(tmpDir, 'lead.jsonl');
-    const firstPath = path.join(tmpDir, 'missing', 'Foo.ts');
-    const secondPath = path.join(tmpDir, 'missing', 'foo.ts');
+    const firstPath = '/case-sensitive-project/missing/Foo.ts';
+    const secondPath = '/case-sensitive-project/missing/foo.ts';
     await writeJsonl(logPath, [
       metadataOnlyMultiFileEditChangesToolUse('first', [{ filePath: firstPath, kind: 'update' }]),
       metadataOnlyMultiFileEditChangesToolUse('second', [{ filePath: secondPath, kind: 'update' }]),
     ]);
     const platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform');
     if (!platformDescriptor) throw new Error('Missing process.platform descriptor');
+    const realpathNative = realpathSync.native;
+    const realpath = vi.spyOn(realpathSync, 'native').mockImplementation((filePath) => {
+      const candidate = String(filePath);
+      if (candidate === '/case-sensitive-project') return candidate;
+      if (candidate.startsWith('/case-sensitive-project/')) {
+        throw Object.assign(new Error('not found'), { code: 'ENOENT' });
+      }
+      return realpathNative(filePath);
+    });
     Object.defineProperty(process, 'platform', { ...platformDescriptor, value: 'darwin' });
     try {
       const changes = await createNoBoundaryTaskChangeComputer(logPath).computeTaskChanges({
@@ -1949,11 +1958,12 @@ describe('TaskChangeComputer', () => {
         taskId: 'task-1',
         taskMeta: null,
         effectiveOptions: {},
-        projectPath: tmpDir,
+        projectPath: '/case-sensitive-project',
         includeDetails: true,
       });
       expect(changes.files.map((file) => file.filePath)).toEqual([firstPath, secondPath]);
     } finally {
+      realpath.mockRestore();
       Object.defineProperty(process, 'platform', platformDescriptor);
     }
   });

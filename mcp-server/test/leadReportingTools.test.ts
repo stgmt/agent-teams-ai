@@ -133,4 +133,3 @@ describe('report fields and confirmed delivery through existing MCP tools', () =
     ).toBe(facts);
   });
 });
-

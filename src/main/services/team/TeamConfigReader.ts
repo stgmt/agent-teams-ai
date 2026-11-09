@@ -11,6 +11,7 @@ import {
 import * as fs from 'fs';
 import * as path from 'path';
 
+import { withFileLock } from './fileLock';
 import { bindingFromTeamMetadata, resolveTeamSpecBindings } from './registry/TeamSpecBinding';
 import type { TeamSpecBindingConfig } from './registry/TeamSpecBinding';
 import { isReadableTeamConfigPayload } from './TeamConfigPayload';
@@ -1131,42 +1132,92 @@ export class TeamConfigReader {
     }
   }
 
+  private async readConfigForUpdate(configPath: string): Promise<TeamConfig | null> {
+    try {
+      // Bypass both cached snapshots and in-flight reads: the lock protects this
+      // fresh read and the subsequent write as one config mutation.
+      const fingerprint = await TeamConfigReader.readConfigFingerprint(configPath);
+      if (!fingerprint?.isFile || fingerprint.numericSize > MAX_CONFIG_READ_BYTES) return null;
+      const raw = await readFileUtf8WithTimeout(configPath, PER_TEAM_READ_TIMEOUT_MS);
+      const config: unknown = JSON.parse(raw);
+      return isReadableTeamConfigPayload(config) ? (config as TeamConfig) : null;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      throw error;
+    }
+  }
+
   async updateSpecBindings(
     teamName: string,
     specBindings: readonly TeamSpecBinding[]
   ): Promise<TeamConfig | null> {
-    const config = await this.getConfig(teamName);
-    if (!config) return null;
-    const validatedBindings = resolveTeamSpecBindings({ specBindings }, teamName);
-    const updatedConfig: TeamConfig = { ...config, specBindings: validatedBindings };
     const configPath = path.join(getTeamsBasePath(), teamName, 'config.json');
-    await atomicWriteAsync(configPath, JSON.stringify(updatedConfig, null, 2));
-    await TeamConfigReader.primeConfig(teamName, updatedConfig);
-    return updatedConfig;
+    let acquired = false;
+    try {
+      return await withFileLock(
+        configPath,
+        async () => {
+          acquired = true;
+          const config = await this.readConfigForUpdate(configPath);
+          if (!config) return null;
+          const validatedBindings = resolveTeamSpecBindings({ specBindings }, teamName);
+          const currentBindings = resolveTeamSpecBindings(config, teamName);
+          if (
+            currentBindings.length === validatedBindings.length &&
+            currentBindings.every(
+              (binding, index) =>
+                binding.project === validatedBindings[index].project &&
+                binding.spec === validatedBindings[index].spec
+            )
+          ) {
+            return config;
+          }
+          const updatedConfig: TeamConfig = { ...config, specBindings: validatedBindings };
+          await atomicWriteAsync(configPath, JSON.stringify(updatedConfig, null, 2));
+          await TeamConfigReader.primeConfig(teamName, updatedConfig);
+          return updatedConfig;
+        },
+        { preventLiveOwnerTakeover: true, createParent: false }
+      );
+    } catch (error) {
+      if (!acquired && (error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      throw error;
+    }
   }
   async updateConfig(
     teamName: string,
     updates: { name?: string; description?: string; color?: string; language?: string }
   ): Promise<TeamConfig | null> {
-    const config = await this.getConfig(teamName);
-    if (!config) {
-      return null;
-    }
-    if (updates.name !== undefined && updates.name.trim() !== '') {
-      config.name = updates.name.trim();
-    }
-    if (updates.description !== undefined) {
-      config.description = updates.description.trim() || undefined;
-    }
-    if (updates.color !== undefined) {
-      config.color = updates.color.trim() || undefined;
-    }
-    if (updates.language !== undefined) {
-      config.language = updates.language.trim() || undefined;
-    }
     const configPath = path.join(getTeamsBasePath(), teamName, 'config.json');
-    await atomicWriteAsync(configPath, JSON.stringify(config, null, 2));
-    await TeamConfigReader.primeConfig(teamName, config);
-    return config;
+    let acquired = false;
+    try {
+      return await withFileLock(
+        configPath,
+        async () => {
+          acquired = true;
+          const config = await this.readConfigForUpdate(configPath);
+          if (!config) return null;
+          if (updates.name !== undefined && updates.name.trim() !== '') {
+            config.name = updates.name.trim();
+          }
+          if (updates.description !== undefined) {
+            config.description = updates.description.trim() || undefined;
+          }
+          if (updates.color !== undefined) {
+            config.color = updates.color.trim() || undefined;
+          }
+          if (updates.language !== undefined) {
+            config.language = updates.language.trim() || undefined;
+          }
+          await atomicWriteAsync(configPath, JSON.stringify(config, null, 2));
+          await TeamConfigReader.primeConfig(teamName, config);
+          return config;
+        },
+        { preventLiveOwnerTakeover: true, createParent: false }
+      );
+    } catch (error) {
+      if (!acquired && (error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      throw error;
+    }
   }
 }

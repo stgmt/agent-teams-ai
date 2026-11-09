@@ -631,7 +631,8 @@ it('fresh source CLI reaches only the original unqualified-owner guard and rejec
       requiredCommand: 'opencode.sendMessage', expectedCapabilitySnapshotId: null, expectedManifestHighWatermark: null });
     expect(request.body).not.toHaveProperty('prompt');
     expect(request.body).not.toHaveProperty('qualification');
-    expect((await lstat(args[5]!)).mode & 0o777).toBe(0o600);
+    // Windows mode bits do not represent the file's ACL.
+    if (process.platform !== 'win32') expect((await lstat(args[5]!)).mode & 0o777).toBe(0o600);
     await writeFile(args[7]!, JSON.stringify({ schemaVersion: 1, requestId: mismatch ? 'TEST-other' : request.requestId,
       command: request.command, completedAt: new Date().toISOString(), durationMs: 0, diagnostics: [], ok: false, error: { kind: 'runtime_not_ready', retryable: false, message } }) + '\n', { flag: 'wx' });
   };
@@ -819,7 +820,7 @@ it.each(['current-pass', 'current-fail', 'floor', 'windows-best-effort', 'posix-
     }).outputText;
     // Model only the cold V2 namespace check of this unit.
     const fakeFs = `export async function lstat(path) {
-      if (path.endsWith('/opencode/v2')) throw Object.assign(new Error('TEST absent'),{code:'ENOENT'});
+      if (path.replaceAll('\\\\', '/').endsWith('/opencode/v2')) throw Object.assign(new Error('TEST absent'),{code:'ENOENT'});
       return {isDirectory:()=>true,isFile:()=>false,isSymbolicLink:()=>false,nlink:1,dev:1,ino:1};
     }`;
     const fsModule = await import('data:text/javascript,' + encodeURIComponent(fakeFs));

@@ -1128,6 +1128,11 @@ describe('ipc teams handlers', () => {
       })
     ).resolves.toEqual({ success: false, error: 'REGISTRY_IDENTITY_CONFLICT' });
 
+    expect(vi.mocked(console.error).mock.calls[0]?.join(' ')).toContain(
+      'REGISTRY_IDENTITY_CONFLICT'
+    );
+    vi.mocked(console.error).mockClear();
+
     expect(service.linkTeamSpec).toHaveBeenCalledOnce();
     expect(service.createTask).not.toHaveBeenCalled();
   });
@@ -1285,6 +1290,7 @@ describe('ipc teams handlers', () => {
     const board = createController({
       teamName: 'my-team',
       claudeDir: attachmentTestRoot,
+      localTaskBoard: true,
     }).taskBoard;
     const task = board.createTask({ subject: 'Fixture artifact', owner: 'worker' });
     const fields = {
@@ -3409,7 +3415,11 @@ describe('ipc teams handlers', () => {
       const { createController } = createRequire(import.meta.url)(
         '../../../agent-teams-controller/src/index.js'
       );
-      const controller = createController({ teamName: 'my-team', claudeDir: attachmentTestRoot });
+      const controller = createController({
+        teamName: 'my-team',
+        claudeDir: attachmentTestRoot,
+        localTaskBoard: true,
+      });
       const board = controller.taskBoard;
       const task = board.createTask({ subject: 'Recover status', owner: 'worker' });
       board.completeTask(task.id, 'worker');

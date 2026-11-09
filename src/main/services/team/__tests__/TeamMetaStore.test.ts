@@ -70,6 +70,40 @@ describe('TeamMetaStore', () => {
     });
   });
 
+  it('skips normalized no-op updates while retaining changes and durable-field fencing', async () => {
+    const store = new TeamMetaStore();
+    const current = { ...initialMeta, registryTeamId: 'registry-id' };
+    vi.spyOn(store, 'getMeta').mockImplementation(async () => structuredClone(current));
+
+    await store.updateMeta('alpha', (meta) => ({ ...meta!, model: ' old-model ' }));
+    expect(atomicWriteAsync).not.toHaveBeenCalled();
+
+    await expect(
+      store.updateMeta('alpha', (meta) => ({
+        ...meta!,
+        registryTeamId: 'different-id',
+      }))
+    ).rejects.toThrow('Cannot change durable registryTeamId');
+    expect(atomicWriteAsync).not.toHaveBeenCalled();
+    await expect(
+      store.updateMeta('alpha', (meta) => {
+        meta!.registryTeamId = 'different-id';
+        return meta!;
+      })
+    ).rejects.toThrow('Cannot change durable registryTeamId');
+    expect(atomicWriteAsync).not.toHaveBeenCalled();
+
+    await store.updateMeta('alpha', (meta) => {
+      meta!.model = 'new-model';
+      return meta!;
+    });
+    expect(atomicWriteAsync).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(atomicWriteAsync.mock.calls[0]![1])).toMatchObject({
+      model: 'new-model',
+      registryTeamId: 'registry-id',
+    });
+  });
+
   it('persists an explicit disabled lead-model sync preference', async () => {
     await new TeamMetaStore().writeMeta('alpha', {
       cwd: '/sandbox/team',

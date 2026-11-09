@@ -133,18 +133,18 @@ describe('native Claude launch planning with app-owned roster and scoped tools',
       ])
     );
     const denied = plan.args[plan.args.indexOf('--disallowedTools') + 1].split(',');
-    expect(denied).toEqual(
-      expect.arrayContaining([
-        'Agent',
-        'Task',
-        'TeamCreate',
-        'TeamDelete',
-        'mcp__agent-teams__team_create',
-        'mcp__agent-teams__team_update',
-        'mcp__agent-teams__team_launch',
-        'mcp__agent-teams__team_stop',
-      ])
-    );
+    expect(denied).toEqual([
+      'Agent',
+      'Task',
+      'TeamCreate',
+      'TeamDelete',
+      'mcp__agent-teams__team_create',
+      'mcp__agent-teams__team_update',
+      'mcp__agent-teams__team_launch',
+      'mcp__agent-teams__team_stop',
+      'mcp__agent-teams__team_trash',
+      'SendMessage',
+    ]);
     expect(prepareArtifacts).toHaveBeenCalledWith(settings, token, expect.any(AbortSignal));
     expect(plan.env).toMatchObject({
       TEST_AUTH: 'TEST-secret',
@@ -182,9 +182,65 @@ describe('native Claude launch planning with app-owned roster and scoped tools',
       expect(deniedLead).toContain('SendMessage');
       expect(deniedMember).not.toContain('SendMessage');
       expect(deniedLead).not.toContain('mcp__agent-teams__message_send');
-      expect(deniedMember).toEqual(expect.arrayContaining(['Agent', 'TeamCreate', 'TaskCreate']));
+      expect(deniedMember).toEqual(deniedLead.filter((tool) => tool !== 'SendMessage'));
+      for (const tool of ['TodoWrite', 'TaskCreate', 'TaskUpdate']) {
+        expect(deniedLead).not.toContain(tool);
+        expect(deniedMember).not.toContain(tool);
+      }
     }
   );
+
+  it('isolates personal task lists by root, team and member while keeping restart identity stable', async () => {
+    const { planner, prepareProvider, artifacts } = setup();
+    const foreignEnv = {
+      CLAUDE_CODE_TASK_LIST_ID: 'TEST-foreign',
+      CLAUDE_CODE_ENABLE_TASKS: '0',
+      CLAUDE_CODE_ENABLE_TODO_TOOLS: '0',
+    };
+    prepareProvider.mockResolvedValue({
+      executable: 'TEST-claude.exe',
+      args: [],
+      env: foreignEnv,
+    });
+    Object.assign(artifacts.env, foreignEnv);
+    const signal = new AbortController().signal;
+    const lead = await planner.prepare(settings, token, signal);
+    const restartedToken = {
+      ...token,
+      appInstanceId: 'TEST-restarted-app',
+      runId: 'TEST-restarted-run',
+      connectionGeneration: 2,
+      generation: 2,
+      operationId: 'TEST-restarted-operation',
+    };
+    const restarted = await planner.prepare(
+      { ...settings, team: restartedToken },
+      restartedToken,
+      signal
+    );
+    const member = await planner.prepare(
+      { ...settings, memberName: 'builder', role: 'member' },
+      { ...token, memberName: 'builder' },
+      signal
+    );
+    const otherRoot = { ...token, dataRootFingerprint: 'TEST-other-root' };
+    const otherTeam = { ...token, teamName: 'TEST-other-team' };
+    const rootPlan = await planner.prepare({ ...settings, team: otherRoot }, otherRoot, signal);
+    const teamPlan = await planner.prepare({ ...settings, team: otherTeam }, otherTeam, signal);
+    const expectedId =
+      'agts-personal-v1-5ce9099203a4b576854d52018fd5e6a8ba1df79a20a3e35a61276c08c951f215';
+    expect(lead.env.CLAUDE_CODE_TASK_LIST_ID).toBe(expectedId);
+    expect(restarted.env.CLAUDE_CODE_TASK_LIST_ID).toBe(expectedId);
+    const ids = [lead, member, rootPlan, teamPlan].map((plan) => plan.env.CLAUDE_CODE_TASK_LIST_ID);
+    expect(new Set(ids).size).toBe(ids.length);
+    for (const plan of [lead, restarted, member, rootPlan, teamPlan]) {
+      expect(plan.env).toMatchObject({
+        CLAUDE_CODE_ENABLE_TASKS: '1',
+        CLAUDE_CODE_ENABLE_TODO_TOOLS: '1',
+      });
+      expect(plan.env.CLAUDE_CODE_TASK_LIST_ID).toMatch(/^agts-personal-v1-[a-f0-9]{64}$/);
+    }
+  });
 
   it('reports an explicit failed lead bootstrap only from the current stdout run', async () => {
     const { planner } = setup();

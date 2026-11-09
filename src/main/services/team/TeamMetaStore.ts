@@ -354,33 +354,45 @@ export class TeamMetaStore {
           if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
         }
       }
+      // The updater may mutate its argument in place, so retain the pre-update value.
+      const previous = current ? structuredClone(current) : null;
       const data = await update(current);
       for (const field of [
         'registryRegistrationRequestId',
         'registryRegistrationProject',
         'registryTeamId',
       ] as const) {
-        if (current?.[field] && data[field] !== current[field]) {
+        if (previous?.[field] && data[field] !== previous[field]) {
           throw new Error(`Cannot change durable ${field}`);
         }
       }
       if (
-        current?.registryRegistrationIdentity &&
+        previous?.registryRegistrationIdentity &&
         (!data.registryRegistrationIdentity ||
           !registrationIdentitiesEqual(
             data.registryRegistrationIdentity,
-            current.registryRegistrationIdentity
+            previous.registryRegistrationIdentity
           ))
       ) {
         throw new Error('Cannot change durable registry registration identity');
       }
       if (
-        current?.registryRegistrationProtocol &&
-        data.registryRegistrationProtocol !== current.registryRegistrationProtocol
+        previous?.registryRegistrationProtocol &&
+        data.registryRegistrationProtocol !== previous.registryRegistrationProtocol
       ) {
         throw new Error('Cannot change durable registry registration protocol');
       }
-      await this.writeMetaUnlocked(metaPath, data);
+      const serialized = this.serializeMeta(data);
+      if (previous) {
+        let previousSerialized: string | undefined;
+        try {
+          previousSerialized = this.serializeMeta(previous);
+        } catch {
+          // A prior value that cannot be serialized must not block a valid update.
+        }
+        if (serialized === previousSerialized) return;
+      }
+      await atomicWriteAsync(metaPath, serialized);
     });
   }
 

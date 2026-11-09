@@ -2,6 +2,8 @@
 import { promises as fsPromises } from 'fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import type * as FileLockModule from '../../../../src/main/services/team/fileLock';
+
 const hoisted = vi.hoisted(() => {
   const files = new Map<string, string>();
   let atomicWriteShouldFail = false;
@@ -112,7 +114,8 @@ vi.mock('../../../../src/main/services/team/atomicWrite', () => ({
   atomicWriteInboxAsync: hoisted.atomicWrite,
 }));
 
-vi.mock('../../../../src/main/services/team/fileLock', () => ({
+vi.mock('../../../../src/main/services/team/fileLock', async (importOriginal) => ({
+  ...await importOriginal<typeof FileLockModule>(),
   withFileLock: async (_filePath: string, fn: () => Promise<unknown>) => await fn(),
   withFileLockSync: (_filePath: string, fn: () => unknown) => fn(),
 }));
@@ -538,6 +541,7 @@ describe('TeamProvisioningService relayLeadInboxMessages', () => {
     const relayPromise = service.relayLeadInboxMessages(teamName);
     const run = await waitForCapture(service);
     expect(run?.leadRelayCapture).toBeTruthy();
+    expect(writeSpy).toHaveBeenCalledTimes(1);
     (service as any).handleStreamJsonMessage(run, {
       type: 'assistant',
       content: [{ type: 'text', text: 'OK, will do.' }],
