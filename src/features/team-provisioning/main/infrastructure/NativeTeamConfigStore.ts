@@ -5,6 +5,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 
 import { validateTeamName } from '@main/services/team/TeamIdentifierValidation';
 import { atomicWriteAsync } from '@main/utils/atomicWrite';
+import { inspectProcessByPid } from '@main/utils/processInspection';
 
 export type NativeTeamConfig = Record<string, unknown>;
 
@@ -13,6 +14,29 @@ function object(value: unknown): value is NativeTeamConfig {
 }
 
 /** Uses the pinned CLI's .config.lock protocol, not a second independent config lock. */
+/**
+ * Removes a lock only when its metadata names a process that provably no longer
+ * exists. A missing or unreadable metadata file keeps the lock: the creator may
+ * still be in the window between `mkdir` and its metadata write.
+ */
+async function takeOverDeadLock(lock: string): Promise<boolean> {
+  let metadata: unknown;
+  try {
+    metadata = JSON.parse(await readFile(join(lock, 'metadata.json'), 'utf8'));
+  } catch {
+    return false;
+  }
+  const pid =
+    typeof (metadata as { pid?: unknown }).pid === 'number'
+      ? (metadata as { pid: number }).pid
+      : null;
+  if (pid === null || !Number.isSafeInteger(pid) || pid <= 0) return false;
+  const inspection = await inspectProcessByPid(pid).catch(() => null);
+  if (!inspection || inspection.status !== 'not_found') return false;
+  await rm(lock, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
+  return true;
+}
+
 export class NativeTeamConfigStore {
   constructor(private readonly teamsRoot: string) {}
 
@@ -55,7 +79,9 @@ export class NativeTeamConfigStore {
         break;
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-        // Unknown/crash-left owners are never removed by a configuration write.
+        // A lock whose recorded owner is gone must not wedge every later write:
+        // a killed app never releases it. Live or unreadable owners still block.
+        if (await takeOverDeadLock(lock)) continue;
         if (Date.now() >= deadline) throw new Error('Native team config lock is occupied');
         await delay(25, undefined, { signal });
       }

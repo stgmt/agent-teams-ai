@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { spawn } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -47,7 +48,7 @@ async function setup() {
     ) as Record<string, unknown>;
     return parsed.appManagedRun;
   };
-  return { config, invalidate, readClaim };
+  return { config, invalidate, readClaim, teamsRoot, store };
 }
 
 describe('native team config recovery', () => {
@@ -60,6 +61,45 @@ describe('native team config recovery', () => {
     await expect(config.recoverOrphanedClaim('test-team', () => false)).resolves.toBe(true);
     await expect(readClaim()).resolves.toBeUndefined();
     expect(invalidate).toHaveBeenCalledWith('test-team');
+  });
+
+  it('releases process rows whose recorded PID is gone, and keeps a live one', async () => {
+    const { config, store, teamsRoot } = await setup();
+    const deadPid = await new Promise<number>((resolve, reject) => {
+      const child = spawn(process.execPath, ['-e', ''], { stdio: 'ignore' });
+      child.once('error', reject);
+      child.once('exit', () => resolve(child.pid ?? 0));
+    });
+    await store.mutate('test-team', new AbortController().signal, async (current) => ({
+      ...current,
+      members: [
+        {
+          name: 'team-lead',
+          runtimePid: deadPid,
+          runtimeProcessBirthId: 'TEST-birth',
+          runtimeOperationId: 'TEST-operation',
+          tmuxPaneId: `process:${deadPid}`,
+        },
+        {
+          name: 'builder',
+          runtimePid: process.pid,
+          runtimeProcessBirthId: 'TEST-live-birth',
+          runtimeOperationId: 'TEST-live-operation',
+        },
+      ],
+    }));
+
+    await expect(config.recoverOrphanedClaim('test-team', () => false)).resolves.toBe(true);
+    const after = JSON.parse(await readFile(join(teamsRoot, 'test-team', 'config.json'), 'utf8')) as {
+      members: Record<string, unknown>[];
+    };
+    const byName = Object.fromEntries(after.members.map((member) => [member.name, member]));
+    expect(byName['team-lead']?.runtimePid).toBeUndefined();
+    expect(byName['team-lead']?.runtimeProcessBirthId).toBeUndefined();
+    expect(byName['team-lead']?.tmuxPaneId).toBeUndefined();
+    // A live process keeps its row; recovery never kills anything.
+    expect(byName.builder?.runtimePid).toBe(process.pid);
+    expect(byName.builder?.runtimeProcessBirthId).toBe('TEST-live-birth');
   });
 
   it('clears the claim once and is idempotent', async () => {

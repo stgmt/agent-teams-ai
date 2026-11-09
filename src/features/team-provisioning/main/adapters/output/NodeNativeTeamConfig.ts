@@ -138,6 +138,36 @@ async function clearStaleLegacyProcessRows(
   }
 }
 
+/** Recovery tolerates a config without a member projection; it never invents one. */
+function recoverableRows(config: NativeTeamConfig | null): NativeTeamConfig[] | null {
+  if (!config || !Array.isArray(config.members)) return null;
+  return rows(config);
+}
+
+/**
+ * Startup recovery only: releases process rows whose recorded PID no longer
+ * exists, which is what a killed app leaves behind. A live PID keeps its row —
+ * recovery never probes ownership beyond existence and never kills anything.
+ */
+async function releaseDeadProcessRows(members: NativeTeamConfig[]): Promise<boolean> {
+  let changed = false;
+  for (let index = 0; index < members.length; index++) {
+    const member = members[index];
+    const pid = member.runtimePid;
+    if (typeof pid !== 'number' || !Number.isSafeInteger(pid) || pid <= 0) continue;
+    const fields = ['runtimePid', 'runtimeProcessBirthId', 'runtimeOperationId'] as const;
+    if (!fields.some((field) => member[field] != null)) continue;
+    const inspection = await inspectProcessByPid(pid).catch(() => null);
+    if (!inspection || inspection.status !== 'not_found') continue;
+    const released = { ...member };
+    for (const field of fields) delete released[field];
+    if (released.tmuxPaneId === `process:${pid}`) delete released.tmuxPaneId;
+    members[index] = released;
+    changed = true;
+  }
+  return changed;
+}
+
 /** Materializes configured identities; runtime files are never a source of configured membership. */
 export class NodeNativeTeamConfig {
   private readonly store: NativeTeamConfigStore;
@@ -242,7 +272,10 @@ export class NodeNativeTeamConfig {
       const claim = record(current.appManagedRun);
       if (!claim) {
         if (current.appManagedRun != null) throw new Error('Native team config owner is invalid');
-        return null;
+        // No claim, but a crashed app may still leave dead rows behind.
+        const members = recoverableRows(current);
+        if (!members || !(await releaseDeadProcessRows(members))) return null;
+        return { ...current, members };
       }
       if (!isNativeTeamRunOwner(claim.identity, run))
         throw new Error('Native team config has another run owner');
@@ -276,6 +309,8 @@ export class NodeNativeTeamConfig {
       recovered = true;
       const next = { ...current };
       delete next.appManagedRun;
+      const members = recoverableRows(current);
+      if (members && (await releaseDeadProcessRows(members))) next.members = members;
       return next;
     });
     if (recovered) this.ports.invalidate(teamName);
