@@ -231,7 +231,16 @@ async function main(): Promise<void> {
     toolProfile: resolveToolProfile(),
     healthIdentity: buildHttpHealthIdentity(startOptions),
   });
-  await registerSpecProxyTools(server);
+  // The registry may be booting (its own dependencies come up first). A failed
+  // discovery must not take the whole app MCP server down: the agent still needs
+  // the local team tools, and the proxy re-reads the registry on the next launch.
+  try {
+    await registerSpecProxyTools(server);
+  } catch (error) {
+    process.stderr.write(
+      `spec proxy registration skipped: ${error instanceof Error ? error.message : String(error)}\n`
+    );
+  }
   await server.start(startOptions);
 }
 
