@@ -1075,16 +1075,19 @@ export class TeamDataService {
     return discoverSpecRegistry();
   }
 
+  /**
+   * Bindings live in the team configuration; the registry has no listing tool,
+   * so this read never leaves the app.
+   */
   async listTeamSpecBindings(teamName: string): Promise<TeamSpecBinding[]> {
-    const authority = await this.readRegistryTaskAuthority(teamName);
-    if (!authority.config) throw new Error(`Team "${teamName}" was not found.`);
-    if (!authority.backed) return [];
-    if (authority.bindings.length > 0) {
-      await this.ensureRegistryTeamRegistration(teamName, authority.config, authority.bindings);
+    const config = await this.readRegistryBindingConfig(teamName);
+    if (!config) throw new Error(`Team "${teamName}" was not found.`);
+    try {
+      return resolveTeamSpecBindings(config, teamName);
+    } catch (error) {
+      if (error instanceof TeamSpecBindingError) throw new Error(error.message);
+      throw error;
     }
-    const bindings = await this.registryTaskProvider.getBindings(teamName, true);
-    await this.persistRegistryBindings(teamName, bindings);
-    return bindings;
   }
 
   async linkTeamSpec(

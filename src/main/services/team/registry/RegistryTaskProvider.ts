@@ -176,64 +176,39 @@ export class RegistryTaskProvider {
     this.now = options.now ?? (() => Date.now());
   }
 
+  /**
+   * Bindings belong to the team configuration the app owns: the registry has no
+   * tool that lists them, and asking it made every bound read fail with
+   * REGISTRY_UNAVAILABLE. Only the app's own configuration is authoritative.
+   */
   async getBindings(teamName: string, forceRefresh = false): Promise<TeamSpecBinding[]> {
     const config = await this.readConfig(teamName);
-    const teamId = typeof config?.registryTeamId === 'string' ? config.registryTeamId.trim() : '';
-    if (!teamId) {
+    if (!config) {
       this.bindingCache.delete(teamName);
-      if (config) {
-        let configuredBindings: TeamSpecBinding[];
-        try {
-          configuredBindings = resolveTeamSpecBindings(config, teamName);
-        } catch (error) {
-          if (error instanceof TeamSpecBindingError) throw incompleteBindingError(error);
-          throw error;
-        }
-        if (configuredBindings.length === 0) {
-          try {
-            resolveTeamSpecBinding(config, teamName);
-          } catch (error) {
-            if (error instanceof TeamSpecBindingError) throw incompleteBindingError(error);
-            throw error;
-          }
-        }
-      }
-      throw new RegistryTaskProviderError({
-        code: 'REGISTRY_TEAM_ID_MISSING',
-        teamName,
-        message: `Team "${teamName}" has no registry-issued team identity.`,
-      });
+      return [];
     }
+    let configured: TeamSpecBinding[];
+    try {
+      configured = resolveTeamSpecBindings(config, teamName);
+      // A half-configured team must say so instead of looking unbound.
+      if (configured.length === 0) resolveTeamSpecBinding(config, teamName);
+    } catch (error) {
+      if (error instanceof TeamSpecBindingError) throw incompleteBindingError(error);
+      throw error;
+    }
+    const teamId = typeof config.registryTeamId === 'string' ? config.registryTeamId.trim() : '';
     if (forceRefresh) {
-      this.cacheGeneration += 1;
       this.bindingCache.delete(teamName);
       this.bindingInFlight.delete(teamName);
     }
     const cached = this.bindingCache.get(teamName);
-    if (cached && cached.teamId === teamId && cached.expiresAt > this.now()) {
-      return cached.bindings;
-    }
-    const pending = this.bindingInFlight.get(teamName);
-    if (pending && !forceRefresh) return pending;
-
-    const generation = this.cacheGeneration;
-    const request = this.loadTeamBindings(teamName, teamId);
-    this.bindingInFlight.set(teamName, request);
-    try {
-      const bindings = await request;
-      if (generation === this.cacheGeneration) {
-        this.bindingCache.set(teamName, {
-          teamId,
-          expiresAt: this.now() + this.cacheTtlMs,
-          bindings,
-        });
-      }
-      return bindings;
-    } finally {
-      if (this.bindingInFlight.get(teamName) === request) {
-        this.bindingInFlight.delete(teamName);
-      }
-    }
+    if (cached && cached.teamId === teamId && cached.expiresAt > this.now()) return cached.bindings;
+    this.bindingCache.set(teamName, {
+      teamId,
+      expiresAt: this.now() + this.cacheTtlMs,
+      bindings: configured,
+    });
+    return configured;
   }
 
   async linkTeamSpec(
@@ -435,24 +410,6 @@ export class RegistryTaskProvider {
       });
     }
     return [binding];
-  }
-
-  private async loadTeamBindings(teamName: string, teamId: string): Promise<TeamSpecBinding[]> {
-    try {
-      const result = await (await this.clientFactory()).listTeamSpecBindings(teamId);
-      if (result.teamId !== teamId) {
-        throw new RegistryTaskProviderError({
-          code: 'REGISTRY_UNAVAILABLE',
-          teamName,
-          message: 'Spec registry returned bindings for a different team identity.',
-          causeCode: 'REGISTRY_TEAM_ID_MISMATCH',
-        });
-      }
-      return result.bindings;
-    } catch (error) {
-      if (error instanceof RegistryTaskProviderError) throw error;
-      throw this.unavailableError(teamName, undefined, error, 'listTeamSpecBindings');
-    }
   }
 
   private unavailableError(

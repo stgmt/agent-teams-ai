@@ -418,7 +418,8 @@ describe('RegistryTaskProvider', () => {
 
     const result = await provider.getTasks(TEAM, { binding: { project: PROJECT, spec: SPEC } });
     expect(result.backed && result.tasks.map((task) => task.id)).toEqual([taskKey('1')]);
-    expect(registry.bindingCalls).toEqual([TEAM_ID]);
+    // Bindings come from the team configuration, never from a registry tool.
+    expect(registry.bindingCalls).toEqual([]);
     expect(registry.calls).toHaveLength(1);
     expect(registry.calls[0]).toMatchObject({
       project: PROJECT,
