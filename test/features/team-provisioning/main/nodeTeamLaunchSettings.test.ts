@@ -91,18 +91,18 @@ describe('canonical configured team launch settings', () => {
     await settings.capture(run);
     const lead = await settings.findConfiguredMember(run, 'team-lead');
     expect(lead?.instructions).toContain('stgm/tokenplan / registry-check');
-    expect(lead?.instructions).toContain('spec_patch');
+    expect(lead?.instructions).toContain('team_spec_spec_patch');
     expect(lead?.instructions).toContain('requirements');
     expect(lead?.instructions).toContain('createRoadmap');
     expect(lead?.instructions).toContain('assembleRoadmap');
     expect(lead?.instructions).toContain('designReview');
     expect(lead?.instructions).toContain('archiveSpec');
-    expect(lead?.instructions).toContain('spec_claim');
+    expect(lead?.instructions).toContain('team_spec_spec_claim');
     const builder = await settings.findConfiguredMember(run, 'builder');
     // Members are launched from the app-managed bootstrap briefing, so the recipe
     // travels in its own field and must not duplicate inside `instructions`.
     expect(builder?.specInstructions).toContain('stgm/tokenplan / registry-check');
-    expect(builder?.instructions).not.toContain('spec_patch');
+    expect(builder?.instructions).not.toContain('team_spec_spec_patch');
   });
 
   it('keeps instructions free of specification text when the team has no bindings', async () => {

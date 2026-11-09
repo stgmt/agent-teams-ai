@@ -152,8 +152,21 @@ export async function registerSpecProxyTools(server: Pick<FastMCP, 'addTool'>): 
       parameters: jsonSchemaParameters(tool.inputSchema),
       execute: async (args: unknown) => {
         const input = args && typeof args === 'object' ? (args as Record<string, unknown>) : {};
-        const envelope = await gateway.callTool(tool.name, input);
-        return jsonTextContent(envelope);
+        try {
+          return jsonTextContent(await gateway.callTool(tool.name, input));
+        } catch (error) {
+          // A team-scope refusal is a typed answer, not a crash: forward its code.
+          const code = (error as { code?: unknown }).code;
+          const message = (error as { message?: unknown }).message;
+          if (typeof code !== 'string') throw error;
+          return jsonTextContent({
+            ok: false,
+            data: null,
+            error: { code, message: typeof message === 'string' ? message : code },
+            diagnostics: [],
+            provenance: null,
+          });
+        }
       },
     });
   }
