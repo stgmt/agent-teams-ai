@@ -132,6 +132,32 @@ function revision(meta: TeamMetaFile, members: readonly TeamMember[]): string {
     .digest('hex');
 }
 
+/**
+ * Bound specifications are the only scope a team's tasks may use. The agent has
+ * no way to discover them from the app tools, so the launch carries the list
+ * and the registry recipe with it.
+ */
+function renderSpecBindingInstructions(
+  bindings: readonly { project: string; spec: string }[]
+): string {
+  const list = bindings.map((binding) => `- ${binding.project} / ${binding.spec}`).join('\n');
+  return [
+    '## Specification work (registry MCP server `omp-spec-kit`)',
+    'This team is bound to these registry specifications:',
+    list,
+    '',
+    'Every task belongs to one of them and must reference requirement ids from it.',
+    '1. Read the specification: spec_documents { action: "read", project: "<project>", spec: "<spec>", doc: "FR.md" } lists requirement ids (FR-1, NFR-1, AC-1.1).',
+    '2. Take the lease before writing: spec_claim { project, spec }; release it with spec_release when finished.',
+    '3. Create tasks through the server, not with task_create and never with file edits:',
+    '   spec_patch { intent: "patch", project, spec, dryRun: false, operations: [{ kind: "upsert_task", document: "TASKS.md", localId: "<next free TASK-N>", title: "...", requirements: ["FR-1"], status: "todo" }] }',
+    '4. Keep lifecycle in the app: task_add_comment posts the result, task_set_owner assigns, task_start/task_complete record work intervals and review.',
+    '5. Use a fresh requestId for each write; reuse it only when retrying the same intent.',
+    'Never edit specification files with file tools: the specification hook rejects such writes and points back to spec_patch.',
+    'The spec_tasks listing hides finished tasks by default; pass statuses: ["done"] to see completed ones.',
+  ].join('\n');
+}
+
 export class NodeTeamLaunchSettings implements MemberLaunchSettingsPort {
   private readonly captured = new Map<string, Readonly<CapturedTeam>>();
   private readonly detachCancellation = new Map<string, () => void>();
@@ -361,9 +387,12 @@ export class NodeTeamLaunchSettings implements MemberLaunchSettingsPort {
       baseWorkingDirectory,
       worktree: !member.cwd?.trim() ? workspace?.worktree : undefined,
       isolation: member.isolation,
-      instructions: lead
-        ? (meta.prompt ?? '')
-        : [member.role, member.workflow].filter(Boolean).join('\n\n'),
+      instructions: [
+        lead ? (meta.prompt ?? '') : [member.role, member.workflow].filter(Boolean).join('\n\n'),
+        meta.specBindings?.length ? renderSpecBindingInstructions(meta.specBindings) : '',
+      ]
+        .filter((part) => part.trim().length > 0)
+        .join('\n\n'),
     });
   }
 

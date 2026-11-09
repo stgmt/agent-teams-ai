@@ -80,6 +80,26 @@ describe('canonical configured team launch settings', () => {
     expect(specRegistryEnvironment).toHaveBeenCalledTimes(1);
   });
 
+  it('carries the bound specifications and the registry recipe in the launch instructions', async () => {
+    const { settings } = setup({
+      specBindings: [{ project: 'stgm/tokenplan', spec: 'registry-check' }],
+    });
+    await settings.capture(run);
+    const lead = await settings.findConfiguredMember(run, 'team-lead');
+    expect(lead?.instructions).toContain('stgm/tokenplan / registry-check');
+    expect(lead?.instructions).toContain('spec_patch');
+    expect(lead?.instructions).toContain('requirements');
+    const builder = await settings.findConfiguredMember(run, 'builder');
+    expect(builder?.instructions).toContain('stgm/tokenplan / registry-check');
+  });
+
+  it('keeps instructions free of specification text when the team has no bindings', async () => {
+    const { settings } = setup();
+    await settings.capture(run);
+    const builder = await settings.findConfiguredMember(run, 'builder');
+    expect(builder?.instructions).not.toContain('spec_patch');
+  });
+
   it('never hands registry credentials to a team without specification bindings', async () => {
     const specRegistryEnvironment = vi.fn(async () => ({
       OMP_SPEC_REGISTRY_URL: 'http://127.0.0.1:8650/mcp',
