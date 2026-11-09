@@ -70,7 +70,9 @@ export class NativeTeamConfigStore {
     await assertDirectory();
     const lock = join(directory, '.config.lock');
     const nonce = randomUUID();
-    const deadline = Date.now() + 10_000;
+    // Ten members write their own rows during one launch; a 10 s wait ran out
+    // for the tail of the roster and degraded the launch ("lock is occupied").
+    const deadline = Date.now() + 30_000;
     while (true) {
       signal.throwIfAborted();
       await assertDirectory();
