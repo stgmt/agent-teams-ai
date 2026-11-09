@@ -166,6 +166,10 @@ import {
   TEAM_DELETE_TASK_ATTACHMENT,
   TEAM_DELETE_TEAM,
   TEAM_DISCARD_QUEUED_USER_MESSAGES,
+  SPEC_REGISTRY_CLEAR,
+  SPEC_REGISTRY_GET_STATUS,
+  SPEC_REGISTRY_SAVE,
+  SPEC_REGISTRY_TEST,
   TEAM_DISCOVER_SPEC_REGISTRY,
   TEAM_LIST_SPEC_BINDINGS,
   TEAM_LINK_SPEC,
@@ -407,6 +411,8 @@ import type {
   TeamProvisioningProgress,
   TeamSummary,
   SpecRegistryDiscovery,
+  SpecRegistryCredentialStatus,
+  SpecRegistryProbeResult,
   TeamSpecBinding,
   TeamTask,
   TeamTaskChangeSummariesResponse,
@@ -934,6 +940,13 @@ const electronAPI: ElectronAPI = {
     ),
     discoverSpecRegistry: async () =>
       invokeIpcWithResult<SpecRegistryDiscovery>(TEAM_DISCOVER_SPEC_REGISTRY),
+    getSpecRegistryCredentialStatus: async () =>
+      invokeIpcWithResult<SpecRegistryCredentialStatus>(SPEC_REGISTRY_GET_STATUS),
+    saveSpecRegistryCredential: async (url: string, token: string) =>
+      invokeIpcWithResult<SpecRegistryProbeResult>(SPEC_REGISTRY_SAVE, url, token),
+    clearSpecRegistryCredential: async () => invokeIpcWithResult<void>(SPEC_REGISTRY_CLEAR),
+    testSpecRegistryCredential: async (url?: string, token?: string) =>
+      invokeIpcWithResult<SpecRegistryProbeResult>(SPEC_REGISTRY_TEST, url, token),
     listTeamSpecBindings: async (teamName: string) =>
       invokeIpcWithResult<TeamSpecBinding[]>(TEAM_LIST_SPEC_BINDINGS, teamName),
     linkTeamSpec: async (teamName: string, binding: TeamSpecBinding) =>

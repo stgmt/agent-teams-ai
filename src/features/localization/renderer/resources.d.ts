@@ -4077,6 +4077,21 @@ export default interface Resources {
         "connectDescription": "Choose the project and specification that own this team's tasks.",
         "connectTitle": "Connect specifications",
         "connected": "Connected to {{url}}",
+        "credentialCheck": "Check",
+        "credentialCheckFailed": "Connection failed: {{code}}",
+        "credentialCheckOk": "Connected, {{count}} tools available.",
+        "credentialCleared": "Credential removed.",
+        "credentialDescription": "Store the specification registry address and token once. The operating system encrypts the token and it is never shown again.",
+        "credentialDisconnect": "Disconnect",
+        "credentialEndpoint": "Registry address",
+        "credentialHint": "Use the token your specification registry issued (the omp-spec-kit setup prints where it keeps it).",
+        "credentialMissing": "No registry credential is stored yet.",
+        "credentialRequired": "Enter the registry address and token.",
+        "credentialSave": "Save",
+        "credentialSaved": "Saved. This team's agents use it from the next launch.",
+        "credentialStored": "Stored credential: {{url}} (source: {{source}})",
+        "credentialTitle": "Registry connection",
+        "credentialToken": "Token",
         "error": "Could not connect to the specification registry. Check its configuration and credentials, then retry.",
         "invalidResponse": "The registry returned an unexpected response. Check the registry service, then retry.",
         "invalidUrl": "The configured registry address is invalid. Correct it, then retry.",
@@ -4889,7 +4904,7 @@ export default interface Resources {
         "start": "Start",
         "taskLogsActive": "Task logs active"
       },
-      "title": "Kanban",
+      "title": "Tasks",
       "trash": {
         "close": "Close",
         "deleted": "Deleted",
@@ -7307,6 +7322,9 @@ export default interface Resources {
       "warningUnsafeTaskCall": "Could not safely rewrite Task call: {{call}}"
     },
     "templates": {
+      "confirmAction": "Apply template",
+      "confirmMessage": "This replaces the description, prompt and teammates, resets runtime selection, disables Run after create and Solo team, and enables model sync. Continue?",
+      "confirmTitle": "Apply team template?",
       "descriptions": {
         "content": "Create clear articles, newsletters, educational content and scripts.",
         "customer-support": "Resolve customer questions and turn recurring issues into useful help content.",

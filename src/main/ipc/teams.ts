@@ -28,6 +28,13 @@ import {
   TeamRequestValidationError,
   validateBootstrapOnlyLaunchRequest,
 } from '@main/services/team/TeamRequestValidation';
+import {
+  clearSpecRegistryCredential,
+  readSpecRegistryCredentialStatus,
+  saveSpecRegistryCredential,
+  testSpecRegistryCredential,
+} from '@main/services/team/registry/SpecRegistryCredentialOnboarding';
+import type { SpecRegistryCredentialStatus, SpecRegistryProbeResult } from '@shared/types';
 import { getAppIconPath } from '@main/utils/appIcon';
 import { getTeamsBasePath } from '@main/utils/pathDecoder';
 import { isProcessAlive } from '@main/utils/processHealth';
@@ -47,6 +54,10 @@ import {
   TEAM_DELETE_TASK_ATTACHMENT,
   TEAM_DELETE_TEAM,
   TEAM_DISCARD_QUEUED_USER_MESSAGES,
+  SPEC_REGISTRY_CLEAR,
+  SPEC_REGISTRY_GET_STATUS,
+  SPEC_REGISTRY_SAVE,
+  SPEC_REGISTRY_TEST,
   TEAM_DISCOVER_SPEC_REGISTRY,
   TEAM_FORCE_STOP,
   TEAM_GET_AGENT_RUNTIME,
@@ -740,6 +751,10 @@ export function initializeTeamHandlers(
 
 export function registerTeamHandlers(ipcMain: IpcMain): void {
   ipcMain.handle(TEAM_DISCOVER_SPEC_REGISTRY, handleDiscoverSpecRegistry);
+  ipcMain.handle(SPEC_REGISTRY_GET_STATUS, handleSpecRegistryGetStatus);
+  ipcMain.handle(SPEC_REGISTRY_SAVE, handleSpecRegistrySave);
+  ipcMain.handle(SPEC_REGISTRY_CLEAR, handleSpecRegistryClear);
+  ipcMain.handle(SPEC_REGISTRY_TEST, handleSpecRegistryTest);
   ipcMain.handle(TEAM_LIST_SPEC_BINDINGS, handleListTeamSpecBindings);
   ipcMain.handle(TEAM_LINK_SPEC, handleLinkTeamSpec);
   ipcMain.handle(TEAM_UNLINK_SPEC, handleUnlinkTeamSpec);
@@ -836,6 +851,10 @@ export function registerTeamHandlers(ipcMain: IpcMain): void {
 
 export function removeTeamHandlers(ipcMain: IpcMain): void {
   ipcMain.removeHandler(TEAM_DISCOVER_SPEC_REGISTRY);
+  ipcMain.removeHandler(SPEC_REGISTRY_GET_STATUS);
+  ipcMain.removeHandler(SPEC_REGISTRY_SAVE);
+  ipcMain.removeHandler(SPEC_REGISTRY_CLEAR);
+  ipcMain.removeHandler(SPEC_REGISTRY_TEST);
   ipcMain.removeHandler(TEAM_LIST_SPEC_BINDINGS);
   ipcMain.removeHandler(TEAM_LINK_SPEC);
   ipcMain.removeHandler(TEAM_UNLINK_SPEC);
@@ -1160,6 +1179,42 @@ async function handleDiscoverSpecRegistry(
   _event: IpcMainInvokeEvent
 ): Promise<IpcResult<SpecRegistryDiscovery>> {
   return wrapTeamHandler('discoverSpecRegistry', () => getTeamDataService().discoverSpecRegistry());
+}
+
+async function handleSpecRegistryGetStatus(
+  _event: IpcMainInvokeEvent
+): Promise<IpcResult<SpecRegistryCredentialStatus>> {
+  return wrapTeamHandler('specRegistryGetStatus', () => readSpecRegistryCredentialStatus());
+}
+
+async function handleSpecRegistrySave(
+  _event: IpcMainInvokeEvent,
+  url: unknown,
+  token: unknown
+): Promise<IpcResult<SpecRegistryProbeResult>> {
+  if (typeof url !== 'string' || !url.trim()) {
+    return { success: false, error: 'Registry endpoint is required' };
+  }
+  if (typeof token !== 'string' || !token.trim()) {
+    return { success: false, error: 'Registry token is required' };
+  }
+  return wrapTeamHandler('specRegistrySave', () => saveSpecRegistryCredential({ url, token }));
+}
+
+async function handleSpecRegistryClear(_event: IpcMainInvokeEvent): Promise<IpcResult<void>> {
+  return wrapTeamHandler('specRegistryClear', () => clearSpecRegistryCredential());
+}
+
+async function handleSpecRegistryTest(
+  _event: IpcMainInvokeEvent,
+  url: unknown,
+  token: unknown
+): Promise<IpcResult<SpecRegistryProbeResult>> {
+  const candidate = {
+    ...(typeof url === 'string' && url.trim() ? { url } : {}),
+    ...(typeof token === 'string' && token.trim() ? { token } : {}),
+  };
+  return wrapTeamHandler('specRegistryTest', () => testSpecRegistryCredential(candidate));
 }
 
 async function handleListTeamSpecBindings(

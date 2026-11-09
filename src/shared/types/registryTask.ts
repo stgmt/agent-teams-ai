@@ -65,6 +65,21 @@ export interface RegistryRegistrationIdentity {
   userId: string;
 }
 
+/** Credential state the onboarding dialog may show; never carries the token. */
+export interface SpecRegistryCredentialStatus {
+  configured: boolean;
+  url: string | null;
+  source: 'store' | 'environment' | 'file' | 'none';
+}
+
+/** Result of probing a registry endpoint and token without writing. */
+export interface SpecRegistryProbeResult {
+  ok: boolean;
+  url: string;
+  toolCount: number | null;
+  errorCode: string | null;
+}
+
 export interface SpecRegistryDiscovery {
   url: string;
   projects: { id: string; specs: { slug: string }[]; unavailable?: true }[];
