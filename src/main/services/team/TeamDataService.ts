@@ -64,7 +64,7 @@ import {
 } from './registry/TeamSpecBinding';
 import { signTaskGenesisAttestation } from '../identity/TaskAttestation';
 import type { RegistryRegistrationIdentity } from '@shared/types';
-import { DesktopSigningKeyStore } from '../identity/DesktopSigningKeyStore';
+import type { DesktopSigningKeyStore } from '../identity/DesktopSigningKeyStore';
 import { verifyLocalTaskArtifact } from '../identity/VerifiedLocalTaskArtifact';
 import { ExecutionTaskStore, validateExecutionTaskPatch } from './execution/ExecutionTaskStore';
 import { TaskAttestationJournal } from './execution/TaskAttestationJournal';
@@ -654,8 +654,11 @@ export class TeamDataService {
     registryTaskProvider?: RegistryTaskProvider,
     private readonly executionTaskStore: ExecutionTaskStore = new ExecutionTaskStore(),
     private readonly taskAttachmentStore: TeamTaskAttachmentStore = new TeamTaskAttachmentStore(),
-    private readonly taskSigningKeyStoreFactory: () => Promise<DesktopSigningKeyStore> = () =>
-      DesktopSigningKeyStore.open(),
+    // The team data service also runs inside a worker thread, where Electron's
+    // module is unavailable. Load the protected key store only when a caller
+    // actually needs signing, so the worker graph never pulls it in.
+    private readonly taskSigningKeyStoreFactory: () => Promise<DesktopSigningKeyStore> = async () =>
+      (await import('../identity/DesktopSigningKeyStore')).DesktopSigningKeyStore.open(),
     _registryTaskCompletionClientFactory: () => Promise<
       Pick<
         RegistryTaskClient,
