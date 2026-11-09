@@ -1,7 +1,6 @@
 const { startControlServer } = require('./helpers/controlServer.js');
 const {
   createRegistryTaskClient,
-  createTeamSpecBindingClient,
 } = require('../src/internal/taskRegistryClient.js');
 const { resetSyncControlRequestChannel } = require('../src/internal/syncControlRequest.js');
 
@@ -53,68 +52,6 @@ describe('registry task client over a real control API', () => {
     expect(requests[0].headers['x-agent-teams-app-context']).toBe(APP_CONTEXT);
   });
 
-  it('uses an app-issued runtime capability instead of a caller-selected team path', () => {
-    const requests = [];
-    const existingBindings = [{ project: 'sandbox/project', spec: 'sandbox-spec' }];
-    const client = createTeamSpecBindingClient({
-      baseUrl: 'http://127.0.0.1:3000',
-      headers: { 'x-agent-teams-app-context': APP_CONTEXT, Authorization: 'Bearer forged' },
-      scopeCredential: 'app-issued-runtime-capability',
-      request(request) {
-        requests.push(request);
-        const bindings =
-          request.method === 'PUT' ? [JSON.parse(request.body)] : existingBindings;
-        return { status: 200, ok: true, body: JSON.stringify({ bindings }) };
-      },
-    });
-
-    expect(client.listTeamSpecBindings()).toEqual(existingBindings);
-    expect(() =>
-      client.linkTeamSpec({
-        project: 'sandbox/linked',
-        spec: 'shared-work',
-        teamId: 'untrusted',
-      })
-    ).toThrow('Spec binding accepts only project and spec');
-    expect(client.linkTeamSpec({ project: 'sandbox/linked', spec: 'shared-work' })).toEqual([
-      { project: 'sandbox/linked', spec: 'shared-work' },
-    ]);
-    for (const request of requests) {
-      expect(request.url).toBe('http://127.0.0.1:3000/api/team-runtime/spec-bindings');
-      expect(request.headers.authorization).toBe('Bearer app-issued-runtime-capability');
-      expect(request.headers['x-agent-teams-app-context']).toBe(APP_CONTEXT);
-    }
-    expect(JSON.parse(requests[1].body)).toEqual({
-      project: 'sandbox/linked',
-      spec: 'shared-work',
-    });
-    expect(JSON.parse(requests[1].body)).not.toHaveProperty('teamId');
-  });
-
-  it('requires an app-issued capability and preserves registry authorization failures', () => {
-    expect(() =>
-      createTeamSpecBindingClient({
-        baseUrl: 'http://127.0.0.1:3000',
-      })
-    ).toThrow('AGENT_TEAMS_MCP_SCOPE_CREDENTIAL');
-
-    const client = createTeamSpecBindingClient({
-      baseUrl: 'http://127.0.0.1:3000',
-      scopeCredential: 'app-issued-runtime-capability',
-      request: () => ({
-        status: 400,
-        ok: false,
-        body: JSON.stringify({
-          code: 'PROJECT_NOT_ALLOWED',
-          message: 'Project is not authorized for this registry tenant.',
-        }),
-      }),
-    });
-
-    expect(() =>
-      client.linkTeamSpec({ project: 'forbidden/project', spec: 'sandbox-spec' })
-    ).toThrow('Project is not authorized for this registry tenant.');
-  });
   it('forwards exact project/spec selectors for every operation without inventing team identity', () => {
     const requests = [];
     const taskId = `registry-${'c'.repeat(64)}`;

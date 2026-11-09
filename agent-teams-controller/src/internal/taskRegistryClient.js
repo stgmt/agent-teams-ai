@@ -178,49 +178,6 @@ function readTaskArtifactEnvelope(payload, operation) {
   };
 }
 
-function readSpecBindingsEnvelope(payload, operation) {
-  if (!payload || typeof payload !== 'object' || !Array.isArray(payload.bindings)) {
-    throw new TaskBackendError(
-      TASK_BACKEND_ERROR_CODES.REGISTRY_PROTOCOL_ERROR,
-      `Team control API ${operation} returned no spec bindings array.`,
-      { operation }
-    );
-  }
-  return payload.bindings.map((binding) => {
-    if (
-      !binding ||
-      typeof binding !== 'object' ||
-      typeof binding.project !== 'string' ||
-      !binding.project.trim() ||
-      typeof binding.spec !== 'string' ||
-      !binding.spec.trim()
-    ) {
-      throw new TaskBackendError(
-        TASK_BACKEND_ERROR_CODES.REGISTRY_PROTOCOL_ERROR,
-        `Team control API ${operation} returned an invalid spec binding.`,
-        { operation }
-      );
-    }
-    return { project: binding.project, spec: binding.spec };
-  });
-}
-
-function normalizeSpecBinding(binding) {
-  if (!binding || typeof binding !== 'object' || Array.isArray(binding)) {
-    throw new TypeError('Spec binding requires project and spec');
-  }
-  if (Object.keys(binding).some((key) => key !== 'project' && key !== 'spec')) {
-    throw new TypeError('Spec binding accepts only project and spec');
-  }
-  const project = typeof binding.project === 'string' ? binding.project.trim() : '';
-  const spec = typeof binding.spec === 'string' ? binding.spec.trim() : '';
-  if (!project || !spec) {
-    throw new Error('Spec binding requires both project and spec');
-  }
-  return { project, spec };
-}
-
-
 function normalizeTaskScope(scope) {
   if (scope === undefined || scope === null) return null;
   if (typeof scope !== 'object' || Array.isArray(scope)) {
@@ -420,42 +377,6 @@ function createRegistryTaskClient(options = {}) {
     },
   };
 }
-function createTeamSpecBindingClient(options = {}) {
-  const scopeCredential = String(options.scopeCredential || '').trim();
-  if (!scopeCredential || scopeCredential.length > 512) {
-    throw new TaskBackendError(
-      TASK_BACKEND_ERROR_CODES.APP_BINDING_REQUIRED,
-      `Team spec bindings require ${MCP_SCOPE_CREDENTIAL_ENV}.`
-    );
-  }
-  const headers = Object.fromEntries(
-    Object.entries(options.headers || {}).filter(([name]) => name.toLowerCase() !== 'authorization')
-  );
-  const { baseUrl, send } = createControlApiSender({
-    ...options,
-    headers: { ...headers, authorization: `Bearer ${scopeCredential}` },
-  });
-  const specBindingsPath = '/api/team-runtime/spec-bindings';
-  return {
-    baseUrl,
-    listTeamSpecBindings() {
-      return readSpecBindingsEnvelope(
-        send('listTeamSpecBindings', 'GET', specBindingsPath),
-        'listTeamSpecBindings'
-      );
-    },
-    linkTeamSpec(binding) {
-      const normalizedBinding = normalizeSpecBinding(binding);
-      return readSpecBindingsEnvelope(
-        send('linkTeamSpec', 'PUT', specBindingsPath, normalizedBinding),
-        'linkTeamSpec'
-      );
-    },
-  };
-}
-
-
 module.exports = {
   createRegistryTaskClient,
-  createTeamSpecBindingClient,
 };

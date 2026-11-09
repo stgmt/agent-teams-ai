@@ -112,9 +112,7 @@ export function createServer(
       : {}),
   });
 
-  registerTools(server, input.toolProfile, {
-    requestScopedSpecCapability: httpOptions !== null,
-  });
+  registerTools(server, input.toolProfile);
 
   return server;
 }
