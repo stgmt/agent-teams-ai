@@ -15,6 +15,7 @@ const maintenance = require('./internal/maintenance.js');
 const agentBlocks = require('./internal/agentBlocks.js');
 const taskCompletionClaim = require('./internal/taskCompletionClaim.js');
 const specBindings = require('./internal/specBindings.js');
+const specGateway = require('./internal/specGateway.js');
 const {
   buildChatVisualizationProtocolText,
   buildChatVisualizationRefreshInstruction,
@@ -60,6 +61,7 @@ module.exports = {
     tryWithTeamBoardLock: boardLocks.tryWithTeamBoardLock,
   },
   appScopedSpecBindings,
+  specGateway,
   createController,
   createControllerContext,
   agentBlocks,
