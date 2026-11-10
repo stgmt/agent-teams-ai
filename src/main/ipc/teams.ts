@@ -2223,6 +2223,20 @@ async function handleCreateTeam(
   if (!validation.valid) {
     return { success: false, error: validation.error };
   }
+  // A team that names a specification must be able to reach the registry before
+  // it starts: without the endpoint and token the agent would launch with no
+  // spec tools at all, and the failure would surface as "the model ignores specs".
+  const requestedSpec = validation.value.specProject;
+  if (typeof requestedSpec === 'string' && requestedSpec.trim()) {
+    const credential = await readSpecRegistryCredentialStatus().catch(() => null);
+    if (!credential?.configured) {
+      return {
+        success: false,
+        error:
+          'SPEC_REGISTRY_NOT_CONFIGURED: подключите спецификации (адрес и токен реестра) перед созданием команды со спекой',
+      } as never;
+    }
+  }
   const progressTargetWindow = BrowserWindow.fromWebContents(event.sender);
 
   return wrapTeamHandler('create', async () => {
@@ -2240,6 +2254,19 @@ async function handleCreateTeam(
       const response = teamBackupService
         ? await teamBackupService.withTeamIdentityFence(validation.value.teamName, create)
         : await create();
+      // The create path used to drop the requested spec; persist it before the
+      // first launch so the recipe, the spec MCP env and the board read agree.
+      const specProject = validation.value.specProject;
+      const specSlug = validation.value.specSlug;
+      if (typeof specProject === 'string' && specProject.trim() && typeof specSlug === 'string' && specSlug.trim()) {
+        await getTeamDataService()
+          .linkTeamSpec(validation.value.teamName, { project: specProject.trim(), spec: specSlug.trim() })
+          .catch((error: unknown) => {
+            logger.warn(
+              `[teams:create] specification binding was not persisted for ${validation.value.teamName}: ${String(error)}`
+            );
+          });
+      }
       teamPermanentDeletionLifecycle?.resumeTeam(validation.value.teamName);
       invalidateTeamRosterSnapshotCaches(validation.value.teamName);
       return response;
