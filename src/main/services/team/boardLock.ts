@@ -3,13 +3,20 @@ import * as path from 'node:path';
 import { getTeamsBasePath } from '@main/utils/pathDecoder';
 import { boardLocks } from 'agent-teams-controller';
 
-/** Wait without holding either lock, then run the operation without yielding. */
+/**
+ * Wait without holding either lock, then run the operation without yielding.
+ *
+ * A live team has the lead, its members and the app reading the board at the
+ * same time; five seconds ran out under that load and a task write failed as a
+ * timeout while the retry succeeded. Twenty seconds covers the contention
+ * without making a genuinely stuck lock wait forever.
+ */
 export async function withTeamBoardLockForSyncOperation<T>(
   paths: { teamDir: string; claudeDir?: string },
   operation: () => T,
   options: { createParent?: boolean; acquireTimeoutMs?: number; retryIntervalMs?: number } = {}
 ): Promise<T> {
-  const deadline = Date.now() + (options.acquireTimeoutMs ?? 5_000);
+  const deadline = Date.now() + (options.acquireTimeoutMs ?? 20_000);
   const retryIntervalMs = options.retryIntervalMs ?? 20;
   for (;;) {
     const acquired = boardLocks.tryWithTeamBoardLock(
