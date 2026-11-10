@@ -37,6 +37,7 @@ export type RegistryTaskProviderErrorCode =
   | 'REGISTRY_SCOPE_UNLINKED'
   | 'REGISTRY_TEAM_ID_MISSING'
   | 'REGISTRY_TASK_ID_AMBIGUOUS'
+  | 'REGISTRY_TASK_NOT_FOUND'
   | 'REGISTRY_UNAVAILABLE';
 
 /**
@@ -216,6 +217,45 @@ export class RegistryTaskProvider {
    * The registry scopes tasks by project and spec; it declares no team identity,
    * so a missing id is the normal state, not an error.
    */
+  /**
+   * Owner/status writes go straight to the registry contract: resolve the task
+   * once, then one `spec_patch` intent. This bypasses the legacy writer, which
+   * required a registry team identity the registry does not have.
+   */
+  async writeTaskFields(
+    teamName: string,
+    taskId: string,
+    fields: { status?: RegistryTaskStatus; owner?: string | null; expectedStatus?: RegistryTaskStatus }
+  ): Promise<void> {
+    const { task } = await this.getTask(teamName, taskId, { forceRefresh: true });
+    if (!task) {
+      throw new RegistryTaskProviderError({
+        code: 'REGISTRY_TASK_NOT_FOUND',
+        teamName,
+        message: `Task "${taskId}" was not found in the linked registry scopes.`,
+      });
+    }
+    const project = task.specProject;
+    const spec = task.specSlug;
+    const localId = task.registryTask?.localId;
+    if (!project || !spec || !localId) {
+      throw new RegistryTaskProviderError({
+        code: 'REGISTRY_SCOPE_INCOMPLETE',
+        teamName,
+        message: `Task "${taskId}" is missing registry identity metadata.`,
+      });
+    }
+    const client = await this.clientFactory();
+    await client.updateTaskFields({
+      project,
+      spec,
+      entity: localId,
+      ...(fields.status === undefined ? {} : { status: fields.status }),
+      ...(fields.owner === undefined ? {} : { owner: fields.owner }),
+      ...(fields.expectedStatus === undefined ? {} : { expectedStatus: fields.expectedStatus }),
+    });
+  }
+
   private async readTeamId(teamName: string): Promise<string> {
     const config = await this.readConfig(teamName);
     return typeof config?.registryTeamId === 'string' ? config.registryTeamId.trim() : '';

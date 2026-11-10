@@ -3669,9 +3669,10 @@ export class TeamDataService {
     actor = 'user',
     binding?: RegistryTaskScope
   ): Promise<void> {
-    const registry = await this.readRegistryTaskForWrite(teamName, taskId, binding);
-    if (registry) {
-      await registry.writer.replaceOwner({ taskId, owner, actor });
+    const authority = await this.readRegistryTaskAuthority(teamName);
+    if (authority.backed) {
+      // One registry-native write; no legacy writer and no team identity.
+      await this.registryTaskProvider.writeTaskFields(teamName, taskId, { owner });
       this.invalidateGlobalTaskProjectionCache();
       return;
     }
