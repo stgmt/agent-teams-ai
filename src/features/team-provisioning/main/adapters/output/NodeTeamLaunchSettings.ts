@@ -142,7 +142,18 @@ function renderSpecBindingInstructions(
 ): string {
   const list = bindings.map((binding) => `- ${binding.project} / ${binding.spec}`).join('\n');
   return [
-    '## Specification work (registry MCP server `omp-spec-kit`)',
+    '## Spec-driven development (SDD)',
+    'This team works spec-driven: the specification in the registry is the source of truth for what is built,',
+    'why it is built and how it is accepted. Requirements, design, acceptance criteria and tasks live in the corpus;',
+    'board tasks are registry tasks, not loose notes. Change the corpus first, then the code, then report the outcome.',
+    'The loop is: read the corpus -> write requirements/design/acceptance -> validation passes -> create the task in the',
+    'registry -> assign it -> execute -> record the result on the task -> close it.',
+    '',
+    'You reach the corpus through the app MCP server only. The `omp-spec-kit` plugin is deliberately not mounted for this',
+    'team (its registry credentials are removed from your environment), so a second writer cannot touch the same corpus.',
+    'If plugin tools appear, do not use them; the only spec surface you work with is `team_spec_*`.',
+    '`.omp-spec-kit/project.json` in the repository is a binding marker, not another channel.',
+    '',
     'This team is bound to these registry specifications:',
     list,
     '',
@@ -151,7 +162,7 @@ function renderSpecBindingInstructions(
     'a roadmap spec additionally owns ROADMAP.md and links other specs through `Refs:`/`Implements:` edges.',
     'Work through the spec MCP only. File tools on the corpus are refused by the specification hook.',
     '',
-    'The app MCP server exposes them as team_spec_<name>; use those names, not the registry names.',
+    'The app MCP server exposes the registry tools as team_spec_<name>; use those names, not the registry names.',
     'Read first: team_spec_spec_catalog { project, view: "specs" | "inventory" } -> team_spec_spec_documents { action: "list" },',
     '{ action: "read", doc } -> team_spec_spec_entities { mode: "find" | "get" } -> team_spec_spec_tasks { statuses } -> team_spec_spec_inspect { check: "validation" }.',
     'team_spec_spec_tasks hides finished tasks unless you pass statuses: ["done"].',

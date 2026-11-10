@@ -105,6 +105,24 @@ describe('canonical configured team launch settings', () => {
     expect(builder?.instructions).not.toContain('team_spec_spec_patch');
   });
 
+  it('tells the roster it works spec-driven and that the spec-kit plugin is unmounted', async () => {
+    const { settings } = setup({
+      specBindings: [{ project: 'stgm/tokenplan', spec: 'registry-check' }],
+      specRegistryEnvironment: async () => ({
+        OMP_SPEC_REGISTRY_URL: 'http://127.0.0.1:8650/mcp',
+        OMP_SPEC_REGISTRY_TOKEN: 'TEST-token',
+      }),
+    });
+    await settings.capture(run);
+    const lead = await settings.findConfiguredMember(run, 'team-lead');
+    expect(lead?.instructions).toContain('Spec-driven development (SDD)');
+    expect(lead?.instructions).toContain('deliberately not mounted');
+    expect(lead?.instructions).toContain('team_spec_');
+    const builder = await settings.findConfiguredMember(run, 'builder');
+    expect(builder?.specInstructions).toContain('Spec-driven development (SDD)');
+    expect(builder?.specInstructions).toContain('deliberately not mounted');
+  });
+
   it('keeps instructions free of specification text when the team has no bindings', async () => {
     const { settings } = setup();
     await settings.capture(run);
