@@ -269,7 +269,10 @@ export class RegistryTaskClient {
     const entity = assertNonEmptyString(input.entity, 'createTask', 'entity');
     const subject = assertNonEmptyString(input.subject, 'createTask', 'subject');
     if (input.requirements.length === 0) {
-      throw invalidArgument('createTask', 'a registry task requires at least one requirement id');
+      throw invalidArgument(
+        'createTask',
+        'a registry task requires at least one requirement id: read the corpus entity ids (FR-/NFR-/AC-) and pass them in requirements'
+      );
     }
     const envelope = await this.#transport.callTool(
       'spec_patch',
