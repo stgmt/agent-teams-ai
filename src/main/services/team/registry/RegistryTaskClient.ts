@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
+import { RegistryTeamTaskWriteError } from './RegistryTeamTaskWriter';
+
 import { isRecord, numberOrNull, stringOrNull } from './RegistryJson';
 import { RegistryMcpTransport } from './RegistryMcpTransport';
 import {
@@ -236,6 +238,85 @@ export class RegistryTaskClient {
   }
 
   /** All tasks of one spec, following the registry's cursor pagination. */
+  /** Turns a registry envelope refusal into the typed error callers expect. */
+  refusalFromEnvelope(
+    envelope: { error?: unknown },
+    operation: string
+  ): RegistryTeamTaskWriteError {
+    const error = (envelope.error ?? {}) as { code?: unknown; message?: unknown };
+    const code = typeof error.code === 'string' ? error.code : 'REGISTRY_REFUSED';
+    const message =
+      typeof error.message === 'string' ? error.message : 'the registry refused the write';
+    return new RegistryTeamTaskWriteError('REGISTRY_REFUSED', `${operation}: ${message}`, {
+      details: { registryCode: code },
+    });
+  }
+
+  /**
+   * Writes canonical task fields the way the registry actually accepts them:
+   * one `spec_patch` intent, scoped by project and spec. No team identity, no
+   * signed policy — the registry declares neither.
+   */
+  async updateTaskFields(input: {
+    project: string;
+    spec: string;
+    entity: string;
+    status?: RegistryTaskStatus;
+    owner?: string | null;
+    expectedStatus?: RegistryTaskStatus;
+    signal?: AbortSignal;
+  }): Promise<{ ok?: unknown; error?: unknown }> {
+    const scope = assertScope({ project: input.project, spec: input.spec }, 'updateTask');
+    const entity = assertNonEmptyString(input.entity, 'updateTask', 'entity');
+    const envelope = await this.#transport.callTool(
+      'spec_patch',
+      {
+        requestId: randomUUID(),
+        reason: `task update ${entity}`,
+        project: scope.project,
+        spec: scope.spec,
+        intent: 'updateTask',
+        entity,
+        ...(input.status === undefined ? {} : { status: input.status }),
+        ...(input.owner === undefined ? {} : { owner: input.owner }),
+        ...(input.expectedStatus === undefined ? {} : { expectedStatus: input.expectedStatus }),
+      },
+      'updateTask',
+      input.signal
+    );
+    return envelope as unknown as { ok?: unknown; error?: unknown };
+  }
+
+  /** Appends one comment to a canonical task; the registry keeps it in TASKS.md. */
+  async addTaskComment(input: {
+    project: string;
+    spec: string;
+    entity: string;
+    text: string;
+    actor?: string;
+    signal?: AbortSignal;
+  }): Promise<{ ok?: unknown; error?: unknown }> {
+    const scope = assertScope({ project: input.project, spec: input.spec }, 'addTaskComment');
+    const entity = assertNonEmptyString(input.entity, 'addTaskComment', 'entity');
+    const text = assertNonEmptyString(input.text, 'addTaskComment', 'text');
+    const envelope = await this.#transport.callTool(
+      'spec_patch',
+      {
+        requestId: randomUUID(),
+        reason: `task comment ${entity}`,
+        project: scope.project,
+        spec: scope.spec,
+        intent: 'addTaskComment',
+        entity,
+        text,
+        ...(input.actor ? { actor: input.actor } : {}),
+      },
+      'addTaskComment',
+      input.signal
+    );
+    return envelope as unknown as { ok?: unknown; error?: unknown };
+  }
+
   async listTasks(input: ListRegistryTasksInput): Promise<RegistryTask[]> {
     const scope = assertScope(input, 'listTasks');
     const statuses = assertStatuses(input.statuses, 'listTasks');
@@ -995,6 +1076,20 @@ export class RegistryTaskClient {
     const entity = assertEntity(input.entity, scope, 'replaceTaskStatus');
     const status = assertTaskStatus(input.status, 'replaceTaskStatus');
     const expectedStatus = assertTaskStatus(input.expectedStatus, 'replaceTaskStatus');
+    if (!input.teamId) {
+      // Registry-contract path: one spec_patch intent, no team identity.
+      const result = await this.updateTaskFields({
+        project: input.project,
+        spec: input.spec,
+        entity: input.entity,
+        status,
+        expectedStatus,
+        signal: input.signal,
+      });
+      if (result && result.ok === false)
+        throw this.refusalFromEnvelope(result, 'replaceTaskStatus');
+      return { outcome: 'APPLIED', transitions: [] };
+    }
     if (status === 'deleted' || expectedStatus === 'deleted')
       await this.#requireTaskCapability('deleted', input.signal);
     const teamId = assertNonEmptyString(input.teamId, 'replaceTaskStatus', 'teamId');
@@ -1021,6 +1116,18 @@ export class RegistryTaskClient {
   /** Replaces the owner of one task; same idempotency contract as upsert. */
   async replaceTaskOwner(input: ReplaceRegistryTaskOwnerInput): Promise<RegistryTaskWriteResult> {
     const scope = assertScope(input, 'replaceTaskOwner');
+    if (!input.teamId) {
+      const result = await this.updateTaskFields({
+        project: scope.project,
+        spec: scope.spec,
+        entity: input.entity,
+        owner: input.owner ?? null,
+        signal: input.signal,
+      });
+      if (result && result.ok === false)
+        throw this.refusalFromEnvelope(result, 'replaceTaskOwner');
+      return { outcome: 'APPLIED', transitions: [], refusal: null };
+    }
     const teamId = assertNonEmptyString(input.teamId, 'replaceTaskOwner', 'teamId');
     const entity = assertEntity(input.entity, scope, 'replaceTaskOwner');
     const owner =
