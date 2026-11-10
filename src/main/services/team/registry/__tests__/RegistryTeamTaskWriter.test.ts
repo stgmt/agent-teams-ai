@@ -113,6 +113,13 @@ class FakeRegistryClient implements RegistryTeamTaskClientPort {
   readonly replaceTaskOwner = vi.fn(
     async (_input: ReplaceRegistryTaskOwnerInput): Promise<RegistryTaskWriteResult> => applied()
   );
+  readonly addTaskComment = vi.fn(async (_input: {
+    project: string;
+    spec: string;
+    entity: string;
+    text: string;
+    actor?: string;
+  }): Promise<{ ok?: unknown; error?: unknown }> => ({ ok: true }));
   readonly replaceTaskLinks = vi.fn(
     async (_input: ReplaceRegistryTaskLinksInput): Promise<RegistryTaskWriteResult> => applied()
   );

@@ -86,6 +86,14 @@ export interface RegistryTeamTaskClientPort {
   replaceTaskStatus(input: ReplaceRegistryTaskStatusInput): Promise<RegistryTaskStatusResult>;
   replaceTaskOwner(input: ReplaceRegistryTaskOwnerInput): Promise<RegistryTaskWriteResult>;
   replaceTaskLinks(input: ReplaceRegistryTaskLinksInput): Promise<RegistryTaskWriteResult>;
+  addTaskComment(input: {
+    project: string;
+    spec: string;
+    entity: string;
+    text: string;
+    actor?: string;
+    signal?: AbortSignal;
+  }): Promise<{ ok?: unknown; error?: unknown }>;
 }
 
 export interface RegistryTeamTaskCreateInput {
@@ -542,6 +550,16 @@ export class RegistryTeamTaskWriter {
       ...(attachments && attachments.length > 0 ? { attachments } : {}),
     };
     this.#executionStore.addComment(this.#teamName, this.#executionId(localId), comment);
+    // The registry is the shared source of truth: mirror the comment into the
+    // task block so a teammate or a person reading spec-kit sees it too.
+    await this.#client.addTaskComment({
+      project: this.#binding.project,
+      spec: this.#binding.spec,
+      entity: localId,
+      text,
+      actor: comment.author,
+    });
+    this.#listingCache = null;
     return comment;
   }
 

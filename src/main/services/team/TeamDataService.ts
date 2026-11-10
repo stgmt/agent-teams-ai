@@ -3669,9 +3669,10 @@ export class TeamDataService {
     actor = 'user',
     binding?: RegistryTaskScope
   ): Promise<void> {
-    const registry = await this.readRegistryTaskForWrite(teamName, taskId, binding);
-    if (registry) {
-      await registry.writer.replaceOwner({ taskId, owner, actor });
+    const authority = await this.readRegistryTaskAuthority(teamName);
+    if (authority.backed) {
+      // One registry-native write; no legacy writer and no team identity.
+      await this.registryTaskProvider.writeTaskFields(teamName, taskId, { owner });
       this.invalidateGlobalTaskProjectionCache();
       return;
     }
@@ -4034,6 +4035,20 @@ export class TeamDataService {
     attachments?: TaskAttachmentMeta[],
     taskRefs?: TaskRef[]
   ): Promise<TaskComment> {
+    const authority = await this.readRegistryTaskAuthority(teamName);
+    if (authority.backed) {
+      // Registry-native comment; the local store only feeds the app's own view.
+      await this.registryTaskProvider.addTaskComment(teamName, taskId, text, 'user');
+      const comment: TaskComment = {
+        id: randomUUID(),
+        author: 'user',
+        text,
+        createdAt: new Date().toISOString(),
+        type: 'regular',
+      };
+      this.invalidateGlobalTaskProjectionCache();
+      return comment;
+    }
     const registry = await this.readRegistryTaskForWrite(teamName, taskId);
     if (registry) {
       const comment = await registry.writer.appendUserComment(taskId, text, attachments, taskRefs);
