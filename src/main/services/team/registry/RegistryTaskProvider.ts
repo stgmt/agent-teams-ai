@@ -241,7 +241,7 @@ export class RegistryTaskProvider {
     });
     const used = new Set(
       existing
-        .map((task) => (task.registryTask as { localId?: string } | undefined)?.localId ?? task.id)
+        .map((task) => task.localId ?? task.id)
         .filter((value): value is string => typeof value === 'string')
         .map((value) => Number.parseInt(value.replace(/^TASK-/u, ''), 10))
         .filter((value) => Number.isFinite(value))
