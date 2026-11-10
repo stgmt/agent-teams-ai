@@ -252,6 +252,48 @@ export class RegistryTaskClient {
     });
   }
 
+  /** Creates one canonical task with the registry's own `spec_patch` intent. */
+  async createTaskFields(input: {
+    project: string;
+    spec: string;
+    entity: string;
+    subject: string;
+    requirements: readonly string[];
+    owner?: string | null;
+    description?: string;
+    status?: RegistryTaskStatus;
+    creationToken?: string;
+    signal?: AbortSignal;
+  }): Promise<{ ok?: unknown; error?: unknown }> {
+    const scope = assertScope({ project: input.project, spec: input.spec }, 'createTask');
+    const entity = assertNonEmptyString(input.entity, 'createTask', 'entity');
+    const subject = assertNonEmptyString(input.subject, 'createTask', 'subject');
+    if (input.requirements.length === 0) {
+      throw invalidArgument('createTask', 'a registry task requires at least one requirement id');
+    }
+    const envelope = await this.#transport.callTool(
+      'spec_patch',
+      {
+        requestId: randomUUID(),
+        reason: `task create ${entity}`,
+        project: scope.project,
+        spec: scope.spec,
+        intent: 'confirmTaskCreation',
+        dryRun: false,
+        entity,
+        subject,
+        requirements: [...new Set(input.requirements)],
+        ...(input.owner === undefined || input.owner === null ? {} : { owner: input.owner }),
+        ...(input.description === undefined ? {} : { description: input.description }),
+        ...(input.status === undefined ? {} : { status: input.status }),
+        ...(input.creationToken === undefined ? {} : { creationToken: input.creationToken }),
+      },
+      'createTask',
+      input.signal
+    );
+    return envelope as unknown as { ok?: unknown; error?: unknown };
+  }
+
   /**
    * Writes canonical task fields the way the registry actually accepts them:
    * one `spec_patch` intent, scoped by project and spec. No team identity, no

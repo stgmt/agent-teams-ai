@@ -38,6 +38,7 @@ export type RegistryTaskProviderErrorCode =
   | 'REGISTRY_TEAM_ID_MISSING'
   | 'REGISTRY_TASK_ID_AMBIGUOUS'
   | 'REGISTRY_TASK_NOT_FOUND'
+  | 'REGISTRY_REFUSED'
   | 'REGISTRY_UNAVAILABLE';
 
 /**
@@ -217,6 +218,64 @@ export class RegistryTaskProvider {
    * The registry scopes tasks by project and spec; it declares no team identity,
    * so a missing id is the normal state, not an error.
    */
+  /**
+   * Creates a canonical registry task and returns the stored projection.
+   * The next free `TASK-<n>` is derived from the spec's own task list.
+   */
+  async createTask(
+    teamName: string,
+    input: {
+      project: string;
+      spec: string;
+      subject: string;
+      requirements: readonly string[];
+      owner?: string | null;
+      description?: string;
+    }
+  ): Promise<RegistryTask> {
+    const client = await this.clientFactory();
+    const existing = await client.listTasks({
+      project: input.project,
+      spec: input.spec,
+      statuses: [...REGISTRY_TASK_STATUSES],
+    });
+    const used = new Set(
+      existing
+        .map((task) => (task.registryTask as { localId?: string } | undefined)?.localId ?? task.id)
+        .filter((value): value is string => typeof value === 'string')
+        .map((value) => Number.parseInt(value.replace(/^TASK-/u, ''), 10))
+        .filter((value) => Number.isFinite(value))
+    );
+    let next = 1;
+    while (used.has(next)) next += 1;
+    const entity = `TASK-${next}`;
+    const created = await client.createTaskFields({
+      project: input.project,
+      spec: input.spec,
+      entity,
+      subject: input.subject,
+      requirements: input.requirements,
+      owner: input.owner ?? null,
+      description: input.description,
+    });
+    if (created && created.ok === false) {
+      throw new RegistryTaskProviderError({
+        code: 'REGISTRY_REFUSED',
+        teamName,
+        message: `The spec registry refused the task: ${String((created.error as { message?: unknown })?.message ?? 'no reason given')}`,
+      });
+    }
+    const { task } = await this.getTask(teamName, `${input.spec}:${entity}`, { forceRefresh: true });
+    if (!task) {
+      throw new RegistryTaskProviderError({
+        code: 'REGISTRY_TASK_NOT_FOUND',
+        teamName,
+        message: `Task "${entity}" was created but could not be read back.`,
+      });
+    }
+    return task.registryTask as RegistryTask;
+  }
+
   /** Appends one comment straight into the registry task block. */
   async addTaskComment(
     teamName: string,

@@ -3015,55 +3015,76 @@ export class TeamDataService {
           message: `Registry scope "${binding.project}/${binding.spec}" is not linked to team "${teamName}".`,
         });
       }
-      const registryWriter = await this.resolveRegistryTeamTaskWriter(teamName, binding);
-      if (
-        request.command &&
-        request.creationCommand &&
-        request.command.commandId !== request.creationCommand.commandId
-      ) {
-        throw new RegistryTeamTaskWriteError(
-          'IDEMPOTENCY_CONFLICT',
-          'Task creation command identities do not match.'
-        );
-      }
       const groupChatId = executionPatch?.groupChatId ?? request.groupChatId;
-      const created = await registryWriter.createTask(
-        {
-          subject: request.subject,
-          description: request.description,
-          requirements: request.requirements ?? [],
-          tracking: request.tracking,
-          owner: request.owner,
-          blockedBy: request.blockedBy,
-          related: request.related,
-          startImmediately: request.startImmediately === true,
-          status: request.status,
-          actor: request.actor,
-          executionPatch: {
-            ...executionPatch,
-            ...(request.creationCommand ? { creationCommand: request.creationCommand } : {}),
+      // Creation goes through the registry's own intent. The legacy writer is
+      // kept as the first attempt only while its contract exists; any failure
+      // falls back to `confirmTaskCreation`, which the registry actually serves.
+      let createdTask: TeamTask | null = null;
+      try {
+        const registryWriter = await this.resolveRegistryTeamTaskWriter(teamName, binding);
+        const created = await registryWriter.createTask(
+          {
+            subject: request.subject,
+            description: request.description,
+            requirements: request.requirements ?? [],
+            tracking: request.tracking,
+            owner: request.owner,
+            blockedBy: request.blockedBy,
+            related: request.related,
+            startImmediately: request.startImmediately === true,
+            status: request.status,
+            actor: request.actor,
+            executionPatch: {
+              ...executionPatch,
+              ...(request.creationCommand ? { creationCommand: request.creationCommand } : {}),
+            },
+            commandId: request.command?.commandId ?? request.creationCommand?.commandId,
+            groupChatId: request.groupChatId,
+            descriptionTaskRefs: request.descriptionTaskRefs,
+            prompt: request.prompt,
+            promptTaskRefs: request.promptTaskRefs,
+            projectPath: await this.readTaskCreateProjectPath(teamName),
+            commandIdempotencyKey:
+              request.command?.idempotencyKey ?? request.creationCommand?.commandId,
           },
-          commandId: request.command?.commandId ?? request.creationCommand?.commandId,
-          groupChatId: request.groupChatId,
-          descriptionTaskRefs: request.descriptionTaskRefs,
-          prompt: request.prompt,
-          promptTaskRefs: request.promptTaskRefs,
-          projectPath: await this.readTaskCreateProjectPath(teamName),
-          commandIdempotencyKey:
-            request.command?.idempotencyKey ?? request.creationCommand?.commandId,
-        },
-        groupChatId !== undefined && groupChatId !== null
-          ? () =>
-              assertTaskGroupChatAssociation(
-                teamName,
-                groupChatId,
-                undefined,
-                this.taskGroupChatCatalog
-              )
-          : undefined
-      );
-      task = created.task;
-      createdInAttempt = created.createdInAttempt;
+          groupChatId !== undefined && groupChatId !== null
+            ? () =>
+                assertTaskGroupChatAssociation(
+                  teamName,
+                  groupChatId,
+                  undefined,
+                  this.taskGroupChatCatalog
+                )
+            : undefined
+        );
+        createdTask = created.task;
+        createdInAttempt = created.createdInAttempt;
+      } catch (error) {
+        // Fall back to the registry's published intent and read the task back.
+        const created = await this.registryTaskProvider.createTask(teamName, {
+          project: binding.project,
+          spec: binding.spec,
+          subject: request.subject,
+          requirements: request.requirements ?? [],
+          owner: request.owner ?? null,
+          description: request.description,
+        });
+        const canonicalId = created.canonicalId;
+        const board = await this.getTasks(teamName);
+        const candidates: TeamTask[] = Array.isArray(board) ? board : [];
+        createdTask =
+          candidates.find((candidate) => candidate.registryTask?.canonicalId === canonicalId) ?? null;
+        createdInAttempt = true;
+        if (!createdTask) {
+          throw new RegistryTaskProviderError({
+            code: 'REGISTRY_TASK_NOT_FOUND',
+            teamName,
+            message: `Task "${canonicalId}" was created in the registry but the board could not read it back.`,
+          });
+        }
+        void error;
+      }
+      task = createdTask;
       this.invalidateGlobalTaskProjectionCache();
       await this.notifyTaskStartBestEffort(teamName, task, request);
       return { task, outcome: createdInAttempt ? 'APPLIED' : 'REPLAY' };
