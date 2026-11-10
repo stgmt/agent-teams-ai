@@ -259,9 +259,14 @@ export class RegistryTaskProvider {
       this.getTasks(teamName, options),
       this.getDeletedTasks(teamName, options),
     ]);
-    const matches = [...active.tasks, ...deleted.tasks].filter(
-      (task) => task.id === taskId.trim() || task.displayId === taskId.trim()
-    );
+    const wanted = taskId.trim();
+    const matches = [...active.tasks, ...deleted.tasks].filter((task) => {
+      if (task.id === wanted || task.displayId === wanted) return true;
+      const canonical = task.registryTask?.canonicalId;
+      if (typeof canonical === 'string' && canonical === wanted) return true;
+      const localId = task.registryTask?.localId;
+      return typeof localId === 'string' && localId === wanted;
+    });
     if (matches.length > 1) {
       throw new RegistryTaskProviderError({
         code: 'REGISTRY_TASK_ID_AMBIGUOUS',
