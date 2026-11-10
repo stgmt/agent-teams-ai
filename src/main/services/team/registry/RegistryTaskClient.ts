@@ -126,6 +126,12 @@ export interface RegistryTeamSpecBindings {
  * structured `spec_patch` operations. There is no local fallback — a failure
  * means the registry did not confirm the write, and the caller must decide.
  */
+/** The registry addresses a task by its canonical `TASK-<n>` entity. */
+function canonicalizeTaskEntity(entity: string): string {
+  const trimmed = entity.trim();
+  return /^\d+$/u.test(trimmed) ? `TASK-${trimmed}` : trimmed;
+}
+
 export class RegistryTaskClient {
   readonly #transport: RegistryMcpTransport;
   #capabilities: Record<string, unknown> | null = null;
@@ -312,7 +318,7 @@ export class RegistryTaskClient {
     signal?: AbortSignal;
   }): Promise<{ ok?: unknown; error?: unknown }> {
     const scope = assertScope({ project: input.project, spec: input.spec }, 'updateTask');
-    const entity = assertNonEmptyString(input.entity, 'updateTask', 'entity');
+    const entity = canonicalizeTaskEntity(assertNonEmptyString(input.entity, 'updateTask', 'entity'));
     const envelope = await this.#transport.callTool(
       'spec_patch',
       {
@@ -343,7 +349,7 @@ export class RegistryTaskClient {
     signal?: AbortSignal;
   }): Promise<{ ok?: unknown; error?: unknown }> {
     const scope = assertScope({ project: input.project, spec: input.spec }, 'addTaskComment');
-    const entity = assertNonEmptyString(input.entity, 'addTaskComment', 'entity');
+    const entity = canonicalizeTaskEntity(assertNonEmptyString(input.entity, 'addTaskComment', 'entity'));
     const text = assertNonEmptyString(input.text, 'addTaskComment', 'text');
     const envelope = await this.#transport.callTool(
       'spec_patch',
