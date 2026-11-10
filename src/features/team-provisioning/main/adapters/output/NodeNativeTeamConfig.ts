@@ -104,6 +104,18 @@ function assertReleased(members: NativeTeamConfig[]): void {
   }
 }
 
+/** A recorded start time is the strongest evidence; without it, the command decides. */
+function liveNativeStartConfirms(
+  recordedStart: number | null,
+  inspection: { status: 'found'; command: string; startedAt?: number }
+): boolean {
+  return (
+    recordedStart !== null &&
+    typeof inspection.startedAt === 'number' &&
+    inspection.startedAt >= recordedStart - 2000
+  );
+}
+
 /** One process snapshot for the whole roster; absence means "unknown", never "dead". */
 async function inspectRoster(
   members: NativeTeamConfig[]
@@ -148,16 +160,25 @@ async function clearStaleLegacyProcessRows(
       members[index] = released;
       continue;
     }
+    // A live PID is ours only while its start time matches the recorded launch.
+    // A process that started earlier than the recorded launch reused the number:
+    // the native identity no longer covers it, whatever its command says.
+    const recordedStart =
+      typeof member.runtimeStartedAt === 'number' ? member.runtimeStartedAt : null;
+    const reusedByStartTime =
+      inspection.status === 'found' &&
+      typeof inspection.startedAt === 'number' &&
+      recordedStart !== null &&
+      inspection.startedAt < recordedStart - 2000;
     // Windows shell fallbacks quote/caret-escape flag tokens. Any team marker
     // is ambiguous ownership, not proof that a live PID belongs to someone else;
-    // a readable command with no marker at all is a reused PID, which the
-    // recorded native identity no longer covers.
-    if (
+    // a readable command with no marker at all is a reused PID too.
+    const foreignCommand =
       inspection.status === 'found' &&
       inspection.command.trim().length > 0 &&
       !inspection.command.includes('--team-name') &&
-      !inspection.command.includes('--agent-id')
-    ) {
+      !inspection.command.includes('--agent-id');
+    if (reusedByStartTime || (foreignCommand && !liveNativeStartConfirms(recordedStart, inspection))) {
       const released = { ...cleaned.member };
       if (liveNative) {
         delete released.runtimeProcessBirthId;

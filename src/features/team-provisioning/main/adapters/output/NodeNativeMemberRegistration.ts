@@ -186,6 +186,8 @@ export class NodeNativeMemberRegistration {
         backendType: 'process',
         runtimePid: identity.pid,
         runtimeProcessBirthId: identity.birthId,
+        // Recorded so a later launch can tell a reused pid from our own process.
+        runtimeStartedAt: Date.now(),
         runtimeGeneration: token.generation,
         runtimeOperationId: token.operationId,
         ...proof,

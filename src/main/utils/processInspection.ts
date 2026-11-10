@@ -9,7 +9,8 @@ import { processProbeDiagnostic } from '@main/utils/processProbeDiagnostics';
  * missing tool), so nothing is known about the process. Callers must not treat it as a mismatch.
  */
 export type ProcessInspection =
-  | { status: 'found'; command: string }
+  /** `startedAt` is the process creation time (epoch ms) when the platform exposes it. */
+  | { status: 'found'; command: string; startedAt?: number }
   | { status: 'not_found' }
   | { status: 'unreadable'; cause: string };
 
@@ -35,8 +36,18 @@ function normalizePid(pid: number): number | null {
 function windowsScript(pid: number): string {
   return [
     '$ErrorActionPreference = "Stop"',
-    `Get-CimInstance Win32_Process -Filter "ProcessId=${pid}" | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress`,
+    `Get-CimInstance Win32_Process -Filter "ProcessId=${pid}" | Select-Object ProcessId,CommandLine,CreationDate | ConvertTo-Json -Compress`,
   ].join('; ');
+}
+
+/** WMI reports `CreationDate` as a CIM datetime; Date.parse does not read it. */
+function parseCimDate(value: unknown): number | undefined {
+  if (typeof value !== 'string') return undefined;
+  const match = value.match(/^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})/u);
+  if (!match) return undefined;
+  const [, y, mo, d, h, mi, sec] = match;
+  const ms = Date.UTC(Number(y), Number(mo) - 1, Number(d), Number(h), Number(mi), Number(sec));
+  return Number.isFinite(ms) ? ms : undefined;
 }
 
 interface ExecResult {
@@ -102,8 +113,13 @@ async function inspectWindows(pid: number, timeoutMs: number): Promise<ProcessIn
     return { status: 'not_found' };
   }
   try {
-    const row = JSON.parse(trimmed) as { CommandLine?: string | null };
-    return { status: 'found', command: row.CommandLine?.trim() ?? '' };
+    const row = JSON.parse(trimmed) as { CommandLine?: string | null; CreationDate?: unknown };
+    const startedAt = parseCimDate(row.CreationDate);
+    return {
+      status: 'found',
+      command: row.CommandLine?.trim() ?? '',
+      ...(startedAt === undefined ? {} : { startedAt }),
+    };
   } catch {
     return unreadable('windows_process_inspection', startedAt, timeoutMs, {
       ...result,
@@ -163,23 +179,24 @@ function windowsBatchScript(pids: readonly number[]): string {
   const filter = pids.map((pid) => `ProcessId=${pid}`).join(' OR ');
   return [
     '$ErrorActionPreference = "Stop"',
-    `Get-CimInstance Win32_Process -Filter "${filter}" | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress`,
+    `Get-CimInstance Win32_Process -Filter "${filter}" | Select-Object ProcessId,CommandLine,CreationDate | ConvertTo-Json -Compress`,
   ].join('; ');
 }
 
-function readBatchRows(stdout: string): { pid: number; command: string }[] | null {
+function readBatchRows(stdout: string): { pid: number; command: string; startedAt?: number }[] | null {
   const trimmed = stdout.trim();
   if (!trimmed) return [];
   try {
     const parsed: unknown = JSON.parse(trimmed);
     const rows = Array.isArray(parsed) ? parsed : [parsed];
     return rows
-      .filter((row): row is { ProcessId?: unknown; CommandLine?: unknown } =>
+      .filter((row): row is { ProcessId?: unknown; CommandLine?: unknown; CreationDate?: unknown } =>
         row !== null && typeof row === 'object'
       )
       .map((row) => ({
         pid: typeof row.ProcessId === 'number' ? row.ProcessId : Number(row.ProcessId),
         command: typeof row.CommandLine === 'string' ? row.CommandLine.trim() : '',
+        startedAt: parseCimDate(row.CreationDate),
       }))
       .filter((row) => Number.isSafeInteger(row.pid) && row.pid > 0);
   } catch {
@@ -219,7 +236,13 @@ export async function inspectProcessesByPid(
     const rows = probe.error || probe.stderr.trim() ? null : readBatchRows(probe.stdout);
     if (rows) {
       for (const row of rows) {
-        if (wanted.includes(row.pid)) result.set(row.pid, { status: 'found', command: row.command });
+        if (wanted.includes(row.pid)) {
+          result.set(row.pid, {
+            status: 'found',
+            command: row.command,
+            ...(row.startedAt === undefined ? {} : { startedAt: row.startedAt }),
+          });
+        }
       }
       for (const pid of wanted) {
         if (!result.has(pid)) result.set(pid, { status: 'not_found' });
