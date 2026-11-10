@@ -1,4 +1,8 @@
 import { getHomeDir } from '@main/utils/pathDecoder';
+import {
+  SpecRegistryCredentialStore,
+  createElectronCredentialCipher,
+} from './SpecRegistryCredentialStore';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -21,6 +25,8 @@ export const SPEC_REGISTRY_TOKEN_FILE_SEGMENTS = ['.spec-registry', 'mcp-token.t
 export const DEFAULT_SPEC_REGISTRY_REQUEST_TIMEOUT_MS = 20_000;
 
 export interface ResolveRegistryTaskClientConfigInput {
+  /** Override for tests; defaults to the app's encrypted credential store. */
+  credentialStore?: { read(): Promise<{ url: string; token: string } | null> };
   /** Endpoint override; otherwise `OMP_SPEC_REGISTRY_URL`, then the local default. */
   url?: string;
   /**
@@ -49,11 +55,47 @@ export async function resolveRegistryTaskClientConfig(
   input: ResolveRegistryTaskClientConfigInput = {}
 ): Promise<ResolvedRegistryTaskClientConfig> {
   const env = input.env ?? process.env;
-  const url = resolveUrl(input.url ?? env[SPEC_REGISTRY_URL_ENV]);
   const requestTimeoutMs = resolveTimeout(input.requestTimeoutMs);
-  const token = await resolveToken(input, env);
 
+  // The app's own encrypted store is the canonical credential. The environment
+  // and the legacy token file stay readable so an existing setup keeps working
+  // until onboarding writes the store.
+  const stored = await readStoredCredential(input);
+  if (stored) {
+    return { url: resolveUrl(stored.url), token: stored.token, requestTimeoutMs };
+  }
+
+  const url = resolveUrl(input.url ?? env[SPEC_REGISTRY_URL_ENV]);
+  const token = await resolveToken(input, env);
   return { url, token, requestTimeoutMs };
+}
+
+async function readStoredCredential(
+  input: ResolveRegistryTaskClientConfigInput
+): Promise<{ url: string; token: string } | null> {
+  const store = input.credentialStore ?? defaultCredentialStore();
+  if (!store) return null;
+  try {
+    const credential = await store.read();
+    return credential && credential.token.trim() ? credential : null;
+  } catch (error) {
+    // A corrupt or undecryptable store must not silently fall back to a weaker
+    // source: the operator has to see the problem.
+    throw new RegistryTaskClientConfigError({
+      code: 'CREDENTIAL_STORE_UNREADABLE',
+      message: `stored spec registry credential is unreadable: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+      cause: error,
+    });
+  }
+}
+
+let cachedCredentialStore: SpecRegistryCredentialStore | null | undefined;
+function defaultCredentialStore(): SpecRegistryCredentialStore | null {
+  if (cachedCredentialStore !== undefined) return cachedCredentialStore;
+  cachedCredentialStore = new SpecRegistryCredentialStore(createElectronCredentialCipher());
+  return cachedCredentialStore;
 }
 
 function resolveUrl(rawUrl: string | undefined): string {

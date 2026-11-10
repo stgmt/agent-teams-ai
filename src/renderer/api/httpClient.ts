@@ -1044,6 +1044,18 @@ export class HttpAPIClient implements ElectronAPI {
     discoverSpecRegistry: async () => {
       throw new Error('Specification registry discovery is only available in the desktop app');
     },
+    getSpecRegistryCredentialStatus: async () => {
+      throw new Error('Specification registry onboarding is only available in the desktop app');
+    },
+    saveSpecRegistryCredential: async () => {
+      throw new Error('Specification registry onboarding is only available in the desktop app');
+    },
+    clearSpecRegistryCredential: async () => {
+      throw new Error('Specification registry onboarding is only available in the desktop app');
+    },
+    testSpecRegistryCredential: async () => {
+      throw new Error('Specification registry onboarding is only available in the desktop app');
+    },
     listTeamSpecBindings: async () => {
       throw new Error('Specification bindings are only available in the desktop app');
     },

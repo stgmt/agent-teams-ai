@@ -6,6 +6,7 @@
  *
  * Shared between preload and renderer processes.
  */
+import type { SpecRegistryCredentialStatus, SpecRegistryProbeResult } from './registryTask';
 import type { CliArgsValidationResult } from '../utils/cliArgsParser';
 import type { CliInstallerAPI, OpenCodeRuntimeAPI } from './cliInstaller';
 import type { TelemetryAPI, WindowsElevationStatus } from './desktopShell';
@@ -453,6 +454,11 @@ export interface HttpServerAPI {
 // =============================================================================
 
 export interface TeamsAPI extends TeamMemberSettingsApi, TeamReadLegacyApi {
+  /** Spec registry credential onboarding; the token is write-only from the UI. */
+  getSpecRegistryCredentialStatus(): Promise<SpecRegistryCredentialStatus>;
+  saveSpecRegistryCredential(url: string, token: string): Promise<SpecRegistryProbeResult>;
+  clearSpecRegistryCredential(): Promise<void>;
+  testSpecRegistryCredential(url?: string, token?: string): Promise<SpecRegistryProbeResult>;
   readRecovery?: TeamReadRecoveryApi;
   discoverSpecRegistry: () => Promise<SpecRegistryDiscovery>;
   listTeamSpecBindings: (teamName: string) => Promise<TeamSpecBinding[]>;

@@ -181,45 +181,46 @@ describe('RegistryTeamTaskWriter creation', () => {
     expect(client.upsertTask).toHaveBeenCalledTimes(1);
   });
 
-  it.each(['another team', 'no team'])(
-    'reserves ids occupied by %s without exposing those tasks on the team board',
-    async () => {
-      const client = new FakeRegistryClient();
-      const occupied = [registryTask('1'), registryTask('2', { status: 'deleted' })];
-      client.listTasks.mockImplementation(async (input) =>
-        input.teamId === undefined ? occupied : []
-      );
-      const { writer, store } = createWriter(client);
+  it('reserves ids occupied by any team in the spec, including deleted ones', async () => {
+    const client = new FakeRegistryClient();
+    const occupied = [registryTask('1'), registryTask('2', { status: 'deleted' })];
+    client.listTasks.mockImplementation(async () => occupied);
+    const { writer, store } = createWriter(client);
 
-      const created = await writer.createTask({ subject: 'New', requirements: ['FR-1'] });
+    const created = await writer.createTask({ subject: 'New', requirements: ['FR-1'] });
 
-      expect(created.task.id).toBe(scopedTaskId('3'));
-      expect(client.listTasks.mock.calls[0][0]).toEqual({
-        project: PROJECT,
-        spec: SPEC,
-        statuses: [
-          'planned',
-          'todo',
-          'ready',
-          'in-progress',
-          'blocked',
-          'done',
-          'deleted',
-          'deferred',
-          'unknown',
-        ],
-      });
-      expect(client.upsertTask).toHaveBeenCalledWith(
-        expect.objectContaining({ localId: '3', teamId: TEAM_ID, expectedSha: 'a'.repeat(64) })
-      );
-      expect(store.read(TEAM, scopedTaskId('1'))).toBeNull();
-      expect(store.read(TEAM, scopedTaskId('2'))).toBeNull();
-      await expectWriteError(writer.readCanonicalTask('1', { force: true }), 'TASK_NOT_FOUND');
-      expect(client.listTasks).toHaveBeenLastCalledWith(
-        expect.objectContaining({ project: PROJECT, spec: SPEC, teamId: TEAM_ID })
-      );
-    }
-  );
+    expect(created.task.id).toBe(scopedTaskId('3'));
+    // The registry scopes tasks by project and spec only; it declares no team
+    // id, so every id used inside this spec is reserved.
+    expect(client.listTasks.mock.calls[0][0]).toEqual({
+      project: PROJECT,
+      spec: SPEC,
+      statuses: [
+        'planned',
+        'todo',
+        'ready',
+        'in-progress',
+        'blocked',
+        'done',
+        'deleted',
+        'deferred',
+        'unknown',
+      ],
+    });
+    expect(client.upsertTask).toHaveBeenCalledWith(
+      expect.objectContaining({ localId: '3', teamId: TEAM_ID, expectedSha: 'a'.repeat(64) })
+    );
+    expect(store.read(TEAM, scopedTaskId('1'))).toBeNull();
+    expect(store.read(TEAM, scopedTaskId('2'))).toBeNull();
+    // Without a team id the registry cannot hide another team's task; the board
+    // simply does not surface ids it never created.
+    expect(client.listTasks).toHaveBeenLastCalledWith(
+      expect.objectContaining({ project: PROJECT, spec: SPEC })
+    );
+    expect(client.listTasks).toHaveBeenLastCalledWith(
+      expect.not.objectContaining({ teamId: expect.anything() })
+    );
+  });
 
   it('does not create a task when the spec-wide allocation query fails', async () => {
     const client = new FakeRegistryClient();

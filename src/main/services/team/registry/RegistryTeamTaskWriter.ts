@@ -192,7 +192,6 @@ export class RegistryTeamTaskWriter {
     const tasks = await this.#client.listTasks({
       project: this.#binding.project,
       spec: this.#binding.spec,
-      teamId: this.#teamId,
       statuses: [...REGISTRY_TASK_STATUSES],
       includeBodies: true,
     });

@@ -32,6 +32,7 @@ interface Dependencies {
         mcpPolicy?: TeamMemberMcpPolicy;
         controlApiBaseUrl: string;
         runtimeScope: { role: 'lead'; credential: string } | { role: 'member' };
+        serverEnv?: Readonly<Record<string, string>>;
       }
     ): Promise<string>;
     removeConfigFile(path: string): Promise<void>;
@@ -84,9 +85,18 @@ export class NodeNativeLaunchArtifacts {
       await chmod(directory, 0o700);
       signal.throwIfAborted();
       const lead = settings.role === 'lead';
+      const specServerEnv = settings.specMcpServerEnv
+        ? {
+            ...settings.specMcpServerEnv,
+            ...(settings.specScope
+              ? { AGENT_TEAMS_SPEC_SCOPE: JSON.stringify(settings.specScope) }
+              : {}),
+          }
+        : undefined;
       mcpConfigPath = await this.ports.mcp.writeConfigFile(settings.workingDirectory, {
         mcpPolicy: settings.mcpPolicy,
         controlApiBaseUrl,
+        ...(specServerEnv ? { serverEnv: specServerEnv } : {}),
         runtimeScope: lead
           ? { role: 'lead', credential: this.ports.leadCredential(token) }
           : { role: 'member' },

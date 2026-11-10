@@ -1,6 +1,7 @@
 import { clearStaleProcessRuntimeMetadataFromMember } from '@main/services/team/provisioning/StaleProcessRuntimeMetadataCleanup';
 import { validateMemberName } from '@main/services/team/TeamIdentifierValidation';
-import { inspectProcessByPid } from '@main/utils/processInspection';
+import { inspectProcessesByPid } from '@main/utils/processInspection';
+import type { ProcessInspection } from '@main/utils/processInspection';
 
 import { isNativeRuntimeProvider } from '../../infrastructure/nativeRuntimeProvider';
 import { NativeTeamConfigStore } from '../../infrastructure/NativeTeamConfigStore';
@@ -103,39 +104,138 @@ function assertReleased(members: NativeTeamConfig[]): void {
   }
 }
 
-/** A legacy PID is not ownership: it may be gone or reused by an unrelated process. */
+/**
+ * Registration happens after the process starts, and a contended config lock can
+ * delay it, so "started before the recorded launch" needs slack. Two minutes
+ * covers that delay; a pid reused by an unrelated program is normally far older.
+ */
+const PROCESS_START_TOLERANCE_MS = 120_000;
+
+/** A recorded start time is the strongest evidence; without it, the command decides. */
+function liveNativeStartConfirms(
+  recordedStart: number | null,
+  inspection: { status: 'found'; command: string; startedAt?: number }
+): boolean {
+  return (
+    recordedStart !== null &&
+    typeof inspection.startedAt === 'number' &&
+    inspection.startedAt >= recordedStart - PROCESS_START_TOLERANCE_MS
+  );
+}
+
+/** One process snapshot for the whole roster; absence means "unknown", never "dead". */
+async function inspectRoster(
+  members: NativeTeamConfig[]
+): Promise<Map<number, ProcessInspection>> {
+  const pids = members
+    .map((member) => member.runtimePid)
+    .filter((pid): pid is number => typeof pid === 'number' && Number.isSafeInteger(pid) && pid > 0);
+  if (pids.length === 0) return new Map();
+  return inspectProcessesByPid(pids).catch(() => new Map<number, ProcessInspection>());
+}
+
+/** A stale PID is not ownership: it may be gone or reused by an unrelated process. */
 async function clearStaleLegacyProcessRows(
   members: NativeTeamConfig[],
   signal: AbortSignal
 ): Promise<void> {
+  const inspections = await inspectRoster(members);
+  signal.throwIfAborted();
   for (let index = 0; index < members.length; index++) {
     signal.throwIfAborted();
     const member = members[index];
-    if (
-      typeof member.runtimePid !== 'number' ||
-      member.runtimeProcessBirthId != null ||
-      member.runtimeOperationId != null
-    )
-      continue;
+    if (typeof member.runtimePid !== 'number') continue;
+    // Lanes, sessions and OpenCode rows keep their identity: only direct
+    // process rows are eligible at all.
     const cleaned = clearStaleProcessRuntimeMetadataFromMember(member, {
       memberName: member.name as string,
       runtimePid: member.runtimePid,
       processPaneId: `process:${member.runtimePid}`,
     });
     if (!cleaned.changed) continue;
-    const inspection = await inspectProcessByPid(member.runtimePid);
-    signal.throwIfAborted();
+    const inspection = inspections.get(member.runtimePid) ?? null;
+    if (!inspection) continue;
+    // A native identity survives only while its process does: a killed app
+    // leaves rows whose PID is gone, and those must not wedge the next launch.
+    const liveNative = member.runtimeProcessBirthId != null || member.runtimeOperationId != null;
+    if (inspection.status === 'not_found') {
+      // The shared cleanup keeps the native identity fields; with the process
+      // gone nothing owns them, so release the whole row.
+      const released = { ...cleaned.member };
+      delete released.runtimeProcessBirthId;
+      delete released.runtimeOperationId;
+      members[index] = released;
+      continue;
+    }
+    // A live PID is ours only while its start time matches the recorded launch.
+    // A process that started earlier than the recorded launch reused the number:
+    // the native identity no longer covers it, whatever its command says.
+    const recordedStart =
+      typeof member.runtimeStartedAt === 'number' ? member.runtimeStartedAt : null;
+    const reusedByStartTime =
+      inspection.status === 'found' &&
+      typeof inspection.startedAt === 'number' &&
+      recordedStart !== null &&
+      inspection.startedAt < recordedStart - PROCESS_START_TOLERANCE_MS;
     // Windows shell fallbacks quote/caret-escape flag tokens. Any team marker
-    // is ambiguous ownership, not proof that a live PID belongs to someone else.
-    if (
-      inspection.status === 'not_found' ||
-      (inspection.status === 'found' &&
-        inspection.command.trim().length > 0 &&
-        !inspection.command.includes('--team-name') &&
-        !inspection.command.includes('--agent-id'))
-    )
-      members[index] = cleaned.member;
+    // is ambiguous ownership, not proof that a live PID belongs to someone else;
+    // a readable command with no marker at all is a reused PID too.
+    const foreignCommand =
+      inspection.status === 'found' &&
+      inspection.command.trim().length > 0 &&
+      !inspection.command.includes('--team-name') &&
+      !inspection.command.includes('--agent-id');
+    if (reusedByStartTime || (foreignCommand && !liveNativeStartConfirms(recordedStart, inspection))) {
+      const released = { ...cleaned.member };
+      if (liveNative) {
+        delete released.runtimeProcessBirthId;
+        delete released.runtimeOperationId;
+      }
+      members[index] = released;
+    }
   }
+}
+
+/** Recovery tolerates a config without a member projection; it never invents one. */
+function recoverableRows(config: NativeTeamConfig | null): NativeTeamConfig[] | null {
+  if (!config || !Array.isArray(config.members)) return null;
+  return rows(config);
+}
+
+/**
+ * Startup recovery only: releases process rows whose recorded PID no longer
+ * exists, which is what a killed app leaves behind. A live PID keeps its row —
+ * recovery never probes ownership beyond existence and never kills anything.
+ */
+async function releaseDeadProcessRows(members: NativeTeamConfig[]): Promise<boolean> {
+  let changed = false;
+  const inspections = await inspectRoster(members);
+  for (let index = 0; index < members.length; index++) {
+    const member = members[index];
+    const pid = member.runtimePid;
+    if (typeof pid !== 'number' || !Number.isSafeInteger(pid) || pid <= 0) continue;
+    const fields = ['runtimePid', 'runtimeProcessBirthId', 'runtimeOperationId'] as const;
+    if (!fields.some((field) => member[field] != null)) continue;
+    const inspection = inspections.get(pid);
+    if (!inspection) continue;
+    const recordedStart =
+      typeof member.runtimeStartedAt === 'number' ? member.runtimeStartedAt : null;
+    // Same rule as the launch path: a process that started well before the
+    // recorded launch is not ours, so recovery must release it too instead of
+    // leaving the team blocked until the next launch attempt.
+    const reused =
+      inspection.status === 'found' &&
+      typeof inspection.startedAt === 'number' &&
+      recordedStart !== null &&
+      inspection.startedAt < recordedStart - PROCESS_START_TOLERANCE_MS;
+    if (inspection.status !== 'not_found' && !reused) continue;
+    const released = { ...member };
+    for (const field of fields) delete released[field];
+    if (released.tmuxPaneId === `process:${pid}`) delete released.tmuxPaneId;
+    members[index] = released;
+    changed = true;
+  }
+  return changed;
 }
 
 /** Materializes configured identities; runtime files are never a source of configured membership. */
@@ -242,7 +342,10 @@ export class NodeNativeTeamConfig {
       const claim = record(current.appManagedRun);
       if (!claim) {
         if (current.appManagedRun != null) throw new Error('Native team config owner is invalid');
-        return null;
+        // No claim, but a crashed app may still leave dead rows behind.
+        const members = recoverableRows(current);
+        if (!members || !(await releaseDeadProcessRows(members))) return null;
+        return { ...current, members };
       }
       if (!isNativeTeamRunOwner(claim.identity, run))
         throw new Error('Native team config has another run owner');
@@ -276,6 +379,8 @@ export class NodeNativeTeamConfig {
       recovered = true;
       const next = { ...current };
       delete next.appManagedRun;
+      const members = recoverableRows(current);
+      if (members && (await releaseDeadProcessRows(members))) next.members = members;
       return next;
     });
     if (recovered) this.ports.invalidate(teamName);

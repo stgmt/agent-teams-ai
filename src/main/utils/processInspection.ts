@@ -9,7 +9,8 @@ import { processProbeDiagnostic } from '@main/utils/processProbeDiagnostics';
  * missing tool), so nothing is known about the process. Callers must not treat it as a mismatch.
  */
 export type ProcessInspection =
-  | { status: 'found'; command: string }
+  /** `startedAt` is the process creation time (epoch ms) when the platform exposes it. */
+  | { status: 'found'; command: string; startedAt?: number }
   | { status: 'not_found' }
   | { status: 'unreadable'; cause: string };
 
@@ -35,7 +36,7 @@ function normalizePid(pid: number): number | null {
 function windowsScript(pid: number): string {
   return [
     '$ErrorActionPreference = "Stop"',
-    `Get-CimInstance Win32_Process -Filter "ProcessId=${pid}" | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress`,
+    `Get-CimInstance Win32_Process -Filter "ProcessId=${pid}" | Select-Object ProcessId,CommandLine,@{Name='StartedAt';Expression={[int64]($_.CreationDate.ToUniversalTime() - [datetime]'1970-01-01').TotalMilliseconds}} | ConvertTo-Json -Compress`,
   ].join('; ');
 }
 
@@ -102,8 +103,15 @@ async function inspectWindows(pid: number, timeoutMs: number): Promise<ProcessIn
     return { status: 'not_found' };
   }
   try {
-    const row = JSON.parse(trimmed) as { CommandLine?: string | null };
-    return { status: 'found', command: row.CommandLine?.trim() ?? '' };
+    const row = JSON.parse(trimmed) as { CommandLine?: string | null; StartedAt?: unknown };
+    const startedAt = typeof row.StartedAt === 'number' && Number.isFinite(row.StartedAt)
+      ? row.StartedAt
+      : undefined;
+    return {
+      status: 'found',
+      command: row.CommandLine?.trim() ?? '',
+      ...(startedAt === undefined ? {} : { startedAt }),
+    };
   } catch {
     return unreadable('windows_process_inspection', startedAt, timeoutMs, {
       ...result,
@@ -156,6 +164,94 @@ export async function inspectWithRetry(
     onUnreadable?.(attempt, last.cause);
   }
   return last;
+}
+
+
+function windowsBatchScript(pids: readonly number[]): string {
+  const filter = pids.map((pid) => `ProcessId=${pid}`).join(' OR ');
+  return [
+    '$ErrorActionPreference = "Stop"',
+    `Get-CimInstance Win32_Process -Filter "${filter}" | Select-Object ProcessId,CommandLine,@{Name='StartedAt';Expression={[int64]($_.CreationDate.ToUniversalTime() - [datetime]'1970-01-01').TotalMilliseconds}} | ConvertTo-Json -Compress`,
+  ].join('; ');
+}
+
+function readBatchRows(stdout: string): { pid: number; command: string; startedAt?: number }[] | null {
+  const trimmed = stdout.trim();
+  if (!trimmed) return [];
+  try {
+    const parsed: unknown = JSON.parse(trimmed);
+    const rows = Array.isArray(parsed) ? parsed : [parsed];
+    return rows
+      .filter((row): row is { ProcessId?: unknown; CommandLine?: unknown; StartedAt?: unknown } =>
+        row !== null && typeof row === 'object'
+      )
+      .map((row) => ({
+        pid: typeof row.ProcessId === 'number' ? row.ProcessId : Number(row.ProcessId),
+        command: typeof row.CommandLine === 'string' ? row.CommandLine.trim() : '',
+        startedAt:
+          typeof row.StartedAt === 'number' && Number.isFinite(row.StartedAt)
+            ? row.StartedAt
+            : undefined,
+      }))
+      .filter((row) => Number.isSafeInteger(row.pid) && row.pid > 0);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * One lookup for a whole roster: a launch inspects every recorded member pid, and
+ * ten separate PowerShell starts were the slow part of `prepare()` on Windows.
+ * Unknown pids are simply absent from the map; callers treat absence as unknown.
+ */
+export async function inspectProcessesByPid(
+  pids: readonly number[],
+  options: InspectProcessOptions = {}
+): Promise<Map<number, ProcessInspection>> {
+  const wanted = [...new Set(pids.map(normalizePid).filter((pid): pid is number => pid !== null))];
+  const result = new Map<number, ProcessInspection>();
+  if (wanted.length === 0) return result;
+  const timeoutMs = options.timeoutMs ?? PROCESS_INSPECTION_TIMEOUT_MS;
+  const platform = options.platform ?? process.platform;
+  if (platform === 'win32') {
+    const startedAt = performance.now();
+    const probe = await run(
+      'powershell.exe',
+      [
+        '-NoProfile',
+        '-NonInteractive',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-Command',
+        windowsBatchScript(wanted),
+      ],
+      timeoutMs,
+      true
+    );
+    const rows = probe.error || probe.stderr.trim() ? null : readBatchRows(probe.stdout);
+    if (rows) {
+      for (const row of rows) {
+        if (wanted.includes(row.pid)) {
+          result.set(row.pid, {
+            status: 'found',
+            command: row.command,
+            ...(row.startedAt === undefined ? {} : { startedAt: row.startedAt }),
+          });
+        }
+      }
+      for (const pid of wanted) {
+        if (!result.has(pid)) result.set(pid, { status: 'not_found' });
+      }
+      return result;
+    }
+    const cause = unreadable('windows_process_batch_inspection', startedAt, timeoutMs, probe);
+    for (const pid of wanted) result.set(pid, cause);
+    return result;
+  }
+  for (const pid of wanted) {
+    result.set(pid, await inspectProcessByPidOnce(pid, options));
+  }
+  return result;
 }
 
 export function inspectProcessByPid(

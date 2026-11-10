@@ -126,6 +126,11 @@ import {
   type NativeTeamProvisioningRoot,
 } from '@features/team-provisioning';
 import type { NativeOpenCodeDeliveryStack } from '@features/team-provisioning/main/composition/createNativeOpenCodeDeliveryStack';
+import {
+  SPEC_REGISTRY_TOKEN_ENV,
+  SPEC_REGISTRY_URL_ENV,
+  resolveRegistryTaskClientConfig,
+} from '@main/services/team/registry/RegistryTaskClientConfig';
 import { createOpenCodeRuntimeControlApi } from '@main/services/team/runtime-control';
 import { createOpenCodeRuntimeControlRouter } from '@main/services/team/runtime-control/application/OpenCodeRuntimeControlProvider';
 import { TeamProvisioningAppShellBoundary } from '@main/services/team/provisioning/TeamProvisioningAppShellBoundary';
@@ -2282,9 +2287,22 @@ async function initializeServices(): Promise<void> {
       },
     },
   };
+  const resolveSpecRegistryEnvironment = async (): Promise<Record<string, string>> => {
+    const registry = await resolveRegistryTaskClientConfig();
+    return {
+      [SPEC_REGISTRY_URL_ENV]: registry.url,
+      [SPEC_REGISTRY_TOKEN_ENV]: registry.token,
+    };
+  };
   const provisioningRuntime = createNativeDesktopTeamRuntime({
     ...provisioningRuntimeDeps,
-    settings: { metadata: provisioningMetaStore, members: provisioningMembersStore },
+    settings: {
+      metadata: provisioningMetaStore,
+      members: provisioningMembersStore,
+      // Bound launches mount the agent MCP surface from this resolver; the
+      // lifecycle settings need it too, or every bound launch refuses to start.
+      specRegistryEnvironment: resolveSpecRegistryEnvironment,
+    },
     mcp: {
       writeConfigFile: (cwd, options) => provisioningMcpBuilder.writeConfigFile(cwd, options),
       removeConfigFile: (path) => provisioningMcpBuilder.removeConfigFile(path),
@@ -2399,6 +2417,9 @@ async function initializeServices(): Promise<void> {
       teamsRoot: getTeamsBasePath(),
       metadata: provisioningMetaStore,
       members: provisioningMembersStore,
+      // The agent's spec MCP server is the only way to reach the registry, so a
+      // bound team's launch carries the endpoint and token it substitutes.
+      specRegistryEnvironment: resolveSpecRegistryEnvironment,
       mcp: provisioningMcpBuilder,
       inbox: teamInboxWriter,
       invalidate: (teamName) => TeamConfigReader.invalidateTeam(teamName),

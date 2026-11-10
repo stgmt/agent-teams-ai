@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { spawn } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -81,6 +82,27 @@ describe('pinned native config storage boundary', () => {
     expect(await readFile(join(directory, '.config.lock', 'metadata.json'), 'utf8')).toBe(metadata);
     finish();
     await first;
+  });
+
+  it('takes over a lock whose recorded owner process is gone', async () => {
+    const { store, teamName, directory, path } = await setup();
+    // A killed app leaves this state behind: the lock names a dead process.
+    const deadPid = await new Promise<number>((resolve, reject) => {
+      const child = spawn(process.execPath, ['-e', ''], { stdio: 'ignore' });
+      child.once('error', reject);
+      child.once('exit', () => resolve(child.pid ?? 0));
+    });
+    expect(deadPid).toBeGreaterThan(0);
+    await mkdir(join(directory, '.config.lock'));
+    await writeFile(
+      join(directory, '.config.lock', 'metadata.json'),
+      JSON.stringify({ pid: deadPid, createdAt: Date.now() })
+    );
+    await store.mutate(teamName, new AbortController().signal, async () => ({ written: true }));
+    expect(JSON.parse(await readFile(path, 'utf8'))).toEqual({ written: true });
+    await expect(readFile(join(directory, '.config.lock', 'metadata.json'))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
   });
 
   it('does not overwrite a non-cooperating writer that changes config while the mutation is prepared', async () => {

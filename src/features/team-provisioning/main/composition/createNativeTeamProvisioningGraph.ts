@@ -21,6 +21,11 @@ export interface NativeTeamProvisioningStores {
   mcp: Pick<NativeTeamLifecycleDependencies['mcp'], 'writeConfigFile'>;
   inbox: Pick<TeamInboxWriter, 'sendMessage'>;
   invalidate(teamName: string): void;
+  /**
+   * Registry endpoint and token for the spec MCP that bound teams inherit.
+   * Absent when the shell has no registry credential configured.
+   */
+  specRegistryEnvironment?: () => Promise<Readonly<Record<string, string>> | null>;
 }
 
 export interface NativeTeamProvisioningGraphDependencies {
@@ -56,6 +61,9 @@ export function createNativeTeamProvisioningGraph(
   const lifecycleSettings: NativeTeamLifecycleDependencies['settings'] = {
     metadata: deps.stores.metadata,
     members: deps.stores.members,
+    ...(deps.stores.specRegistryEnvironment
+      ? { specRegistryEnvironment: deps.stores.specRegistryEnvironment }
+      : {}),
   };
   const mcp: NativeTeamLifecycleDependencies['mcp'] = {
     writeConfigFile: (cwd, options) => deps.stores.mcp.writeConfigFile(cwd, options),
@@ -67,7 +75,10 @@ export function createNativeTeamProvisioningGraph(
       ...deps.runtimeDeps,
       settings: lifecycleSettings,
       mcp,
-      inbox: { sendMessage: (teamName, message, options) => deps.stores.inbox.sendMessage(teamName, message, options) },
+      inbox: {
+        sendMessage: (teamName, message, options) =>
+          deps.stores.inbox.sendMessage(teamName, message, options),
+      },
     },
     apisDeps: deps.apisDeps,
     watchdogDeps: deps.watchdogDeps,

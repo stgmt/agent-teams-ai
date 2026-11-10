@@ -1,8 +1,9 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
 import { useAppTranslation } from '@features/localization/renderer';
 import { api } from '@renderer/api';
 import { Button } from '@renderer/components/ui/button';
+import { Input } from '@renderer/components/ui/input';
 import {
   Dialog,
   DialogContent,
@@ -13,6 +14,8 @@ import {
 } from '@renderer/components/ui/dialog';
 
 import { registrySelectionKey, SpecRegistryPicker } from './SpecRegistryPicker';
+
+import type { SpecRegistryCredentialStatus } from '@shared/types';
 
 interface SpecRegistryConnectionDialogProps {
   teamName: string;
@@ -36,6 +39,105 @@ export function SpecRegistryConnectionDialog({
   const [validSelection, setValidSelection] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<'saveError' | null>(null);
+  const [credentialUrl, setCredentialUrl] = useState('');
+  const [credentialToken, setCredentialToken] = useState('');
+  const [credentialStatus, setCredentialStatus] = useState<SpecRegistryCredentialStatus | null>(
+    null
+  );
+  const [credentialNotice, setCredentialNotice] = useState<string | null>(null);
+  const [credentialError, setCredentialError] = useState<string | null>(null);
+  const [credentialBusy, setCredentialBusy] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    void api.teams
+      .getSpecRegistryCredentialStatus()
+      .then((status) => {
+        if (cancelled) return;
+        setCredentialStatus(status);
+        if (status.url) setCredentialUrl(status.url);
+      })
+      .catch(() => {
+        if (!cancelled) setCredentialStatus(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const checkCredential = async (): Promise<void> => {
+    setCredentialBusy(true);
+    setCredentialError(null);
+    setCredentialNotice(null);
+    try {
+      const result = await api.teams.testSpecRegistryCredential(
+        credentialUrl.trim() || undefined,
+        credentialToken.trim() || undefined
+      );
+      if (result.ok) {
+        setCredentialNotice(
+          t('create.registryPicker.credentialCheckOk', { count: result.toolCount ?? 0 })
+        );
+      } else {
+        setCredentialError(
+          t('create.registryPicker.credentialCheckFailed', {
+            code: result.errorCode ?? 'UNREACHABLE',
+          })
+        );
+      }
+    } catch {
+      setCredentialError(t('create.registryPicker.credentialCheckFailed', { code: 'UNREACHABLE' }));
+    } finally {
+      setCredentialBusy(false);
+    }
+  };
+
+  const saveCredential = async (): Promise<void> => {
+    if (!credentialUrl.trim() || !credentialToken.trim()) {
+      setCredentialError(t('create.registryPicker.credentialRequired'));
+      return;
+    }
+    setCredentialBusy(true);
+    setCredentialError(null);
+    setCredentialNotice(null);
+    try {
+      const result = await api.teams.saveSpecRegistryCredential(
+        credentialUrl.trim(),
+        credentialToken.trim()
+      );
+      if (!result.ok) {
+        setCredentialError(
+          t('create.registryPicker.credentialCheckFailed', {
+            code: result.errorCode ?? 'UNREACHABLE',
+          })
+        );
+        return;
+      }
+      setCredentialToken('');
+      setCredentialStatus(await api.teams.getSpecRegistryCredentialStatus());
+      setCredentialNotice(t('create.registryPicker.credentialSaved'));
+    } catch {
+      setCredentialError(t('create.registryPicker.credentialCheckFailed', { code: 'SAVE_FAILED' }));
+    } finally {
+      setCredentialBusy(false);
+    }
+  };
+
+  const disconnectCredential = async (): Promise<void> => {
+    setCredentialBusy(true);
+    setCredentialError(null);
+    try {
+      await api.teams.clearSpecRegistryCredential();
+      setCredentialStatus(await api.teams.getSpecRegistryCredentialStatus());
+      setCredentialNotice(t('create.registryPicker.credentialCleared'));
+    } catch {
+      setCredentialError(
+        t('create.registryPicker.credentialCheckFailed', { code: 'CLEAR_FAILED' })
+      );
+    } finally {
+      setCredentialBusy(false);
+    }
+  };
 
   const save = async (): Promise<void> => {
     if (saving || validSelection !== registrySelectionKey(project, spec)) return;
@@ -66,6 +168,68 @@ export function SpecRegistryConnectionDialog({
           <DialogTitle>{t('create.registryPicker.connectTitle')}</DialogTitle>
           <DialogDescription>{t('create.registryPicker.connectDescription')}</DialogDescription>
         </DialogHeader>
+        <section className="flex flex-col gap-2 rounded-md border border-[var(--border)] p-3">
+          <h3 className="text-sm font-medium">{t('create.registryPicker.credentialTitle')}</h3>
+          <p className="text-xs text-[var(--color-text-muted)]">
+            {t('create.registryPicker.credentialDescription')}
+          </p>
+          <p className="text-xs text-[var(--color-text-muted)]">
+            {credentialStatus?.configured
+              ? t('create.registryPicker.credentialStored', {
+                  url: credentialStatus.url ?? '',
+                  source: credentialStatus.source,
+                })
+              : t('create.registryPicker.credentialMissing')}
+          </p>
+          <Input
+            aria-label={t('create.registryPicker.credentialEndpoint')}
+            placeholder={t('create.registryPicker.credentialEndpoint')}
+            value={credentialUrl}
+            onChange={(event) => setCredentialUrl(event.target.value)}
+            disabled={credentialBusy}
+          />
+          <Input
+            aria-label={t('create.registryPicker.credentialToken')}
+            placeholder={t('create.registryPicker.credentialToken')}
+            type="password"
+            autoComplete="off"
+            value={credentialToken}
+            onChange={(event) => setCredentialToken(event.target.value)}
+            disabled={credentialBusy}
+          />
+          <p className="text-xs text-[var(--color-text-muted)]">
+            {t('create.registryPicker.credentialHint')}
+          </p>
+          {credentialError ? (
+            <p role="alert" className="text-xs text-[var(--field-error-text)]">
+              {credentialError}
+            </p>
+          ) : null}
+          {credentialNotice ? (
+            <p role="status" className="text-xs text-[var(--color-text-muted)]">
+              {credentialNotice}
+            </p>
+          ) : null}
+          <div className="flex gap-2">
+            <Button
+              variant="outline"
+              onClick={() => void checkCredential()}
+              disabled={credentialBusy}
+            >
+              {t('create.registryPicker.credentialCheck')}
+            </Button>
+            <Button onClick={() => void saveCredential()} disabled={credentialBusy}>
+              {t('create.registryPicker.credentialSave')}
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => void disconnectCredential()}
+              disabled={credentialBusy || !credentialStatus?.configured}
+            >
+              {t('create.registryPicker.credentialDisconnect')}
+            </Button>
+          </div>
+        </section>
         <SpecRegistryPicker
           project={project}
           slug={spec}

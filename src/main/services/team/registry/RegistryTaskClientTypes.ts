@@ -311,8 +311,7 @@ export interface RegistryTaskScope {
 }
 
 export interface ListRegistryTasksInput extends RegistryTaskScope {
-  /** Opaque server-issued identity for an isolated team task view. */
-  teamId?: string;
+  // The registry scopes a task read by project and spec; it declares no team id.
   statuses?: readonly RegistryTaskStatus[];
   signal?: AbortSignal;
   includeBodies?: boolean;

@@ -306,7 +306,22 @@
       "bindingImmutable": "This team already has a specification. Create a separate team for a different one so task history stays with the right tasks.",
       "connectAction": "Connect",
       "selectSpec": "Select a specification",
-      "optionalBinding": "A specification link is optional when creating a team. You can connect a registry specification later."
+      "optionalBinding": "A specification link is optional when creating a team. You can connect a registry specification later.",
+      "credentialTitle": "Registry connection",
+      "credentialDescription": "Store the specification registry address and token once. The operating system encrypts the token and it is never shown again.",
+      "credentialHint": "Use the token your specification registry issued (the omp-spec-kit setup prints where it keeps it).",
+      "credentialEndpoint": "Registry address",
+      "credentialToken": "Token",
+      "credentialCheck": "Check",
+      "credentialSave": "Save",
+      "credentialDisconnect": "Disconnect",
+      "credentialSaved": "Saved. This team's agents use it from the next launch.",
+      "credentialStored": "Stored credential: {{url}} (source: {{source}})",
+      "credentialMissing": "No registry credential is stored yet.",
+      "credentialCheckOk": "Connected, {{count}} tools available.",
+      "credentialCheckFailed": "Connection failed: {{code}}",
+      "credentialRequired": "Enter the registry address and token.",
+      "credentialCleared": "Credential removed."
     },
     "registryBindingDescription": "Choose the existing project and specification that will hold this team's tasks. The working directory is not a registry project.",
     "actions": {

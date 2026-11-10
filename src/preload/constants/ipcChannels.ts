@@ -460,6 +460,12 @@ export const TEAM_TOOL_APPROVAL_READ_FILE = 'team:toolApprovalReadFile';
 export const TEAM_GET_SAVED_REQUEST = 'team:getSavedRequest';
 export const TEAM_DELETE_DRAFT = 'team:deleteDraft';
 export const TEAM_DISCOVER_SPEC_REGISTRY = 'team:discoverSpecRegistry';
+/** Spec registry credential onboarding (endpoint + token, stored encrypted). */
+export const SPEC_REGISTRY_GET_STATUS = 'specRegistry:getStatus';
+export const SPEC_REGISTRY_SAVE = 'specRegistry:save';
+export const SPEC_REGISTRY_CLEAR = 'specRegistry:clear';
+export const SPEC_REGISTRY_TEST = 'specRegistry:test';
+
 export const TEAM_LIST_SPEC_BINDINGS = 'team:listSpecBindings';
 export const TEAM_LINK_SPEC = 'team:linkSpec';
 export const TEAM_UNLINK_SPEC = 'team:unlinkSpec';

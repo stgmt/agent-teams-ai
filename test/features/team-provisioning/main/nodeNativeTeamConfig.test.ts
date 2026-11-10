@@ -11,6 +11,14 @@ import { inspectProcessByPid } from '../../../../src/main/utils/processInspectio
 
 vi.mock('../../../../src/main/utils/processInspection', () => ({
   inspectProcessByPid: vi.fn(),
+  // The production path takes one roster snapshot; tests keep controlling the
+  // per-pid outcomes, so the batch simply delegates to them.
+  inspectProcessesByPid: vi.fn(async (pids: readonly number[]) => {
+    const { inspectProcessByPid } = await import('../../../../src/main/utils/processInspection');
+    const map = new Map<number, unknown>();
+    for (const pid of pids) map.set(pid, await (inspectProcessByPid as unknown as (pid: number) => Promise<unknown>)(pid));
+    return map;
+  }),
 }));
 
 const directories: string[] = [];
@@ -322,6 +330,95 @@ describe('app-owned native team runtime configuration', () => {
     expect(await readFile(configPath, 'utf8')).toBe(before);
   });
 
+  it('releases a native row whose recorded pid now belongs to an unrelated process', async () => {
+    const { config, configPath } = await setup();
+    vi.mocked(inspectProcessByPid).mockResolvedValue({
+      status: 'found',
+      command: 'bun unrelated-native-host.mjs E:\\tmp\\other',
+    });
+    await writeFile(
+      configPath,
+      JSON.stringify({
+        name: run.teamName,
+        members: [
+          {
+            name: 'builder',
+            runtimePid: 61064,
+            runtimeProcessBirthId: 'TEST-birth',
+            runtimeOperationId: 'TEST-operation',
+            tmuxPaneId: 'process:61064',
+          },
+        ],
+      })
+    );
+
+    await expect(config.prepare(run, new AbortController().signal)).resolves.toBeUndefined();
+    const saved = JSON.parse(await readFile(configPath, 'utf8')) as {
+      members: Record<string, unknown>[];
+    };
+    expect(saved.members[0]?.runtimePid).toBeUndefined();
+    expect(saved.members[0]?.runtimeProcessBirthId).toBeUndefined();
+  });
+
+  it('releases a native row whose process started long before the recorded launch', async () => {
+    const { config, configPath } = await setup();
+    vi.mocked(inspectProcessByPid).mockResolvedValue({
+      status: 'found',
+      command: 'C:\\Windows\\System32\\notepad.exe',
+      startedAt: Date.now() - 3_600_000,
+    });
+    await writeFile(
+      configPath,
+      JSON.stringify({
+        name: run.teamName,
+        members: [
+          {
+            name: 'builder',
+            runtimePid: 4242,
+            runtimeProcessBirthId: 'TEST-birth',
+            runtimeOperationId: 'TEST-operation',
+            runtimeStartedAt: Date.now() - 5_000,
+            tmuxPaneId: 'process:4242',
+          },
+        ],
+      })
+    );
+
+    await expect(config.prepare(run, new AbortController().signal)).resolves.toBeUndefined();
+    const saved = JSON.parse(await readFile(configPath, 'utf8')) as {
+      members: Record<string, unknown>[];
+    };
+    expect(saved.members[0]?.runtimePid).toBeUndefined();
+    expect(saved.members[0]?.runtimeStartedAt).toBeUndefined();
+  });
+
+  it('keeps the row when the live process started after the recorded launch', async () => {
+    const { config, configPath } = await setup();
+    const recordedStart = Date.now() - 30_000;
+    vi.mocked(inspectProcessByPid).mockResolvedValue({
+      status: 'found',
+      command: 'claude-multimodel --print',
+      startedAt: recordedStart + 1_000,
+    });
+    const before = JSON.stringify({
+      name: run.teamName,
+      members: [
+        {
+          name: 'builder',
+          runtimePid: 4242,
+          runtimeProcessBirthId: 'TEST-birth',
+          runtimeOperationId: 'TEST-operation',
+          runtimeStartedAt: recordedStart,
+          tmuxPaneId: 'process:4242',
+        },
+      ],
+    });
+    await writeFile(configPath, before);
+
+    await expect(config.prepare(run, new AbortController().signal)).rejects.toThrow('unreleased');
+    expect(await readFile(configPath, 'utf8')).toBe(before);
+  });
+
   it('keeps a live Windows shell-wrapper process whose ownership flags are caret-escaped', async () => {
     const { config, configPath } = await setup();
     vi.mocked(inspectProcessByPid).mockResolvedValue({
@@ -361,12 +458,32 @@ describe('app-owned native team runtime configuration', () => {
     expect(await readFile(configPath, 'utf8')).toBe(before);
   });
 
-  it.each([
-    { runtimeProcessBirthId: 'TEST-native-birth' },
-    { runtimeOperationId: 'TEST-native-operation' },
-    { laneId: 'TEST-opencode-lane' },
-    { provider: 'opencode' },
-  ])('does not recover non-legacy runtime identity %j', async (identity) => {
+  it.each([{ runtimeProcessBirthId: 'TEST-native-birth' }, { runtimeOperationId: 'TEST-native-operation' }])(
+    'releases a native row whose recorded process is gone %j',
+    async (identity) => {
+      const { config, configPath } = await setup();
+      vi.mocked(inspectProcessByPid).mockResolvedValue({ status: 'not_found' });
+      await writeFile(
+        configPath,
+        JSON.stringify({
+          name: run.teamName,
+          members: [{ name: 'builder', runtimePid: 4242, tmuxPaneId: 'process:4242', ...identity }],
+        })
+      );
+
+      await expect(config.prepare(run, new AbortController().signal)).resolves.toBeUndefined();
+      const saved = JSON.parse(await readFile(configPath, 'utf8')) as {
+        members: Record<string, unknown>[];
+      };
+      expect(saved.members[0]?.runtimePid).toBeUndefined();
+      expect(saved.members[0]?.runtimeProcessBirthId).toBeUndefined();
+      expect(saved.members[0]?.runtimeOperationId).toBeUndefined();
+    }
+  );
+
+  it.each([{ laneId: 'TEST-opencode-lane' }, { provider: 'opencode' }])(
+    'does not recover non-legacy lane identity %j',
+    async (identity) => {
     const { config, configPath } = await setup();
     vi.mocked(inspectProcessByPid).mockResolvedValue({ status: 'not_found' });
     const before = JSON.stringify({
@@ -418,8 +535,9 @@ describe('app-owned native team runtime configuration', () => {
     expect(await readFile(configPath, 'utf8')).toBe(concurrent);
   });
 
-  it('refuses an unowned process projection instead of probing or killing its PID', async () => {
+  it('refuses an unowned process projection whose PID is alive and leaves it untouched', async () => {
     const { config, configPath } = await setup();
+    vi.mocked(inspectProcessByPid).mockResolvedValue({ status: 'found', command: 'TEST agent' });
     const before = JSON.stringify({
       name: run.teamName,
       members: [

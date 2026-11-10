@@ -28,6 +28,13 @@ import {
   TeamRequestValidationError,
   validateBootstrapOnlyLaunchRequest,
 } from '@main/services/team/TeamRequestValidation';
+import {
+  clearSpecRegistryCredential,
+  readSpecRegistryCredentialStatus,
+  saveSpecRegistryCredential,
+  testSpecRegistryCredential,
+} from '@main/services/team/registry/SpecRegistryCredentialOnboarding';
+import type { SpecRegistryCredentialStatus, SpecRegistryProbeResult } from '@shared/types';
 import { getAppIconPath } from '@main/utils/appIcon';
 import { getTeamsBasePath } from '@main/utils/pathDecoder';
 import { isProcessAlive } from '@main/utils/processHealth';
@@ -47,6 +54,10 @@ import {
   TEAM_DELETE_TASK_ATTACHMENT,
   TEAM_DELETE_TEAM,
   TEAM_DISCARD_QUEUED_USER_MESSAGES,
+  SPEC_REGISTRY_CLEAR,
+  SPEC_REGISTRY_GET_STATUS,
+  SPEC_REGISTRY_SAVE,
+  SPEC_REGISTRY_TEST,
   TEAM_DISCOVER_SPEC_REGISTRY,
   TEAM_FORCE_STOP,
   TEAM_GET_AGENT_RUNTIME,
@@ -740,6 +751,10 @@ export function initializeTeamHandlers(
 
 export function registerTeamHandlers(ipcMain: IpcMain): void {
   ipcMain.handle(TEAM_DISCOVER_SPEC_REGISTRY, handleDiscoverSpecRegistry);
+  ipcMain.handle(SPEC_REGISTRY_GET_STATUS, handleSpecRegistryGetStatus);
+  ipcMain.handle(SPEC_REGISTRY_SAVE, handleSpecRegistrySave);
+  ipcMain.handle(SPEC_REGISTRY_CLEAR, handleSpecRegistryClear);
+  ipcMain.handle(SPEC_REGISTRY_TEST, handleSpecRegistryTest);
   ipcMain.handle(TEAM_LIST_SPEC_BINDINGS, handleListTeamSpecBindings);
   ipcMain.handle(TEAM_LINK_SPEC, handleLinkTeamSpec);
   ipcMain.handle(TEAM_UNLINK_SPEC, handleUnlinkTeamSpec);
@@ -836,6 +851,10 @@ export function registerTeamHandlers(ipcMain: IpcMain): void {
 
 export function removeTeamHandlers(ipcMain: IpcMain): void {
   ipcMain.removeHandler(TEAM_DISCOVER_SPEC_REGISTRY);
+  ipcMain.removeHandler(SPEC_REGISTRY_GET_STATUS);
+  ipcMain.removeHandler(SPEC_REGISTRY_SAVE);
+  ipcMain.removeHandler(SPEC_REGISTRY_CLEAR);
+  ipcMain.removeHandler(SPEC_REGISTRY_TEST);
   ipcMain.removeHandler(TEAM_LIST_SPEC_BINDINGS);
   ipcMain.removeHandler(TEAM_LINK_SPEC);
   ipcMain.removeHandler(TEAM_UNLINK_SPEC);
@@ -1160,6 +1179,42 @@ async function handleDiscoverSpecRegistry(
   _event: IpcMainInvokeEvent
 ): Promise<IpcResult<SpecRegistryDiscovery>> {
   return wrapTeamHandler('discoverSpecRegistry', () => getTeamDataService().discoverSpecRegistry());
+}
+
+async function handleSpecRegistryGetStatus(
+  _event: IpcMainInvokeEvent
+): Promise<IpcResult<SpecRegistryCredentialStatus>> {
+  return wrapTeamHandler('specRegistryGetStatus', () => readSpecRegistryCredentialStatus());
+}
+
+async function handleSpecRegistrySave(
+  _event: IpcMainInvokeEvent,
+  url: unknown,
+  token: unknown
+): Promise<IpcResult<SpecRegistryProbeResult>> {
+  if (typeof url !== 'string' || !url.trim()) {
+    return { success: false, error: 'Registry endpoint is required' };
+  }
+  if (typeof token !== 'string' || !token.trim()) {
+    return { success: false, error: 'Registry token is required' };
+  }
+  return wrapTeamHandler('specRegistrySave', () => saveSpecRegistryCredential({ url, token }));
+}
+
+async function handleSpecRegistryClear(_event: IpcMainInvokeEvent): Promise<IpcResult<void>> {
+  return wrapTeamHandler('specRegistryClear', () => clearSpecRegistryCredential());
+}
+
+async function handleSpecRegistryTest(
+  _event: IpcMainInvokeEvent,
+  url: unknown,
+  token: unknown
+): Promise<IpcResult<SpecRegistryProbeResult>> {
+  const candidate = {
+    ...(typeof url === 'string' && url.trim() ? { url } : {}),
+    ...(typeof token === 'string' && token.trim() ? { token } : {}),
+  };
+  return wrapTeamHandler('specRegistryTest', () => testSpecRegistryCredential(candidate));
 }
 
 async function handleListTeamSpecBindings(
@@ -2160,6 +2215,25 @@ function noteLaunchIntentFailed(teamName: string, source: string): void {
   } as TeamProvisioningProgress);
 }
 
+/**
+ * A team that names a specification cannot start without a reachable registry:
+ * the agent would come up with no spec tools and the failure would look like a
+ * model problem. The store is the owner-configured source; environment and the
+ * legacy token file remain bridges, but they are reported as a warning so a
+ * shell-inherited setup is never mistaken for a configured one.
+ */
+async function assertSpecRegistryReadyForTeam(specProject: unknown): Promise<string | null> {
+  if (typeof specProject !== 'string' || !specProject.trim()) return null;
+  const credential = await readSpecRegistryCredentialStatus().catch(() => null);
+  if (!credential?.configured) return 'SPEC_REGISTRY_NOT_CONFIGURED';
+  if (credential.source !== 'store') {
+    logger.warn(
+      `[spec-registry] credentials resolved from ${credential.source ?? 'unknown'} instead of the app store; saving them in the team dialog makes the setup durable`
+    );
+  }
+  return null;
+}
+
 async function handleCreateTeam(
   event: IpcMainInvokeEvent,
   request: unknown
@@ -2168,6 +2242,8 @@ async function handleCreateTeam(
   if (!validation.valid) {
     return { success: false, error: validation.error };
   }
+  const registryRefusal = await assertSpecRegistryReadyForTeam(validation.value.specProject);
+  if (registryRefusal) return { success: false, error: registryRefusal };
   const progressTargetWindow = BrowserWindow.fromWebContents(event.sender);
 
   return wrapTeamHandler('create', async () => {
@@ -2185,6 +2261,18 @@ async function handleCreateTeam(
       const response = teamBackupService
         ? await teamBackupService.withTeamIdentityFence(validation.value.teamName, create)
         : await create();
+      // The create path used to drop the requested spec; persist it before the
+      // first launch so the recipe, the spec MCP env and the board read agree.
+      const specProject = validation.value.specProject;
+      const specSlug = validation.value.specSlug;
+      if (typeof specProject === 'string' && specProject.trim() && typeof specSlug === 'string' && specSlug.trim()) {
+        // The binding is part of "created": a team that silently lost its spec
+        // would start with the wrong surface, so the failure surfaces instead.
+        await getTeamDataService().linkTeamSpec(validation.value.teamName, {
+          project: specProject.trim(),
+          spec: specSlug.trim(),
+        });
+      }
       teamPermanentDeletionLifecycle?.resumeTeam(validation.value.teamName);
       invalidateTeamRosterSnapshotCaches(validation.value.teamName);
       return response;
@@ -2216,6 +2304,21 @@ async function handleLaunchTeamUnlocked(
 ): Promise<IpcResult<TeamLaunchResponse>> {
   if (!request || typeof request !== 'object') {
     return { success: false, error: 'Invalid team launch request' };
+  }
+  // Launch carries the same contract as create: a team whose configuration
+  // names a specification must reach the registry before it starts.
+  {
+    const requestedTeam =
+      typeof (request as Partial<TeamLaunchRequest>).teamName === 'string'
+        ? (request as Partial<TeamLaunchRequest>).teamName!.trim()
+        : '';
+    if (requestedTeam) {
+      const config = await getTeamDataService()
+        .readSpecBindingConfigForGate(requestedTeam)
+        .catch(() => null);
+      const refusal = await assertSpecRegistryReadyForTeam(config?.specProject);
+      if (refusal) return { success: false, error: refusal };
+    }
   }
   const progressTargetWindow = BrowserWindow.fromWebContents(event.sender);
 

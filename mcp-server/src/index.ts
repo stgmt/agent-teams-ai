@@ -6,6 +6,7 @@ import { fileURLToPath } from 'url';
 import { FastMCP } from 'fastmcp';
 
 import { registerTools, type McpToolProfile } from './tools';
+import { registerSpecProxyTools } from './tools/specProxyTools';
 
 const HTTP_TRANSPORT = 'httpStream';
 const STDIO_TRANSPORT = 'stdio';
@@ -111,9 +112,7 @@ export function createServer(
       : {}),
   });
 
-  registerTools(server, input.toolProfile, {
-    requestScopedSpecCapability: httpOptions !== null,
-  });
+  registerTools(server, input.toolProfile);
 
   return server;
 }
@@ -232,6 +231,16 @@ async function main(): Promise<void> {
     toolProfile: resolveToolProfile(),
     healthIdentity: buildHttpHealthIdentity(startOptions),
   });
+  // The registry may be booting (its own dependencies come up first). A failed
+  // discovery must not take the whole app MCP server down: the agent still needs
+  // the local team tools, and the proxy re-reads the registry on the next launch.
+  try {
+    await registerSpecProxyTools(server);
+  } catch (error) {
+    process.stderr.write(
+      `spec proxy registration skipped: ${error instanceof Error ? error.message : String(error)}\n`
+    );
+  }
   await server.start(startOptions);
 }
 

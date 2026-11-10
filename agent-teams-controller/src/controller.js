@@ -14,7 +14,7 @@ const groupChats = require('./internal/groupChats.js');
 const maintenance = require('./internal/maintenance.js');
 const agentBlocks = require('./internal/agentBlocks.js');
 const taskCompletionClaim = require('./internal/taskCompletionClaim.js');
-const specBindings = require('./internal/specBindings.js');
+const specGateway = require('./internal/specGateway.js');
 const {
   buildChatVisualizationProtocolText,
   buildChatVisualizationRefreshInstruction,
@@ -25,12 +25,6 @@ function bindModule(context, moduleApi) {
     Object.entries(moduleApi).map(([name, fn]) => [name, (...args) => fn(context, ...args)])
   );
 }
-const appScopedSpecBindings = Object.freeze({
-  listTeamSpecBindings: (scopeCredential) => specBindings.listTeamSpecBindings(scopeCredential),
-  linkTeamSpec: (binding, scopeCredential) =>
-    specBindings.linkTeamSpec(null, binding, scopeCredential),
-});
-
 
 function createController(options) {
   const context = createControllerContext(boundControllerOptions(options));
@@ -50,7 +44,6 @@ function createController(options) {
     workSync: bindModule(context, workSync),
     groupChats: bindModule(context, groupChats),
     maintenance: bindModule(context, maintenance),
-    specBindings: appScopedSpecBindings,
   };
 }
 
@@ -59,7 +52,7 @@ module.exports = {
     withTeamBoardLock: boardLocks.withTeamBoardLock,
     tryWithTeamBoardLock: boardLocks.tryWithTeamBoardLock,
   },
-  appScopedSpecBindings,
+  specGateway,
   createController,
   createControllerContext,
   agentBlocks,

@@ -190,6 +190,40 @@ describe('native Claude launch planning with app-owned roster and scoped tools',
     }
   );
 
+  it('never gives the agent CLI a registry credential, even when the parent has one', async () => {
+    const previous = {
+      OMP_SPEC_REGISTRY_URL: process.env.OMP_SPEC_REGISTRY_URL,
+      OMP_SPEC_REGISTRY_TOKEN: process.env.OMP_SPEC_REGISTRY_TOKEN,
+    };
+    process.env.OMP_SPEC_REGISTRY_URL = 'http://127.0.0.1:8650/mcp';
+    process.env.OMP_SPEC_REGISTRY_TOKEN = 'TEST-provider-token';
+    try {
+      const { planner, prepareProvider } = setup();
+      prepareProvider.mockResolvedValue({
+        executable: 'TEST-claude.exe',
+        env: {
+          TEST_AUTH: 'TEST-secret',
+          OMP_SPEC_REGISTRY_URL: 'http://127.0.0.1:8650/mcp',
+          OMP_SPEC_REGISTRY_TOKEN: 'TEST-provider-token',
+          OMP_SPEC_PROJECT: 'OTHER/project',
+        },
+        args: [],
+      });
+      const plan = await planner.prepare(settings, token, new AbortController().signal);
+      expect(plan.env).not.toHaveProperty('OMP_SPEC_REGISTRY_URL');
+      expect(plan.env).not.toHaveProperty('OMP_SPEC_REGISTRY_TOKEN');
+      expect(plan.env).not.toHaveProperty('OMP_SPEC_REGISTRY_TOKEN_FILE');
+      // The selector travels with the credential: alone it points the plugin at
+      // a corpus this team is not bound to.
+      expect(plan.env).not.toHaveProperty('OMP_SPEC_PROJECT');
+    } finally {
+      for (const [key, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  });
+
   it('isolates personal task lists by root, team and member while keeping restart identity stable', async () => {
     const { planner, prepareProvider, artifacts } = setup();
     const foreignEnv = {

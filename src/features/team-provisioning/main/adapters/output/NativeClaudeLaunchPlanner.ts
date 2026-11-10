@@ -288,6 +288,14 @@ export class NativeClaudeLaunchPlanner implements NodeMemberLaunchPlanner {
       delete env.AGENT_TEAMS_LEAD_START_CREDENTIAL;
       // These fields describe this launch only, never a parent process's workspace.
       for (const key of [
+        // The registry credential belongs to the app MCP child; an inherited
+        // value would mount a second, duplicate spec server in the agent.
+        'OMP_SPEC_REGISTRY_URL',
+        'OMP_SPEC_REGISTRY_TOKEN',
+        'OMP_SPEC_REGISTRY_TOKEN_FILE',
+        // The project selector rides with the credential: inherited alone it
+        // points the spec-kit plugin at a corpus this team is not bound to.
+        'OMP_SPEC_PROJECT',
         'CLAUDE_CODE_TASK_LEDGER_PROJECT_DIR',
         'CLAUDE_CODE_TEAM_WORKTREE_PATH',
         'CLAUDE_CODE_TEAM_WORKTREE_BRANCH',

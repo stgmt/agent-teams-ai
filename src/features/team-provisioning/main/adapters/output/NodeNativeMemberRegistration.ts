@@ -1,4 +1,5 @@
 import { validateMemberName, validateTeamName } from '@main/services/team/TeamIdentifierValidation';
+import { inspectProcessesByPid } from '@main/utils/processInspection';
 import { buildNativeAppManagedBootstrapCheckText } from '@shared/utils/teamInternalControlMessages';
 
 import { NativeTeamConfigStore } from '../../infrastructure/NativeTeamConfigStore';
@@ -24,6 +25,19 @@ export interface NativeMemberRegistrationProof extends Pick<
 }
 
 /** Writes process projections, never a configured-roster source or liveness verdict. */
+/** The recorded launch time must be the process's, not the registration's. */
+async function readProcessStartedAt(pid: number): Promise<number> {
+  try {
+    const snapshot = await inspectProcessesByPid([pid]);
+    const inspection = snapshot.get(pid);
+    if (inspection?.status === 'found' && typeof inspection.startedAt === 'number')
+      return inspection.startedAt;
+  } catch {
+    // A failed probe is not a reason to lose the row: fall back to the wall clock.
+  }
+  return Date.now();
+}
+
 export class NodeNativeMemberRegistration {
   private readonly store: NativeTeamConfigStore;
 
@@ -186,6 +200,9 @@ export class NodeNativeMemberRegistration {
         backendType: 'process',
         runtimePid: identity.pid,
         runtimeProcessBirthId: identity.birthId,
+        // The process's own creation time, so a later launch compares like with
+        // like; Date.now() would be the registration time, which is later.
+        runtimeStartedAt: await readProcessStartedAt(identity.pid),
         runtimeGeneration: token.generation,
         runtimeOperationId: token.operationId,
         ...proof,
