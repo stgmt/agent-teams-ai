@@ -1,6 +1,7 @@
 import { clearStaleProcessRuntimeMetadataFromMember } from '@main/services/team/provisioning/StaleProcessRuntimeMetadataCleanup';
 import { validateMemberName } from '@main/services/team/TeamIdentifierValidation';
-import { inspectProcessByPid } from '@main/utils/processInspection';
+import { inspectProcessesByPid } from '@main/utils/processInspection';
+import type { ProcessInspection } from '@main/utils/processInspection';
 
 import { isNativeRuntimeProvider } from '../../infrastructure/nativeRuntimeProvider';
 import { NativeTeamConfigStore } from '../../infrastructure/NativeTeamConfigStore';
@@ -103,11 +104,24 @@ function assertReleased(members: NativeTeamConfig[]): void {
   }
 }
 
+/** One process snapshot for the whole roster; absence means "unknown", never "dead". */
+async function inspectRoster(
+  members: NativeTeamConfig[]
+): Promise<Map<number, ProcessInspection>> {
+  const pids = members
+    .map((member) => member.runtimePid)
+    .filter((pid): pid is number => typeof pid === 'number' && Number.isSafeInteger(pid) && pid > 0);
+  if (pids.length === 0) return new Map();
+  return inspectProcessesByPid(pids).catch(() => new Map<number, ProcessInspection>());
+}
+
 /** A stale PID is not ownership: it may be gone or reused by an unrelated process. */
 async function clearStaleLegacyProcessRows(
   members: NativeTeamConfig[],
   signal: AbortSignal
 ): Promise<void> {
+  const inspections = await inspectRoster(members);
+  signal.throwIfAborted();
   for (let index = 0; index < members.length; index++) {
     signal.throwIfAborted();
     const member = members[index];
@@ -120,8 +134,7 @@ async function clearStaleLegacyProcessRows(
       processPaneId: `process:${member.runtimePid}`,
     });
     if (!cleaned.changed) continue;
-    const inspection = await inspectProcessByPid(member.runtimePid).catch(() => null);
-    signal.throwIfAborted();
+    const inspection = inspections.get(member.runtimePid) ?? null;
     if (!inspection) continue;
     // A native identity survives only while its process does: a killed app
     // leaves rows whose PID is gone, and those must not wedge the next launch.
@@ -168,13 +181,14 @@ function recoverableRows(config: NativeTeamConfig | null): NativeTeamConfig[] | 
  */
 async function releaseDeadProcessRows(members: NativeTeamConfig[]): Promise<boolean> {
   let changed = false;
+  const inspections = await inspectRoster(members);
   for (let index = 0; index < members.length; index++) {
     const member = members[index];
     const pid = member.runtimePid;
     if (typeof pid !== 'number' || !Number.isSafeInteger(pid) || pid <= 0) continue;
     const fields = ['runtimePid', 'runtimeProcessBirthId', 'runtimeOperationId'] as const;
     if (!fields.some((field) => member[field] != null)) continue;
-    const inspection = await inspectProcessByPid(pid).catch(() => null);
+    const inspection = inspections.get(pid);
     if (!inspection || inspection.status !== 'not_found') continue;
     const released = { ...member };
     for (const field of fields) delete released[field];

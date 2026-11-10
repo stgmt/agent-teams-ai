@@ -11,6 +11,14 @@ import { inspectProcessByPid } from '../../../../src/main/utils/processInspectio
 
 vi.mock('../../../../src/main/utils/processInspection', () => ({
   inspectProcessByPid: vi.fn(),
+  // The production path takes one roster snapshot; tests keep controlling the
+  // per-pid outcomes, so the batch simply delegates to them.
+  inspectProcessesByPid: vi.fn(async (pids: readonly number[]) => {
+    const { inspectProcessByPid } = await import('../../../../src/main/utils/processInspection');
+    const map = new Map<number, unknown>();
+    for (const pid of pids) map.set(pid, await (inspectProcessByPid as unknown as (pid: number) => Promise<unknown>)(pid));
+    return map;
+  }),
 }));
 
 const directories: string[] = [];

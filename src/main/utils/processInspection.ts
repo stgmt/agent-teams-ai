@@ -158,6 +158,84 @@ export async function inspectWithRetry(
   return last;
 }
 
+
+function windowsBatchScript(pids: readonly number[]): string {
+  const filter = pids.map((pid) => `ProcessId=${pid}`).join(' OR ');
+  return [
+    '$ErrorActionPreference = "Stop"',
+    `Get-CimInstance Win32_Process -Filter "${filter}" | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress`,
+  ].join('; ');
+}
+
+function readBatchRows(stdout: string): { pid: number; command: string }[] | null {
+  const trimmed = stdout.trim();
+  if (!trimmed) return [];
+  try {
+    const parsed: unknown = JSON.parse(trimmed);
+    const rows = Array.isArray(parsed) ? parsed : [parsed];
+    return rows
+      .filter((row): row is { ProcessId?: unknown; CommandLine?: unknown } =>
+        row !== null && typeof row === 'object'
+      )
+      .map((row) => ({
+        pid: typeof row.ProcessId === 'number' ? row.ProcessId : Number(row.ProcessId),
+        command: typeof row.CommandLine === 'string' ? row.CommandLine.trim() : '',
+      }))
+      .filter((row) => Number.isSafeInteger(row.pid) && row.pid > 0);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * One lookup for a whole roster: a launch inspects every recorded member pid, and
+ * ten separate PowerShell starts were the slow part of `prepare()` on Windows.
+ * Unknown pids are simply absent from the map; callers treat absence as unknown.
+ */
+export async function inspectProcessesByPid(
+  pids: readonly number[],
+  options: InspectProcessOptions = {}
+): Promise<Map<number, ProcessInspection>> {
+  const wanted = [...new Set(pids.map(normalizePid).filter((pid): pid is number => pid !== null))];
+  const result = new Map<number, ProcessInspection>();
+  if (wanted.length === 0) return result;
+  const timeoutMs = options.timeoutMs ?? PROCESS_INSPECTION_TIMEOUT_MS;
+  const platform = options.platform ?? process.platform;
+  if (platform === 'win32') {
+    const startedAt = performance.now();
+    const probe = await run(
+      'powershell.exe',
+      [
+        '-NoProfile',
+        '-NonInteractive',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-Command',
+        windowsBatchScript(wanted),
+      ],
+      timeoutMs,
+      true
+    );
+    const rows = probe.error || probe.stderr.trim() ? null : readBatchRows(probe.stdout);
+    if (rows) {
+      for (const row of rows) {
+        if (wanted.includes(row.pid)) result.set(row.pid, { status: 'found', command: row.command });
+      }
+      for (const pid of wanted) {
+        if (!result.has(pid)) result.set(pid, { status: 'not_found' });
+      }
+      return result;
+    }
+    const cause = unreadable('windows_process_batch_inspection', startedAt, timeoutMs, probe);
+    for (const pid of wanted) result.set(pid, cause);
+    return result;
+  }
+  for (const pid of wanted) {
+    result.set(pid, await inspectProcessByPidOnce(pid, options));
+  }
+  return result;
+}
+
 export function inspectProcessByPid(
   pid: number,
   options: InspectProcessOptions = {}
