@@ -211,37 +211,6 @@ export class RegistryTaskProvider {
     return configured;
   }
 
-  async linkTeamSpec(
-    teamId: string,
-    binding: TeamSpecBinding,
-    requestId: string
-  ): Promise<TeamSpecBinding[]> {
-    const result = await (
-      await this.clientFactory()
-    ).linkTeamSpec({
-      teamId,
-      binding,
-      requestId,
-    });
-    this.invalidate();
-    return result.bindings;
-  }
-
-  async unlinkTeamSpec(
-    teamId: string,
-    binding: TeamSpecBinding,
-    requestId: string
-  ): Promise<TeamSpecBinding[]> {
-    const result = await (
-      await this.clientFactory()
-    ).unlinkTeamSpec({
-      teamId,
-      binding,
-      requestId,
-    });
-    this.invalidate();
-    return result.bindings;
-  }
 
   private async readTeamId(teamName: string): Promise<string> {
     const config = await this.readConfig(teamName);

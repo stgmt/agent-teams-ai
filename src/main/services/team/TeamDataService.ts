@@ -783,6 +783,11 @@ export class TeamDataService {
     });
   }
 
+  /**
+   * Bindings are team configuration. The registry exposes no tool that lists,
+   * links or registers them, so this never leaves the app: it persists the
+   * bindings and marks the team configured.
+   */
   private async ensureRegistryTeamRegistration(
     teamName: string,
     initialConfig: TeamSpecBindingConfig,
@@ -790,49 +795,22 @@ export class TeamDataService {
   ): Promise<TeamSpecBindingConfig> {
     const pending = this.registryTeamRegistrationInFlight.get(teamName);
     if (pending) return pending;
-
     const request = (async () => {
-      const firstBinding = desiredBindings[0];
-      let config = initialConfig;
-      let teamId = typeof config.registryTeamId === 'string' ? config.registryTeamId.trim() : '';
-      if (!teamId) {
-        if (!firstBinding) return config;
-        teamId = (
-          await new TeamRegistryRegistration(this.teamMetaStore).register(
-            teamName,
-            firstBinding.project
-          )
-        ).teamId;
-        config = (await this.readRegistryBindingConfig(teamName)) ?? config;
-      }
-      if (!teamId) {
-        throw new RegistryTaskProviderError({
-          code: 'REGISTRY_TEAM_ID_MISSING',
-          teamName,
-          message: `Team "${teamName}" has no registry-issued team identity.`,
-        });
-      }
-
-      // Bindings are configuration, not registry state: the registry exposes no
-      // tool that lists or links them, and asking made every task read fail.
-      const linked = [...desiredBindings];
-      await this.persistRegistryBindings(teamName, linked);
+      await this.persistRegistryBindings(teamName, [...desiredBindings]);
       await this.markRegistryRegistrationCompleted(teamName);
+      const config = (await this.readRegistryBindingConfig(teamName)) ?? initialConfig;
       return {
         ...config,
-        registryTeamId: teamId,
-        specBindings: [...linked],
+        specBindings: [...desiredBindings],
         registryRegistrationCompleted: true,
-      };
+      } satisfies TeamSpecBindingConfig;
     })();
-
     this.registryTeamRegistrationInFlight.set(teamName, request);
     try {
       return await request;
     } finally {
-      if (this.registryTeamRegistrationInFlight.get(teamName) === request) {
+      if (this.registryTeamRegistrationInFlight.get(teamName) === request)
         this.registryTeamRegistrationInFlight.delete(teamName);
-      }
     }
   }
 
@@ -1124,18 +1102,12 @@ export class TeamDataService {
   }
 
   async unlinkTeamSpec(teamName: string, binding: TeamSpecBinding): Promise<TeamSpecBinding[]> {
-    const config = await this.readRegistryBindingConfig(teamName);
-    const teamId = typeof config?.registryTeamId === 'string' ? config.registryTeamId.trim() : '';
-    if (!teamId) {
-      throw new RegistryTaskProviderError({
-        code: 'REGISTRY_TEAM_ID_MISSING',
-        teamName,
-        message: `Team "${teamName}" has no registry-issued team identity.`,
-      });
-    }
-    const bindings = await this.registryTaskProvider.unlinkTeamSpec(teamId, binding, randomUUID());
+    // Bindings are configuration; removing one is a local write.
+    const existing = await this.listTeamSpecBindings(teamName);
+    const bindings = existing.filter(
+      (candidate) => !(candidate.project === binding.project && candidate.spec === binding.spec)
+    );
     await this.persistRegistryBindings(teamName, bindings);
-    await this.markRegistryRegistrationCompleted(teamName);
     this.registryTaskWriters.delete(teamName);
     return bindings;
   }

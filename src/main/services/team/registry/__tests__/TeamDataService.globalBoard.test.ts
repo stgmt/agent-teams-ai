@@ -118,18 +118,7 @@ async function makeService(options: HarnessOptions) {
     if (!bindings) throw new Error(`Unexpected registry team read for ${teamName}`);
     return [...bindings];
   });
-  vi.spyOn(registryTaskProvider, 'linkTeamSpec').mockImplementation(async (teamId, binding) => {
-    const teamName = teamNameByRegistryId.get(teamId);
-    if (!teamName) throw new Error(`Unexpected registry team id: ${teamId}`);
-    const current = linkedBindings.get(teamName) ?? [];
-    const next = current.some(
-      (entry) => entry.project === binding.project && entry.spec === binding.spec
-    )
-      ? current
-      : [...current, binding];
-    linkedBindings.set(teamName, next);
-    return [...next];
-  });
+  // linkTeamSpec is gone: bindings are configuration, so no registry mock is needed.
   const getTasks = vi
     .spyOn(registryTaskProvider, 'getTasks')
     .mockImplementation(async (teamName, readOptions = {}) => {

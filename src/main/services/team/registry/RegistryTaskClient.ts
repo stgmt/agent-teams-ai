@@ -753,69 +753,6 @@ export class RegistryTaskClient {
     return readTeamSpecBindings(envelope, 'registerTeam');
   }
 
-  async listTeamSpecBindings(
-    teamId: string,
-    signal?: AbortSignal
-  ): Promise<RegistryTeamSpecBindings> {
-    const id = assertNonEmptyString(teamId, 'listTeamSpecBindings', 'teamId');
-    const envelope = await this.#transport.callTool(
-      'team_specs',
-      { action: 'list', teamId: id, requestId: randomUUID() },
-      'listTeamSpecBindings',
-      signal
-    );
-    return readTeamSpecBindings(envelope, 'listTeamSpecBindings');
-  }
-
-  async linkTeamSpec(input: {
-    teamId: string;
-    binding: TeamSpecBinding;
-    requestId: string;
-    signal?: AbortSignal;
-  }): Promise<RegistryTeamSpecBindings> {
-    const teamId = assertNonEmptyString(input.teamId, 'linkTeamSpec', 'teamId');
-    const requestId = assertNonEmptyString(input.requestId, 'linkTeamSpec', 'requestId');
-    const scope = assertScope(input.binding, 'linkTeamSpec');
-    const envelope = await this.#transport.callTool(
-      'team_specs',
-      {
-        action: 'link',
-        teamId,
-        project: scope.project,
-        spec: scope.spec,
-        requestId,
-      },
-      'linkTeamSpec',
-      input.signal
-    );
-    return readTeamSpecBindings(envelope, 'linkTeamSpec');
-  }
-
-  async unlinkTeamSpec(input: {
-    teamId: string;
-    binding: TeamSpecBinding;
-    requestId: string;
-    signal?: AbortSignal;
-  }): Promise<RegistryTeamSpecBindings> {
-    const teamId = assertNonEmptyString(input.teamId, 'unlinkTeamSpec', 'teamId');
-    const requestId = assertNonEmptyString(input.requestId, 'unlinkTeamSpec', 'requestId');
-    const scope = assertScope(input.binding, 'unlinkTeamSpec');
-    const envelope = await this.#transport.callTool(
-      'team_specs',
-      {
-        action: 'unlink',
-        teamId,
-        project: scope.project,
-        spec: scope.spec,
-        requestId,
-      },
-      'unlinkTeamSpec',
-      input.signal
-    );
-    return readTeamSpecBindings(envelope, 'unlinkTeamSpec');
-  }
-
-  /** Reads the TASKS.md preimage used to fence a subsequent numeric-id allocation. */
   async readTasksDocumentSha(input: {
     project: string;
     spec: string;
