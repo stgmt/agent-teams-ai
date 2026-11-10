@@ -94,13 +94,25 @@ describe('team specification scope policy', () => {
     expect(args).not.toHaveProperty('spec');
   });
 
-  it('accepts a bound pair and refuses an unbound one', () => {
+  it('accepts any specification inside a bound project and refuses another project', () => {
+    const scope = { teamId: 'team-1', bindings: [{ project: 'stgmt/tokenplan', spec: 'registry-check' }] };
+    const accepted = applyTeamSpecScope(
+      'spec_documents',
+      { action: 'list', project: 'stgmt/tokenplan', spec: 'not-bound-yet' },
+      scope,
+      DESCRIPTORS.documents,
+      () => 'rid'
+    );
+    expect(accepted.spec).toBe('not-bound-yet');
     expect(() =>
-      applyTeamSpecScope('spec_patch', { project: 'stgm/tokenplan', spec: 'balancer' }, scope, DESCRIPTORS.patch, () => 'rid')
-    ).not.toThrow();
-    expect(() =>
-      applyTeamSpecScope('spec_patch', { project: 'stgm/tokenplan', spec: 'someone-else' }, scope, DESCRIPTORS.patch, () => 'rid')
-    ).toThrow(SpecScopeError);
+      applyTeamSpecScope(
+        'spec_documents',
+        { action: 'list', project: 'other/project', spec: 'x' },
+        scope,
+        DESCRIPTORS.documents,
+        () => 'rid'
+      )
+    ).toThrow(/not bound to this team/);
   });
 
   it('reports a typed refusal code for an unbound pair', () => {
