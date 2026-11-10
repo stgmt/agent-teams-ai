@@ -246,7 +246,9 @@ export class RegistryTaskProvider {
         .map((value) => Number.parseInt(value.replace(/^TASK-/u, ''), 10))
         .filter((value) => Number.isFinite(value))
     );
-    let next = 1;
+    // Allocate above the highest id ever used: reusing a retired number would
+    // collide with the board's execution records for that id.
+    let next = used.size === 0 ? 1 : Math.max(...used) + 1;
     while (used.has(next)) next += 1;
     const entity = `TASK-${next}`;
     const created = await client.createTaskFields({
