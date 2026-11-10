@@ -424,8 +424,8 @@ describe('RegistryTaskProvider', () => {
     expect(registry.calls[0]).toMatchObject({
       project: PROJECT,
       spec: SPEC,
-      teamId: TEAM_ID,
     });
+    expect(registry.calls[0]).not.toHaveProperty('teamId');
     expect(configReads).toBeGreaterThan(0);
   });
 });

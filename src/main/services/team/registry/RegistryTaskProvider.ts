@@ -509,7 +509,6 @@ export class RegistryTaskProvider {
       return await client.listTasks({
         project: scope.project,
         spec: scope.spec,
-        teamId,
         statuses: [...REGISTRY_TASK_STATUSES],
       });
     } catch (error) {

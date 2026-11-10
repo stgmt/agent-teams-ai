@@ -240,9 +240,6 @@ export class RegistryTaskClient {
     const scope = assertScope(input, 'listTasks');
     const statuses = assertStatuses(input.statuses, 'listTasks');
     if (statuses?.includes('deleted')) await this.#requireTaskCapability('deleted', input.signal);
-    // The registry scopes tasks by project and spec; it declares no teamId
-    // argument, and sending one is rejected as an unknown field.
-    void input.teamId;
     const tasks: RegistryTask[] = [];
     const seenCursors = new Set<string>();
     let cursor: string | null = null;

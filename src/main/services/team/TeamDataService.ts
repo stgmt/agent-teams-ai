@@ -1076,6 +1076,24 @@ export class TeamDataService {
   }
 
   /**
+   * Launch-gate input: does this team's configuration name a specification?
+   * Returns the project only, because the gate needs to know whether registry
+   * credentials are required, not which documents are bound.
+   */
+  async readSpecBindingConfigForGate(teamName: string): Promise<{ specProject: string } | null> {
+    const config = await this.readRegistryBindingConfig(teamName).catch(() => null);
+    if (!config) return null;
+    const project =
+      typeof config.specProject === 'string' ? config.specProject.trim() : '';
+    if (project) return { specProject: project };
+    const bindings = Array.isArray(config.specBindings) ? config.specBindings : [];
+    const first = bindings.find(
+      (binding) => binding && typeof binding === 'object' && typeof (binding as { project?: unknown }).project === 'string'
+    ) as { project?: string } | undefined;
+    return first?.project ? { specProject: first.project } : null;
+  }
+
+  /**
    * Bindings live in the team configuration; the registry has no listing tool,
    * so this read never leaves the app.
    */

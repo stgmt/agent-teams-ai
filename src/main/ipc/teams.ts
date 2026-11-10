@@ -2215,6 +2215,25 @@ function noteLaunchIntentFailed(teamName: string, source: string): void {
   } as TeamProvisioningProgress);
 }
 
+/**
+ * A team that names a specification cannot start without a reachable registry:
+ * the agent would come up with no spec tools and the failure would look like a
+ * model problem. The store is the owner-configured source; environment and the
+ * legacy token file remain bridges, but they are reported as a warning so a
+ * shell-inherited setup is never mistaken for a configured one.
+ */
+async function assertSpecRegistryReadyForTeam(specProject: unknown): Promise<string | null> {
+  if (typeof specProject !== 'string' || !specProject.trim()) return null;
+  const credential = await readSpecRegistryCredentialStatus().catch(() => null);
+  if (!credential?.configured) return 'SPEC_REGISTRY_NOT_CONFIGURED';
+  if (credential.source !== 'store') {
+    logger.warn(
+      `[spec-registry] credentials resolved from ${credential.source ?? 'unknown'} instead of the app store; saving them in the team dialog makes the setup durable`
+    );
+  }
+  return null;
+}
+
 async function handleCreateTeam(
   event: IpcMainInvokeEvent,
   request: unknown
@@ -2223,20 +2242,8 @@ async function handleCreateTeam(
   if (!validation.valid) {
     return { success: false, error: validation.error };
   }
-  // A team that names a specification must be able to reach the registry before
-  // it starts: without the endpoint and token the agent would launch with no
-  // spec tools at all, and the failure would surface as "the model ignores specs".
-  const requestedSpec = validation.value.specProject;
-  if (typeof requestedSpec === 'string' && requestedSpec.trim()) {
-    const credential = await readSpecRegistryCredentialStatus().catch(() => null);
-    if (!credential?.configured) {
-      return {
-        success: false,
-        error:
-          'SPEC_REGISTRY_NOT_CONFIGURED: подключите спецификации (адрес и токен реестра) перед созданием команды со спекой',
-      } as never;
-    }
-  }
+  const registryRefusal = await assertSpecRegistryReadyForTeam(validation.value.specProject);
+  if (registryRefusal) return { success: false, error: registryRefusal };
   const progressTargetWindow = BrowserWindow.fromWebContents(event.sender);
 
   return wrapTeamHandler('create', async () => {
@@ -2259,13 +2266,12 @@ async function handleCreateTeam(
       const specProject = validation.value.specProject;
       const specSlug = validation.value.specSlug;
       if (typeof specProject === 'string' && specProject.trim() && typeof specSlug === 'string' && specSlug.trim()) {
-        await getTeamDataService()
-          .linkTeamSpec(validation.value.teamName, { project: specProject.trim(), spec: specSlug.trim() })
-          .catch((error: unknown) => {
-            logger.warn(
-              `[teams:create] specification binding was not persisted for ${validation.value.teamName}: ${String(error)}`
-            );
-          });
+        // The binding is part of "created": a team that silently lost its spec
+        // would start with the wrong surface, so the failure surfaces instead.
+        await getTeamDataService().linkTeamSpec(validation.value.teamName, {
+          project: specProject.trim(),
+          spec: specSlug.trim(),
+        });
       }
       teamPermanentDeletionLifecycle?.resumeTeam(validation.value.teamName);
       invalidateTeamRosterSnapshotCaches(validation.value.teamName);
@@ -2298,6 +2304,21 @@ async function handleLaunchTeamUnlocked(
 ): Promise<IpcResult<TeamLaunchResponse>> {
   if (!request || typeof request !== 'object') {
     return { success: false, error: 'Invalid team launch request' };
+  }
+  // Launch carries the same contract as create: a team whose configuration
+  // names a specification must reach the registry before it starts.
+  {
+    const requestedTeam =
+      typeof (request as Partial<TeamLaunchRequest>).teamName === 'string'
+        ? (request as Partial<TeamLaunchRequest>).teamName!.trim()
+        : '';
+    if (requestedTeam) {
+      const config = await getTeamDataService()
+        .readSpecBindingConfigForGate(requestedTeam)
+        .catch(() => null);
+      const refusal = await assertSpecRegistryReadyForTeam(config?.specProject);
+      if (refusal) return { success: false, error: refusal };
+    }
   }
   const progressTargetWindow = BrowserWindow.fromWebContents(event.sender);
 
