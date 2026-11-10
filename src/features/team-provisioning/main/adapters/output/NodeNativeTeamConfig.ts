@@ -217,7 +217,18 @@ async function releaseDeadProcessRows(members: NativeTeamConfig[]): Promise<bool
     const fields = ['runtimePid', 'runtimeProcessBirthId', 'runtimeOperationId'] as const;
     if (!fields.some((field) => member[field] != null)) continue;
     const inspection = inspections.get(pid);
-    if (!inspection || inspection.status !== 'not_found') continue;
+    if (!inspection) continue;
+    const recordedStart =
+      typeof member.runtimeStartedAt === 'number' ? member.runtimeStartedAt : null;
+    // Same rule as the launch path: a process that started well before the
+    // recorded launch is not ours, so recovery must release it too instead of
+    // leaving the team blocked until the next launch attempt.
+    const reused =
+      inspection.status === 'found' &&
+      typeof inspection.startedAt === 'number' &&
+      recordedStart !== null &&
+      inspection.startedAt < recordedStart - PROCESS_START_TOLERANCE_MS;
+    if (inspection.status !== 'not_found' && !reused) continue;
     const released = { ...member };
     for (const field of fields) delete released[field];
     if (released.tmuxPaneId === `process:${pid}`) delete released.tmuxPaneId;
