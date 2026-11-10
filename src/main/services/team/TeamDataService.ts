@@ -837,15 +837,9 @@ export class TeamDataService {
     const registered = await this.ensureRegistryTeamRegistration(request.teamName, config, [
       request.binding,
     ]);
+    // Optional: the registry addresses tasks by project and spec.
     const teamId =
       typeof registered.registryTeamId === 'string' ? registered.registryTeamId.trim() : '';
-    if (!teamId) {
-      throw new RegistryTaskProviderError({
-        code: 'REGISTRY_TEAM_ID_MISSING',
-        teamName: request.teamName,
-        message: `Team "${request.teamName}" has no registry-issued team identity.`,
-      });
-    }
     const registrationMeta = await this.teamMetaStore.getMeta(request.teamName);
     const expectedRegistrationIdentity: RegistryRegistrationIdentity | undefined =
       registrationMeta?.registryRegistrationIdentity;
@@ -971,17 +965,11 @@ export class TeamDataService {
       authority.bindings.length > 0
         ? await this.ensureRegistryTeamRegistration(teamName, authority.config, authority.bindings)
         : authority.config;
+    // The registry scopes tasks by project and spec; a team identity is optional.
     const teamId =
       typeof registeredConfig.registryTeamId === 'string'
         ? registeredConfig.registryTeamId.trim()
         : '';
-    if (!teamId) {
-      throw new RegistryTaskProviderError({
-        code: 'REGISTRY_TEAM_ID_MISSING',
-        teamName,
-        message: `Team "${teamName}" has no registry-issued team identity.`,
-      });
-    }
     const readOptions = requestedBinding
       ? { forceRefresh: true, binding: requestedBinding }
       : { forceRefresh: true };
