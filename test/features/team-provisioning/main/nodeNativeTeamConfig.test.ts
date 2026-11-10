@@ -360,6 +360,65 @@ describe('app-owned native team runtime configuration', () => {
     expect(saved.members[0]?.runtimeProcessBirthId).toBeUndefined();
   });
 
+  it('releases a native row whose process started long before the recorded launch', async () => {
+    const { config, configPath } = await setup();
+    vi.mocked(inspectProcessByPid).mockResolvedValue({
+      status: 'found',
+      command: 'C:\\Windows\\System32\\notepad.exe',
+      startedAt: Date.now() - 3_600_000,
+    });
+    await writeFile(
+      configPath,
+      JSON.stringify({
+        name: run.teamName,
+        members: [
+          {
+            name: 'builder',
+            runtimePid: 4242,
+            runtimeProcessBirthId: 'TEST-birth',
+            runtimeOperationId: 'TEST-operation',
+            runtimeStartedAt: Date.now() - 5_000,
+            tmuxPaneId: 'process:4242',
+          },
+        ],
+      })
+    );
+
+    await expect(config.prepare(run, new AbortController().signal)).resolves.toBeUndefined();
+    const saved = JSON.parse(await readFile(configPath, 'utf8')) as {
+      members: Record<string, unknown>[];
+    };
+    expect(saved.members[0]?.runtimePid).toBeUndefined();
+    expect(saved.members[0]?.runtimeStartedAt).toBeUndefined();
+  });
+
+  it('keeps the row when the live process started after the recorded launch', async () => {
+    const { config, configPath } = await setup();
+    const recordedStart = Date.now() - 30_000;
+    vi.mocked(inspectProcessByPid).mockResolvedValue({
+      status: 'found',
+      command: 'claude-multimodel --print',
+      startedAt: recordedStart + 1_000,
+    });
+    const before = JSON.stringify({
+      name: run.teamName,
+      members: [
+        {
+          name: 'builder',
+          runtimePid: 4242,
+          runtimeProcessBirthId: 'TEST-birth',
+          runtimeOperationId: 'TEST-operation',
+          runtimeStartedAt: recordedStart,
+          tmuxPaneId: 'process:4242',
+        },
+      ],
+    });
+    await writeFile(configPath, before);
+
+    await expect(config.prepare(run, new AbortController().signal)).rejects.toThrow('unreleased');
+    expect(await readFile(configPath, 'utf8')).toBe(before);
+  });
+
   it('keeps a live Windows shell-wrapper process whose ownership flags are caret-escaped', async () => {
     const { config, configPath } = await setup();
     vi.mocked(inspectProcessByPid).mockResolvedValue({

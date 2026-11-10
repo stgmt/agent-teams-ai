@@ -36,18 +36,8 @@ function normalizePid(pid: number): number | null {
 function windowsScript(pid: number): string {
   return [
     '$ErrorActionPreference = "Stop"',
-    `Get-CimInstance Win32_Process -Filter "ProcessId=${pid}" | Select-Object ProcessId,CommandLine,CreationDate | ConvertTo-Json -Compress`,
+    `Get-CimInstance Win32_Process -Filter "ProcessId=${pid}" | Select-Object ProcessId,CommandLine,@{Name='StartedAt';Expression={[int64]($_.CreationDate.ToUniversalTime() - [datetime]'1970-01-01').TotalMilliseconds}} | ConvertTo-Json -Compress`,
   ].join('; ');
-}
-
-/** WMI reports `CreationDate` as a CIM datetime; Date.parse does not read it. */
-function parseCimDate(value: unknown): number | undefined {
-  if (typeof value !== 'string') return undefined;
-  const match = value.match(/^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})/u);
-  if (!match) return undefined;
-  const [, y, mo, d, h, mi, sec] = match;
-  const ms = Date.UTC(Number(y), Number(mo) - 1, Number(d), Number(h), Number(mi), Number(sec));
-  return Number.isFinite(ms) ? ms : undefined;
 }
 
 interface ExecResult {
@@ -113,8 +103,10 @@ async function inspectWindows(pid: number, timeoutMs: number): Promise<ProcessIn
     return { status: 'not_found' };
   }
   try {
-    const row = JSON.parse(trimmed) as { CommandLine?: string | null; CreationDate?: unknown };
-    const startedAt = parseCimDate(row.CreationDate);
+    const row = JSON.parse(trimmed) as { CommandLine?: string | null; StartedAt?: unknown };
+    const startedAt = typeof row.StartedAt === 'number' && Number.isFinite(row.StartedAt)
+      ? row.StartedAt
+      : undefined;
     return {
       status: 'found',
       command: row.CommandLine?.trim() ?? '',
@@ -179,7 +171,7 @@ function windowsBatchScript(pids: readonly number[]): string {
   const filter = pids.map((pid) => `ProcessId=${pid}`).join(' OR ');
   return [
     '$ErrorActionPreference = "Stop"',
-    `Get-CimInstance Win32_Process -Filter "${filter}" | Select-Object ProcessId,CommandLine,CreationDate | ConvertTo-Json -Compress`,
+    `Get-CimInstance Win32_Process -Filter "${filter}" | Select-Object ProcessId,CommandLine,@{Name='StartedAt';Expression={[int64]($_.CreationDate.ToUniversalTime() - [datetime]'1970-01-01').TotalMilliseconds}} | ConvertTo-Json -Compress`,
   ].join('; ');
 }
 
@@ -190,13 +182,16 @@ function readBatchRows(stdout: string): { pid: number; command: string; startedA
     const parsed: unknown = JSON.parse(trimmed);
     const rows = Array.isArray(parsed) ? parsed : [parsed];
     return rows
-      .filter((row): row is { ProcessId?: unknown; CommandLine?: unknown; CreationDate?: unknown } =>
+      .filter((row): row is { ProcessId?: unknown; CommandLine?: unknown; StartedAt?: unknown } =>
         row !== null && typeof row === 'object'
       )
       .map((row) => ({
         pid: typeof row.ProcessId === 'number' ? row.ProcessId : Number(row.ProcessId),
         command: typeof row.CommandLine === 'string' ? row.CommandLine.trim() : '',
-        startedAt: parseCimDate(row.CreationDate),
+        startedAt:
+          typeof row.StartedAt === 'number' && Number.isFinite(row.StartedAt)
+            ? row.StartedAt
+            : undefined,
       }))
       .filter((row) => Number.isSafeInteger(row.pid) && row.pid > 0);
   } catch {

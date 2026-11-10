@@ -104,6 +104,13 @@ function assertReleased(members: NativeTeamConfig[]): void {
   }
 }
 
+/**
+ * Registration happens after the process starts, and a contended config lock can
+ * delay it, so "started before the recorded launch" needs slack. Two minutes
+ * covers that delay; a pid reused by an unrelated program is normally far older.
+ */
+const PROCESS_START_TOLERANCE_MS = 120_000;
+
 /** A recorded start time is the strongest evidence; without it, the command decides. */
 function liveNativeStartConfirms(
   recordedStart: number | null,
@@ -112,7 +119,7 @@ function liveNativeStartConfirms(
   return (
     recordedStart !== null &&
     typeof inspection.startedAt === 'number' &&
-    inspection.startedAt >= recordedStart - 2000
+    inspection.startedAt >= recordedStart - PROCESS_START_TOLERANCE_MS
   );
 }
 
@@ -169,7 +176,7 @@ async function clearStaleLegacyProcessRows(
       inspection.status === 'found' &&
       typeof inspection.startedAt === 'number' &&
       recordedStart !== null &&
-      inspection.startedAt < recordedStart - 2000;
+      inspection.startedAt < recordedStart - PROCESS_START_TOLERANCE_MS;
     // Windows shell fallbacks quote/caret-escape flag tokens. Any team marker
     // is ambiguous ownership, not proof that a live PID belongs to someone else;
     // a readable command with no marker at all is a reused PID too.
