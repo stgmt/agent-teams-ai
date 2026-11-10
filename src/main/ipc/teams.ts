@@ -3412,14 +3412,20 @@ async function handleCreateTask(
     if (!hasSpecProject || !hasSpecSlug || !hasRequirements) {
       return {
         success: false,
-        error: 'specProject, specSlug, and requirements must be provided together',
+        error:
+          'A registry task needs specProject, specSlug and requirements together: read the corpus requirement ids first ' +
+          '(team_spec_spec_entities kinds ["requirement"]) and pass ids that exist in the bound specification.',
       };
     }
     if (typeof payload.specProject !== 'string' || typeof payload.specSlug !== 'string') {
       return { success: false, error: 'specProject and specSlug must be strings' };
     }
     if (!Array.isArray(payload.requirements)) {
-      return { success: false, error: 'requirements must be an array of strings' };
+      return {
+        success: false,
+        error:
+          'requirements must be a non-empty array of requirement ids that exist in the bound specification, for example ["FR-1"]',
+      };
     }
     const binding = validateTeamSpecBindingInput(
       { project: payload.specProject, spec: payload.specSlug },
