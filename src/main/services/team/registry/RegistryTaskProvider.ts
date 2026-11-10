@@ -212,17 +212,13 @@ export class RegistryTaskProvider {
   }
 
 
+  /**
+   * The registry scopes tasks by project and spec; it declares no team identity,
+   * so a missing id is the normal state, not an error.
+   */
   private async readTeamId(teamName: string): Promise<string> {
     const config = await this.readConfig(teamName);
-    const teamId = typeof config?.registryTeamId === 'string' ? config.registryTeamId.trim() : '';
-    if (!teamId) {
-      throw new RegistryTaskProviderError({
-        code: 'REGISTRY_TEAM_ID_MISSING',
-        teamName,
-        message: `Team "${teamName}" has no registry-issued team identity.`,
-      });
-    }
-    return teamId;
+    return typeof config?.registryTeamId === 'string' ? config.registryTeamId.trim() : '';
   }
 
   async getTasks(
