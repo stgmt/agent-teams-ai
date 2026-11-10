@@ -56,7 +56,17 @@ function applyTeamSpecScope(name, args, scope, descriptor, newRequestId = random
         `${name} does not accept the supplied scope fields`
       );
     }
-    if (rawProject && rawSpec) {
+    // A bound project is the unit of trust: a team may create and work on any
+    // specification inside it, including one it just created (owner decision).
+    const createsSpec = typeof scoped.intent === 'string' && scoped.intent === 'createSpec';
+    if (rawProject && rawSpec && createsSpec) {
+      if (!scope.bindings.some((binding) => binding.project === rawProject)) {
+        throw new SpecScopeError(
+          SPEC_SCOPE_ERROR_CODES.NOT_LINKED,
+          `${rawProject} is not bound to this team`
+        );
+      }
+    } else if (rawProject && rawSpec) {
       if (!matchesBinding(scope.bindings, rawProject, rawSpec)) {
         throw new SpecScopeError(
           SPEC_SCOPE_ERROR_CODES.NOT_LINKED,

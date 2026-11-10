@@ -253,3 +253,52 @@ describe('registry gateway adapter', () => {
     expect(transport.listTools).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('spec creation inside a bound project', () => {
+  it('allows createSpec for a specification the team has not bound yet', () => {
+    const scope = { teamId: 'team-1', bindings: [{ project: 'stgmt/tokenplan', spec: 'registry-check' }] };
+    const descriptor = {
+      name: 'spec_patch',
+      inputSchema: {
+        properties: {
+          intent: { enum: ['createSpec'] },
+          project: { type: 'string' },
+          spec: { type: 'string' },
+          title: { type: 'string' },
+          requestId: { type: ['string', 'null'] },
+        },
+      },
+    };
+    const out = applyTeamSpecScope(
+      'spec_patch',
+      { intent: 'createSpec', project: 'stgmt/tokenplan', spec: 'brand-new-spec', title: 'New' },
+      scope,
+      descriptor
+    );
+    expect(out.spec).toBe('brand-new-spec');
+  });
+
+  it('still refuses createSpec in a project the team is not bound to', () => {
+    const scope = { teamId: 'team-1', bindings: [{ project: 'stgmt/tokenplan', spec: 'registry-check' }] };
+    const descriptor = {
+      name: 'spec_patch',
+      inputSchema: {
+        properties: {
+          intent: { enum: ['createSpec'] },
+          project: { type: 'string' },
+          spec: { type: 'string' },
+          title: { type: 'string' },
+          requestId: { type: ['string', 'null'] },
+        },
+      },
+    };
+    expect(() =>
+      applyTeamSpecScope(
+        'spec_patch',
+        { intent: 'createSpec', project: 'other/project', spec: 'x', title: 'New' },
+        scope,
+        descriptor
+      )
+    ).toThrow(/not bound to this team/);
+  });
+});
