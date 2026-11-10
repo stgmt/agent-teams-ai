@@ -1118,22 +1118,15 @@ export class TeamDataService {
     );
     const config = await this.readRegistryBindingConfig(teamName);
     if (!config) throw new Error(`Team "${teamName}" was not found.`);
-    let teamId = typeof config.registryTeamId === 'string' ? config.registryTeamId.trim() : '';
-    if (!teamId) {
-      teamId = (
-        await new TeamRegistryRegistration(this.teamMetaStore).register(teamName, binding.project)
-      ).teamId;
-    }
-    let bindings = await this.registryTaskProvider.getBindings(teamName, true);
-    if (
-      !bindings.some(
-        (candidate) => candidate.project === binding.project && candidate.spec === binding.spec
-      )
-    ) {
-      bindings = await this.registryTaskProvider.linkTeamSpec(teamId, binding, randomUUID());
-    }
+    // Bindings live in the team configuration: the registry has no tool that
+    // lists or links them, so a link is a local write, not a remote call.
+    const existing = await this.listTeamSpecBindings(teamName);
+    const bindings = existing.some(
+      (candidate) => candidate.project === binding.project && candidate.spec === binding.spec
+    )
+      ? existing
+      : [...existing, binding];
     await this.persistRegistryBindings(teamName, bindings);
-    await this.markRegistryRegistrationCompleted(teamName);
     this.registryTaskWriters.delete(teamName);
     return bindings;
   }
