@@ -217,6 +217,28 @@ export class RegistryTaskProvider {
    * The registry scopes tasks by project and spec; it declares no team identity,
    * so a missing id is the normal state, not an error.
    */
+  /** Appends one comment straight into the registry task block. */
+  async addTaskComment(
+    teamName: string,
+    taskId: string,
+    text: string,
+    actor: string
+  ): Promise<void> {
+    const { task } = await this.getTask(teamName, taskId, { forceRefresh: true });
+    const project = task?.specProject;
+    const spec = task?.specSlug;
+    const localId = task?.registryTask?.localId;
+    if (!task || !project || !spec || !localId) {
+      throw new RegistryTaskProviderError({
+        code: 'REGISTRY_TASK_NOT_FOUND',
+        teamName,
+        message: `Task "${taskId}" was not found in the linked registry scopes.`,
+      });
+    }
+    const client = await this.clientFactory();
+    await client.addTaskComment({ project, spec, entity: localId, text, actor });
+  }
+
   /**
    * Owner/status writes go straight to the registry contract: resolve the task
    * once, then one `spec_patch` intent. This bypasses the legacy writer, which

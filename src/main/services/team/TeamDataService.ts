@@ -4035,6 +4035,20 @@ export class TeamDataService {
     attachments?: TaskAttachmentMeta[],
     taskRefs?: TaskRef[]
   ): Promise<TaskComment> {
+    const authority = await this.readRegistryTaskAuthority(teamName);
+    if (authority.backed) {
+      // Registry-native comment; the local store only feeds the app's own view.
+      await this.registryTaskProvider.addTaskComment(teamName, taskId, text, 'user');
+      const comment: TaskComment = {
+        id: randomUUID(),
+        author: 'user',
+        text,
+        createdAt: new Date().toISOString(),
+        type: 'regular',
+      };
+      this.invalidateGlobalTaskProjectionCache();
+      return comment;
+    }
     const registry = await this.readRegistryTaskForWrite(teamName, taskId);
     if (registry) {
       const comment = await registry.writer.appendUserComment(taskId, text, attachments, taskRefs);
