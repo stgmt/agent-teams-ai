@@ -2967,7 +2967,11 @@ export class TeamDataService {
         throw new RegistryTaskProviderError({
           code: 'REGISTRY_SCOPE_INCOMPLETE',
           teamName,
-          message: `Task creation for team "${teamName}" requires specProject, specSlug, and requirements together.`,
+          message:
+            `Task creation for team "${teamName}" needs specProject, specSlug and requirements together. ` +
+            'Read the bound specification first (team_spec_spec_entities with kinds ["requirement"]) and pass ids that exist there, ' +
+            'for example specProject "owner/project", specSlug "spec-slug", requirements ["FR-1"]. ' +
+            'A task without a requirement is refused because it cannot be traced in the corpus.',
         });
       }
       binding = resolveTeamSpecBinding(
@@ -2999,7 +3003,9 @@ export class TeamDataService {
         throw new RegistryTaskProviderError({
           code: 'REGISTRY_SCOPE_INCOMPLETE',
           teamName,
-          message: `Registry-bound team "${teamName}" requires specProject, specSlug, and requirements to create a task.`,
+          message:
+            `Team "${teamName}" is bound to a registry scope, so a task must name it: pass specProject, specSlug and requirements. ` +
+            'Use the bound pair and requirement ids that exist in that corpus; the task then lands in TASKS.md automatically.',
         });
       }
       if (
