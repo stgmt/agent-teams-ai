@@ -813,17 +813,9 @@ export class TeamDataService {
         });
       }
 
-      let linked = await this.registryTaskProvider.getBindings(teamName, true);
-      for (const binding of desiredBindings) {
-        if (
-          linked.some(
-            (candidate) => candidate.project === binding.project && candidate.spec === binding.spec
-          )
-        ) {
-          continue;
-        }
-        linked = await this.registryTaskProvider.linkTeamSpec(teamId, binding, randomUUID());
-      }
+      // Bindings are configuration, not registry state: the registry exposes no
+      // tool that lists or links them, and asking made every task read fail.
+      const linked = [...desiredBindings];
       await this.persistRegistryBindings(teamName, linked);
       await this.markRegistryRegistrationCompleted(teamName);
       return {
