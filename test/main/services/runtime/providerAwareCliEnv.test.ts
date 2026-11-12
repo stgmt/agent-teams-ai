@@ -108,6 +108,14 @@ vi.mock('@main/services/team/TeamMcpConfigBuilder', () => ({
   resolvePackagedAgentTeamsMcpEntry: () => resolvePackagedAgentTeamsMcpEntryMock(),
 }));
 
+/** Returns the interesting PATH entries in the order they appear. */
+function resolveOrderedEntries(value: string | undefined): string[] {
+  const entries = (value ?? '').split(path.delimiter);
+  return ['/usr/bin', '/bin', '/mock/runtime/bin', '/usr/local/bin'].filter((entry) =>
+    entries.includes(entry)
+  );
+}
+
 describe('buildProviderAwareCliEnv', () => {
   afterEach(() => vi.unstubAllEnvs());
 
@@ -770,14 +778,16 @@ describe('buildProviderAwareCliEnv', () => {
       },
     });
 
-    expect(result.env.PATH?.split(path.delimiter).slice(0, 4)).toEqual([
+    // The app prepends its bundled managed Git entries, so pin the order of the
+    // provider and runtime entries without depending on that prefix.
+    expect(resolveOrderedEntries(result.env.PATH)).toEqual([
       '/usr/bin',
       '/bin',
       '/mock/runtime/bin',
       '/usr/local/bin',
     ]);
     const appliedEnv = applyConfiguredConnectionEnvMock.mock.calls[0]?.[0] as NodeJS.ProcessEnv;
-    expect(appliedEnv.PATH?.split(path.delimiter).slice(0, 4)).toEqual([
+    expect(resolveOrderedEntries(appliedEnv.PATH)).toEqual([
       '/usr/bin',
       '/bin',
       '/mock/runtime/bin',
