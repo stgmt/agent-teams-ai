@@ -46,9 +46,15 @@ until the application and registry release checks and sandbox acceptance pass.
 
 Target repository: `stgmt/agent-teams-ai`. This release makes the Spec Kit registry the single
 source for a team's specifications and tasks, so it takes the next minor on the fork line and the
-first pre-release counter (`-tokenplan.0`) of that line. `package.json` and the tag stay unchanged
-until publication is approved. Do not publish or install this draft until the application and
-registry release checks and sandbox acceptance pass.
+first pre-release counter (`-tokenplan.0`) of that line. `package.json` carries
+`2.19.0-tokenplan.0`, the Windows installer is built, and installing it over
+`2.18.6-tokenplan.0` preserved user data. Do not publish or install this draft publicly until the
+application and registry release checks pass.
+
+Build facts: `Agent.Teams.AI.Setup.2.19.0-tokenplan.0.exe`,
+sha256 `c5bf5c0e9e1104c1595a356b59fd01ccc3d39b278348004b33e3e0af8b03d84d`, 353602761 bytes,
+unsigned (no signing certificate configured). Staged runtime: `resources/runtime/VERSION`=`0.0.159`,
+`COMMIT_SHA`=`423598826b3f8e76632648282dc9195e2819632a` — the published `runtime-v0.0.159` release.
 
 <!-- RELEASE_BODY_START v2.19.0-tokenplan.0 -->
 
