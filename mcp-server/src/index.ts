@@ -78,9 +78,10 @@ export function createServer(
     version: '1.0.0',
     ...(httpOptions
       ? {
-          authenticate: (request) => ({
-            appMcpScopeCredential: readBearerScopeCredential(request.headers.authorization),
-          }),
+          authenticate: (request) =>
+            Promise.resolve({
+              appMcpScopeCredential: readBearerScopeCredential(request.headers.authorization),
+            }),
         }
       : {}),
     ...(bound && authority
@@ -116,7 +117,6 @@ export function createServer(
 
   return server;
 }
-
 
 function getArgValue(argv: string[], name: string): string | null {
   const directPrefix = `${name}=`;

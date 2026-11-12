@@ -9,8 +9,15 @@ declare module 'agent-teams-controller' {
     artifactFile?: TaskArtifactFile;
   }
 
-  export interface TaskArtifactProof { attachmentId: string; sha256: string; size: number }
-  export interface TaskArtifactFile { filename: string; base64Data: string }
+  export interface TaskArtifactProof {
+    attachmentId: string;
+    sha256: string;
+    size: number;
+  }
+  export interface TaskArtifactFile {
+    filename: string;
+    base64Data: string;
+  }
 
   export interface ControllerTaskScope {
     project: string;
@@ -22,7 +29,7 @@ declare module 'agent-teams-controller' {
     displayId?: string;
     subject: string;
     status: string;
-    owner?: string | null | undefined;
+    owner?: string | null;
     comments?: ControllerTaskCommentRecord[];
     attachments?: ControllerTaskAttachmentRecord[];
     historyEvents?: Record<string, unknown>[];
@@ -47,7 +54,9 @@ declare module 'agent-teams-controller' {
     task: ControllerTaskRecord;
     comment: ControllerTaskCommentRecord;
   }
-  export type ControllerTaskMutationResult = Record<string, unknown> & { task: ControllerTaskRecord };
+  export type ControllerTaskMutationResult = Record<string, unknown> & {
+    task: ControllerTaskRecord;
+  };
 
   export interface ControllerTaskMutationOptions {
     scope?: ControllerTaskScope;
@@ -93,7 +102,11 @@ declare module 'agent-teams-controller' {
     ): ControllerTaskRecord;
     startTask(taskId: string, actor?: string, scope?: ControllerTaskScope): ControllerTaskRecord;
     completeTask(taskId: string, actor?: string, scope?: ControllerTaskScope): ControllerTaskRecord;
-    softDeleteTask(taskId: string, actor?: string, scope?: ControllerTaskScope): ControllerTaskRecord;
+    softDeleteTask(
+      taskId: string,
+      actor?: string,
+      scope?: ControllerTaskScope
+    ): ControllerTaskRecord;
     restoreTask(taskId: string, actor?: string, scope?: ControllerTaskScope): ControllerTaskRecord;
     setTaskOwner(
       taskId: string,
@@ -154,8 +167,17 @@ declare module 'agent-teams-controller' {
   export interface ControllerTaskBoardTaskApi
     extends ControllerTaskReadApi, ControllerTaskWriteApi {
     verifyTaskArtifact(taskId: string, scope?: ControllerTaskScope): TaskArtifactProof | null;
-    readTaskArtifactData(taskId: string, attachmentId: string, scope?: ControllerTaskScope): string | null;
-    setTaskArtifactFile(taskId: string, file: TaskArtifactFile, actor?: string, scope?: ControllerTaskScope): ControllerTaskRecord;
+    readTaskArtifactData(
+      taskId: string,
+      attachmentId: string,
+      scope?: ControllerTaskScope
+    ): string | null;
+    setTaskArtifactFile(
+      taskId: string,
+      file: TaskArtifactFile,
+      actor?: string,
+      scope?: ControllerTaskScope
+    ): ControllerTaskRecord;
     reconcileTaskCreation(flags: Record<string, unknown>): ControllerTaskRecord;
     memberBriefing(
       memberName: string,
@@ -418,7 +440,6 @@ declare module 'agent-teams-controller' {
     memberWorkSyncReport(flags: Record<string, unknown>): Promise<unknown>;
   }
 
-
   export interface ControllerSpecToolDescriptor {
     readonly name: string;
     readonly description: string;
@@ -456,7 +477,6 @@ declare module 'agent-teams-controller' {
       newRequestId?(): string;
     }): ControllerSpecGateway;
   };
-
 
   export interface AgentTeamsController {
     tasks: ControllerTaskApi;
