@@ -133,7 +133,8 @@ describe('TeamMcpConfigBuilder', () => {
     entry: string
   ): void {
     expect(server?.args).toEqual([entry]);
-    expect(server?.command).toMatch(/(^node(?:-\d+)?$|[\\/]node(?:-\d+)?(?:\.exe)?$)/);
+    // Windows paths are case-insensitive: the host binary may be `node.EXE`.
+    expect(server?.command).toMatch(/(^node(?:-\d+)?$|[\\/]node(?:-\d+)?(?:\.exe)?$)/i);
   }
 
   function getBuiltWorkspaceEntry(): string {

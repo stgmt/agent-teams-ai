@@ -481,7 +481,11 @@ describe('Kanban transition integration', () => {
     expect(kill).not.toHaveBeenCalled();
     expect(cancelDeliveries).not.toHaveBeenCalled();
     expect(stopProcesses).toHaveBeenCalledTimes(1);
-    expect(pause).toHaveBeenCalledTimes(1);
+    // The clock is paused at both dedicated boundaries: before teardown, and
+    // again at the final persisted boundary after every owned stop settled.
+    // Both attempts are blocked by the same uncertain review, so both report
+    // the pending transition and neither rewrites the task.
+    expect(pause).toHaveBeenCalledTimes(2);
     expect(fs.readFileSync(taskPath, 'utf8')).toBe(before);
     expect(controller.kanban.inspectPendingTransition(task.id)).toEqual(inspected);
     controller.kanban.resolvePendingTransition(
@@ -542,15 +546,16 @@ describe('Kanban transition integration', () => {
       logger: { info: vi.fn() },
     };
     try {
-      await expect(stopTeamFlow('fixture', ports as never)).rejects.toMatchObject({
-        code: 'task_activity_interval_pause_failed_after_stop',
-        pendingTransition: false,
-      });
+      // The pre-teardown pause wrote the interval and then reported EIO. The
+      // final boundary re-reads the already-closed interval and settles the
+      // clock, so the stop confirms instead of failing — but the write itself
+      // is never retried, which `attempts` proves below.
+      await expect(stopTeamFlow('fixture', ports as never)).resolves.toBeUndefined();
     } finally {
       spy.mockRestore();
     }
     expect(stopProcesses).toHaveBeenCalledTimes(1);
-    expect(pause).toHaveBeenCalledTimes(1);
+    expect(pause).toHaveBeenCalledTimes(2);
     expect(attempts).toBe(1);
     expect(warning).toHaveBeenCalledWith(
       expect.any(String),
@@ -645,7 +650,9 @@ export const boardLocks = controller.boardLocks;`
       code: 'task_activity_interval_pause_failed_after_stop',
       pendingTransition: true,
     });
-    expect(pause).toHaveBeenCalledTimes(1);
+    // Pre-teardown and final boundary both stay blocked by the transition the
+    // other process left behind, so neither closes the uncertain interval.
+    expect(pause).toHaveBeenCalledTimes(2);
     expect(fs.readFileSync(taskPath, 'utf8')).toBe(before);
   });
 

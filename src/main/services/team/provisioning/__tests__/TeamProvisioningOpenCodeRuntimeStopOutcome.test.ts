@@ -416,11 +416,11 @@ describe('assertEscalatedStopConfirmed', () => {
     diagnostics: [],
   };
 
-  it('accepts the runtime-already-down outcome as the finished stop it is', () => {
-    // A team with no owned OpenCode lane ids whose recorded hosts exit before
-    // the orchestrator acknowledges: the flow deliberately returns this after
-    // its force cleanup and both entry points describe it as having finished
-    // the stop, so it must not read as an unconfirmed stop failure.
+  it('refuses the runtime-already-down outcome as an unconfirmed stop', () => {
+    // A team whose recorded hosts exit before the orchestrator acknowledges
+    // answers `runtime_already_down` with `cleanupOutcome: 'incomplete'`. Dead
+    // processes do not establish that the original stop finished its durable
+    // task-clock work, so this must never read as a completed stop.
     expect(() =>
       assertEscalatedStopConfirmed({
         ...finished,
@@ -430,7 +430,7 @@ describe('assertEscalatedStopConfirmed', () => {
           'Runtime hosts were gone 12ms into the stop; finished without waiting for the orchestrator acknowledgement',
         ],
       })
-    ).not.toThrow();
+    ).toThrow('team_stop_unconfirmed:runtime_already_down');
   });
 
   it('still rejects an unconfirmed stop and a stop with incomplete cleanup', () => {
