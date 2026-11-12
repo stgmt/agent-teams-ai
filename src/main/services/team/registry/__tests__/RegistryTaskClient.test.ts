@@ -658,6 +658,44 @@ describe('RegistryTaskClient writes', () => {
     ]);
   });
 
+  it('creates a task through the published contract when the team has no registry identity', async () => {
+    const registry = await startFakeRegistry(() => ({
+      envelope: baseEnvelope({
+        schemaVersion: 'spec-mcp-operations-patch@1',
+        requestId: 'req-contract',
+        dryRun: false,
+        proposalHash: 'hash-contract',
+        outcome: 'APPLIED',
+      }),
+    }));
+    const client = await makeClient(registry);
+
+    const result = await client.upsertTask({
+      project: 'stgmt/tokenplan',
+      spec: 'spec-a',
+      localId: '77',
+      title: 'Create without a registry team id',
+      requirements: ['spec-a:FR-1'],
+      owner: 'reader',
+      status: 'todo',
+    });
+
+    expect(result).toEqual({ outcome: 'APPLIED', transitions: [], refusal: null });
+    const writeCall = registry.calls[0];
+    expect(writeCall?.toolName).toBe('spec_patch');
+    expect(writeCall?.args).toMatchObject({
+      intent: 'confirmTaskCreation',
+      project: 'stgmt/tokenplan',
+      spec: 'spec-a',
+      entity: 'TASK-77',
+      subject: 'Create without a registry team id',
+      requirements: ['spec-a:FR-1'],
+      owner: 'reader',
+      dryRun: false,
+    });
+    expect(writeCall?.args).not.toHaveProperty('teamId');
+  });
+
   it('binds a signed GENESIS replay to the exact transported request and final lifecycle receipt', async () => {
     const identity = {
       securityStoreId: '10000000-0000-4000-8000-000000000001',

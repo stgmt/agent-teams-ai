@@ -466,6 +466,26 @@ export class RegistryTaskClient {
       input.requestId === undefined
         ? randomUUID()
         : assertUuid(input.requestId, 'upsertTask', 'requestId');
+    // Registry-contract path: the published intent creates the task from project
+    // and spec alone, so an app-bound team with no registry team id can still
+    // create tasks. Without this branch the creator fails after a write it cannot
+    // confirm, which surfaces as an unknown creation outcome.
+    if (!input.teamId) {
+      const entity = localId.toLowerCase().startsWith('task-') ? localId : `TASK-${localId}`;
+      await this.createTaskFields({
+        project: scope.project,
+        spec: scope.spec,
+        entity,
+        subject: input.title,
+        requirements: input.requirements,
+        ...(input.owner === undefined ? {} : { owner: input.owner }),
+        ...(input.description === undefined ? {} : { description: input.description }),
+        ...(input.status === undefined ? {} : { status: input.status }),
+        ...(input.creationToken === undefined ? {} : { creationToken: input.creationToken }),
+        ...(input.signal === undefined ? {} : { signal: input.signal }),
+      });
+      return { outcome: 'APPLIED', transitions: [], refusal: null };
+    }
     const teamId = assertNonEmptyString(input.teamId, 'upsertTask', 'teamId');
     const policy = input.policy === undefined ? undefined : assertRequiredTaskPolicy(input.policy);
     const expectedRegistrationIdentity =

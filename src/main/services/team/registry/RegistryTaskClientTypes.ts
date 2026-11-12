@@ -322,7 +322,8 @@ export interface ListRegistryTasksInput extends RegistryTaskScope {
   includeBodies?: boolean;
 }
 export interface UpsertRegistryTaskInput extends RegistryTaskScope {
-  teamId: string;
+  /** Omitted for the registry-contract path: the registry scopes tasks by project and spec. */
+  teamId?: string;
   /** `TASK-7` or a bare `7`; the registry owns the canonical spelling. */
   localId: string;
   title: string;
