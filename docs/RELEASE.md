@@ -52,8 +52,10 @@ first pre-release counter (`-tokenplan.0`) of that line. `package.json` carries
 application and registry release checks pass.
 
 Build facts: `Agent.Teams.AI.Setup.2.19.0-tokenplan.0.exe`,
-sha256 `c5bf5c0e9e1104c1595a356b59fd01ccc3d39b278348004b33e3e0af8b03d84d`, 353602761 bytes,
-unsigned (no signing certificate configured). Staged runtime: `resources/runtime/VERSION`=`0.0.159`,
+sha256 `48ded220c4bb00195172f1bb73cadaeb9635a4f26535d19e7f6f074a10aadd80`, 353602760 bytes,
+unsigned (no signing certificate configured), with
+`Agent.Teams.AI.Setup.2.19.0-tokenplan.0.exe.blockmap` and `latest.yml` (sha512 and size match the
+installer). Staged runtime: `resources/runtime/VERSION`=`0.0.159`,
 `COMMIT_SHA`=`423598826b3f8e76632648282dc9195e2819632a` — the published `runtime-v0.0.159` release.
 
 <!-- RELEASE_BODY_START v2.19.0-tokenplan.0 -->
