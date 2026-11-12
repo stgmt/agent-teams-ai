@@ -556,19 +556,34 @@ describe('TeamConfigReader', () => {
     const metaPath = path.join(teamDir, 'team.meta.json');
     await fs.mkdir(teamDir, { recursive: true });
     await fs.writeFile(configPath, JSON.stringify({ name: teamName, members: [] }));
-    const metadata = (spec: string) => JSON.stringify({
-      version: 1, cwd: tempDir, createdAt: 1,
-      specBindings: [{ project: 'owner/project', spec }],
-      registryTeamId: 'team-1',
-    });
+    const metadata = (spec: string) =>
+      JSON.stringify({
+        version: 1,
+        cwd: tempDir,
+        createdAt: 1,
+        specScope: { projects: ['owner/project'], bindings: [{ project: 'owner/project', spec }] },
+        registryTeamId: 'team-1',
+      });
     await fs.writeFile(metaPath, metadata('first'));
     const reader = new TeamConfigReader();
     expect(await reader.getRegistryBindingState(teamName)).toMatchObject({
-      status: 'verified', binding: { specBindings: [{ project: 'owner/project', spec: 'first' }] },
+      status: 'verified',
+      binding: {
+        specScope: {
+          projects: ['owner/project'],
+          bindings: [{ project: 'owner/project', spec: 'first' }],
+        },
+      },
     });
     await fs.writeFile(metaPath, metadata('second'));
     expect(await reader.getRegistryBindingState(teamName)).toMatchObject({
-      status: 'verified', binding: { specBindings: [{ project: 'owner/project', spec: 'second' }] },
+      status: 'verified',
+      binding: {
+        specScope: {
+          projects: ['owner/project'],
+          bindings: [{ project: 'owner/project', spec: 'second' }],
+        },
+      },
     });
     await fs.writeFile(metaPath, '{');
     expect(await reader.getRegistryBindingState(teamName)).toEqual({ status: 'unavailable' });
@@ -578,13 +593,26 @@ describe('TeamConfigReader', () => {
   it('does not replace an explicit incomplete config binding with metadata', async () => {
     const teamDir = path.join(tempDir, 'explicit-scope');
     await fs.mkdir(teamDir, { recursive: true });
-    await fs.writeFile(path.join(teamDir, 'config.json'), JSON.stringify({
-      name: 'explicit-scope', members: [], specProject: 'owner/project',
-    }));
-    await fs.writeFile(path.join(teamDir, 'team.meta.json'), JSON.stringify({
-      version: 1, cwd: tempDir, createdAt: 1,
-      specBindings: [{ project: 'owner/project', spec: 'old-spec' }],
-    }));
+    await fs.writeFile(
+      path.join(teamDir, 'config.json'),
+      JSON.stringify({
+        name: 'explicit-scope',
+        members: [],
+        specProject: 'owner/project',
+      })
+    );
+    await fs.writeFile(
+      path.join(teamDir, 'team.meta.json'),
+      JSON.stringify({
+        version: 1,
+        cwd: tempDir,
+        createdAt: 1,
+        specScope: {
+          projects: ['owner/project'],
+          bindings: [{ project: 'owner/project', spec: 'old-spec' }],
+        },
+      })
+    );
     expect(await new TeamConfigReader().getRegistryBindingState('explicit-scope')).toEqual({
       status: 'unavailable',
     });
@@ -593,14 +621,21 @@ describe('TeamConfigReader', () => {
   it('fails closed if registry metadata changes while the binding is being read', async () => {
     const teamDir = path.join(tempDir, 'binding-race');
     await fs.mkdir(teamDir, { recursive: true });
-    await fs.writeFile(path.join(teamDir, 'config.json'), JSON.stringify({
-      name: 'binding-race', members: [],
-    }));
+    await fs.writeFile(
+      path.join(teamDir, 'config.json'),
+      JSON.stringify({
+        name: 'binding-race',
+        members: [],
+      })
+    );
     const metaPath = path.join(teamDir, 'team.meta.json');
-    const payload = (spec: string) => JSON.stringify({
-      version: 1, cwd: tempDir, createdAt: 1,
-      specBindings: [{ project: 'owner/project', spec }],
-    });
+    const payload = (spec: string) =>
+      JSON.stringify({
+        version: 1,
+        cwd: tempDir,
+        createdAt: 1,
+        specScope: { projects: ['owner/project'], bindings: [{ project: 'owner/project', spec }] },
+      });
     await fs.writeFile(metaPath, payload('first'));
     const metaStore = new TeamMetaStore();
     const originalRead = metaStore.getMeta.bind(metaStore);
@@ -613,7 +648,13 @@ describe('TeamConfigReader', () => {
     expect(await reader.getRegistryBindingState('binding-race')).toEqual({ status: 'unavailable' });
     vi.restoreAllMocks();
     expect(await reader.getRegistryBindingState('binding-race')).toMatchObject({
-      status: 'verified', binding: { specBindings: [{ project: 'owner/project', spec: 'changed-spec' }] },
+      status: 'verified',
+      binding: {
+        specScope: {
+          projects: ['owner/project'],
+          bindings: [{ project: 'owner/project', spec: 'changed-spec' }],
+        },
+      },
     });
   });
 

@@ -145,7 +145,10 @@ liveDescribe('issue #258 member deletion live e2e', () => {
 
       const handlers = new Map<string, RegisteredHandler>();
       ipcMain = createIpcMainHarness(handlers);
-      initializeTeamHandlers(new TeamDataService(), bindTeamIpcHandlerApis(activeService));
+      initializeTeamHandlers(
+        new TeamDataService((teamName) => activeService!.getTeamAgentRuntimeSnapshot(teamName)),
+        bindTeamIpcHandlerApis(activeService)
+      );
       registerTeamHandlers(ipcMain);
       const remove = handlers.get(TEAM_REMOVE_MEMBER);
       if (!remove) throw new Error('TEAM_REMOVE_MEMBER IPC handler was not registered');
@@ -173,7 +176,10 @@ liveDescribe('issue #258 member deletion live e2e', () => {
         await activeService.stopTeam(teamName);
         terminateOwnedProcesses(lastSnapshot);
         activeService = createProvisioningService();
-        initializeTeamHandlers(new TeamDataService(), bindTeamIpcHandlerApis(activeService));
+        initializeTeamHandlers(
+          new TeamDataService((teamName) => activeService!.getTeamAgentRuntimeSnapshot(teamName)),
+          bindTeamIpcHandlerApis(activeService)
+        );
         const relaunchProgress: TeamProvisioningProgress[] = [];
         await activeService.launchTeam(
           {
@@ -229,7 +235,10 @@ liveDescribe('issue #258 member deletion live e2e', () => {
       await activeService.stopTeam(teamName);
       terminateOwnedProcesses(lastSnapshot);
       activeService = createProvisioningService();
-      initializeTeamHandlers(new TeamDataService(), bindTeamIpcHandlerApis(activeService));
+      initializeTeamHandlers(
+        new TeamDataService((teamName) => activeService!.getTeamAgentRuntimeSnapshot(teamName)),
+        bindTeamIpcHandlerApis(activeService)
+      );
       const soloProgress: TeamProvisioningProgress[] = [];
       await activeService.launchTeam(
         {
@@ -415,7 +424,9 @@ function findCompletedBootstrapEvent(logs: string): Record<string, unknown> | nu
 }
 
 function asStringArray(value: unknown): string[] {
-  return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string') : [];
+  return Array.isArray(value)
+    ? value.filter((entry): entry is string => typeof entry === 'string')
+    : [];
 }
 
 function assertAndClearRevokedTokenWarnings(): void {
@@ -426,9 +437,9 @@ function assertAndClearRevokedTokenWarnings(): void {
     'Launch cleanup finalizing unconfirmed bootstrap members',
   ];
   expect(warnings.length).toBeGreaterThan(0);
-  expect(warnings.filter((warning) => !allowed.some((fragment) => warning.includes(fragment)))).toEqual(
-    []
-  );
+  expect(
+    warnings.filter((warning) => !allowed.some((fragment) => warning.includes(fragment)))
+  ).toEqual([]);
   warningMock.mockClear();
 }
 
@@ -504,9 +515,8 @@ function configureLiveEnvironment(
 }
 
 async function installCodexLaunchFixture(): Promise<() => Promise<void>> {
-  const { ProviderConnectionService } = await import(
-    '../../../../src/main/services/runtime/ProviderConnectionService'
-  );
+  const { ProviderConnectionService } =
+    await import('../../../../src/main/services/runtime/ProviderConnectionService');
   const binaryPath =
     process.env.CODEX_CLI_PATH?.trim() || (await execFileAsync('which', ['codex'])).stdout.trim();
   if (!binaryPath) throw new Error('Codex CLI was not found for the live E2E');

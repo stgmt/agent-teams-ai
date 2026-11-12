@@ -10,9 +10,9 @@ import { ExecutionTaskStore } from '../execution/ExecutionTaskStore';
 import { RegistryTaskClient } from './RegistryTaskClient';
 import { RegistryTeamTaskWriter } from './RegistryTeamTaskWriter';
 
-import type { RegistryRegistrationIdentity } from '@shared/types';
 import type { RegistryTaskGenesisSigner } from './RegistryTeamTaskWriter';
 import type { TeamSpecBinding } from './TeamSpecBinding';
+import type { RegistryRegistrationIdentity } from '@shared/types';
 
 export interface RegistryTeamTaskWriterRequest {
   teamName: string;

@@ -732,7 +732,7 @@ describe('KanbanTaskCard flat board appearance', () => {
     expect(toolbarContent?.className).toContain('rounded-r-none');
     expect(toolbarContent?.className).toContain('border-r-0');
     const metadataCommentBadge = card?.querySelector('[data-testid="unread-comments-badge"]');
-    expect(metadataCommentBadge?.previousElementSibling?.textContent).toContain('#abcd1234');
+    expect(metadataCommentBadge?.previousElementSibling?.textContent).toContain('abcd1234');
     expect(getLastUnreadBadgeProps()).toMatchObject({
       totalCount: 0,
       showZero: true,

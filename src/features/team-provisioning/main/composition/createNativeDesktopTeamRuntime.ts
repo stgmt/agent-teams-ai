@@ -23,6 +23,7 @@ export interface NativeDesktopTeamRuntimeDependencies {
   teamsRoot: string;
   settings: NativeTeamLifecycleDependencies['settings'];
   provider: NativeTeamLifecycleDependencies['provider'];
+  sdkHost: NativeTeamLifecycleDependencies['sdkHost'];
   runtimeRoot: string;
   workspaceRoot: string;
   mcp: NativeTeamLifecycleDependencies['mcp'];
@@ -38,6 +39,7 @@ export interface NativeDesktopTeamRuntimeDependencies {
   runtimeAdapterRegistry?: NativeTeamLifecycleDependencies['runtimeAdapterRegistry'];
   /** Where a failed launch reports why; the shell supplies its logger. */
   log?(message: string): void;
+  onRuntimeFailure?: NativeTeamLifecycleDependencies['onRuntimeFailure'];
   /** Refuse a member whose provider has no credential, so the launch says why. */
   requireProviderAuth?: boolean;
   /** Non-owning OpenCode prompt ledger; enables lane lead delivery and member relay. */
@@ -54,7 +56,7 @@ export interface NativeDesktopTeamRuntimeDependencies {
   progressHistory?: ProvisioningStatusReaderPort;
   bootstrapRuntime?: DesktopTeamRuntimeDependencies['bootstrapRuntime'];
   launchAdmission?: DesktopTeamRuntimeDependencies['launchAdmission'];
-  /** Teams to scan for orphaned native run claims at startup. */
+  /** This profile's teams to reconcile for surviving attempts and orphaned claims. */
   listTeamNames(): Promise<readonly string[]>;
   /** Enables inbox relay polling after launch; omitted keeps relays on-demand. */
   relayIntervalMs?: number;
@@ -73,7 +75,7 @@ export interface NativeDesktopTeamRuntime {
   profileOwnership: TeamProfileOwnership;
   /** Native in-memory logs; persistence across restart is a phase 7 concern. */
   logs: Pick<NativeTeamLifecycle['logs'], 'read'>;
-  /** Clears claims whose runs are not alive in this process. */
+  /** Reobserves surviving attempts and releases orphaned claims within this profile. */
   recoverStartup(): Promise<OrphanedRunRecovery>;
 }
 
@@ -90,6 +92,7 @@ export function createNativeDesktopTeamRuntime(
     registry,
     settings: deps.settings,
     provider: deps.provider,
+    sdkHost: deps.sdkHost,
     runtimeRoot: deps.runtimeRoot,
     workspaceRoot: deps.workspaceRoot,
     teamsRoot: deps.teamsRoot,
@@ -102,6 +105,7 @@ export function createNativeDesktopTeamRuntime(
     invalidate: deps.invalidate,
     contextInvalidationSignal: deps.contextInvalidationSignal,
     withExpectedContext: deps.withExpectedContext,
+    ...(deps.onRuntimeFailure ? { onRuntimeFailure: deps.onRuntimeFailure } : {}),
     ...(deps.runtimeAdapterRegistry ? { runtimeAdapterRegistry: deps.runtimeAdapterRegistry } : {}),
     ...(deps.openCodeMemberDelivery ? { openCodeLeadDelivery: deps.openCodeMemberDelivery } : {}),
     ...(deps.relayIntervalMs ? { relayIntervalMs: deps.relayIntervalMs } : {}),

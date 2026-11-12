@@ -59,7 +59,7 @@ import type {
   TeamTask,
   TeamViewSnapshot,
   ToolApprovalSettings,
-} from '@shared/types/team';
+} from '@shared/types';
 
 const TEST_TEAM_CWD = '/workspace/team';
 

@@ -126,9 +126,9 @@ export class NativeStartupWorkDelivery {
       allEffectiveMembers: [{ name: launch.memberName, providerId: launch.providerId }],
     };
     let policyStarted = false;
-    let operation: Promise<number>;
-    try {
-      operation = this.deps.withExpectedContext(token, async () => {
+    // A synchronous admission failure must reach the same rejection path as a late one.
+    const operation: Promise<number> = Promise.resolve().then(() =>
+      this.deps.withExpectedContext(token, async () => {
         if (!isCurrent()) return 0;
         policyStarted = true;
         return deliverStartupWorkAfterConfirmation(deliveryRun, token.memberName, attemptId, {
@@ -140,10 +140,8 @@ export class NativeStartupWorkDelivery {
             this.deps.appendDiagnostic(token, memberName, text),
           logger: this.deps.logger,
         });
-      });
-    } catch (error) {
-      operation = Promise.reject(error);
-    }
+      })
+    );
 
     const tracked: Promise<void> = operation
       .then((deliveredCount) => {

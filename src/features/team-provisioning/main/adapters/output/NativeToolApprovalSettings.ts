@@ -1,4 +1,4 @@
-import { DEFAULT_TOOL_APPROVAL_SETTINGS } from '@shared/types/team';
+import { DEFAULT_TOOL_APPROVAL_SETTINGS } from '@shared/types/toolApproval';
 
 import type { ToolApprovalSettings } from '@shared/types';
 

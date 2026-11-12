@@ -80,6 +80,10 @@ import { formatBytes } from '@renderer/utils/formatters';
 import { filterMainScreenCliProviders } from '@renderer/utils/geminiUiFreeze';
 import { isMultimodelRuntimeStatus } from '@renderer/utils/multimodelProviderVisibility';
 import { resolveProjectPathById } from '@renderer/utils/projectLookup';
+import {
+  getProviderLabel,
+  getProviderStatusColor,
+} from '@renderer/utils/providerStatusPresentation';
 import { refreshCliStatusForCurrentMode } from '@renderer/utils/refreshCliStatus';
 import { getRuntimeDisplayName as getHumanRuntimeDisplayName } from '@renderer/utils/runtimeDisplayName';
 import { getVisibleTeamProviderModels } from '@renderer/utils/teamModelCatalog';
@@ -500,19 +504,6 @@ interface InstalledBannerProps {
   onOpenCodeConnectedPlanCountChange: (count: number) => void;
 }
 
-function getProviderLabel(providerId: CliProviderId): string {
-  switch (providerId) {
-    case 'anthropic':
-      return 'Anthropic';
-    case 'codex':
-      return 'Codex';
-    case 'gemini':
-      return 'Gemini';
-    case 'opencode':
-      return 'OpenCode (200+ providers)';
-  }
-}
-
 const ProviderDetailSkeleton = (): React.JSX.Element => {
   return (
     <div className="mt-1 space-y-2">
@@ -542,14 +533,6 @@ function isCodexSnapshotPending(
   codexSnapshotPending: boolean
 ): boolean {
   return provider.providerId === 'codex' && codexSnapshotPending;
-}
-
-function getProviderStatusColor(statusText: string, authenticated: boolean): string {
-  if (statusText === 'Checking...') {
-    return 'var(--color-text-secondary)';
-  }
-
-  return authenticated ? 'var(--color-positive-text)' : 'var(--color-text-muted)';
 }
 
 function getApiKeyActionRequiredProviders(

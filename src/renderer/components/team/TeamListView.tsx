@@ -75,6 +75,11 @@ import { runTeamDeleteOnce } from './teamDeleteProgress';
 import { TeamEmptyState } from './TeamEmptyState';
 import { EMPTY_TEAM_FILTER, TeamListFilterPopover } from './TeamListFilterPopover';
 import { TeamListSkeleton } from './TeamListSkeleton';
+import {
+  generateUniqueName,
+  getRecentProjects,
+  resolveLaunchDialogMembers,
+} from './teamListViewModel';
 import { TeamManagementNotice } from './TeamManagementNotice';
 import {
   findTeamProjectSelectionTarget,
@@ -97,7 +102,6 @@ import type {
   ResolvedTeamMember,
   TeamCreateRequest,
   TeamLaunchRequest,
-  TeamMemberSnapshot,
   TeamSummary,
   TeamSummaryMember,
 } from '@shared/types';
@@ -115,38 +119,8 @@ const ImportTeamDialog = lazy(() =>
 const TEAM_SECTION_INITIAL_VISIBLE_COUNT = 24;
 const TEAM_SECTION_PAGE_SIZE = 24;
 
-function generateUniqueName(sourceName: string, existingNames: string[]): string {
-  const base = sourceName.replace(/-\d+$/, '');
-  const existing = new Set(existingNames);
-  for (let i = 1; ; i++) {
-    const candidate = `${base}-${i}`;
-    if (!existing.has(candidate)) {
-      return candidate;
-    }
-  }
-}
-
-function getRecentProjects(team: TeamSummary): string[] {
-  const history = team.projectPathHistory;
-  if (!history || history.length === 0) {
-    return team.projectPath ? [team.projectPath] : [];
-  }
-  return history.slice(-3).reverse();
-}
-
 function folderName(fullPath: string): string {
   return getBaseName(fullPath) || fullPath;
-}
-
-function resolveLaunchDialogMembers(members: readonly TeamMemberSnapshot[]): ResolvedTeamMember[] {
-  return members.map((member) => {
-    return {
-      ...member,
-      status: member.currentTaskId ? 'active' : 'idle',
-      messageCount: 0,
-      lastActiveAt: null,
-    };
-  });
 }
 
 function renderMemberNames(members: TeamSummaryMember[]): React.JSX.Element {
@@ -868,8 +842,7 @@ export const TeamListView = memo(function TeamListView({
             void openCopiedTeam({
               teamName: uniqueName,
               runtimeSelectionVersion: savedRequest.runtimeSelectionVersion,
-              specProject: savedRequest.specProject,
-              specSlug: savedRequest.specSlug,
+              specScope: savedRequest.specScope,
               description: savedRequest.description,
               color: savedRequest.color,
               cwd: savedRequest.cwd,
@@ -891,8 +864,7 @@ export const TeamListView = memo(function TeamListView({
           });
           void openCopiedTeam({
             teamName: uniqueName,
-            specProject: data.config.specProject,
-            specSlug: data.config.specSlug,
+            specScope: data.config.specScope,
             description: data.config.description,
             color: data.config.color,
             cwd: data.config.projectPath,

@@ -68,7 +68,10 @@ vi.mock(
     OpenCodeProviderCompatibilityScope: ({
       generation,
       children,
-    }: { generation: 'v1' | 'v2' | null; children: React.ReactNode }) => {
+    }: {
+      generation: 'v1' | 'v2' | null;
+      children: React.ReactNode;
+    }) => {
       mocks.generationProps.push(generation);
       return children;
     },
@@ -121,11 +124,13 @@ describe('RuntimeProviderManagementPanel', () => {
     const root = createRoot(host);
 
     await act(async () => {
-      root.render(React.createElement(RuntimeProviderManagementPanel, {
-        runtimeId: 'opencode',
-        open: true,
-        projectPath: null,
-      }));
+      root.render(
+        React.createElement(RuntimeProviderManagementPanel, {
+          runtimeId: 'opencode',
+          open: true,
+          projectPath: null,
+        })
+      );
       await Promise.resolve();
     });
 
@@ -164,22 +169,26 @@ describe('RuntimeProviderManagementPanel', () => {
     document.body.appendChild(host);
     const root = createRoot(host);
     await act(async () => {
-      root.render(React.createElement(RuntimeProviderManagementPanel, {
-        runtimeId: 'opencode',
-        open: true,
-        projectPath: '/tmp/project-b',
-      }));
+      root.render(
+        React.createElement(RuntimeProviderManagementPanel, {
+          runtimeId: 'opencode',
+          open: true,
+          projectPath: '/tmp/project-b',
+        })
+      );
       await Promise.resolve();
     });
-    const snapshot = (mocks.viewProps.at(-1) as unknown as {
-      state: {
-        view: unknown;
-        providers: unknown[];
-        directoryEntries: unknown[];
-        selectedProviderId: string | null;
-        apiKeyValue: string;
-      };
-    }).state;
+    const snapshot = (
+      mocks.viewProps.at(-1) as unknown as {
+        state: {
+          view: unknown;
+          providers: unknown[];
+          directoryEntries: unknown[];
+          selectedProviderId: string | null;
+          apiKeyValue: string;
+        };
+      }
+    ).state;
     expect(snapshot.view).toBeNull();
     expect(snapshot.providers).toEqual([]);
     expect(snapshot.directoryEntries).toEqual([]);
@@ -205,9 +214,13 @@ describe('RuntimeProviderManagementPanel', () => {
     document.body.appendChild(host);
     const root = createRoot(host);
     const render = (projectPath: string) =>
-      root.render(React.createElement(RuntimeProviderManagementPanel, {
-        runtimeId: 'opencode', open: true, projectPath,
-      }));
+      root.render(
+        React.createElement(RuntimeProviderManagementPanel, {
+          runtimeId: 'opencode',
+          open: true,
+          projectPath,
+        })
+      );
     await act(async () => render('/tmp/project-a'));
     expect(mocks.viewProps.at(-1)?.projectPath).toBe('/tmp/project-a');
 
@@ -217,10 +230,14 @@ describe('RuntimeProviderManagementPanel', () => {
     await act(async () => render('/tmp/project-b'));
 
     expect(mocks.viewProps.length).toBeGreaterThan(0);
-    expect(mocks.viewProps.every((props) => props.disabled && props.projectPath === null)).toBe(true);
-    expect(mocks.useRuntimeProviderManagement.mock.calls.every(
-      ([options]) => !options.enabled && options.projectPath === null
-    )).toBe(true);
+    expect(mocks.viewProps.every((props) => props.disabled && props.projectPath === null)).toBe(
+      true
+    );
+    expect(
+      mocks.useRuntimeProviderManagement.mock.calls.every(
+        ([options]) => !options.enabled && options.projectPath === null
+      )
+    ).toBe(true);
     await act(async () => root.unmount());
   });
 
@@ -236,11 +253,13 @@ describe('RuntimeProviderManagementPanel', () => {
     const root = createRoot(host);
 
     await act(async () => {
-      root.render(React.createElement(RuntimeProviderManagementPanel, {
-        runtimeId: 'opencode',
-        open: true,
-        projectPath: '/tmp/project-a',
-      }));
+      root.render(
+        React.createElement(RuntimeProviderManagementPanel, {
+          runtimeId: 'opencode',
+          open: true,
+          projectPath: '/tmp/project-a',
+        })
+      );
       await Promise.resolve();
     });
     expect(mocks.useRuntimeProviderManagement.mock.calls.at(-1)?.[0]).toMatchObject({
@@ -250,14 +269,16 @@ describe('RuntimeProviderManagementPanel', () => {
     expect(mocks.viewProps.at(-1)?.disabled).toBe(true);
 
     await act(async () => {
-      resolveProjects?.([{
-        id: 'project-a',
-        path: '/tmp/project-a',
-        name: 'Project A',
-        sessions: [],
-        totalSessions: 0,
-        createdAt: 0,
-      }]);
+      resolveProjects?.([
+        {
+          id: 'project-a',
+          path: '/tmp/project-a',
+          name: 'Project A',
+          sessions: [],
+          totalSessions: 0,
+          createdAt: 0,
+        },
+      ]);
       await Promise.resolve();
     });
     expect(mocks.useRuntimeProviderManagement.mock.calls.at(-1)?.[0]).toMatchObject({
@@ -310,9 +331,12 @@ describe('RuntimeProviderManagementPanel', () => {
     const render = async (version: string) => {
       mocks.nativeRuntimeStatus = { installed: true, version, state: 'ready' };
       await act(async () => {
-        root.render(React.createElement(RuntimeProviderManagementPanel, {
-          runtimeId: 'opencode', open: true,
-        }));
+        root.render(
+          React.createElement(RuntimeProviderManagementPanel, {
+            runtimeId: 'opencode',
+            open: true,
+          })
+        );
         await Promise.resolve();
       });
     };
@@ -320,14 +344,15 @@ describe('RuntimeProviderManagementPanel', () => {
     expect(mocks.generationProps.at(-1)).toBeNull();
     expect(mocks.invalidateOpenCodeRuntimeStatus).toHaveBeenCalledTimes(1);
     expect(mocks.fetchOpenCodeRuntimeStatus).toHaveBeenCalledTimes(1);
+    // The pinned runtime ships the V1-only delivery, so a V2 CLI is unrecognized.
     await render('2.1.4');
-    expect(mocks.generationProps.at(-1)).toBe('v2');
+    expect(mocks.generationProps.at(-1)).toBeNull();
     await render('1.19.5');
     expect(mocks.generationProps.at(-1)).toBe('v1');
     await act(async () => root.unmount());
   });
 
-  it('gates V2 xAI OAuth and preserves API-key connect/reconnect plus V1', async () => {
+  it('blocks unrecognized generations and preserves connect/reconnect on the V1 runtime', async () => {
     const startConnect = vi.fn();
     const startReconnect = vi.fn();
     let authMethods: readonly string[] = ['oauth'];
@@ -350,11 +375,13 @@ describe('RuntimeProviderManagementPanel', () => {
         directorySummary: false,
         directoryRefreshing: false,
         providers: [{ providerId: 'xai', connectedAuthHint: providerAuthHint }],
-        directoryEntries: [{
-          providerId: 'xai',
-          authMethods,
-          connectedAuthHint,
-        }],
+        directoryEntries: [
+          {
+            providerId: 'xai',
+            authMethods,
+            connectedAuthHint,
+          },
+        ],
       },
       actions,
     ]);
@@ -362,13 +389,15 @@ describe('RuntimeProviderManagementPanel', () => {
     document.body.appendChild(host);
     const root = createRoot(host);
     const render = async (version: string | null) => {
-      mocks.nativeRuntimeStatus = version === null
-        ? null
-        : { installed: true, version, state: 'ready' };
+      mocks.nativeRuntimeStatus =
+        version === null ? null : { installed: true, version, state: 'ready' };
       await act(async () => {
-        root.render(React.createElement(RuntimeProviderManagementPanel, {
-          runtimeId: 'opencode', open: true,
-        }));
+        root.render(
+          React.createElement(RuntimeProviderManagementPanel, {
+            runtimeId: 'opencode',
+            open: true,
+          })
+        );
         await Promise.resolve();
       });
       const actions = mocks.viewProps.at(-1)?.actions;
@@ -377,6 +406,7 @@ describe('RuntimeProviderManagementPanel', () => {
       actions?.startReconnect('xai');
     };
 
+    // A V2 CLI is not served by the pinned V1-only runtime: no route is offered.
     await render('2.1.4');
     expect(startConnect).not.toHaveBeenCalled();
     expect(startReconnect).not.toHaveBeenCalled();
@@ -389,36 +419,35 @@ describe('RuntimeProviderManagementPanel', () => {
     expect(startConnect).toHaveBeenCalledTimes(1);
     expect(startReconnect).toHaveBeenCalledTimes(1);
 
-    // V2 API-key routes must not be blocked just because OAuth is unavailable.
+    // A supported V1 runtime keeps the API-key route connectable.
     authMethods = ['api'];
     connectedAuthHint = null;
     providerAuthHint = null;
-    await render('2.1.4');
+    await render('1.19.5');
     expect(startConnect).toHaveBeenCalledTimes(2);
     expect(startReconnect).toHaveBeenCalledTimes(2);
 
-    // A fresh API-key Connect stays selectable with both offered methods,
-    // but an existing OAuth credential cannot be reconnected on V2.
+    // With both offered methods a fresh connect and an existing OAuth
+    // credential's reconnect both stay available on V1.
     authMethods = ['oauth', 'api'];
     connectedAuthHint = 'oauth';
     providerAuthHint = 'oauth';
-    await render('2.1.4');
+    await render('1.19.5');
     expect(startConnect).toHaveBeenCalledTimes(3);
-    expect(startReconnect).toHaveBeenCalledTimes(2);
+    expect(startReconnect).toHaveBeenCalledTimes(3);
 
     // The saved connection's auth method has precedence over the directory hint.
     connectedAuthHint = 'api';
-    await render('2.1.4');
+    await render('1.19.5');
     expect(startConnect).toHaveBeenCalledTimes(4);
-    expect(startReconnect).toHaveBeenCalledTimes(2);
+    expect(startReconnect).toHaveBeenCalledTimes(4);
 
-    // When the provider's saved hint is missing, the directory OAuth hint still
-    // prevents reconnecting an unsupported V2 subscription route.
+    // A missing saved hint falls back to the directory auth hint without blocking V1.
     connectedAuthHint = 'oauth';
     providerAuthHint = null;
-    await render('2.1.4');
+    await render('1.19.5');
     expect(startConnect).toHaveBeenCalledTimes(5);
-    expect(startReconnect).toHaveBeenCalledTimes(2);
+    expect(startReconnect).toHaveBeenCalledTimes(5);
     await act(async () => root.unmount());
   });
 
@@ -556,8 +585,9 @@ describe('RuntimeProviderManagementPanel', () => {
     await act(async () => {
       await vi.waitFor(() => expect(hydrateDirectory).toHaveBeenCalledTimes(2));
     });
-    expect(mocks.useRuntimeProviderManagement.mock.calls.at(-1)?.[0]?.runtimeRevision)
-      .toContain('1.19.4');
+    expect(mocks.useRuntimeProviderManagement.mock.calls.at(-1)?.[0]?.runtimeRevision).toContain(
+      '1.19.4'
+    );
     await act(async () => root.unmount());
   });
 

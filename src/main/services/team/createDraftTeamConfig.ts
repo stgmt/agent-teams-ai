@@ -62,8 +62,7 @@ export async function createDraftTeamConfig(
     // team.meta.json preserves user's configuration for the Launch flow.
     const metadata: Omit<TeamMetaFile, 'version'> = {
       runtimeSelectionVersion: request.runtimeSelectionVersion,
-      ...(request.specProject !== undefined ? { specProject: request.specProject } : {}),
-      ...(request.specSlug !== undefined ? { specSlug: request.specSlug } : {}),
+      ...(request.specScope ? { specScope: request.specScope } : {}),
       displayName: request.displayName,
       description: request.description,
       color: request.color,

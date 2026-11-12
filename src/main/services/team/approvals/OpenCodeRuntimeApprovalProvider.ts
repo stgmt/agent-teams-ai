@@ -14,7 +14,7 @@ import type {
   TeamRuntimePermissionAnswerInput,
 } from '../runtime/TeamRuntimeAdapter';
 import type { PersistedTeamLaunchSnapshot } from '@shared/types';
-import type { ToolApprovalRequest } from '@shared/types/team';
+import type { ToolApprovalRequest } from '@shared/types';
 
 interface CollectOpenCodeRuntimeApprovalsInput {
   teamName: string;

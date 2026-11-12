@@ -1,4 +1,6 @@
 // @vitest-environment node
+import { installNativeSdkHostFixture } from './nativeSdkTestHarness';
+import { rejectUnexpectedRecovery } from './nodeMemberRuntimeFixture';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -8,6 +10,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { NativeClaudeLaunchPlanner } from '../../../../src/features/team-provisioning/main/adapters/output/NativeClaudeLaunchPlanner';
 import { NodeNativeLaunchArtifacts } from '../../../../src/features/team-provisioning/main/adapters/output/NodeNativeLaunchArtifacts';
 import { NodeNativeMemberRegistration } from '../../../../src/features/team-provisioning/main/adapters/output/NodeNativeMemberRegistration';
+const sdkHost = installNativeSdkHostFixture();
 
 const directories: string[] = [];
 const subscriptions: (() => void)[] = [];
@@ -24,6 +27,13 @@ const settings = {
   memberName: 'builder',
   role: 'member' as const,
   configurationRevision: 'TEST-revision',
+  specIntegration: {
+    scope: { projects: ['TEST/project'], bindings: [] },
+    environment: {
+      OMP_SPEC_REGISTRY_URL: 'http://127.0.0.1:8090',
+      OMP_SPEC_REGISTRY_TOKEN: 'TEST-registry-credential',
+    },
+  },
   providerId: 'anthropic',
   model: 'TEST-model',
   workingDirectory: process.cwd(),
@@ -83,6 +93,8 @@ describe('native launch artifact, registration and proof ownership integration',
       registration,
     });
     const planner = new NativeClaudeLaunchPlanner({
+      sdkHost: sdkHost(),
+      releaseRecovered: rejectUnexpectedRecovery,
       prepareWorkspace: (launch) =>
         Promise.resolve({ ...launch, taskLedgerProjectDirectory: join(root, 'TEST-ledger') }),
       prepareProvider: () =>

@@ -30,6 +30,12 @@ vi.mock('@main/services/team/TeamDataWorkerClient', () => ({
     invalidateTeamConfig: () => undefined,
     invalidateMemberRuntimeAdvisory: () => undefined,
   }),
+  getTeamDataWorkerCache: () => ({
+    invalidateTeamConfig: () => undefined,
+    invalidateTeamMessageFeed: () => undefined,
+    invalidateMemberRuntimeAdvisory: () => undefined,
+    resetMemberRuntimeAdvisoriesForNewRun: () => undefined,
+  }),
 }));
 
 import {

@@ -34,9 +34,13 @@ export function runTeamTaskAction(
     release();
     publishTaskActionError({ ...identity, message: mapReviewError(error) });
   };
-  try {
-    void action(isCurrent).then(release, failed);
-  } catch (error) {
-    failed(error);
-  }
+  const run = async (): Promise<void> => {
+    try {
+      await action(isCurrent);
+      release();
+    } catch (error) {
+      failed(error);
+    }
+  };
+  void run();
 }

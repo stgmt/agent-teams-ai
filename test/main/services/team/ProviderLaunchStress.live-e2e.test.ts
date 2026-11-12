@@ -414,7 +414,9 @@ async function runPostLaunchWorkProofCheck(
 ): Promise<void> {
   const memberNames = resolvePostLaunchWorkTargets(active.scenario, expectedMembers);
   const markerPrefix = `provider-stress-${active.scenario}-${Date.now()}`;
-  const teamDataService = new TeamDataService();
+  const teamDataService = new TeamDataService((teamName) =>
+    active.svc.getTeamAgentRuntimeSnapshot(teamName)
+  );
   const taskReader = new TeamTaskReader();
 
   process.stderr.write(

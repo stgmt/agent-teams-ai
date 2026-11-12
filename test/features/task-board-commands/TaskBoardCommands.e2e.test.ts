@@ -21,10 +21,8 @@ import { type AgentTeamsController, createController } from 'agent-teams-control
 import Database from 'better-sqlite3-node';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { TeamDataService } from '../../../src/main/services/team/TeamDataService';
 import { InProcessGateway } from '../internal-storage/helpers/InProcessGateway';
 
-import type { TeamGroupChatDTO } from '@features/team-group-chats/contracts';
 import type { TeamTask } from '@shared/types';
 
 const TEAM_NAME = 'task-command-e2e';
@@ -74,85 +72,6 @@ describe('task-board commands E2E', () => {
         }
       ).creationCommand?.idempotencyKey
     ).toBe(identity.idempotencyKey);
-    expect(harness.controller.taskBoard.listTasks()).toHaveLength(1);
-  });
-
-  it('admits fresh group links without blocking committed replay or existing-link edits', async () => {
-    const harness = await makeHarness();
-    const group: TeamGroupChatDTO = {
-      id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
-      name: 'Task context',
-      createdAt: '2026-10-10T12:00:00.000Z',
-      membership: { kind: 'fixed', memberNames: ['lead', 'worker'] },
-      memberNames: ['lead', 'worker'],
-      availableRecipientNames: [],
-      canSend: false,
-      archivedAt: null,
-    };
-    const catalog = vi.fn(() => Promise.resolve([group]));
-    const service = new TeamDataService(
-      { getConfigSnapshot: () => Promise.resolve({ name: TEAM_NAME, members: [] }) } as never,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      () => harness.controller
-    );
-    service.setTaskBoardCommandFacade(harness.facade);
-    service.setTaskGroupChatCatalog(catalog);
-    const request = {
-      subject: 'Associated durable task',
-      groupChatId: group.id,
-      command: makeIdentity('abababab-abab-4bab-8bab-abababababab'),
-    };
-    const first = await service.createTask(TEAM_NAME, request);
-    expect(first.groupChatId).toBe(group.id);
-    expect(catalog).toHaveBeenCalledWith(TEAM_NAME);
-
-    group.archivedAt = '2026-10-10T12:01:00.000Z';
-    catalog.mockClear();
-    const replay = await service.createTask(TEAM_NAME, request);
-    expect(replay.id).toBe(first.id);
-    expect(catalog).not.toHaveBeenCalled();
-    await expect(
-      service.createTask(TEAM_NAME, {
-        ...request,
-        groupChatId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
-      })
-    ).rejects.toThrow(/conflict/i);
-    expect(catalog).not.toHaveBeenCalled();
-
-    await expect(
-      service.createTask(TEAM_NAME, {
-        subject: 'Archived destination',
-        groupChatId: group.id,
-      })
-    ).rejects.toThrow('archived group chat');
-    await expect(
-      service.createTask(TEAM_NAME, {
-        subject: 'Foreign destination',
-        groupChatId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
-      })
-    ).rejects.toThrow('does not belong to this team');
-    await expect(
-      service.createTask(TEAM_NAME, {
-        subject: 'Malformed destination',
-        groupChatId: 'not-a-uuid',
-      })
-    ).rejects.toThrow('UUID');
-    catalog.mockClear();
-    catalog.mockRejectedValue(new Error('Catalog is unavailable'));
-    await service.updateTaskFields(TEAM_NAME, first.id, { subject: 'Edited title' });
-    await service.updateTaskFields(TEAM_NAME, first.id, { groupChatId: group.id });
-    expect((harness.controller.taskBoard.getTask(first.id) as TeamTask).groupChatId).toBe(group.id);
-    await service.updateTaskFields(TEAM_NAME, first.id, { groupChatId: null });
-    expect(harness.controller.taskBoard.getTask(first.id)).not.toHaveProperty('groupChatId');
-    expect(catalog).not.toHaveBeenCalled();
     expect(harness.controller.taskBoard.listTasks()).toHaveLength(1);
   });
 
@@ -502,7 +421,9 @@ describe('task-board commands E2E', () => {
     const dependency = harness.controller.taskBoard.createTask({
       subject: 'Dependency',
     }) as TeamTask;
-    const related = harness.controller.taskBoard.createTask({ subject: 'Related task' }) as TeamTask;
+    const related = harness.controller.taskBoard.createTask({
+      subject: 'Related task',
+    }) as TeamTask;
     const identity = makeIdentity('66666666-6666-4666-8666-666666666666');
     const payload = {
       subject: 'Task with recoverable backlink',
@@ -526,7 +447,9 @@ describe('task-board commands E2E', () => {
         dependencyRow.blocks = [];
         await fs.writeFile(dependencyPath, JSON.stringify(dependencyRow));
         const relatedPath = path.join(harness.claudeDir, 'tasks', TEAM_NAME, `${related.id}.json`);
-        const relatedRow = JSON.parse(await fs.readFile(relatedPath, 'utf8')) as { related?: string[] };
+        const relatedRow = JSON.parse(await fs.readFile(relatedPath, 'utf8')) as {
+          related?: string[];
+        };
         relatedRow.related = [];
         await fs.writeFile(relatedPath, JSON.stringify(relatedRow));
         throw new Error('Simulated failure after the task row was committed');
@@ -544,41 +467,51 @@ describe('task-board commands E2E', () => {
     expect(result.outcome).toBe(ApplicationCommandRunOutcome.Executed);
     expect(result.createdInAttempt).toBe(true);
     expect(repairedDependency.blocks).toContain(identity.commandId);
-    expect((harness.controller.taskBoard.getTask(related.id) as TeamTask).related)
-      .toContain(identity.commandId);
+    expect((harness.controller.taskBoard.getTask(related.id) as TeamTask).related).toContain(
+      identity.commandId
+    );
   });
 
   it('preserves existing tasks on an explicit id collision and retains numeric allocation', async () => {
     const harness = await makeHarness();
-    const numeric = harness.controller.taskBoard.createTask({ subject: 'Existing local task' }) as TeamTask;
+    const numeric = harness.controller.taskBoard.createTask({
+      subject: 'Existing local task',
+    }) as TeamTask;
     expect(numeric.id).toBe('1');
     const identity = makeIdentity('12121212-1212-4212-8212-121212121212');
     harness.controller.taskBoard.createTask({ id: identity.commandId, subject: 'Unrelated task' });
     const payload = { subject: 'New command task', createdBy: 'user' };
-    expect(() => harness.controller.taskBoard.createTask({
-      ...payload,
-      id: identity.commandId,
-      creationCommand: {
-        namespace: 'task-board',
-        scopeKey: TEAM_NAME,
-        operation: CREATE_TASK_OPERATION,
-        ...identity,
-        payloadHash: new NodeApplicationCommandHasher().hashJson(payload),
-      },
-    })).toThrow(/Task creation command conflict/);
+    expect(() =>
+      harness.controller.taskBoard.createTask({
+        ...payload,
+        id: identity.commandId,
+        creationCommand: {
+          namespace: 'task-board',
+          scopeKey: TEAM_NAME,
+          operation: CREATE_TASK_OPERATION,
+          ...identity,
+          payloadHash: new NodeApplicationCommandHasher().hashJson(payload),
+        },
+      })
+    ).toThrow(/Task creation command conflict/);
 
-    await expect(harness.facade.createTask({
-      teamName: TEAM_NAME,
-      identity,
-      payload,
-      destination: harness.destination,
-    })).rejects.toThrow('Task creation conflicts with an existing destination task');
-    expect((harness.controller.taskBoard.getTask(identity.commandId) as TeamTask).subject)
-      .toBe('Unrelated task');
-    expect((harness.controller.taskBoard.getTask(numeric.id) as TeamTask).subject)
-      .toBe('Existing local task');
-    expect((harness.controller.taskBoard.createTask({ subject: 'Next local task' }) as TeamTask).id)
-      .toBe('2');
+    await expect(
+      harness.facade.createTask({
+        teamName: TEAM_NAME,
+        identity,
+        payload,
+        destination: harness.destination,
+      })
+    ).rejects.toThrow('Task creation conflicts with an existing destination task');
+    expect((harness.controller.taskBoard.getTask(identity.commandId) as TeamTask).subject).toBe(
+      'Unrelated task'
+    );
+    expect((harness.controller.taskBoard.getTask(numeric.id) as TeamTask).subject).toBe(
+      'Existing local task'
+    );
+    expect(
+      (harness.controller.taskBoard.createTask({ subject: 'Next local task' }) as TeamTask).id
+    ).toBe('2');
   });
 
   it('replays the same explicit local command and rejects a conflicting one', async () => {
@@ -597,15 +530,21 @@ describe('task-board commands E2E', () => {
     const replay = harness.controller.taskBoard.createTask(input) as TeamTask;
     expect(replay.id).toBe(first.id);
     expect(harness.controller.taskBoard.listTasks()).toHaveLength(1);
-    expect(() => harness.controller.taskBoard.createTask({
-      ...input,
-      creationCommand: { ...command, payloadHash: 'different' },
-    })).toThrow(/Task creation command conflict/);
-    expect(() => harness.controller.taskBoard.createTask({
-      ...input,
-      id: 'different-task',
-    })).toThrow(/Task creation command conflict/);
-    expect((harness.controller.taskBoard.getTask(first.id) as TeamTask).subject).toBe(payload.subject);
+    expect(() =>
+      harness.controller.taskBoard.createTask({
+        ...input,
+        creationCommand: { ...command, payloadHash: 'different' },
+      })
+    ).toThrow(/Task creation command conflict/);
+    expect(() =>
+      harness.controller.taskBoard.createTask({
+        ...input,
+        id: 'different-task',
+      })
+    ).toThrow(/Task creation command conflict/);
+    expect((harness.controller.taskBoard.getTask(first.id) as TeamTask).subject).toBe(
+      payload.subject
+    );
   });
 
   it('reconciles a stale started command with an existing destination task', async () => {

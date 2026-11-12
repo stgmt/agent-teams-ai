@@ -43,31 +43,6 @@ import { TeamLaunchValidationError } from './TeamLaunchValidationError';
 import { assertCodexChatGptLaunchModelSupported } from './TeamProvisioningCodexChatGptModelGate';
 import { getExplicitLaunchModelSelection } from './TeamProvisioningMemberSpecs';
 
-export { normalizeProviderModelListModels } from './TeamProvisioningModelListNormalization';
-
-export interface ProviderModelListCommandResponse {
-  schemaVersion?: number;
-  providers?: Record<
-    string,
-    {
-      defaultModel?: string | null;
-      models?: (string | { id?: string; label?: string; description?: string })[];
-    }
-  >;
-}
-
-export interface RuntimeStatusCommandResponse {
-  providers?: Record<string, Partial<CliProviderStatus>>;
-}
-
-export interface AuthStatusCommandResponse {
-  provider?: string;
-  status?: Partial<CliProviderStatus>;
-  loggedIn?: boolean;
-  authMethod?: string | null;
-  providers?: Record<string, Partial<CliProviderStatus>>;
-}
-
 export interface RuntimeProviderLaunchFacts {
   defaultModel: string | null;
   modelIds: Set<string>;

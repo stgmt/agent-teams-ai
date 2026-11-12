@@ -25,7 +25,7 @@ import { TeamGraphAdapter } from '../adapters/TeamGraphAdapter';
 
 import type { TeamGraphData } from '../adapters/TeamGraphAdapter';
 import type { GraphDataPort } from '@claude-teams/agent-graph';
-import type { InboxMessage, ResolvedTeamMember, ToolApprovalRequest } from '@shared/types/team';
+import type { InboxMessage, ResolvedTeamMember, ToolApprovalRequest } from '@shared/types';
 
 interface UseTeamGraphAdapterOptions {
   active?: boolean;

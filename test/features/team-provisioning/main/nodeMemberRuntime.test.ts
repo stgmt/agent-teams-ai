@@ -1,25 +1,42 @@
 // @vitest-environment node
 import { ChildProcess } from 'node:child_process';
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 
+import { inspectProcessByPid } from '@main/utils/processInspection';
 import { describe, expect, it, vi } from 'vitest';
 
 import { BoundControlContext } from '../../../../src/features/external-agent-connection/main/BoundControlContext';
-import {
-  type NodeMemberLaunchPlan,
-  NodeMemberRuntime,
-} from '../../../../src/features/team-provisioning/main/adapters/output/NodeMemberRuntime';
+import { NodeMemberRuntime } from '../../../../src/features/team-provisioning/main/adapters/output/NodeMemberRuntime';
 
+import {
+  createNodeMemberRuntimeFixture,
+  createSdkRuntimePlan,
+  deferred,
+  rejectUnexpectedRecovery,
+} from './nodeMemberRuntimeFixture';
+
+import type {
+  ConfiguredMemberLaunch,
+  MemberRuntimeEvents,
+} from '../../../../src/features/team-provisioning/core/application/ports/MemberRuntimePorts';
+import type {
+  NodeMemberLaunchPlan,
+  NodeMemberLaunchPlanner,
+  NodeMemberTerminationPolicy,
+} from '../../../../src/features/team-provisioning/main/adapters/output/NodeMemberRuntime';
+import type { SdkPlanOverrides } from './nodeMemberRuntimeFixture';
+
+const context = new BoundControlContext('TEST-app', 'TEST-root');
 const token = {
-  appInstanceId: 'TEST-app',
-  dataRootFingerprint: 'TEST-root',
-  connectionGeneration: 1,
+  ...context.snapshot(),
   teamName: 'TEST-team',
   runId: 'TEST-run',
   memberName: 'TEST-member',
   generation: 1,
   operationId: 'TEST-start',
 };
-const settings = {
+const settings: ConfiguredMemberLaunch = {
   team: token,
   memberName: token.memberName,
   configurationRevision: 'TEST-revision',
@@ -27,10 +44,8 @@ const settings = {
   model: null,
   workingDirectory: process.cwd(),
   instructions: 'TEST',
+  specIntegration: { scope: { projects: ['TEST-project'], bindings: [] }, environment: {} },
 };
-const context = new BoundControlContext('TEST-app', 'TEST-root');
-const testOwner = context.snapshot();
-Object.assign(token, testOwner);
 
 async function admit<T>(expected: typeof token, operation: () => Promise<T>): Promise<T> {
   const release = context.admit(expected);
@@ -41,42 +56,55 @@ async function admit<T>(expected: typeof token, operation: () => Promise<T>): Pr
   }
 }
 
-function runtime(code: string) {
+function runtime(
+  code: string,
+  overrides: SdkPlanOverrides = {},
+  policy?: NodeMemberTerminationPolicy
+) {
   return new NodeMemberRuntime(
     {
-      prepare(): Promise<NodeMemberLaunchPlan> {
-        return Promise.resolve({
-          executable: process.execPath,
-          args: ['-e', code],
-          cwd: process.cwd(),
-          env: process.env,
-        });
-      },
-      observeOutput: (line) => (line.trim() === 'TEST-ready' ? 'connected' : null),
+      prepare: (_settings, attempt) => createSdkRuntimePlan(code, attempt, overrides),
+      recover: rejectUnexpectedRecovery,
     },
-    admit
+    admit,
+    policy
   );
 }
 
+function observations() {
+  return {
+    connected: vi.fn(),
+    connectionLost: vi.fn(),
+    failed: vi.fn<MemberRuntimeEvents['failed']>(),
+    releaseFailed: vi.fn<MemberRuntimeEvents['releaseFailed']>(),
+    released: vi.fn(),
+    exited: vi.fn<MemberRuntimeEvents['exited']>(),
+  };
+}
+
 async function settleWithin<T>(operation: Promise<T>): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = deferred<never>();
+  const timer = setTimeout(() => timeout.reject(new Error('TEST stop did not settle')), 5000);
   try {
-    return await Promise.race([
-      operation,
-      new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(() => reject(new Error('TEST stop did not settle')), 1500);
-      }),
-    ]);
+    return await Promise.race([operation, timeout.promise]);
   } finally {
     clearTimeout(timer);
   }
 }
 
+const userLine = JSON.stringify({ type: 'user', message: { role: 'user', content: 'TEST-input' } });
+const releaseLine = JSON.stringify({
+  type: 'control_request',
+  request_id: 'release-line',
+  request: { subtype: 'test-release' },
+});
+
+// Readiness is an SDK event plus a live authenticated socket, never diagnostic stdout.
 describe('owned Node member process adapter', () => {
   it.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 2_147_483_648])(
     'rejects invalid termination deadlines %s before preparing a process',
     (deadline) => {
-      const planner = { prepare: vi.fn() };
+      const planner: NodeMemberLaunchPlanner = { prepare: vi.fn(), recover: vi.fn() };
       expect(
         () =>
           new NodeMemberRuntime(planner, admit, {
@@ -92,671 +120,442 @@ describe('owned Node member process adapter', () => {
           })
       ).toThrow('termination deadlines');
       expect(planner.prepare).not.toHaveBeenCalled();
+      expect(planner.recover).not.toHaveBeenCalled();
     }
   );
 
-  it('carries a dying member\'s stderr into the exit observation', async () => {
-    const process = await runtime(
-      "process.stderr.write('TEST-cause: no access\\n'); setTimeout(() => process.exit(3), 250)"
-    ).spawn(settings, token, new AbortController().signal);
-    const exited = vi.fn();
-    process.subscribe({
-      connected: vi.fn(),
-      exited,
-      connectionLost: vi.fn(),
-      failed: vi.fn(),
-      releaseFailed: vi.fn(),
-      released: vi.fn(),
-    });
-    await vi.waitFor(() => expect(exited).toHaveBeenCalled(), { timeout: 10_000 });
-    expect(exited.mock.calls[0][0]).toMatchObject({ kind: 'exit', code: 3 });
-    expect(exited.mock.calls[0][0].stderrTail.join(' ')).toContain('TEST-cause: no access');
-    await process.stop();
-  });
-
-  it('replays real readiness and exit observations without inventing a live process', async () => {
-    const process = await runtime("console.log('TEST-ready'); process.exitCode=7").spawn(
-      settings,
-      token,
-      new AbortController().signal
-    );
-    const connected = vi.fn();
-    const exited = vi.fn();
-    process.subscribe({
-      connected,
-      exited,
-      connectionLost: vi.fn(),
-      failed: vi.fn(),
-      releaseFailed: vi.fn(),
-      released: vi.fn(),
-    });
-    await vi.waitFor(() =>
-      expect(exited).toHaveBeenCalledWith({ kind: 'exit', code: 7, signal: null })
-    );
-    expect(connected).toHaveBeenCalledOnce();
-    expect(process.identity.pid).toBeGreaterThan(0);
-    expect(process.identity.birthId).toBeTruthy();
-    await process.stop();
-  });
-
-  it('stops only the child it owns and preserves its real terminal observation', async () => {
-    const process = await runtime('setInterval(()=>{},1000)').spawn(
-      settings,
-      token,
-      new AbortController().signal
-    );
-    const exited = vi.fn();
-    process.subscribe({
-      connected: vi.fn(),
-      connectionLost: vi.fn(),
-      failed: vi.fn(),
-      releaseFailed: vi.fn(),
-      released: vi.fn(),
-      exited,
-    });
-    await Promise.all([process.stop(), process.stop()]);
-    expect(exited).toHaveBeenCalledOnce();
-  });
-
-  it('parses the last output line even when the child omits a newline', async () => {
-    const process = await runtime("process.stdout.write('TEST-ready')").spawn(
-      settings,
-      token,
-      new AbortController().signal
-    );
-    const connected = vi.fn();
-    const exited = vi.fn();
-    process.subscribe({
-      connected,
-      exited,
-      connectionLost: vi.fn(),
-      failed: vi.fn(),
-      releaseFailed: vi.fn(),
-      released: vi.fn(),
-    });
-    await vi.waitFor(() => expect(exited).toHaveBeenCalled(), { timeout: 10_000 });
-    expect(connected).toHaveBeenCalledOnce();
-  });
-
-  it('keeps UTF-8 readiness text intact across output chunks', async () => {
-    const bytes = [...Buffer.from('Тест-готов')];
-    const adapter = new NodeMemberRuntime(
-      {
-        prepare(): Promise<NodeMemberLaunchPlan> {
-          return Promise.resolve({
-            executable: process.execPath,
-            args: [
-              '-e',
-              `const b=Buffer.from(${JSON.stringify(bytes)});process.stdout.write(b.subarray(0,1));setTimeout(()=>process.stdout.write(b.subarray(1)),30)`,
-            ],
-            cwd: process.cwd(),
-            env: process.env,
-          });
-        },
-        observeOutput: (line) => (line === 'Тест-готов' ? 'connected' : null),
-      },
-      admit
-    );
-    const child = await adapter.spawn(settings, token, new AbortController().signal);
-    const connected = vi.fn();
-    const exited = vi.fn();
-    child.subscribe({
-      connected,
-      exited,
-      connectionLost: vi.fn(),
-      failed: vi.fn(),
-      releaseFailed: vi.fn(),
-      released: vi.fn(),
-    });
-    await vi.waitFor(() => expect(exited).toHaveBeenCalled(), { timeout: 5_000 });
-    expect(connected).toHaveBeenCalledOnce();
-  });
-
-  it('binds a started child before private bootstrap delivery and releases resources on its real exit', async () => {
-    const disposed = vi.fn(() => Promise.resolve());
-    const bootstrapped = vi.fn<NonNullable<NodeMemberLaunchPlan['afterSpawn']>>(() =>
-      Promise.resolve()
-    );
-    const adapter = new NodeMemberRuntime(
-      {
-        prepare(): Promise<NodeMemberLaunchPlan> {
-          return Promise.resolve({
-            executable: process.execPath,
-            args: ['-e', 'setInterval(()=>{},1000)'],
-            cwd: process.cwd(),
-            env: process.env,
-            afterSpawn: bootstrapped,
-            dispose: disposed,
-          });
-        },
-      },
-      admit
-    );
-    const child = await adapter.spawn(settings, token, new AbortController().signal);
-    child.subscribe({
-      connected: vi.fn(),
-      connectionLost: vi.fn(),
-      failed: vi.fn(),
-      releaseFailed: vi.fn(),
-      released: vi.fn(),
-      exited: vi.fn(),
-    });
-    await expect.poll(() => bootstrapped.mock.calls.length).toBe(1);
-    expect(bootstrapped).toHaveBeenCalledWith(child.identity, expect.any(AbortSignal));
-    await child.stop();
-    expect(disposed).toHaveBeenCalledOnce();
-  });
-
-  it('stops the owned child when registration fails instead of leaking it outside lifecycle ownership', async () => {
-    const disposed = vi.fn(() => Promise.resolve());
-    const adapter = new NodeMemberRuntime(
-      {
-        prepare(): Promise<NodeMemberLaunchPlan> {
-          return Promise.resolve({
-            executable: process.execPath,
-            args: ['-e', 'setInterval(()=>{},1000)'],
-            cwd: process.cwd(),
-            env: process.env,
-            afterSpawn: () => Promise.reject(new Error('TEST-registration-failed')),
-            dispose: disposed,
-          });
-        },
-      },
-      admit
-    );
-    const child = await adapter.spawn(settings, token, new AbortController().signal);
-    const exited = vi.fn();
-    child.subscribe({
-      connected: vi.fn(),
-      connectionLost: vi.fn(),
-      failed: vi.fn(),
-      releaseFailed: vi.fn(),
-      released: vi.fn(),
-      exited,
-    });
-    await expect.poll(() => exited.mock.calls.length).toBe(1);
-    await expect(child.stop()).rejects.toThrow('TEST-registration-failed');
-    expect(disposed).toHaveBeenCalledOnce();
-  });
-
-  it('writes one framed input only to its live owned child and rejects writes after stop', async () => {
+  it("carries a dying member's real diagnostic stderr into the exit observation", async () => {
     const child = await runtime(
-      "process.stdin.setEncoding('utf8');process.stdin.on('data',line=>{if(line==='TEST-input\\n')console.log('TEST-ready')});setInterval(()=>{},1000)"
+      "process.stderr.write('TEST-cause: no access\\n'); await finish(3);"
     ).spawn(settings, token, new AbortController().signal);
-    const connected = vi.fn();
-    child.subscribe({
-      connected,
-      exited: vi.fn(),
-      connectionLost: vi.fn(),
-      failed: vi.fn(),
-      releaseFailed: vi.fn(),
-      released: vi.fn(),
-    });
-    try {
-      await child.writeInput('TEST-input');
-      await expect.poll(() => connected.mock.calls.length).toBe(1);
-      await expect(child.writeInput('TEST-invalid\nTEST-injected')).rejects.toThrow('line');
-    } finally {
-      await child.stop();
-    }
-    await expect(child.writeInput('TEST-input')).rejects.toThrow('writable');
+    const events = observations();
+    child.subscribe(events);
+    await vi.waitFor(
+      () =>
+        expect(events.exited).toHaveBeenCalledWith(
+          expect.objectContaining({ code: 3, stderrTail: ['TEST-cause: no access'] })
+        ),
+      { timeout: 10_000 }
+    );
+    await child.stop();
   });
 
-  it('does not release attempt files until private registration has settled after process cancellation', async () => {
-    let finish!: () => void;
-    const pending = new Promise<void>((resolve) => {
-      finish = resolve;
+  it('replays real SDK readiness and terminal observations without inventing a live process', async () => {
+    const child = await runtime('await ready(); await finish(7);').spawn(
+      settings,
+      token,
+      new AbortController().signal
+    );
+    const events = observations();
+    child.subscribe(events);
+    await vi.waitFor(() => expect(events.exited).toHaveBeenCalledWith({ code: 7, signal: null }), {
+      timeout: 10_000,
     });
-    const disposed = vi.fn(() => Promise.resolve());
-    const registering = vi.fn(async () => pending);
-    const adapter = new NodeMemberRuntime(
+    expect(events.connected).toHaveBeenCalledOnce();
+    expect(child.identity.pid).toBeGreaterThan(0);
+    expect(child.identity.birthId).toBeTruthy();
+    await child.stop();
+  });
+
+  it('stops only the child it owns and preserves exactly one real terminal observation', async () => {
+    const child = await runtime('await ready();').spawn(
+      settings,
+      token,
+      new AbortController().signal
+    );
+    const events = observations();
+    child.subscribe(events);
+    await Promise.all([child.stop(), child.stop()]);
+    expect(events.exited).toHaveBeenCalledOnce();
+    expect(events.released).toHaveBeenCalledOnce();
+  });
+
+  it('waits for the newline completing an SDK event rather than accepting an unterminated tail', async () => {
+    const fixture = await createNodeMemberRuntimeFixture();
+    const partialPath = join(fixture.directory, 'partial-sent');
+    const child = await new NodeMemberRuntime(
       {
-        prepare(): Promise<NodeMemberLaunchPlan> {
-          return Promise.resolve({
-            executable: process.execPath,
-            args: ['-e', 'setInterval(()=>{},1000)'],
-            cwd: process.cwd(),
-            env: process.env,
-            afterSpawn: registering,
-            dispose: disposed,
-          });
-        },
+        prepare: () =>
+          fixture.plan(
+            `
+        ws.send(JSON.stringify({ type: 'system', subtype: 'team_bootstrap', team_name: token.teamName, run_id: token.runId, event: 'completed', status: 'completed', text: 'TEST-ready', uuid: 'partial-ready' }));
+        ws.prependListener('message', bytes => { if (JSON.parse(bytes.toString()).request_id === 'release-line') ws.send('\\n'); });
+        require('node:fs').writeFileSync(${JSON.stringify(partialPath)}, 'sent');
+      `,
+            token
+          ),
+        recover: rejectUnexpectedRecovery,
       },
       admit
+    ).spawn(settings, token, new AbortController().signal);
+    const events = observations();
+    child.subscribe(events);
+    await vi.waitFor(async () => expect(await readFile(partialPath, 'utf8')).toBe('sent'), {
+      timeout: 10_000,
+    });
+    expect(events.connected).not.toHaveBeenCalled();
+    await child.writeInput(releaseLine);
+    await vi.waitFor(() => expect(events.connected).toHaveBeenCalledOnce(), { timeout: 10_000 });
+    await child.stop();
+  });
+
+  it('keeps UTF-8 bootstrap evidence intact across fragmented WebSocket frames', async () => {
+    const child = await runtime(
+      `
+      const bytes = Buffer.from(JSON.stringify({ type: 'system', subtype: 'test-ready', text: 'Тест-готов', uuid: 'utf8-ready' }) + '\\n');
+      const split = bytes.indexOf(Buffer.from('Т')) + 1;
+      ws.send(bytes.subarray(0, split), { binary: false, fin: false });
+      ws.send(bytes.subarray(split), { binary: false, fin: true });
+    `,
+      {
+        observeOutput: (line) => (JSON.parse(line).text === 'Тест-готов' ? 'connected' : null),
+      }
+    ).spawn(settings, token, new AbortController().signal);
+    const events = observations();
+    child.subscribe(events);
+    await vi.waitFor(() => expect(events.connected).toHaveBeenCalledOnce(), { timeout: 10_000 });
+    await child.stop();
+  });
+
+  it('binds a started child before bootstrap and releases resources only after its real exit', async () => {
+    const disposed = vi.fn(async () => undefined);
+    const bootstrapped = vi.fn<NonNullable<NodeMemberLaunchPlan['afterSpawn']>>(
+      async () => undefined
     );
-    const child = await adapter.spawn(settings, token, new AbortController().signal);
-    const exited = vi.fn();
-    child.subscribe({
-      connected: vi.fn(),
-      connectionLost: vi.fn(),
-      failed: vi.fn(),
-      releaseFailed: vi.fn(),
-      released: vi.fn(),
-      exited,
-    });
-    await expect.poll(() => registering.mock.calls.length).toBe(1);
-    let stopped = false;
-    const stopping = child.stop().then(() => {
-      stopped = true;
-    });
-    await expect.poll(() => exited.mock.calls.length).toBe(1);
-    try {
-      expect(disposed).not.toHaveBeenCalled();
-      expect(stopped).toBe(false);
-    } finally {
-      finish();
-      await stopping;
-    }
+    const child = await runtime('await ready();', {
+      afterSpawn: bootstrapped,
+      dispose: disposed,
+    }).spawn(settings, token, new AbortController().signal);
+    const events = observations();
+    child.subscribe(events);
+    expect(bootstrapped).toHaveBeenCalledWith(child.identity, expect.any(AbortSignal));
+    await vi.waitFor(() => expect(events.connected).toHaveBeenCalledOnce(), { timeout: 10_000 });
+    expect(disposed).not.toHaveBeenCalled();
+    await child.stop();
+    expect(events.exited).toHaveBeenCalledOnce();
     expect(disposed).toHaveBeenCalledOnce();
   });
 
-  it('does not claim resources were released when cleanup fails after the real OS exit', async () => {
-    const adapter = new NodeMemberRuntime(
-      {
-        prepare(): Promise<NodeMemberLaunchPlan> {
-          return Promise.resolve({
-            executable: process.execPath,
-            args: ['-e', 'process.exit(0)'],
-            cwd: process.cwd(),
-            env: process.env,
-            dispose: () => Promise.reject(new Error('TEST-cleanup-failed')),
-          });
-        },
-      },
-      admit
-    );
-    const child = await adapter.spawn(settings, token, new AbortController().signal);
-    const released = vi.fn();
-    const releaseFailed = vi.fn();
-    const exited = vi.fn();
-    child.subscribe({
-      connected: vi.fn(),
-      connectionLost: vi.fn(),
-      failed: vi.fn(),
-      releaseFailed,
-      released,
-      exited,
+  it('rejects failed registration only after terminating its owned process and cleaning its artifacts', async () => {
+    const disposed = vi.fn(async () => undefined);
+    const register = vi.fn<NonNullable<NodeMemberLaunchPlan['afterSpawn']>>(async () => {
+      throw new Error('TEST-registration-failed');
     });
-    await expect.poll(() => releaseFailed.mock.calls.length).toBe(1);
-    expect(exited).toHaveBeenCalledOnce();
-    expect(released).not.toHaveBeenCalled();
+    await expect(
+      runtime('await ready();', { afterSpawn: register, dispose: disposed }).spawn(
+        settings,
+        token,
+        new AbortController().signal
+      )
+    ).rejects.toThrow('TEST-registration-failed');
+    expect(register).toHaveBeenCalledOnce();
+    const identity = register.mock.calls[0]![0];
+    expect((await inspectProcessByPid(identity.pid)).status).toBe('not_found');
+    expect(disposed).toHaveBeenCalledOnce();
+  });
+
+  it('delivers framed UUID input to its live SDK child exactly once and rejects input after stop', async () => {
+    const fixture = await createNodeMemberRuntimeFixture();
+    const child = await new NodeMemberRuntime(
+      { prepare: () => fixture.plan('await ready();', token), recover: rejectUnexpectedRecovery },
+      admit
+    ).spawn(settings, token, new AbortController().signal);
+    const events = observations();
+    child.subscribe(events);
+    await vi.waitFor(() => expect(events.connected).toHaveBeenCalledOnce(), { timeout: 10_000 });
+    await child.writeInput(userLine, 'TEST-command');
+    await child.writeInput(userLine, 'TEST-command');
+    expect(await fixture.commands(token)).toEqual([
+      expect.objectContaining({ uuid: 'TEST-command', type: 'user' }),
+    ]);
+    await expect(child.writeInput(`${userLine}\n${userLine}`, 'TEST-injected')).rejects.toThrow();
+    await child.stop();
+    await expect(child.writeInput(userLine, 'TEST-late')).rejects.toThrow('no longer current');
+  });
+
+  it('retains attempt resources until pending registration settles after cancellation', async () => {
+    const pending = deferred<void>();
+    const disposed = vi.fn(async () => undefined);
+    const registering = vi.fn<NonNullable<NodeMemberLaunchPlan['afterSpawn']>>(
+      async () => pending.promise
+    );
+    const abort = new AbortController();
+    const spawning = runtime('await ready();', {
+      afterSpawn: registering,
+      dispose: disposed,
+    }).spawn(settings, token, abort.signal);
+    const rejected = expect(spawning).rejects.toThrow();
+    await vi.waitFor(() => expect(registering).toHaveBeenCalledOnce(), { timeout: 10_000 });
+    abort.abort();
+    expect(disposed).not.toHaveBeenCalled();
+    pending.resolve();
+    await rejected;
+    expect((await inspectProcessByPid(registering.mock.calls[0]![0].pid)).status).toBe('not_found');
+    expect(disposed).toHaveBeenCalledOnce();
+  });
+
+  it('does not report release when cleanup fails after a real exit', async () => {
+    const child = await runtime('await finish();', {
+      dispose: async () => {
+        throw new Error('TEST-cleanup-failed');
+      },
+    }).spawn(settings, token, new AbortController().signal);
+    const events = observations();
+    child.subscribe(events);
+    await vi.waitFor(() => expect(events.releaseFailed).toHaveBeenCalledOnce(), {
+      timeout: 10_000,
+    });
+    expect(events.exited).toHaveBeenCalledOnce();
+    expect(events.released).not.toHaveBeenCalled();
     await expect(child.stop()).rejects.toThrow('TEST-cleanup-failed');
   });
 
-  it('retains and retries exact failed cleanup without spawning another process or reporting early release', async () => {
+  it('retries exact failed cleanup without respawning or announcing release more than once', async () => {
     let blocked = true;
-    const dispose = vi.fn(() =>
-      blocked ? Promise.reject(new Error('TEST transient owned cleanup')) : Promise.resolve()
-    );
-    const adapter = new NodeMemberRuntime(
-      {
-        prepare(): Promise<NodeMemberLaunchPlan> {
-          return Promise.resolve({
-            executable: process.execPath,
-            args: ['-e', 'process.exit(0)'],
-            cwd: process.cwd(),
-            env: process.env,
-            dispose,
-          });
-        },
-      },
-      admit
-    );
-    const child = await adapter.spawn(settings, token, new AbortController().signal);
-    const released = vi.fn();
-    const releaseFailed = vi.fn();
-    child.subscribe({
-      connected: vi.fn(),
-      connectionLost: vi.fn(),
-      exited: vi.fn(),
-      failed: vi.fn(),
-      releaseFailed,
-      released,
+    const dispose = vi.fn(async () => {
+      if (blocked) throw new Error('TEST transient owned cleanup');
     });
-    await expect.poll(() => releaseFailed.mock.calls.length).toBe(1);
-    expect(released).not.toHaveBeenCalled();
+    const child = await runtime('await finish();', { dispose }).spawn(
+      settings,
+      token,
+      new AbortController().signal
+    );
+    const events = observations();
+    child.subscribe(events);
+    await vi.waitFor(() => expect(events.releaseFailed).toHaveBeenCalledOnce(), {
+      timeout: 10_000,
+    });
+    expect(events.released).not.toHaveBeenCalled();
     await expect(child.stop()).rejects.toThrow('TEST transient owned cleanup');
     blocked = false;
     const before = dispose.mock.calls.length;
     await Promise.all([child.stop(), child.stop()]);
     expect(dispose.mock.calls.length).toBe(before + 1);
-    expect(released).toHaveBeenCalledOnce();
+    expect(events.released).toHaveBeenCalledOnce();
     await child.stop();
     expect(dispose.mock.calls.length).toBe(before + 1);
   });
 
-  it('does not reinterpret the tail of an oversized output line as a fresh readiness event', async () => {
+  it('never interprets oversized diagnostic stdout or its tail as SDK readiness', async () => {
     const child = await runtime(
-      "process.stdout.write('x'.repeat(1100000),()=>setTimeout(()=>process.stdout.write('TEST-ready\\n'),30))"
+      "process.stdout.write('x'.repeat(1100000) + 'TEST-ready\\n'); await finish();"
     ).spawn(settings, token, new AbortController().signal);
-    const connected = vi.fn();
-    const exited = vi.fn();
-    child.subscribe({
-      connected,
-      exited,
-      connectionLost: vi.fn(),
-      failed: vi.fn(),
-      releaseFailed: vi.fn(),
-      released: vi.fn(),
-    });
-    await expect.poll(() => exited.mock.calls.length, { timeout: 10_000 }).toBe(1);
-    expect(connected).not.toHaveBeenCalled();
+    const events = observations();
+    child.subscribe(events);
+    await vi.waitFor(() => expect(events.exited).toHaveBeenCalledOnce(), { timeout: 10_000 });
+    expect(events.connected).not.toHaveBeenCalled();
     await child.stop();
   });
 
-  it('rejects a stale desktop context after asynchronous preparation and before creating the OS process', async () => {
-    const context = new BoundControlContext('TEST-app', 'TEST-root');
-    const attempt = { ...token, ...context.snapshot() };
-    const disposed = vi.fn(() => Promise.resolve());
-    const admit = vi.fn(async (expected, operation) => {
-      const release = context.admit(expected);
-      try {
-        return await operation();
-      } finally {
-        release();
-      }
-    });
+  it('rejects stale desktop admission after preparation and before creating an OS process', async () => {
+    const owner = new BoundControlContext('TEST-app', 'TEST-root');
+    const attempt = { ...token, ...owner.snapshot() };
+    const disposed = vi.fn(async () => undefined);
+    const admission = vi.fn();
     const adapter = new NodeMemberRuntime(
       {
-        prepare(): Promise<NodeMemberLaunchPlan> {
-          context.transportReplaced();
-          return Promise.resolve({
-            executable: process.execPath,
-            args: ['-e', 'process.exit(0)'],
-            cwd: process.cwd(),
-            env: process.env,
+        async prepare() {
+          const plan = await createSdkRuntimePlan("throw new Error('must not run')", attempt, {
             dispose: disposed,
           });
+          owner.transportReplaced();
+          return plan;
         },
+        recover: rejectUnexpectedRecovery,
       },
-      admit
+      async (expected, operation) => {
+        admission(expected);
+        const release = owner.admit(expected);
+        try {
+          return await operation();
+        } finally {
+          release();
+        }
+      }
     );
     await expect(
       adapter.spawn({ ...settings, team: attempt }, attempt, new AbortController().signal)
     ).rejects.toThrow('APP_CONTEXT_MISMATCH');
     expect(disposed).toHaveBeenCalledOnce();
-    expect(admit).toHaveBeenCalledOnce();
+    expect(admission).toHaveBeenCalledOnce();
   });
 
-  it('fails and stops only its owned child when connection proof misses the launch deadline', async () => {
-    const adapter = new NodeMemberRuntime(
-      {
-        prepare(): Promise<NodeMemberLaunchPlan> {
-          return Promise.resolve({
-            executable: process.execPath,
-            args: ['-e', 'setInterval(()=>{},1000)'],
-            cwd: process.cwd(),
-            env: process.env,
-            connectionTimeoutMs: 80,
-          });
-        },
-      },
-      admit
+  it('fails and terminates its owned child when a socket opens without bootstrap evidence', async () => {
+    const child = await runtime('', { connectionTimeoutMs: 1000 }).spawn(
+      settings,
+      token,
+      new AbortController().signal
     );
-    const child = await adapter.spawn(settings, token, new AbortController().signal);
-    const failed = vi.fn();
-    const exited = vi.fn();
-    child.subscribe({
-      connected: vi.fn(),
-      connectionLost: vi.fn(),
-      failed,
-      releaseFailed: vi.fn(),
-      exited,
-      released: vi.fn(),
-    });
-    try {
-      await expect.poll(() => failed.mock.calls.length).toBe(1);
-      expect(failed).toHaveBeenCalledWith(
-        'Owned runtime did not connect before the launch deadline'
-      );
-      await expect.poll(() => exited.mock.calls.length).toBe(1);
-    } finally {
-      await child.stop().catch(() => undefined);
-    }
+    const events = observations();
+    child.subscribe(events);
+    await vi.waitFor(
+      () =>
+        expect(events.failed).toHaveBeenCalledWith(
+          'Owned runtime did not confirm bootstrap before the launch deadline'
+        ),
+      { timeout: 10_000 }
+    );
+    await vi.waitFor(() => expect(events.exited).toHaveBeenCalledOnce(), { timeout: 10_000 });
+    expect(events.connected).not.toHaveBeenCalled();
+    await expect(child.stop()).rejects.toThrow('bootstrap');
   });
 
-  it('clears the initial connection deadline after exact runtime readiness', async () => {
-    const adapter = new NodeMemberRuntime(
-      {
-        prepare(): Promise<NodeMemberLaunchPlan> {
-          return Promise.resolve({
-            executable: process.execPath,
-            args: ['-e', 'setInterval(()=>{},1000)'],
-            cwd: process.cwd(),
-            env: process.env,
-            connectionTimeoutMs: 80,
-            connection: {
-              subscribe(_identity, events) {
-                events.connected();
-                return () => undefined;
-              },
-            },
-          });
-        },
-      },
-      admit
+  it('clears the deadline only after exact SDK readiness and an authenticated socket', async () => {
+    // Real Windows PID/birth authority probes must finish inside this budget;
+    // a one-second budget times out PowerShell rather than missing readiness.
+    const child = await runtime('await ready();', { connectionTimeoutMs: 20_000 }).spawn(
+      settings,
+      token,
+      new AbortController().signal
     );
-    const child = await adapter.spawn(settings, token, new AbortController().signal);
-    const failed = vi.fn();
-    const connected = vi.fn();
-    child.subscribe({
-      connected,
-      connectionLost: vi.fn(),
-      failed,
-      releaseFailed: vi.fn(),
-      exited: vi.fn(),
-      released: vi.fn(),
-    });
-    try {
-      await new Promise((resolve) => setTimeout(resolve, 160));
-      expect(connected).toHaveBeenCalledOnce();
-      expect(failed).not.toHaveBeenCalled();
-    } finally {
-      await child.stop();
-    }
-  });
+    const events = observations();
+    child.subscribe(events);
+    await vi.waitFor(() => expect(events.connected).toHaveBeenCalledOnce(), { timeout: 20_000 });
+    // Fake time would also advance live OS-probe/socket deadlines; this integration
+    // case deliberately waits past the actual runtime timer on the platform clock.
+    await new Promise<void>((resolve) => setTimeout(resolve, 20_100));
+    expect(events.failed).not.toHaveBeenCalled();
+    await child.stop();
+  }, 60_000);
 
   it.each(['stop', 'connection failure'] as const)(
-    'escalates %s only for the exact owned child and waits for its exit and cleanup',
+    'escalates %s only for its exact owned child and waits for exit and cleanup',
     async (reason) => {
-      const observations: string[] = [];
-      let failConnection!: (error: Error) => void;
-      const disposed = vi.fn(() => {
-        observations.push('cleanup');
-        return Promise.resolve();
+      const order: string[] = [];
+      const proofFailure = deferred<(error: Error) => void>();
+      const disposed = vi.fn(async () => {
+        order.push('cleanup');
       });
-      const adapter = new NodeMemberRuntime(
+      const child = await runtime(
+        'await ready();',
         {
-          prepare(): Promise<NodeMemberLaunchPlan> {
-            return Promise.resolve({
-              executable: process.execPath,
-              args: ['-e', "console.log('TEST-ready');setInterval(()=>{},1000)"],
-              cwd: process.cwd(),
-              env: process.env,
-              observeOutput: (line) => (line === 'TEST-ready' ? ('connected' as const) : null),
-              connection: {
-                subscribe(_identity, events) {
-                  failConnection = events.failed;
-                  return () => undefined;
-                },
-              },
-              dispose: disposed,
-            });
+          dispose: disposed,
+          connection: {
+            subscribe(_identity, events) {
+              proofFailure.resolve(events.failed);
+              return () => undefined;
+            },
           },
         },
-        admit,
-        { gracePeriodMs: 25, forceExitTimeoutMs: 1000 }
-      );
-      const child = await adapter.spawn(settings, token, new AbortController().signal);
-      const other = await runtime("console.log('TEST-ready');setInterval(()=>{},1000)").spawn(
+        { gracePeriodMs: 25, forceExitTimeoutMs: 2000 }
+      ).spawn(settings, token, new AbortController().signal);
+      const other = await runtime('await ready();').spawn(
         settings,
-        token,
+        { ...token, operationId: 'TEST-other' },
         new AbortController().signal
       );
-      const connected = vi.fn();
-      const otherConnected = vi.fn();
-      const otherExited = vi.fn();
+      const events = observations();
+      const otherEvents = observations();
       child.subscribe({
-        connected,
-        exited: () => observations.push('exit'),
-        connectionLost: vi.fn(),
-        failed: vi.fn(),
-        releaseFailed: vi.fn(),
-        released: () => observations.push('released'),
+        ...events,
+        exited: (exit) => {
+          events.exited(exit);
+          order.push('exit');
+        },
+        released: () => {
+          events.released();
+          order.push('released');
+        },
       });
-      other.subscribe({
-        connected: otherConnected,
-        exited: otherExited,
-        connectionLost: vi.fn(),
-        failed: vi.fn(),
-        releaseFailed: vi.fn(),
-        released: vi.fn(),
-      });
+      other.subscribe(otherEvents);
       const kill = ChildProcess.prototype.kill;
-      // РИСК: Windows cannot ignore SIGTERM. Only this test child's first signal is withheld;
-      // the escalation uses its real OS handle, but this does not prove process-tree containment.
       const signals: (NodeJS.Signals | number | undefined)[] = [];
-      let forceOwnedExit: (() => void) | undefined;
-      const controlledSignal = vi
-        .spyOn(ChildProcess.prototype, 'kill')
-        .mockImplementation(function (this: ChildProcess, signal) {
-          if (this.pid !== child.identity.pid) return kill.call(this, signal);
-          forceOwnedExit = () => {
-            if (this.exitCode === null && this.signalCode === null) kill.call(this, 'SIGKILL');
-          };
-          signals.push(signal);
-          return signal === undefined || signal === 'SIGTERM' ? true : kill.call(this, signal);
-        });
+      // Windows cannot ignore SIGTERM: withhold only this child's first signal, then use its real handle.
+      const controlled = vi.spyOn(ChildProcess.prototype, 'kill').mockImplementation(function (
+        this: ChildProcess,
+        signal
+      ) {
+        if (this.pid !== child.identity.pid) return kill.call(this, signal);
+        signals.push(signal);
+        return signal === undefined || signal === 'SIGTERM' ? true : kill.call(this, signal);
+      });
       try {
-        await expect.poll(() => connected.mock.calls.length, { timeout: 5_000 }).toBe(1);
-        await expect.poll(() => otherConnected.mock.calls.length, { timeout: 5_000 }).toBe(1);
-        if (reason === 'connection failure') {
-          failConnection(new Error('TEST connection failed'));
-          await expect.poll(() => observations.includes('released'), { timeout: 5_000 }).toBe(true);
-        }
+        await vi.waitFor(
+          () => {
+            expect(events.connected).toHaveBeenCalledOnce();
+            expect(otherEvents.connected).toHaveBeenCalledOnce();
+          },
+          { timeout: 10_000 }
+        );
+        if (reason === 'connection failure')
+          (await proofFailure.promise)(new Error('TEST connection failed'));
         const stopping = child.stop();
         expect(child.stop()).toBe(stopping);
         if (reason === 'connection failure')
           await expect(settleWithin(stopping)).rejects.toThrow('TEST connection failed');
         else await settleWithin(stopping);
         expect(signals).toEqual(['SIGTERM', 'SIGKILL']);
-        expect(observations).toEqual(['exit', 'cleanup', 'released']);
+        expect(order).toEqual(['exit', 'cleanup', 'released']);
         expect(disposed).toHaveBeenCalledOnce();
-        expect(otherExited).not.toHaveBeenCalled();
+        expect(otherEvents.exited).not.toHaveBeenCalled();
       } finally {
-        controlledSignal.mockRestore();
-        forceOwnedExit?.();
+        controlled.mockRestore();
         await Promise.all([child.stop().catch(() => undefined), other.stop()]);
       }
     }
   );
 
   it.skipIf(process.platform === 'win32')(
-    'terminates a real POSIX child that ignores SIGTERM using its owned handle',
+    'terminates a real POSIX child that ignores SIGTERM through its owned handle',
     async () => {
-      const child = await new NodeMemberRuntime(
-        {
-          prepare: () =>
-            Promise.resolve({
-              executable: process.execPath,
-              args: [
-                '-e',
-                "process.on('SIGTERM',()=>{});console.log('TEST-ready');setInterval(()=>{},1000)",
-              ],
-              cwd: process.cwd(),
-              env: process.env,
-              observeOutput: (line) => (line === 'TEST-ready' ? ('connected' as const) : null),
-            }),
-        },
-        admit,
-        { gracePeriodMs: 25, forceExitTimeoutMs: 1000 }
+      const child = await runtime(
+        "process.on('SIGTERM', () => {}); await ready();",
+        {},
+        { gracePeriodMs: 25, forceExitTimeoutMs: 2000 }
       ).spawn(settings, token, new AbortController().signal);
-      const connected = vi.fn();
-      const exited = vi.fn();
-      child.subscribe({
-        connected,
-        exited,
-        failed: vi.fn(),
-        connectionLost: vi.fn(),
-        releaseFailed: vi.fn(),
-        released: vi.fn(),
-      });
-      try {
-        await expect.poll(() => connected.mock.calls.length).toBe(1);
-        await settleWithin(child.stop());
-        expect(exited).toHaveBeenCalledWith({ kind: 'exit', code: null, signal: 'SIGKILL' });
-      } finally {
-        await child.stop();
-      }
+      const events = observations();
+      child.subscribe(events);
+      await vi.waitFor(() => expect(events.connected).toHaveBeenCalledOnce(), { timeout: 10_000 });
+      await settleWithin(child.stop());
+      expect(events.exited).toHaveBeenCalledWith({ code: null, signal: 'SIGKILL' });
     }
   );
 
-  it.each([true, false])('retains ownership after signal result %s', async (signalAccepted) => {
-    const disposed = vi.fn(() => Promise.resolve());
-    const adapter = new NodeMemberRuntime(
-      {
-        prepare(): Promise<NodeMemberLaunchPlan> {
-          return Promise.resolve({
-            executable: process.execPath,
-            args: ['-e', "console.log('TEST-ready');setInterval(()=>{},1000)"],
-            cwd: process.cwd(),
-            env: process.env,
-            observeOutput: (line) => (line === 'TEST-ready' ? ('connected' as const) : null),
-            dispose: disposed,
-          });
-        },
-      },
-      admit,
-      { gracePeriodMs: 25, forceExitTimeoutMs: 25 }
-    );
-    const child = await adapter.spawn(settings, token, new AbortController().signal);
-    const identity = child.identity;
-    const connected = vi.fn();
-    const failed = vi.fn();
-    const exited = vi.fn();
-    const released = vi.fn();
-    child.subscribe({
-      connected,
-      failed,
-      exited,
-      released,
-      connectionLost: vi.fn(),
-      releaseFailed: vi.fn(),
-    });
-    const kill = ChildProcess.prototype.kill;
-    let forceOwnedExit: (() => void) | undefined;
-    // РИСК: withholding both signals simulates failed OS termination, not a real Windows refusal.
-    const controlledSignal = vi.spyOn(ChildProcess.prototype, 'kill').mockImplementation(function (
-      this: ChildProcess,
-      signal
-    ) {
-      if (this.pid !== identity.pid) return kill.call(this, signal);
-      forceOwnedExit = () => {
-        if (this.exitCode === null && this.signalCode === null) kill.call(this, 'SIGKILL');
-      };
-      return signalAccepted;
-    });
-    try {
-      await expect.poll(() => connected.mock.calls.length, { timeout: 5_000 }).toBe(1);
-      await expect(settleWithin(child.stop())).rejects.toThrow('termination deadline');
-      expect(failed).toHaveBeenCalledWith(expect.stringContaining('termination deadline'));
-      expect(exited).not.toHaveBeenCalled();
-      expect(disposed).not.toHaveBeenCalled();
-      expect(released).not.toHaveBeenCalled();
-      expect(child.identity).toBe(identity);
-    } finally {
-      controlledSignal.mockRestore();
+  it.each([true, false])(
+    'retains exact ownership after signal result %s until a real OS exit',
+    async (signalAccepted) => {
+      const disposed = vi.fn(async () => undefined);
+      const child = await runtime(
+        'await ready();',
+        { dispose: disposed },
+        { gracePeriodMs: 25, forceExitTimeoutMs: 25 }
+      ).spawn(settings, token, new AbortController().signal);
+      const identity = child.identity;
+      const events = observations();
+      child.subscribe(events);
+      const kill = ChildProcess.prototype.kill;
+      let forceOwnedExit: (() => void) | undefined;
+      const controlled = vi.spyOn(ChildProcess.prototype, 'kill').mockImplementation(function (
+        this: ChildProcess,
+        signal
+      ) {
+        if (this.pid !== identity.pid) return kill.call(this, signal);
+        forceOwnedExit = () => {
+          if (this.exitCode === null && this.signalCode === null) kill.call(this, 'SIGKILL');
+        };
+        return signalAccepted;
+      });
       try {
+        await vi.waitFor(() => expect(events.connected).toHaveBeenCalledOnce(), {
+          timeout: 10_000,
+        });
+        await expect(settleWithin(child.stop())).rejects.toThrow('termination deadline');
+        expect(events.failed).toHaveBeenCalledWith(expect.stringContaining('termination deadline'));
+        expect(events.exited).not.toHaveBeenCalled();
+        expect(disposed).not.toHaveBeenCalled();
+        expect(events.released).not.toHaveBeenCalled();
+        expect(child.identity).toBe(identity);
         await expect(settleWithin(child.stop())).rejects.toThrow('termination deadline');
       } finally {
+        controlled.mockRestore();
         forceOwnedExit?.();
         await child.stop().catch(() => undefined);
       }
+      expect(events.exited).toHaveBeenCalledOnce();
+      expect(disposed).toHaveBeenCalledOnce();
+      expect(events.released).toHaveBeenCalledOnce();
     }
-    expect(exited).toHaveBeenCalledOnce();
-    expect(disposed).toHaveBeenCalledOnce();
-    expect(released).toHaveBeenCalledOnce();
-  });
+  );
 
   it('does not start a process after cancellation', async () => {
     const abort = new AbortController();
@@ -764,5 +563,85 @@ describe('owned Node member process adapter', () => {
     await expect(
       runtime("throw new Error('must not run')").spawn(settings, token, abort.signal)
     ).rejects.toThrow();
+  });
+
+  it('reconnects the same real child after host/SQLite replacement without replaying accepted work or launching again', async () => {
+    const fixture = await createNodeMemberRuntimeFixture();
+    const startsPath = join(fixture.directory, 'starts.txt');
+    const prepare = vi.fn(() =>
+      fixture.plan(
+        `require('node:fs').appendFileSync(${JSON.stringify(startsPath)}, 'started\\n'); await ready();`,
+        token
+      )
+    );
+    const recover = vi.fn<NodeMemberLaunchPlanner['recover']>((_settings, attempt) =>
+      fixture.recover(attempt)
+    );
+    const first = await new NodeMemberRuntime({ prepare, recover }, admit).spawn(
+      settings,
+      token,
+      new AbortController().signal
+    );
+    const firstEvents = observations();
+    const unsubscribe = first.subscribe(firstEvents);
+    await vi.waitFor(() => expect(firstEvents.connected).toHaveBeenCalledOnce(), {
+      timeout: 10_000,
+    });
+    await first.writeInput(userLine, 'accepted-before-restart');
+    const inspection = await inspectProcessByPid(first.identity.pid);
+    if (inspection.status !== 'found' || inspection.startedAt === undefined)
+      throw new Error('Owned child birth unavailable');
+    unsubscribe();
+    await fixture.replaceHost();
+    const recovered = await new NodeMemberRuntime({ prepare, recover }, admit).reconnect(
+      settings,
+      token,
+      first.identity,
+      inspection.startedAt,
+      new AbortController().signal
+    );
+    const recoveredEvents = observations();
+    recovered.subscribe(recoveredEvents);
+    await vi.waitFor(() => expect(recoveredEvents.connected).toHaveBeenCalledOnce(), {
+      timeout: 10_000,
+    });
+    expect(recovered.identity).toEqual(first.identity);
+    expect(prepare).toHaveBeenCalledOnce();
+    expect(recover).toHaveBeenCalledOnce();
+    await recovered.writeInput(userLine, 'accepted-before-restart');
+    await recovered.writeInput(userLine, 'accepted-after-restart');
+    expect((await fixture.commands(token)).map((event) => event.uuid)).toEqual([
+      'accepted-before-restart',
+      'accepted-after-restart',
+    ]);
+    expect(await readFile(startsPath, 'utf8')).toBe('started\n');
+    await recovered.stop();
+    expect(recoveredEvents.exited).toHaveBeenCalledOnce();
+    expect(recoveredEvents.released).toHaveBeenCalledOnce();
+  }, 20_000);
+
+  it('refuses stale process birth before invoking recovery or creating a replacement process', async () => {
+    const fixture = await createNodeMemberRuntimeFixture();
+    const prepare = vi.fn(() => fixture.plan('await ready();', token));
+    const recover = vi.fn<NodeMemberLaunchPlanner['recover']>((_settings, attempt) =>
+      fixture.recover(attempt)
+    );
+    const adapter = new NodeMemberRuntime({ prepare, recover }, admit);
+    const child = await adapter.spawn(settings, token, new AbortController().signal);
+    const inspection = await inspectProcessByPid(child.identity.pid);
+    if (inspection.status !== 'found' || inspection.startedAt === undefined)
+      throw new Error('Owned child birth unavailable');
+    await expect(
+      adapter.reconnect(
+        settings,
+        token,
+        child.identity,
+        inspection.startedAt + 1,
+        new AbortController().signal
+      )
+    ).rejects.toThrow('birth is not current');
+    expect(recover).not.toHaveBeenCalled();
+    expect(prepare).toHaveBeenCalledOnce();
+    await child.stop();
   });
 });

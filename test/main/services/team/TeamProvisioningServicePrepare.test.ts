@@ -269,6 +269,7 @@ const REQUIRED_MOCK_AGENT_TEAMS_TOOLS = [
   'task_set_status',
   'task_start',
   'task_unlink',
+  'task_update',
 ] as const;
 
 function writeMockMcpServer(

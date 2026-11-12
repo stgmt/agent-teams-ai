@@ -54,7 +54,15 @@ vi.mock('@renderer/api', () => ({
   },
 }));
 
+// `runtime.lock.json` pins a V1-only release, so the served runtime is OpenCode V1.
 const runtime = {
+  installed: true,
+  state: 'ready',
+  source: 'app-managed',
+  version: '1.18.3',
+} as OpenCodeRuntimeStatus;
+// Legacy V2-support record: pending V2 support must still block dashboard reads.
+const supportRequiredRuntime = {
   installed: true,
   state: 'ready',
   source: 'app-managed',
@@ -238,7 +246,7 @@ describe('selected-project dashboard proof', () => {
         root.render(
           <Probe
             projectPath={projectPath}
-            runtimeStatus={{ ...runtime, state: 'idle', v2Support: 'required' }}
+            runtimeStatus={{ ...supportRequiredRuntime, state: 'idle', v2Support: 'required' }}
           />
         )
       );
@@ -270,7 +278,7 @@ describe('selected-project dashboard proof', () => {
       const missing: OpenCodeRuntimeStatus =
         reason === 'native missing'
           ? { installed: false, source: 'missing', state: 'idle' }
-          : { ...runtime, state: 'idle', v2Support: 'required' };
+          : { ...supportRequiredRuntime, state: 'idle', v2Support: 'required' };
       await act(async () => root.render(<Probe runtimeStatus={missing} />));
       expect(observed.status.enabled).toBe(false);
       expect(observed.status.providerStatus).toMatchObject({

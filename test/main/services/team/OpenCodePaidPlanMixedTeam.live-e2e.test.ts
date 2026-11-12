@@ -63,7 +63,9 @@ liveDescribe('OpenCode paid-plan mixed team live e2e', () => {
       const teamName = `opencode-paid-plan-mixed-${Date.now()}`;
       const progressEvents: TeamProvisioningProgress[] = [];
       const taskReader = new TeamTaskReader();
-      const teamDataService = new TeamDataService();
+      const teamDataService = new TeamDataService((teamName) =>
+        svc.getTeamAgentRuntimeSnapshot(teamName)
+      );
       const aliceTaskMarker = `minimax-task-${Date.now()}`;
       const bobTaskMarker = `zai-task-${Date.now()}`;
       const alicePeerToken = `minimax-to-zai-${Date.now()}`;
@@ -148,25 +150,29 @@ liveDescribe('OpenCode paid-plan mixed team live e2e', () => {
         expect(isAcceptedRelay(aliceRelay)).toBe(true);
         expect(isAcceptedRelay(bobRelay)).toBe(true);
 
-        await waitUntil(async () => {
-          const tasks = await taskReader.getTasks(teamName);
-          return [
-            { taskId: aliceTask.id, marker: `${aliceTaskMarker}:done` },
-            { taskId: bobTask.id, marker: `${bobTaskMarker}:done` },
-          ].every(({ taskId, marker }) => {
-            const task = tasks.find((candidate) => candidate.id === taskId);
-            return (
-              task?.status === 'completed' &&
-              task.comments?.some((comment) => comment.text.includes(marker)) === true
-            );
-          });
-        }, 300_000, 2_000, async () =>
-          formatDiagnostics({
-            bridgeClient,
-            teamName,
-            projectPath,
-            taskReader,
-          })
+        await waitUntil(
+          async () => {
+            const tasks = await taskReader.getTasks(teamName);
+            return [
+              { taskId: aliceTask.id, marker: `${aliceTaskMarker}:done` },
+              { taskId: bobTask.id, marker: `${bobTaskMarker}:done` },
+            ].every(({ taskId, marker }) => {
+              const task = tasks.find((candidate) => candidate.id === taskId);
+              return (
+                task?.status === 'completed' &&
+                task.comments?.some((comment) => comment.text.includes(marker)) === true
+              );
+            });
+          },
+          300_000,
+          2_000,
+          async () =>
+            formatDiagnostics({
+              bridgeClient,
+              teamName,
+              projectPath,
+              taskReader,
+            })
         );
 
         const [aliceToBob, bobToAlice] = await Promise.all([
@@ -209,14 +215,18 @@ liveDescribe('OpenCode paid-plan mixed team live e2e', () => {
   );
 });
 
-function isAcceptedRelay(relay: Awaited<
-  ReturnType<Awaited<ReturnType<typeof createOpenCodeLiveHarness>>['svc']['relayInboxFileToLiveRecipient']>
->): boolean {
+function isAcceptedRelay(
+  relay: Awaited<
+    ReturnType<
+      Awaited<ReturnType<typeof createOpenCodeLiveHarness>>['svc']['relayInboxFileToLiveRecipient']
+    >
+  >
+): boolean {
   if (relay.kind === 'native_member_noop' || relay.relayed > 0) return true;
   return Boolean(
     relay.lastDelivery?.accepted === true ||
-      relay.lastDelivery?.delivered === true ||
-      relay.lastDelivery?.responsePending === true
+    relay.lastDelivery?.delivered === true ||
+    relay.lastDelivery?.responsePending === true
   );
 }
 

@@ -4,22 +4,33 @@
  * Runs in its own event loop, completely isolated from the Electron main thread.
  * This prevents file-heavy operations (scanning 300+ subagent JSONL files,
  * parsing large session files) from stalling the main process UI/IPC.
+ *
+ * Filesystem projections stay here; registry board reads use the existing private
+ * parent channel. Only main owns registry authentication. Replies bypass the
+ * heavy-read queue so an active projection can await MCP alongside filesystem I/O.
  */
 
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { randomUUID } from 'node:crypto';
 import { parentPort, workerData } from 'node:worker_threads';
 
+import { RegistryTaskProviderError } from '@main/services/team/registry/RegistryTaskProvider';
 import { TeamConfigReader } from '@main/services/team/TeamConfigReader';
 import { TeamDataService } from '@main/services/team/TeamDataService';
+import { serializeRegistryBoardReadFailure } from '@main/services/team/teamDataWorkerTypes';
 import { TeamMemberLogsFinder } from '@main/services/team/TeamMemberLogsFinder';
 import { applyElectronDevClaudeRootOverrideForWorker } from '@main/utils/electronDevPathOverrides';
 import { setClaudeBasePathOverride } from '@main/utils/pathDecoder';
 import { createLogger } from '@shared/utils/logger';
 
+import type { RegistryBoardSnapshotReadPort } from '@main/services/team/registry/RegistryTaskProvider';
 import type {
+  RegistryBoardReadRequest,
+  RegistryBoardReadResponse,
   TeamDataWorkerRequest,
   TeamDataWorkerResponse,
 } from '@main/services/team/teamDataWorkerTypes';
-import type { MemberLogSummary } from '@shared/types';
+import type { MemberLogSummary, TeamAgentRuntimeSnapshot, TeamTask } from '@shared/types';
 
 const logger = createLogger('Worker:TeamData');
 
@@ -30,10 +41,68 @@ if (typeof workerData === 'string') {
   setClaudeBasePathOverride(workerData);
 }
 
-// Instantiate services with default dependencies — worker has its own event loop.
-// The worker cannot tell which teams this app profile manages, so it only reads team
-// files: TeamDataService gets no profile ownership and the default resolvers are read only.
-const teamDataService = new TeamDataService();
+// Main supplies its authoritative native snapshot for each heavy read.
+// Request-local scope keeps concurrent teams isolated without a second runtime owner.
+const runtimeSnapshots = new AsyncLocalStorage<TeamAgentRuntimeSnapshot>();
+const registryBoardReads = new Map<
+  string,
+  {
+    resolve: (tasks: TeamTask[]) => void;
+    reject: (error: Error) => void;
+  }
+>();
+const boardSnapshots: RegistryBoardSnapshotReadPort = {
+  readBoardSnapshot(teamName, options) {
+    const port = parentPort;
+    if (!port) {
+      return Promise.reject(new Error('Registry board parent channel unavailable'));
+    }
+    const request: RegistryBoardReadRequest = {
+      id: randomUUID(),
+      op: 'readRegistryBoard',
+      payload: { teamName, ...(options ? { options } : {}) },
+    };
+    return new Promise<TeamTask[]>((resolve, reject) => {
+      registryBoardReads.set(request.id, { resolve, reject });
+      try {
+        port.postMessage(request);
+      } catch (error) {
+        registryBoardReads.delete(request.id);
+        reject(error);
+      }
+    });
+  },
+};
+const teamDataService = new TeamDataService(
+  async (teamName) => {
+    const snapshot = runtimeSnapshots.getStore();
+    if (!snapshot || snapshot.teamName !== teamName) {
+      throw new Error(`Native runtime snapshot unavailable for ${teamName}`);
+    }
+    return snapshot;
+  },
+  undefined, // configReader
+  undefined, // inboxReader
+  undefined, // inboxWriter
+  undefined, // memberResolver
+  undefined, // kanbanManager
+  undefined, // membersMetaStore
+  undefined, // sentMessagesStore
+  undefined, // controllerFactory
+  undefined, // taskCommentNotificationJournal
+  undefined, // teamMetaStore
+  undefined, // memberRuntimeAdvisoryService
+  undefined, // leadSessionParseCache
+  undefined, // projectResolver
+  undefined, // launchStateStore
+  undefined, // registryTaskWriterProvider
+  undefined, // registryTaskProvider (lazy; never authenticated in worker)
+  undefined, // executionTaskStore
+  undefined, // taskAttachmentStore
+  undefined, // taskSigningKeyStoreFactory
+  undefined, // taskAttestationJournal
+  boardSnapshots
+);
 const logsFinder = new TeamMemberLogsFinder();
 
 // In-flight dedup: concurrent calls for the same task piggyback on one request
@@ -56,7 +125,19 @@ function runHeavyRead<T>(load: () => Promise<T>): Promise<T> {
   return result;
 }
 
-parentPort?.on('message', async (msg: TeamDataWorkerRequest) => {
+parentPort?.on('message', async (msg: TeamDataWorkerRequest | RegistryBoardReadResponse) => {
+  // Registry replies must bypass the queue whose active read is awaiting them.
+  if (msg.op === 'registryBoardResult') {
+    const pending = registryBoardReads.get(msg.id);
+    if (!pending) return;
+    registryBoardReads.delete(msg.id);
+    if (msg.ok) {
+      pending.resolve(msg.tasks);
+    } else {
+      pending.reject(new RegistryTaskProviderError(msg.failure));
+    }
+    return;
+  }
   const startedAt = Date.now();
   const buildDiag = (): NonNullable<Extract<TeamDataWorkerResponse, { ok: true }>['diag']> => ({
     op: msg.op,
@@ -71,8 +152,11 @@ parentPort?.on('message', async (msg: TeamDataWorkerRequest) => {
         break;
       }
       case 'getTeamData': {
+        const { teamName, options, runtimeSnapshot } = msg.payload;
         const result = await runHeavyRead(() =>
-          teamDataService.getTeamData(msg.payload.teamName, msg.payload.options)
+          runtimeSnapshots.run(runtimeSnapshot, () =>
+            teamDataService.getTeamData(teamName, options)
+          )
         );
         respond({ id: msg.id, ok: true, result, diag: buildDiag() });
         break;
@@ -164,7 +248,14 @@ parentPort?.on('message', async (msg: TeamDataWorkerRequest) => {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     logger.error(`[${msg.op}] ${message}`);
-    respond({ id: msg.id, ok: false, error: message });
+    respond({
+      id: msg.id,
+      ok: false,
+      error: message,
+      ...(err instanceof RegistryTaskProviderError
+        ? { registryFailure: serializeRegistryBoardReadFailure(err) }
+        : {}),
+    });
   }
 });
 

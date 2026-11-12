@@ -34,8 +34,15 @@ function launch(
     model: null,
     workingDirectory: cwd,
     instructions: instructions ?? '',
+    specIntegration: {
+      scope: { projects: ['TEST/project'], bindings: [] },
+      environment: {
+        OMP_SPEC_REGISTRY_URL: 'http://127.0.0.1:8090',
+        OMP_SPEC_REGISTRY_TOKEN: 'TEST-registry-credential',
+      },
+    },
     ...(specInstructions ? { specInstructions } : {}),
-  } as unknown as Readonly<ConfiguredMemberLaunch>;
+  };
 }
 
 describe('native team briefing', () => {
@@ -53,7 +60,7 @@ describe('native team briefing', () => {
     expect(text.startsWith('w')).toBe(true);
   });
 
-  it('keeps the briefing unchanged when the team has no bound specifications', async () => {
+  it('keeps the configured workflow when no additional specification recipe is supplied', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'briefing-'));
     directories.push(cwd);
     const briefing = createNativeTeamBriefing({ readMembersMeta: async () => [] });

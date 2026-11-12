@@ -50,13 +50,13 @@ function buildStatusText(
   return labels.showing(formatBytes(log.bytesRead));
 }
 
-function ProcessLogKindTabs({
+const ProcessLogKindTabs = ({
   selected,
   onSelect,
 }: Readonly<{
   readonly selected: MemberRuntimeLogKind;
   readonly onSelect: (kind: MemberRuntimeLogKind) => void;
-}>): React.JSX.Element {
+}>): React.JSX.Element => {
   return (
     <div className="flex rounded-lg bg-[var(--color-surface-subtle)] p-1">
       {PROCESS_LOG_KINDS.map((kind) => (
@@ -75,15 +75,15 @@ function ProcessLogKindTabs({
       ))}
     </div>
   );
-}
+};
 
-function ProcessLogVirtualList({
+const ProcessLogVirtualList = ({
   content,
   wrapLines,
 }: Readonly<{
   readonly content: string;
   readonly wrapLines: boolean;
-}>): React.JSX.Element {
+}>): React.JSX.Element => {
   const parentRef = useRef<HTMLDivElement | null>(null);
   const lines = useMemo(() => content.split(/\r?\n/), [content]);
   const rowVirtualizer = useVirtualizer({
@@ -121,12 +121,12 @@ function ProcessLogVirtualList({
       </div>
     </div>
   );
-}
+};
 
-export function MemberRuntimeProcessLogsPanel({
+export const MemberRuntimeProcessLogsPanel = ({
   enabled,
   loadRuntimeLogTail,
-}: Readonly<MemberRuntimeProcessLogsPanelProps>): React.JSX.Element {
+}: Readonly<MemberRuntimeProcessLogsPanelProps>): React.JSX.Element => {
   const { t } = useAppTranslation('team');
   const { t: tCommon } = useAppTranslation('common');
   const [kind, setKind] = useState<MemberRuntimeLogKind>('stdout');
@@ -294,4 +294,4 @@ export function MemberRuntimeProcessLogsPanel({
       )}
     </div>
   );
-}
+};

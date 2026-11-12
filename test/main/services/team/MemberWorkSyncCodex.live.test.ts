@@ -1,4 +1,5 @@
 import { createTestWorkSyncIdentity } from '../../../features/member-work-sync/helpers/createTestWorkSyncIdentity';
+import type { TeamAgentRuntimeSnapshot } from '../../../../src/shared/types';
 import { promises as fs } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -85,6 +86,7 @@ liveDescribe('Member work sync Codex live e2e', () => {
     setCodexAccountFeature(feature: { getSnapshot(): Promise<unknown> } | null): void;
   } | null;
   let svc: {
+    getTeamAgentRuntimeSnapshot(teamName: string): Promise<TeamAgentRuntimeSnapshot>;
     stopTeam(teamName: string): Promise<unknown>;
     isTeamAlive(teamName: string): boolean;
     hasProvisioningRun(teamName: string): boolean;
@@ -272,10 +274,12 @@ liveDescribe('Member work sync Codex live e2e', () => {
 
     svc = new TeamProvisioningService();
     const activeService = svc;
-    const teamDataService = new TeamDataService();
+    const teamDataService = new TeamDataService((teamName) =>
+      activeService.getTeamAgentRuntimeSnapshot(teamName)
+    );
     feature = createMemberWorkSyncFeature({
       isManagedByThisProfile: async () => true,
-    lifecycleIdentity: createTestWorkSyncIdentity(),
+      lifecycleIdentity: createTestWorkSyncIdentity(),
       teamsBasePath: getTeamsBasePath(),
       configReader: new TeamConfigReader(),
       taskReader: new TeamTaskReader(),
@@ -534,10 +538,12 @@ liveDescribe('Member work sync Codex live e2e', () => {
 
     svc = new TeamProvisioningService();
     const activeService = svc;
-    const teamDataService = new TeamDataService();
+    const teamDataService = new TeamDataService((teamName) =>
+      activeService.getTeamAgentRuntimeSnapshot(teamName)
+    );
     feature = createMemberWorkSyncFeature({
       isManagedByThisProfile: async () => true,
-    lifecycleIdentity: createTestWorkSyncIdentity(),
+      lifecycleIdentity: createTestWorkSyncIdentity(),
       teamsBasePath: getTeamsBasePath(),
       configReader: new TeamConfigReader(),
       taskReader: new TeamTaskReader(),
@@ -758,7 +764,7 @@ liveDescribe('Member work sync Codex live e2e', () => {
     const membersMetaStore = new TeamMembersMetaStore();
     feature = createMemberWorkSyncFeature({
       isManagedByThisProfile: async () => true,
-    lifecycleIdentity: createTestWorkSyncIdentity(),
+      lifecycleIdentity: createTestWorkSyncIdentity(),
       teamsBasePath: getTeamsBasePath(),
       configReader: new TeamConfigReader(),
       taskReader,
@@ -1199,11 +1205,13 @@ liveDescribe('Member work sync Codex live e2e', () => {
 
     svc = new TeamProvisioningService();
     const activeService = svc;
-    const teamDataService = new TeamDataService();
+    const teamDataService = new TeamDataService((teamName) =>
+      activeService.getTeamAgentRuntimeSnapshot(teamName)
+    );
     const taskReader = new TeamTaskReader();
     feature = createMemberWorkSyncFeature({
       isManagedByThisProfile: async () => true,
-    lifecycleIdentity: createTestWorkSyncIdentity(),
+      lifecycleIdentity: createTestWorkSyncIdentity(),
       teamsBasePath: getTeamsBasePath(),
       configReader: new TeamConfigReader(),
       taskReader,

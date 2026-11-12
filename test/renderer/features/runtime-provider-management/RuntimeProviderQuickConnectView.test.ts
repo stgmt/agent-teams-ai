@@ -280,9 +280,10 @@ describe('RuntimeProviderQuickConnectView', () => {
   });
 
   it.each(['app-managed', 'override'] as const)(
-    'sets up only V2 support files for a %s native runtime',
+    'offers no V2 support setup for a %s native runtime served by the V1-only runtime',
     async (source) => {
       const onInstallOpenCode = vi.fn();
+      const onRefreshOpenCode = vi.fn();
       await act(async () =>
         root.render(
           React.createElement(RuntimeProviderQuickConnectView, {
@@ -298,7 +299,7 @@ describe('RuntimeProviderQuickConnectView', () => {
               v2Support: 'required',
             },
             onInstallOpenCode,
-            onRefreshOpenCode: vi.fn(),
+            onRefreshOpenCode,
             onRetryDirectory: vi.fn(),
             onSetupLocalModel: vi.fn(),
             onBrowseProviders: vi.fn(),
@@ -306,22 +307,36 @@ describe('RuntimeProviderQuickConnectView', () => {
         )
       );
       const banner = host.querySelector('[data-testid="provider-quick-opencode-prerequisite"]');
-      expect(banner?.textContent).toContain(
+      // runtime.lock.json pins the V1-only delivery, so a 2.x CLI is an unsupported
+      // native generation and no V2 support download can be offered.
+      expect(banner?.textContent).toContain('unsupported native generation');
+      expect(banner?.textContent).not.toContain('Finish OpenCode V2 setup');
+      expect(banner?.textContent).not.toContain(
         'Download the remaining files once to connect providers and use models.'
       );
       expect(banner?.textContent).not.toContain('Confusing override selection sentence');
+      if (source === 'override') {
+        // A binary override cannot be replaced by a managed install: refresh only.
+        const refresh = banner?.querySelector<HTMLButtonElement>(
+          '[data-testid="provider-quick-opencode-refresh"]'
+        );
+        expect(refresh?.textContent).toContain('Refresh status');
+        expect(refresh?.disabled).toBe(false);
+        act(() => refresh?.click());
+        expect(onRefreshOpenCode).toHaveBeenCalledOnce();
+        expect(onInstallOpenCode).not.toHaveBeenCalled();
+        return;
+      }
       const setup = banner?.querySelector<HTMLButtonElement>('button');
-      expect(setup?.textContent).toContain('Finish OpenCode V2 setup');
+      expect(setup?.textContent).toContain('cliStatus.quickConnect.updateOpenCode');
       expect(setup?.disabled).toBe(false);
       act(() => setup?.click());
-      expect(onInstallOpenCode).toHaveBeenCalledExactlyOnceWith({
-        generation: 'v2',
-        supportOnly: true,
-      });
+      // The managed runtime keeps a full update action, never a V2 support-only install.
+      expect(onInstallOpenCode).toHaveBeenCalledExactlyOnceWith();
     }
   );
 
-  it('offers refresh instead of an installation when no qualified V2 support is available', async () => {
+  it('offers refresh instead of a V2 support installation while the runtime does not serve V2', async () => {
     const onInstallOpenCode = vi.fn();
     const onRefreshOpenCode = vi.fn();
     await act(async () =>
@@ -347,7 +362,8 @@ describe('RuntimeProviderQuickConnectView', () => {
       )
     );
     const banner = host.querySelector('[data-testid="provider-quick-opencode-prerequisite"]');
-    expect(banner?.textContent).toContain('cliStatus.runtimeInstall.v2Unavailable');
+    expect(banner?.textContent).toContain('unsupported native generation');
+    expect(banner?.textContent).not.toContain('cliStatus.runtimeInstall.v2Unavailable');
     const buttons = banner?.querySelectorAll<HTMLButtonElement>('button');
     expect(buttons).toHaveLength(1);
     expect(buttons?.[0]?.dataset.testid).toBe('provider-quick-opencode-refresh');
@@ -440,7 +456,7 @@ describe('RuntimeProviderQuickConnectView', () => {
   });
 
   it.each(['path', 'override'] as const)(
-    'keeps a failed optional support repair retry separate from the %s native binary',
+    'keeps a failed V2 support repair separate from the %s native binary decision',
     async (source) => {
       vi.spyOn(companion, 'useRuntimeProviderCompanion').mockReturnValue({
         status: null,
@@ -469,25 +485,14 @@ describe('RuntimeProviderQuickConnectView', () => {
         compatibleV2Version: '2.2.0',
         v2Support: 'ready',
       };
-      let releaseFollowUp!: () => void;
-      let startedFollowUp!: () => void;
-      const followUp = new Promise<void>((resolve) => {
-        releaseFollowUp = resolve;
-      });
-      const followUpStarted = new Promise<void>((resolve) => {
-        startedFollowUp = resolve;
-      });
-      let installation: Promise<void> | undefined;
+      const invalidateStatus = vi.fn(async () => undefined);
       Object.defineProperty(window, 'electronAPI', {
         configurable: true,
         value: {
           ...previousApi,
           openCodeRuntime: {
             install: vi.fn().mockRejectedValue(new Error('TEST IPC disconnected')),
-            invalidateStatus: vi.fn(() => {
-              startedFollowUp();
-              return followUp;
-            }),
+            invalidateStatus,
           },
           cliInstaller: undefined,
         },
@@ -497,10 +502,7 @@ describe('RuntimeProviderQuickConnectView', () => {
           createCliInstallerSlice as unknown as StateCreator<CliInstallerSlice>
         );
         store.setState({ openCodeRuntimeStatus: initial });
-        installation = store
-          .getState()
-          .installOpenCodeRuntime({ generation: 'v2', supportOnly: true });
-        await followUpStarted;
+        await store.getState().installOpenCodeRuntime({ generation: 'v2', supportOnly: true });
         const runtimeStatus = store.getState().openCodeRuntimeStatus;
         expect(runtimeStatus).toMatchObject({
           source,
@@ -509,7 +511,12 @@ describe('RuntimeProviderQuickConnectView', () => {
           v2Support: 'ready',
           error: 'TEST IPC disconnected',
         });
+        // The pinned runtime does not serve V2, so a failed support repair cannot
+        // schedule a follow-up reload; the binary decision stays untouched.
+        expect(invalidateStatus).not.toHaveBeenCalled();
+        expect(store.getState().openCodeRuntimeStatusLoading).toBe(false);
         const onInstallOpenCode = vi.fn();
+        const onRefreshOpenCode = vi.fn();
         const renderQuickConnect = () =>
           act(async () =>
             root.render(
@@ -520,42 +527,30 @@ describe('RuntimeProviderQuickConnectView', () => {
                 openCodeRuntimeStatus: runtimeStatus,
                 openCodeRuntimeStatusLoading: store.getState().openCodeRuntimeStatusLoading,
                 onInstallOpenCode,
-                onRefreshOpenCode: vi.fn(),
+                onRefreshOpenCode,
                 onOpenCodeProviderAction: vi.fn(),
                 onBrowseProviders: vi.fn(),
               })
             )
           );
         await renderQuickConnect();
-        // A failed optional repair does not revoke the working native runtime.
         expect(
           vi.mocked(quickConnectDirectory.useRuntimeProviderQuickConnect).mock.calls.at(-1)?.[0]
-        ).toMatchObject({ enabled: true });
-        const browseButton = Array.from(host.querySelectorAll('button')).find((button) =>
-          button.textContent?.includes('Browse all providers')
-        );
-        expect(browseButton?.disabled).toBe(false);
+        ).toMatchObject({ enabled: false });
         const banner = host.querySelector('[data-testid="provider-quick-opencode-prerequisite"]');
         expect(banner?.querySelector('[role="alert"]')).not.toBeNull();
         expect(banner?.textContent).toContain('TEST IPC disconnected');
-        const retry = banner?.querySelector<HTMLButtonElement>('button');
-        expect(store.getState().openCodeRuntimeStatusLoading).toBe(true);
-        expect(retry?.disabled).toBe(true);
-        act(() => retry?.click());
-        expect(onInstallOpenCode).not.toHaveBeenCalled();
-        releaseFollowUp();
-        await installation;
-        await renderQuickConnect();
-        expect(store.getState().openCodeRuntimeStatusLoading).toBe(false);
-        expect(retry?.disabled).toBe(false);
-        act(() => retry?.click());
+        const action = banner?.querySelector<HTMLButtonElement>('button');
+        expect(action?.textContent).toContain('Finish OpenCode V2 setup');
+        expect(action?.disabled).toBe(false);
+        act(() => action?.click());
+        // The retry repairs only the separate support files, never the native binary.
         expect(onInstallOpenCode).toHaveBeenCalledExactlyOnceWith({
           generation: 'v2',
           supportOnly: true,
         });
+        expect(onRefreshOpenCode).not.toHaveBeenCalled();
       } finally {
-        releaseFollowUp();
-        await installation;
         Object.defineProperty(window, 'electronAPI', { configurable: true, value: previousApi });
         vi.mocked(console.error).mockClear();
       }

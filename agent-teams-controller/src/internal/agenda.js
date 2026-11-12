@@ -5,24 +5,22 @@ const reviewStateHelpers = require('./reviewState.js');
 const { withTeamBoardReadLock } = require('./boardLock.js');
 const { bucketLeadItems } = require('./leadQueueBuckets.js');
 
-const { buildTaskInventoryRow, INVENTORY_KANBAN_COLUMNS } = require('./taskInventoryRow.js');
+const {
+  MAX_SUBJECT_CHARS,
+  compareTasksByFreshness,
+  listTaskInventory,
+  normalizeKey,
+  normalizeName,
+  truncateText,
+} = require('./teamAgendaProjection.js');
 const MAX_MEMBER_ACTIONABLE_ITEMS = 50;
 const MAX_MEMBER_AWARENESS_ITEMS = 30;
 const MAX_LEAD_SECTION_ITEMS = 50;
 const MAX_EXPANDED_CONTEXT_ITEMS = 8;
 const MAX_DESCRIPTION_CHARS = 1200;
 const MAX_COMMENT_CHARS = 500;
-const MAX_SUBJECT_CHARS = 240;
 const MAX_ANOMALY_ITEMS = 25;
 const MAX_ANOMALY_DETAIL_CHARS = 500;
-
-function normalizeName(value) {
-  return typeof value === 'string' && value.trim() ? value.trim() : '';
-}
-
-function normalizeKey(value) {
-  return normalizeName(value).toLowerCase();
-}
 
 function formatTaskLabel(task) {
   return `#${task.displayId || task.id}`;
@@ -49,7 +47,7 @@ function buildQueueRoster(paths) {
   const canonicalLeadName =
     uniqueLeadName ||
     (membersByKey.get(normalizeKey(inferredLeadName)) &&
-    normalizeName(membersByKey.get(normalizeKey(inferredLeadName)).name)) ||
+      normalizeName(membersByKey.get(normalizeKey(inferredLeadName)).name)) ||
     '';
   const leadAliases = new Set(['team-lead']);
   if (canonicalLeadName) {
@@ -131,7 +129,10 @@ function resolveQueueActor(value, roster) {
   if (!member) return null;
   if (!roster.explicitMemberKeys || !roster.explicitMemberKeys.has(key)) return null;
 
-  if (roster.canonicalLeadName && normalizeKey(member.name) === normalizeKey(roster.canonicalLeadName)) {
+  if (
+    roster.canonicalLeadName &&
+    normalizeKey(member.name) === normalizeKey(roster.canonicalLeadName)
+  ) {
     return { kind: 'lead', memberName: roster.canonicalLeadName };
   }
 
@@ -226,23 +227,6 @@ function resolveCurrentCycleReviewer(task, roster, options = {}) {
   return { actor: null, source: 'none', invalidValue: null };
 }
 
-function compareTasksByFreshness(left, right) {
-  const leftTs = Date.parse(normalizeName(left.updatedAt) || normalizeName(left.createdAt) || '') || 0;
-  const rightTs = Date.parse(normalizeName(right.updatedAt) || normalizeName(right.createdAt) || '') || 0;
-  if (leftTs !== rightTs) return rightTs - leftTs;
-
-  const byDisplay = String(left.displayId || left.id).localeCompare(String(right.displayId || right.id), undefined, {
-    numeric: true,
-    sensitivity: 'base',
-  });
-  if (byDisplay !== 0) return byDisplay;
-
-  return String(left.id).localeCompare(String(right.id), undefined, {
-    numeric: true,
-    sensitivity: 'base',
-  });
-}
-
 function buildBoardState(paths, teamName) {
   const taskRows = taskStore.listTaskRows(paths);
   const kanbanState = kanbanStore.readKanbanState(paths, teamName);
@@ -333,16 +317,10 @@ function getLastMeaningfulEventAt(task) {
   return timestamps[0] || undefined;
 }
 
-function truncateText(value, maxChars) {
-  const text = normalizeName(value);
-  if (!text || text.length <= maxChars) {
-    return text;
-  }
-  return `${text.slice(0, maxChars)}... [truncated]`;
-}
-
 function buildAgendaItem(task, boardState) {
-  const kanbanEntry = boardState.kanbanState.tasks ? boardState.kanbanState.tasks[task.id] : undefined;
+  const kanbanEntry = boardState.kanbanState.tasks
+    ? boardState.kanbanState.tasks[task.id]
+    : undefined;
   const reviewStateResult = resolveEffectiveReviewState(task, kanbanEntry);
   const reviewerResult = resolveCurrentCycleReviewer(task, boardState.roster, {
     reviewState: reviewStateResult.state,
@@ -354,7 +332,9 @@ function buildAgendaItem(task, boardState) {
   const hasInvalidOwner = hasOwnerField && !ownerActor;
   const reviewActor = reviewerResult.actor;
   const reviewActorIsInvalid = reviewStateResult.state === 'review' && !reviewActor;
-  const hasSelfReview = Boolean(ownerActor && reviewActor && areSameActors(ownerActor, reviewActor));
+  const hasSelfReview = Boolean(
+    ownerActor && reviewActor && areSameActors(ownerActor, reviewActor)
+  );
 
   const brokenDependencyIds = [];
   const waitingDependencyIds = [];
@@ -420,9 +400,10 @@ function buildAgendaItem(task, boardState) {
       reasonCode = 'review_reviewer_missing';
       derivedFrom.push('history_reviewer_invalid');
     } else if (reviewActor) {
-      actionOwner = reviewActor.kind === 'lead'
-        ? { kind: 'lead' }
-        : { kind: 'member', memberName: reviewActor.memberName };
+      actionOwner =
+        reviewActor.kind === 'lead'
+          ? { kind: 'lead' }
+          : { kind: 'member', memberName: reviewActor.memberName };
       nextAction = 'review';
       queueCategory = actionOwner.kind === 'lead' ? 'oversight' : 'actionable';
       reasonCode =
@@ -503,10 +484,14 @@ function compareAgendaItems(left, right) {
   const rightTs = Date.parse(normalizeName(right.lastMeaningfulEventAt)) || 0;
   if (leftTs !== rightTs) return rightTs - leftTs;
 
-  const byDisplay = String(left.displayId || left.taskId).localeCompare(String(right.displayId || right.taskId), undefined, {
-    numeric: true,
-    sensitivity: 'base',
-  });
+  const byDisplay = String(left.displayId || left.taskId).localeCompare(
+    String(right.displayId || right.taskId),
+    undefined,
+    {
+      numeric: true,
+      sensitivity: 'base',
+    }
+  );
   if (byDisplay !== 0) return byDisplay;
 
   return String(left.taskId).localeCompare(String(right.taskId), undefined, {
@@ -532,7 +517,8 @@ function buildAgendaSnapshot(paths, teamName, actor) {
           isActionable ||
           normalizeKey(item.owner) === memberKey ||
           normalizeKey(item.reviewer) === memberKey ||
-          (Array.isArray(item.watchers) && item.watchers.some((entry) => normalizeKey(entry) === memberKey));
+          (Array.isArray(item.watchers) &&
+            item.watchers.some((entry) => normalizeKey(entry) === memberKey));
 
         if (isActionable) {
           actionable.push(item);
@@ -569,8 +555,10 @@ function buildAgendaSnapshot(paths, teamName, actor) {
           (item) =>
             item.reasonCode === 'dependency_waiting' || item.reasonCode === 'dependency_broken'
         ).length,
-        waitingOnUser: items.filter((item) => item.reasonCode === 'waiting_user_clarification').length,
-        waitingOnLead: items.filter((item) => item.reasonCode === 'waiting_lead_clarification').length,
+        waitingOnUser: items.filter((item) => item.reasonCode === 'waiting_user_clarification')
+          .length,
+        waitingOnLead: items.filter((item) => item.reasonCode === 'waiting_lead_clarification')
+          .length,
         reviewNeeded: items.filter(
           (item) =>
             item.reasonCode === 'review_reviewer_missing' ||
@@ -592,93 +580,6 @@ function listAgendaItems(paths, teamName) {
   return withTeamBoardReadLock(paths, () => {
     const boardState = buildBoardState(paths, teamName);
     return { items: boardState.tasks.map((task) => buildAgendaItem(task, boardState)) };
-  });
-}
-
-function matchesInventoryFilters(row, filters) {
-  if (normalizeName(filters.owner) && normalizeKey(row.owner) !== normalizeKey(filters.owner)) {
-    return false;
-  }
-  if (normalizeName(filters.status) && row.status !== filters.status) {
-    return false;
-  }
-  if (normalizeName(filters.reviewState) && row.reviewState !== filters.reviewState) {
-    return false;
-  }
-  if (normalizeName(filters.kanbanColumn)) {
-    const kanbanColumn = filters.kanbanColumn;
-    if (!INVENTORY_KANBAN_COLUMNS.has(kanbanColumn) || row.kanbanColumn !== kanbanColumn) {
-      return false;
-    }
-  }
-  if (normalizeName(filters.relatedTo)) {
-    const related = Array.isArray(row.related) ? row.related : [];
-    if (!related.includes(filters.relatedTo)) {
-      return false;
-    }
-  }
-  if (normalizeName(filters.blockedBy)) {
-    const blockedBy = Array.isArray(row.blockedBy) ? row.blockedBy : [];
-    if (!blockedBy.includes(filters.blockedBy)) {
-      return false;
-    }
-  }
-  return true;
-}
-
-function listTaskInventory(paths, teamName, filters = {}) {
-  return withTeamBoardReadLock(paths, () => {
-    const scope = filters.scope;
-    const readOptions = scope ? { scope } : {};
-    const taskRows = taskStore.listTaskRows(paths, readOptions);
-    const kanbanState = kanbanStore.readKanbanState(paths, teamName);
-    const resolvedRelatedTo = normalizeName(filters.relatedTo)
-      ? taskStore.resolveTaskRef(paths, filters.relatedTo, readOptions)
-      : '';
-    const resolvedBlockedBy = normalizeName(filters.blockedBy)
-      ? taskStore.resolveTaskRef(paths, filters.blockedBy, readOptions)
-      : '';
-    const limit =
-      typeof filters.limit === 'number' && Number.isFinite(filters.limit)
-        ? Math.max(1, Math.floor(filters.limit))
-        : null;
-
-    const resolvedFilters = {
-      ...filters,
-      ...(resolvedRelatedTo ? { relatedTo: resolvedRelatedTo } : {}),
-      ...(resolvedBlockedBy ? { blockedBy: resolvedBlockedBy } : {}),
-    };
-    const candidates = [];
-
-    const addCandidate = (candidate) => {
-      if (limit == null || candidates.length < limit) {
-        candidates.push(candidate);
-        return;
-      }
-
-      let oldestIndex = 0;
-      for (let index = 1; index < candidates.length; index += 1) {
-        if (compareTasksByFreshness(candidates[index].task, candidates[oldestIndex].task) > 0) {
-          oldestIndex = index;
-        }
-      }
-
-      if (compareTasksByFreshness(candidate.task, candidates[oldestIndex].task) < 0) {
-        candidates[oldestIndex] = candidate;
-      }
-    };
-
-    for (const task of taskRows.tasks) {
-      const kanbanEntry = kanbanState.tasks ? kanbanState.tasks[task.id] : undefined;
-      const reviewState = resolveEffectiveReviewState(task, kanbanEntry).state;
-      const row = buildTaskInventoryRow(task, reviewState, kanbanEntry, truncateText(task.subject, MAX_SUBJECT_CHARS));
-      if (!matchesInventoryFilters(row, resolvedFilters)) {
-        continue;
-      }
-      addCandidate({ task, row });
-    }
-
-    return candidates.sort((left, right) => compareTasksByFreshness(left.task, right.task)).map((entry) => entry.row);
   });
 }
 

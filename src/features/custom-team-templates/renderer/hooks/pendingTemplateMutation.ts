@@ -8,7 +8,10 @@ export interface PendingTemplateMutation {
 }
 
 type NewMutation = Omit<PendingTemplateMutation, 'id'>;
-type Snapshot = { operations: readonly PendingTemplateMutation[]; storageAvailable: boolean };
+interface Snapshot {
+  operations: readonly PendingTemplateMutation[];
+  storageAvailable: boolean;
+}
 const PREFIX = 'agent-teams:custom-template-pending-mutation:';
 const DECISION_PREFIX = 'agent-teams:custom-template-mutation-decision:';
 const PROBE_KEY = 'agent-teams:custom-template-mutation-storage-probe';
@@ -32,7 +35,7 @@ function parseOperation(id: string, raw: string | null): PendingTemplateMutation
         typeof candidate.label === 'string' &&
         candidate.label.length <= 512
       ) {
-        return { id, kind: candidate.kind as NewMutation['kind'], label: candidate.label };
+        return { id, kind: candidate.kind!, label: candidate.label };
       }
     }
   } catch {

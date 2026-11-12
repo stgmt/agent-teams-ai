@@ -42,19 +42,20 @@ import { formatAgentRole } from '@renderer/utils/formatAgentRole';
 import { isImeComposing } from '@renderer/utils/imeComposition';
 import { buildMemberColorMap } from '@renderer/utils/memberHelpers';
 import {
-  extractTaskRefsFromText,
-  stripEncodedTaskReferenceMetadata,
-} from '@renderer/utils/taskReferenceUtils';
-import {
   formatSpecificationBindingLabel,
   formatSpecificationTaskLabel,
   getSpecificationBindingKey,
   resolveSpecificationBinding,
 } from '@renderer/utils/specificationTaskPresentation';
-import { hasRequiredRegistryTaskInputs } from './createTaskScopeEligibility';
+import {
+  extractTaskRefsFromText,
+  stripEncodedTaskReferenceMetadata,
+} from '@renderer/utils/taskReferenceUtils';
 import { deriveTaskDisplayId } from '@shared/utils/taskIdentity';
 import { getTeamTaskWorkflowColumn } from '@shared/utils/teamTaskState';
 import { AlertTriangle, ChevronDown, ChevronRight, Search } from 'lucide-react';
+
+import { hasRequiredRegistryTaskInputs } from './createTaskScopeEligibility';
 
 import type { InlineChip } from '@renderer/types/inlineChip';
 import type { MentionSuggestion } from '@renderer/types/mention';

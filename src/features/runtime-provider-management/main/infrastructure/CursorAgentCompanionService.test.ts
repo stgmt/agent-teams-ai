@@ -1,3 +1,5 @@
+import path from 'node:path';
+
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { CURSOR_AGENT_COMPANION_DEFINITION } from './cli-companion/definitions/CursorAgentCompanionDefinition';
@@ -205,9 +207,11 @@ describe('CursorAgentCompanionService', () => {
       'agent.exe',
       'agent.cmd',
     ]);
+    // The definition joins with the host path module, so a simulated POSIX home
+    // on Windows yields the same host-shaped candidate; precedence is what matters.
     expect(
       CURSOR_AGENT_COMPANION_DEFINITION.binary.extraCandidates('darwin', '/Users/test')[0]
-    ).toBe('/Users/test/.local/bin/cursor-agent');
+    ).toBe(path.join('/Users/test', '.local', 'bin', 'cursor-agent'));
     expect(
       CURSOR_AGENT_COMPANION_DEFINITION.binary.matchesVersionOutput?.(
         'grok 1.0.34 (3736acbc8658)\n'

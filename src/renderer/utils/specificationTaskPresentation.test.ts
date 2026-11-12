@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest';
 
 import {
   formatSpecificationTaskLabel,
-  getSpecificationTaskScope,
   getSpecificationBindingKey,
+  getSpecificationTaskScope,
   isSpecificationTask,
   resolveSpecificationBinding,
 } from './specificationTaskPresentation';
@@ -70,11 +70,11 @@ describe('specification task presentation', () => {
       { project: 'product', spec: 'editor' },
       { project: 'product', spec: 'api' },
     ];
-    const selectedKey = getSpecificationBindingKey(bindings[1]!);
+    const selectedKey = getSpecificationBindingKey(bindings[1]);
 
     expect(resolveSpecificationBinding(bindings, '')).toBeNull();
     expect(resolveSpecificationBinding(bindings, selectedKey)).toEqual(bindings[1]);
-    expect(resolveSpecificationBinding([bindings[0]!], '')).toEqual(bindings[0]);
+    expect(resolveSpecificationBinding([bindings[0]], '')).toEqual(bindings[0]);
     expect(resolveSpecificationBinding(bindings, 'stale-selection')).toBeNull();
   });
 });

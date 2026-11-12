@@ -171,11 +171,15 @@ liveDescribe('Member work sync recovery OpenCode live canary', () => {
       stopTeam: async () => {
         await harness!.svc.stopTeam(teamName!).catch(() => undefined);
         await waitForOpenCodeLanesStopped(teamName!).catch(() => undefined);
-        await fs.rm(path.join(getTeamsBasePath(), teamName!), { recursive: true, force: true }).catch(() => undefined);
+        await fs
+          .rm(path.join(getTeamsBasePath(), teamName!), { recursive: true, force: true })
+          .catch(() => undefined);
       },
     });
 
-    const task = await new TeamDataService().createTask(teamName, {
+    const task = await new TeamDataService((teamName) =>
+      harness!.svc.getTeamAgentRuntimeSnapshot(teamName)
+    ).createTask(teamName, {
       subject: `Recovery OpenCode live canary ${Date.now()}`,
       owner: memberName,
       startImmediately: false,
@@ -293,13 +297,17 @@ liveDescribe('Member work sync recovery OpenCode live canary', () => {
       stopTeam: async () => {
         await harness!.svc.stopTeam(teamName!).catch(() => undefined);
         await waitForOpenCodeLanesStopped(teamName!).catch(() => undefined);
-        await fs.rm(path.join(getTeamsBasePath(), teamName!), { recursive: true, force: true }).catch(() => undefined);
+        await fs
+          .rm(path.join(getTeamsBasePath(), teamName!), { recursive: true, force: true })
+          .catch(() => undefined);
       },
     });
     expect(harness!.svc.isTeamAlive(teamName!)).toBe(true);
 
     await seedOpenCodeShadowReadyMetrics({ teamName, memberName });
-    const task = await new TeamDataService().createTask(teamName, {
+    const task = await new TeamDataService((teamName) =>
+      harness!.svc.getTeamAgentRuntimeSnapshot(teamName)
+    ).createTask(teamName, {
       subject: `Recovery OpenCode live crash canary ${Date.now()}`,
       owner: memberName,
       startImmediately: false,
@@ -477,13 +485,17 @@ liveDescribe('Member work sync recovery OpenCode live canary', () => {
         stopTeam: async () => {
           await harness!.svc.stopTeam(teamName!).catch(() => undefined);
           await waitForOpenCodeLanesStopped(teamName!).catch(() => undefined);
-          await fs.rm(path.join(getTeamsBasePath(), teamName!), { recursive: true, force: true }).catch(() => undefined);
+          await fs
+            .rm(path.join(getTeamsBasePath(), teamName!), { recursive: true, force: true })
+            .catch(() => undefined);
         },
       });
       expect(harness!.svc.isTeamAlive(teamName!)).toBe(true);
 
       await seedOpenCodeShadowReadyMetrics({ teamName, memberName });
-      const task = await new TeamDataService().createTask(teamName, {
+      const task = await new TeamDataService((teamName) =>
+        harness!.svc.getTeamAgentRuntimeSnapshot(teamName)
+      ).createTask(teamName, {
         subject: `Write CANARY.txt ${marker}`,
         owner: memberName,
         startImmediately: false,
@@ -619,10 +631,17 @@ liveDescribe('Member work sync recovery OpenCode live canary', () => {
       if (typeof earlyContinuationId !== 'string') {
         throw new Error('expected D1 early-continuation inbox message id');
       }
-      await waitForOpenCodePeerRelay(harness.svc, teamName, memberName, earlyContinuationId, 180_000, {
-        requireAccepted: true,
-        source: 'watchdog',
-      });
+      await waitForOpenCodePeerRelay(
+        harness.svc,
+        teamName,
+        memberName,
+        earlyContinuationId,
+        180_000,
+        {
+          requireAccepted: true,
+          source: 'watchdog',
+        }
+      );
 
       await waitUntil(
         async () => {

@@ -53,10 +53,7 @@ function native(version = '2.0.0'): NativeIdentity {
         generation: 'v2',
         // The CLI version and mock runtime-qualified engine are independent identities.
         // The 2.37.105 fixture uses the separate mocked 2.0.32 engine below.
-        apiDialect:
-          version === '2.37.105'
-            ? 'v2-2.0.32'
-            : 'v2-2.1.4',
+        apiDialect: version === '2.37.105' ? 'v2-2.0.32' : 'v2-2.1.4',
         version,
         executablePath: '/TEST/bin/opencode-native',
         executableSha256: sha,
@@ -170,40 +167,67 @@ function context(version = '2.0.0'): Protocol2CommandContext {
 
 // These protect absent/new strict decoding, not an implemented permission transport.
 describe('bounded protocol2 public contracts', () => {
-  it.each(['2.0.0', '2.0.32'])('decodes pinned-engine %s native contracts across public boundaries', (version) => {
-    expect(decodeProtocol2Offer(offer(version)).ok).toBe(true);
-    expect(decodeProtocol2Handshake(handshake(version)).ok).toBe(true);
-    expect(decodeProtocol2CommandContext(context(version)).ok).toBe(true);
-    expect(decodeOwnerPermissionReply(permission(version)).ok).toBe(true);
-    const original = offer(version);
-    const mismatched = { ...original, selected: {
-      ...original.selected, apiDialect: version === '2.0.0' ? 'v2-2.0.32' : 'v2-2.0.0',
-    } };
-    expect(decodeProtocol2Offer(mismatched).ok).toBe(false);
-  });
+  it.each(['2.0.0', '2.0.32'])(
+    'decodes pinned-engine %s native contracts across public boundaries',
+    (version) => {
+      expect(decodeProtocol2Offer(offer(version)).ok).toBe(true);
+      expect(decodeProtocol2Handshake(handshake(version)).ok).toBe(true);
+      expect(decodeProtocol2CommandContext(context(version)).ok).toBe(true);
+      expect(decodeOwnerPermissionReply(permission(version)).ok).toBe(true);
+      const original = offer(version);
+      const mismatched = {
+        ...original,
+        selected: {
+          ...original.selected,
+          apiDialect: version === '2.0.0' ? 'v2-2.0.32' : 'v2-2.0.0',
+        },
+      };
+      expect(decodeProtocol2Offer(mismatched).ok).toBe(false);
+    }
+  );
 
   it('refuses out-of-range and inconsistent dialects even with claimed ready authority', () => {
     const outOfRange = { ...native('2.0.32'), version: '3.0.0', apiDialect: 'v2-3.0.0' };
     expect(decodeProtocol2Offer({ ...offer('2.0.32'), selected: outOfRange }).ok).toBe(false);
     // An in-range native CLI must still identify the runtime-qualified engine dialect.
-    expect(decodeProtocol2Offer({ ...offer('2.0.32'), selected: {
-      ...native('2.0.32'), apiDialect: 'v2-2.0.21',
-    } }).ok).toBe(false);
-    expect(decodeProtocol2Handshake({ ...handshake('2.0.32'), selectedNative: outOfRange,
-      selectedAuthority: { ...endpoint('2.0.32'), native: outOfRange } }).ok).toBe(false);
-    expect(decodeProtocol2CommandContext({ ...context('2.0.32'), native: outOfRange }).ok).toBe(false);
+    expect(
+      decodeProtocol2Offer({
+        ...offer('2.0.32'),
+        selected: {
+          ...native('2.0.32'),
+          apiDialect: 'v2-2.0.21',
+        },
+      }).ok
+    ).toBe(false);
+    expect(
+      decodeProtocol2Handshake({
+        ...handshake('2.0.32'),
+        selectedNative: outOfRange,
+        selectedAuthority: { ...endpoint('2.0.32'), native: outOfRange },
+      }).ok
+    ).toBe(false);
+    expect(decodeProtocol2CommandContext({ ...context('2.0.32'), native: outOfRange }).ok).toBe(
+      false
+    );
     const current = handshake('2.0.32');
     for (const key of ['v2-3.0.0', 'v2-2.0.32-rc.1', 'v2-next']) {
-      expect(decodeProtocol2Handshake({ ...current, dialects: {
-        [key]: current.dialects[native('2.0.32').apiDialect],
-      } }).ok).toBe(false);
+      expect(
+        decodeProtocol2Handshake({
+          ...current,
+          dialects: {
+            [key]: current.dialects[native('2.0.32').apiDialect],
+          },
+        }).ok
+      ).toBe(false);
     }
     expect(negotiateOpenCodeProtocol({ version: '3.0.0' })).toEqual({
-      kind: 'blocked', reason: 'Unsupported native generation',
+      kind: 'blocked',
+      reason: 'Unsupported native generation',
     });
     // Recognized in-range V2 still never negotiates without an upgraded qualified owner.
     expect(negotiateOpenCodeProtocol({ version: '2.0.21' })).toEqual({
-      kind: 'blocked', reason: 'V2 requires an upgraded qualified owner',
+      kind: 'blocked',
+      reason: 'V2 requires an upgraded qualified owner',
     });
   });
 
@@ -372,23 +396,26 @@ describe('bounded protocol2 public contracts', () => {
   });
 
   it('retains current legacy public builder bytes captured before A0 integration', () => {
+    // The fixture is committed with LF (git index); a Windows checkout may hand it
+    // back with CRLF, which is a checkout translation, not a builder byte change.
     const captured = readFileSync(
       resolve('test/features/opencode-compatibility/legacy-identity.json'),
       'utf8'
-    );
+    ).replace(/\r\n/g, '\n');
     const identity = createOpenCodeBridgeClientIdentity({ appVersion: 'test-app' });
     // Group support intentionally adds these capabilities to the existing v1 identity.
     const { groupChatProtocolVersion, ...legacyProtocol } = identity.bridgeProtocol;
     expect(groupChatProtocolVersion).toBe(1);
-    expect(legacyProtocol.supportedCommands).toEqual(expect.arrayContaining([
-      'opencode.sendMessage', 'opencode.observeMessageDelivery',
-    ]));
+    expect(legacyProtocol.supportedCommands).toEqual(
+      expect.arrayContaining(['opencode.sendMessage', 'opencode.observeMessageDelivery'])
+    );
     const legacyIdentity = {
       ...identity,
       bridgeProtocol: {
         ...legacyProtocol,
-        supportedCommands: legacyProtocol.supportedCommands.filter((command) =>
-          command !== 'opencode.sendMessage' && command !== 'opencode.observeMessageDelivery'
+        supportedCommands: legacyProtocol.supportedCommands.filter(
+          (command) =>
+            command !== 'opencode.sendMessage' && command !== 'opencode.observeMessageDelivery'
         ),
       },
     };

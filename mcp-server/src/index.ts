@@ -226,21 +226,15 @@ export function resolveStartOptions(
 
 async function main(): Promise<void> {
   const startOptions = resolveStartOptions();
+  const toolProfile = resolveToolProfile();
   const server = createServer({
     startOptions,
-    toolProfile: resolveToolProfile(),
+    toolProfile,
     healthIdentity: buildHttpHealthIdentity(startOptions),
   });
-  // The registry may be booting (its own dependencies come up first). A failed
-  // discovery must not take the whole app MCP server down: the agent still needs
-  // the local team tools, and the proxy re-reads the registry on the next launch.
-  try {
-    await registerSpecProxyTools(server);
-  } catch (error) {
-    process.stderr.write(
-      `spec proxy registration skipped: ${error instanceof Error ? error.message : String(error)}\n`
-    );
-  }
+  // Management is the explicit desktop-only bootstrap surface, not a degraded
+  // team session. A full team session must discover all spec tools before ready.
+  if (toolProfile === 'full') await registerSpecProxyTools(server);
   await server.start(startOptions);
 }
 

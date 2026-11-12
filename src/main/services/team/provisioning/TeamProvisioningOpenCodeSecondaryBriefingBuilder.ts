@@ -4,6 +4,8 @@ import {
 } from './TeamProvisioningOpenCodeDiagnosticsPolicy';
 import { buildChatVisualizationBriefing } from './TeamProvisioningVisualizationPrompt';
 
+import type { TeamTask } from '@shared/types';
+
 export interface OpenCodeSecondaryBriefingController {
   taskBoard: {
     memberBriefing(
@@ -31,12 +33,19 @@ export interface OpenCodeSecondaryBriefingControllerInput {
   teamName: string;
   claudeDir: string;
   allowUserMessageSender: false;
+  readOnlyTaskSnapshot: readonly TeamTask[];
 }
 
 export interface OpenCodeSecondaryBriefingBuilderPorts {
   createController(
     input: OpenCodeSecondaryBriefingControllerInput
   ): OpenCodeSecondaryBriefingController;
+  /**
+   * Canonical team tasks already read by the app that owns the registry token. The
+   * controller projects this detached snapshot; resolving the app-bound task API from
+   * inside the app would park the thread serving that request.
+   */
+  readTasks(teamName: string): Promise<readonly TeamTask[]>;
   getClaudeBasePath(): string;
 }
 
@@ -64,10 +73,12 @@ export async function buildOpenCodeSecondaryAppManagedLaunchPromptWithPorts(
   input: BuildOpenCodeSecondaryAppManagedLaunchPromptInput,
   ports: OpenCodeSecondaryBriefingBuilderPorts
 ): Promise<string> {
+  const tasks = await ports.readTasks(input.teamName);
   const controller = ports.createController({
     teamName: input.teamName,
     claudeDir: ports.getClaudeBasePath(),
     allowUserMessageSender: false,
+    readOnlyTaskSnapshot: tasks,
   });
   const briefing = await controller.taskBoard.memberBriefing(input.memberName, {
     runtimeProvider: 'opencode',

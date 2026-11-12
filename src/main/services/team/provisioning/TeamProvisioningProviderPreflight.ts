@@ -25,7 +25,6 @@ import {
 } from './TeamProvisioningCodexChatGptModelGate';
 import { getTeamProviderLabel } from './TeamProvisioningRuntimeDiagnostics';
 import {
-  type AuthStatusCommandResponse,
   extractJsonObjectFromCli,
   formatAnthropicEffortSupportFailure,
   hasAuthoritativeCodexLaunchCatalog,
@@ -33,9 +32,12 @@ import {
   type ProviderSelectedModelCheck,
   resolveAnthropicSelectionFromFacts,
   type RuntimeProviderLaunchFacts,
-  type RuntimeStatusCommandResponse,
 } from './TeamProvisioningRuntimeLaunchSelection';
 
+import type {
+  AuthStatusCommandResponse,
+  RuntimeStatusCommandResponse,
+} from './TeamProvisioningModelListNormalization';
 import type {
   CliProviderStatus,
   EffortLevel,

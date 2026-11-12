@@ -4,6 +4,7 @@ import * as path from 'node:path';
 import { atomicWriteSync } from '../../../utils/atomicWrite';
 import { withFileLock } from '../fileLock';
 import { isRecord } from '../registry/RegistryJson';
+
 import type { RegistryTaskGenesisReplayRecord } from '../registry/RegistryTaskClientTypes';
 
 function hasOnlyKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean {

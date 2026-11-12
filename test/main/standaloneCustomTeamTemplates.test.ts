@@ -1,3 +1,4 @@
+import { knownEmptyTeamRuntimeSnapshot } from '../helpers/teamRuntimeSnapshot';
 // @vitest-environment node
 /**
  * Standalone HTTP integration for the custom-team-templates feature.
@@ -246,7 +247,10 @@ describe('standalone custom-team-templates HTTP integration', () => {
     const first = sqliteFeature(core);
     const app = serve(first.feature);
     const { templateId } = await prepareAndSave(app, 'Release Pipeline');
-    const before = await app.inject({ method: 'GET', url: CUSTOM_TEAM_TEMPLATE_ROUTES.listTemplates });
+    const before = await app.inject({
+      method: 'GET',
+      url: CUSTOM_TEAM_TEMPLATE_ROUTES.listTemplates,
+    });
     const original = before.json().templates[0] as CustomTeamTemplateV1;
     expect(original.revision).toBe(1);
     const fields = {
@@ -280,7 +284,10 @@ describe('standalone custom-team-templates HTTP integration', () => {
       },
     });
     const persisted = updated.json().template as CustomTeamTemplateV1;
-    const listed = await app.inject({ method: 'GET', url: CUSTOM_TEAM_TEMPLATE_ROUTES.listTemplates });
+    const listed = await app.inject({
+      method: 'GET',
+      url: CUSTOM_TEAM_TEMPLATE_ROUTES.listTemplates,
+    });
     expect(listed.json()).toEqual({ status: 'ready', templates: [persisted] });
 
     await app.close();
@@ -389,7 +396,7 @@ describe('standalone custom-team-templates HTTP integration', () => {
     await fs.mkdir(project, { recursive: true });
     setClaudeBasePathOverride(claudeRoot);
     try {
-      const service = new TeamDataService();
+      const service = new TeamDataService(knownEmptyTeamRuntimeSnapshot);
       await service.createTeamConfig({
         teamName: TEAM,
         cwd: project,
@@ -560,8 +567,8 @@ describe('standalone custom-team-templates HTTP integration', () => {
       url: recheckRoute,
       payload: { previewToken: token },
     });
-    // Nothing was saved, but the submitted operation is still known.
-    expect(beforeDispose.json()).toMatchObject({ status: 'notSaved' });
+    // An absent row cannot certify that a previously dispatched writer will never commit.
+    expect(beforeDispose.json()).toMatchObject({ status: 'unresolved' });
 
     feature.dispose();
     const afterDispose = await app.inject({

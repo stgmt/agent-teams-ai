@@ -24,8 +24,9 @@ import { useStore } from '@renderer/store';
 import { buildTaskChangeRequestOptions } from '@renderer/utils/taskChangeRequest';
 import { RefreshCw } from 'lucide-react';
 
-import { TaskDetailLoadingDialog } from './TaskDetailLoadingDialog';
 import { SpecificationTaskDetails } from '../SpecificationTaskDetails';
+
+import { TaskDetailLoadingDialog } from './TaskDetailLoadingDialog';
 
 import type { TaskDetailHeadingProps } from '@features/team-task-detail/renderer';
 import type { TaskDetailFileLinkIntent } from '@features/team-task-detail/renderer';

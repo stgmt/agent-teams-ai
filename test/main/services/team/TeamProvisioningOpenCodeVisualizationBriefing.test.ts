@@ -1,9 +1,25 @@
 import { buildOpenCodeSecondaryAppManagedLaunchPromptWithPorts } from '@main/services/team/provisioning/TeamProvisioningOpenCodeSecondaryBriefingBuilder';
-import { createController, protocols } from 'agent-teams-controller';
+import * as agentTeamsControllerModule from 'agent-teams-controller';
 import { mkdir, mkdtemp, rm, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { describe, expect, it } from 'vitest';
+
+// A test process has no desktop app binding, which the canonical task backend requires. The
+// fixture pins the local board selection for the real controller, so both this test's own
+// briefing read and the briefing builder's controller stay on the real board implementation.
+vi.mock('agent-teams-controller', async () => {
+  // vi.mock factories are hoisted above the imports, so createRequire is resolved inside.
+  const { createRequire } = await import('node:module');
+  const actual = createRequire(import.meta.url)('../../../../agent-teams-controller/src/index.js');
+  return {
+    ...actual,
+    createController: (options: Record<string, unknown>) =>
+      actual.createController({ ...options, localTaskBoard: true }),
+  };
+});
+
+const { createController, protocols } = agentTeamsControllerModule;
 
 describe('bounded OpenCode startup visualization briefing', () => {
   it('keeps operating rules and workflow context within12k using an atomic display refresh for a long real briefing', async () => {
@@ -39,7 +55,11 @@ describe('bounded OpenCode startup visualization briefing', () => {
       expect(rawBriefing).not.toContain(protocol);
       const prompt = await buildOpenCodeSecondaryAppManagedLaunchPromptWithPorts(
         { teamName, memberName: 'Builder' },
-        { createController, getClaudeBasePath: () => claudeDir }
+        {
+          createController,
+          getClaudeBasePath: () => claudeDir,
+          readTasks: () => Promise.resolve([]),
+        }
       );
       expect(prompt.length).toBeLessThanOrEqual(12_000);
       expect(prompt).not.toContain(protocol);

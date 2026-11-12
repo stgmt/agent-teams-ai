@@ -1,7 +1,5 @@
 const { startControlServer } = require('./helpers/controlServer.js');
-const {
-  createRegistryTaskClient,
-} = require('../src/internal/taskRegistryClient.js');
+const { createRegistryTaskClient } = require('../src/internal/taskRegistryClient.js');
 const { resetSyncControlRequestChannel } = require('../src/internal/syncControlRequest.js');
 
 const APP_CONTEXT = JSON.stringify({
@@ -65,7 +63,9 @@ describe('registry task client over a real control API', () => {
         {
           id: 'comment-1',
           text: 'Complete execution details',
-          attachments: [{ id: 'comment-file-1', filename: 'comment.txt', filePath: '/data/comment.txt' }],
+          attachments: [
+            { id: 'comment-file-1', filename: 'comment.txt', filePath: '/data/comment.txt' },
+          ],
         },
       ],
       attachments: [{ id: 'task-file-1', filename: 'task.txt', filePath: '/data/task.txt' }],
@@ -91,10 +91,7 @@ describe('registry task client over a real control API', () => {
       client.setTaskStatus(taskId, { status: 'in_progress', expectedStatus: 'pending' }, scope)
     ).toEqual(task);
     expect(
-      client.createTaskWithOutcome(
-        { subject: 'Shared task', requirements: ['FR-1'] },
-        scope
-      )
+      client.createTaskWithOutcome({ subject: 'Shared task', requirements: ['FR-1'] }, scope)
     ).toEqual({ task, outcome: 'APPLIED' });
 
     for (const request of requests.slice(0, 4)) {
@@ -162,8 +159,11 @@ describe('registry task client over a real control API', () => {
       subject: 'One intent',
       requirements: ['FR-1'],
       creationCommand: {
-        namespace: 'test', scopeKey: 'team a', operation: 'task.create',
-        commandId: 'request-1', payloadHash: 'hash-1',
+        namespace: 'test',
+        scopeKey: 'team a',
+        operation: 'task.create',
+        commandId: 'request-1',
+        payloadHash: 'hash-1',
       },
     };
     const first = client.createTaskWithOutcome(input);
@@ -177,10 +177,9 @@ describe('registry task client over a real control API', () => {
   it('maps a missing-requirements refusal to a typed error', async () => {
     const server = await startServer({ initialTasks: [] });
 
-    expect(() => makeClient(server).createTask({ subject: 'No requirements', requirements: [] }))
-      .toThrowError(
-        expect.objectContaining({ code: 'REQUIREMENTS_REQUIRED', status: 400 })
-      );
+    expect(() =>
+      makeClient(server).createTask({ subject: 'No requirements', requirements: [] })
+    ).toThrowError(expect.objectContaining({ code: 'REQUIREMENTS_REQUIRED', status: 400 }));
   });
 
   it('surfaces a status conflict with the live current status', async () => {
@@ -191,6 +190,7 @@ describe('registry task client over a real control API', () => {
     expect(() =>
       makeClient(server).setTaskStatus('7', { status: 'completed', expectedStatus: 'in_progress' })
     ).toThrowError(expect.objectContaining({ code: 'STATUS_CONFLICT', currentStatus: 'pending' }));
+    expect(makeClient(server).getTask('7')).toMatchObject({ id: '7', status: 'pending' });
   });
 
   it('reports an unavailable control API as REGISTRY_UNAVAILABLE', async () => {
@@ -199,6 +199,28 @@ describe('registry task client over a real control API', () => {
     expect(() => makeClient(server).listTasks()).toThrowError(
       expect.objectContaining({ code: 'REGISTRY_UNAVAILABLE', status: 503 })
     );
+  });
+
+  it('keeps the shared registry task lifecycle functional through one client', async () => {
+    const server = await startServer({ initialTasks: [] });
+    const client = makeClient(server);
+    const created = client.createTask({
+      subject: 'Shared registry lifecycle',
+      requirements: ['FR-1'],
+    });
+    const running = client.setTaskStatus(created.id, {
+      status: 'in_progress',
+      expectedStatus: 'pending',
+    });
+    expect(running).toMatchObject({ id: created.id, status: 'in_progress' });
+    const completed = client.setTaskStatus(created.id, {
+      status: 'completed',
+      expectedStatus: 'in_progress',
+    });
+    expect(completed).toMatchObject({ id: created.id, status: 'completed' });
+    expect(client.listTasks()).toEqual([
+      expect.objectContaining({ id: created.id, status: 'completed' }),
+    ]);
   });
 
   it('reports an unreachable control API as REGISTRY_UNAVAILABLE', async () => {
@@ -233,9 +255,7 @@ describe('registry task client over a real control API', () => {
 
     expect(client.readTaskArtifactData('7', 'artifact-1')).toEqual(artifact);
     expect(requests[0].method).toBe('GET');
-    expect(new URL(requests[0].url).pathname).toBe(
-      '/api/teams/team-a/tasks/7/artifact/artifact-1'
-    );
+    expect(new URL(requests[0].url).pathname).toBe('/api/teams/team-a/tasks/7/artifact/artifact-1');
     expect(new URL(requests[0].url).search).toBe('');
     expect(requests[0].body).toBeUndefined();
     expect(requests[0].headers['x-agent-teams-app-context']).toBe(APP_CONTEXT);

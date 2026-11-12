@@ -13,6 +13,19 @@ export function createInternalStorageCommentWarning(
 } {
   const reportedTeams = new Set<string>();
   let storageUnavailableReported = false;
+  /**
+   * Calls the publisher synchronously and swallows both a synchronous throw and an
+   * async rejection: an uncertain report is never retried or rethrown.
+   */
+  const publishQuietly = (warning: DetectedError): void => {
+    void (async (): Promise<void> => {
+      try {
+        await publish(warning);
+      } catch {
+        // An uncertain report is never retried.
+      }
+    })();
+  };
   const onFailure = (teamName: string): void => {
     if (storageUnavailableReported) return;
     if (reportedTeams.has(teamName)) return;
@@ -42,11 +55,8 @@ export function createInternalStorageCommentWarning(
       target: { kind: 'team', teamName, section: 'tasks' },
       context: { projectName: teamName },
     };
-    try {
-      void publish(warning).catch(() => undefined);
-    } catch {
-      // Preserve the original journal error; do not retry an uncertain report.
-    }
+    // Preserve the original journal error; do not retry an uncertain report.
+    publishQuietly(warning);
   };
   const onStorageUnavailable = (): void => {
     if (storageUnavailableReported) return;
@@ -74,11 +84,8 @@ export function createInternalStorageCommentWarning(
       requiresAcknowledgement: true,
       context: { projectName: russian ? 'Внутреннее хранилище' : 'Internal storage' },
     };
-    try {
-      void publish(warning).catch(() => undefined);
-    } catch {
-      // Do not retry an uncertain report or alter the storage decision.
-    }
+    // Do not retry an uncertain report or alter the storage decision.
+    publishQuietly(warning);
   };
   return {
     onFailure,

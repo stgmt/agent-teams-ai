@@ -1,10 +1,9 @@
 // @vitest-environment node
+import { createSdkRuntimePlan, rejectUnexpectedRecovery } from './nodeMemberRuntimeFixture';
 import { describe, expect, it } from 'vitest';
 
 import { NodeMemberRuntime } from '../../../../src/features/team-provisioning/main/adapters/output/NodeMemberRuntime';
 import { createMemberLifecycle } from '../../../../src/features/team-provisioning/main/composition/createMemberLifecycle';
-
-import type { NodeMemberLaunchPlan } from '../../../../src/features/team-provisioning/main/adapters/output/NodeMemberRuntime';
 
 const owner = {
   appInstanceId: 'TEST-app',
@@ -12,7 +11,8 @@ const owner = {
   connectionGeneration: 1,
 };
 const run = { ...owner, teamName: 'test-team', runId: 'TEST-run' };
-const LIVES = 'setInterval(() => {}, 1000)';
+// The real child remains alive until the lifecycle terminates its exact PID.
+const LIVES = 'await ready();setInterval(() => {}, 1000)';
 
 function alive(pid: number): boolean {
   try {
@@ -27,15 +27,10 @@ function alive(pid: number): boolean {
 function realRuntime() {
   return new NodeMemberRuntime(
     {
-      prepare(settings): Promise<NodeMemberLaunchPlan> {
-        return Promise.resolve({
-          executable: process.execPath,
-          args: ['-e', LIVES],
-          cwd: settings.workingDirectory,
-          env: process.env,
-        });
+      async prepare(settings, token) {
+        return createSdkRuntimePlan(LIVES, token, { cwd: settings.workingDirectory });
       },
-      observeOutput: () => 'connected',
+      recover: rejectUnexpectedRecovery,
     },
     (_token, operation) => operation()
   );
@@ -52,6 +47,13 @@ function lifecycleWith(runtime: NodeMemberRuntime) {
           memberName,
           role: memberName === 'team-lead' ? ('lead' as const) : ('member' as const),
           configurationRevision: 'TEST-revision',
+          specIntegration: {
+            scope: { projects: ['TEST/project'], bindings: [] },
+            environment: {
+              OMP_SPEC_REGISTRY_URL: 'http://127.0.0.1:8090',
+              OMP_SPEC_REGISTRY_TOKEN: 'TEST-registry-credential',
+            },
+          },
           providerId: 'anthropic',
           model: 'TEST-model',
           workingDirectory: process.cwd(),
@@ -62,32 +64,40 @@ function lifecycleWith(runtime: NodeMemberRuntime) {
 }
 
 describe('lead restart against real processes', () => {
-  it('kills the process it owned and runs the replacement instead', async () => {
-    const lifecycle = lifecycleWith(realRuntime());
-    await lifecycle.teams.launch(run, [
-      { memberName: 'team-lead', role: 'lead' },
-      { memberName: 'builder', role: 'member' },
-    ]);
-    await Promise.all(['team-lead', 'builder'].map((name) => lifecycle.commands.settled(run, name)));
+  // Two real launches (lead + member) and a fenced restart; under parallel file execution on
+  // Windows this exceeds the default 15s ceiling, so the budget is explicit.
+  it(
+    'kills the process it owned and runs the replacement instead',
+    { timeout: 30_000 },
+    async () => {
+      const lifecycle = lifecycleWith(realRuntime());
+      await lifecycle.teams.launch(run, [
+        { memberName: 'team-lead', role: 'lead' },
+        { memberName: 'builder', role: 'member' },
+      ]);
+      await Promise.all(
+        ['team-lead', 'builder'].map((name) => lifecycle.commands.settled(run, name))
+      );
 
-    const before = lifecycle.snapshot(run.teamName).members['team-lead']!.process!;
-    expect(alive(before.pid)).toBe(true);
+      const before = lifecycle.snapshot(run.teamName).members['team-lead']!.process!;
+      expect(alive(before.pid)).toBe(true);
 
-    await lifecycle.commands.restartLeadWithSettings({
-      team: run,
-      memberName: 'team-lead',
-      generation: 1,
-      expectedRunId: run.runId,
-      overrides: { model: 'TEST-model-2', effort: 'high', resumeSessionId: 'TEST-session' },
-    });
-    await lifecycle.commands.settled(run, 'team-lead');
+      await lifecycle.commands.restartLeadWithSettings({
+        team: run,
+        memberName: 'team-lead',
+        generation: 1,
+        expectedRunId: run.runId,
+        overrides: { model: 'TEST-model-2', effort: 'high', resumeSessionId: 'TEST-session' },
+      });
+      await lifecycle.commands.settled(run, 'team-lead');
 
-    const after = lifecycle.snapshot(run.teamName).members['team-lead']!.process!;
-    expect(after.pid).not.toBe(before.pid);
-    expect(alive(after.pid)).toBe(true);
-    await expect.poll(() => alive(before.pid)).toBe(false);
+      const after = lifecycle.snapshot(run.teamName).members['team-lead']!.process!;
+      expect(after.pid).not.toBe(before.pid);
+      expect(alive(after.pid)).toBe(true);
+      await expect.poll(() => alive(before.pid)).toBe(false);
 
-    await lifecycle.commands.cancelPendingLaunches();
-    expect(alive(after.pid)).toBe(false);
-  });
+      await lifecycle.commands.cancelPendingLaunches();
+      expect(alive(after.pid)).toBe(false);
+    }
+  );
 });

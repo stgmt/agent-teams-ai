@@ -4,11 +4,7 @@ import { awaitWithAbort } from '../awaitWithAbort';
 
 import { laneGroupKey, memberKey as key } from './MemberRunKey';
 
-import type {
-  MemberProcessToken,
-  MemberStartAdmission,
-  TeamRunIdentity,
-} from '../../../contracts';
+import type { MemberProcessToken, MemberStartAdmission, TeamRunIdentity } from '../../../contracts';
 import type { MemberLifecycleRegistry } from '../../domain/MemberLifecycleRegistry';
 import type {
   MemberLanePermission,
@@ -55,10 +51,7 @@ export interface MemberLaneCommandPorts {
   nextOperationId(): string;
   launch(token: Readonly<MemberProcessToken>): void;
   settleTeamLaunch(team: Readonly<TeamRunIdentity>): void;
-  cancelAdmitted(
-    team: TeamRunIdentity,
-    memberNames: readonly string[]
-  ): readonly Promise<void>[];
+  cancelAdmitted(team: TeamRunIdentity, memberNames: readonly string[]): readonly Promise<void>[];
   awaitStops(stops: readonly Promise<void>[]): Promise<void>;
   settled(team: TeamRunIdentity, memberName: string): Promise<void>;
   /** A full team launch is in flight; retrying a lane under it would race it. */
@@ -81,6 +74,85 @@ export class MemberLaneCommands {
   >();
 
   constructor(private readonly ports: MemberLaneCommandPorts) {}
+
+  adoptLane(
+    tokens: readonly Readonly<MemberProcessToken>[],
+    laneId: string,
+    group: OwnedMemberLaneGroup
+  ): void {
+    const first = tokens[0];
+    if (!first || tokens.some((token) => key(token, '') !== key(first, '')))
+      throw new Error('Recovered lane must belong to one run');
+    this.ports.registry.assertRun(first);
+    const members = this.ports.registry.snapshot(first.teamName).members;
+    for (const token of tokens) {
+      const member = members[token.memberName];
+      if (
+        !member ||
+        member.generation !== token.generation ||
+        member.operationId !== token.operationId ||
+        !group.observations[token.memberName]
+      )
+        throw new Error('Recovered lane attempt is stale or lacks member evidence');
+    }
+    const groupKey = laneGroupKey(first, laneId);
+    if (this.laneGroups.has(groupKey)) throw new Error('Recovered lane is already observed');
+    const execution: LaneGroupExecution = {
+      laneId,
+      tokens,
+      group,
+      accepted: new Map(),
+      abort: new AbortController(),
+      unsubscribe: null,
+      stop: null,
+      released: false,
+      completion: Promise.resolve(),
+    };
+    this.laneGroups.set(groupKey, execution);
+    this.subscribeGroup(execution, group);
+  }
+
+  private subscribeGroup(execution: LaneGroupExecution, group: OwnedMemberLaneGroup): void {
+    const { tokens, accepted } = execution;
+    const byName = new Map(tokens.map((token) => [token.memberName, token]));
+    for (const token of tokens) {
+      const observation = group.observations[token.memberName];
+      if (!observation) throw new Error('Adapter lane evidence is missing for a member');
+      accepted.set(token.memberName, this.ports.registry.observeLane(token, observation));
+    }
+    const unsubscribe = group.subscribe({
+      observed: (memberName, observation) => {
+        const token = byName.get(memberName);
+        if (token && accepted.get(memberName)) {
+          this.ports.registry.observeLane(token, observation);
+          this.settleTeamLaunch(token);
+        }
+      },
+      lost: (memberName, error) => {
+        const token = byName.get(memberName);
+        if (token && accepted.get(memberName)) {
+          this.ports.registry.observeLaneLost(token, error);
+          this.settleTeamLaunch(token);
+        }
+      },
+      failed: (memberName, error) => {
+        const token = byName.get(memberName);
+        if (token && accepted.get(memberName)) {
+          this.ports.registry.observeRuntimeFailed(token, error);
+          this.ports.reportRuntimeFailure?.({
+            teamName: token.teamName,
+            memberName,
+            runId: token.runId,
+            detail: error,
+          });
+          this.settleTeamLaunch(token);
+        }
+      },
+      released: () => this.releaseLaneGroup(execution),
+    });
+    execution.unsubscribe = unsubscribe;
+    if (execution.released) unsubscribe();
+  }
 
   /** Every lane execution of this process, in creation order. */
   entries(): LaneGroupExecution[] {
@@ -114,7 +186,7 @@ export class MemberLaneCommands {
   launchLane(tokens: readonly Readonly<MemberProcessToken>[], laneId: string): void {
     if (!laneId.trim()) throw new Error('Lane identity is required');
     if (tokens.length === 0) return;
-    const first = tokens[0]!;
+    const first = tokens[0];
     const runKey = key(first, '');
     if (tokens.some((token) => key(token, '') !== runKey))
       throw new Error('A lane group must belong to one run');
@@ -248,7 +320,7 @@ export class MemberLaneCommands {
         skipped.push({ memberName: name, reason: 'Lead lane requires a team relaunch' });
     };
     for (const group of this.laneGroups.values()) {
-      if (key(group.tokens[0]!, '') !== key(run, '')) continue;
+      if (key(group.tokens[0], '') !== key(run, '')) continue;
       const names = group.tokens.map((token) => token.memberName);
       const failedNames = names.filter((name) => snapshot.members[name]?.phase === 'failed');
       if (failedNames.length === 0) continue;
@@ -367,7 +439,6 @@ export class MemberLaneCommands {
   private async startLaneGroup(execution: LaneGroupExecution): Promise<void> {
     const { tokens, abort } = execution;
     const accepted = execution.accepted;
-    const byName = new Map(tokens.map((token) => [token.memberName, token]));
     try {
       const settings = await Promise.all(
         tokens.map(async (token) => {
@@ -402,44 +473,7 @@ export class MemberLaneCommands {
         if (!group.observations[token.memberName])
           throw new Error('Adapter lane evidence is missing for a member');
       }
-      for (const token of tokens) {
-        accepted.set(
-          token.memberName,
-          this.ports.registry.observeLane(token, group.observations[token.memberName]!)
-        );
-      }
-      const unsubscribe = group.subscribe({
-        observed: (memberName, observation) => {
-          const token = byName.get(memberName);
-          if (token && accepted.get(memberName)) {
-            this.ports.registry.observeLane(token, observation);
-            this.settleTeamLaunch(token);
-          }
-        },
-        lost: (memberName, error) => {
-          const token = byName.get(memberName);
-          if (token && accepted.get(memberName)) {
-            this.ports.registry.observeLaneLost(token, error);
-            this.settleTeamLaunch(token);
-          }
-        },
-        failed: (memberName, error) => {
-          const token = byName.get(memberName);
-          if (token && accepted.get(memberName)) {
-            this.ports.registry.observeRuntimeFailed(token, error);
-            this.ports.reportRuntimeFailure?.({
-              teamName: token.teamName,
-              memberName: token.memberName,
-              runId: token.runId,
-              detail: error,
-            });
-            this.settleTeamLaunch(token);
-          }
-        },
-        released: () => this.releaseLaneGroup(execution),
-      });
-      execution.unsubscribe = unsubscribe;
-      if (execution.released) unsubscribe();
+      this.subscribeGroup(execution, group);
       if (abort.signal.aborted) await this.stopLaneGroup(execution);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -471,13 +505,14 @@ export class MemberLaneCommands {
       execution.unsubscribe = null;
       this.forgetLaneGroup(execution);
       // Keep the lane plan retryable even though no execution owns it anymore.
-      this.failedLaneGroups.set(laneGroupKey(tokens[0]!, execution.laneId), {
+      const first = tokens[0];
+      this.failedLaneGroups.set(laneGroupKey(first, execution.laneId), {
         run: Object.freeze({
-          appInstanceId: tokens[0]!.appInstanceId,
-          dataRootFingerprint: tokens[0]!.dataRootFingerprint,
-          connectionGeneration: tokens[0]!.connectionGeneration,
-          teamName: tokens[0]!.teamName,
-          runId: tokens[0]!.runId,
+          appInstanceId: first.appInstanceId,
+          dataRootFingerprint: first.dataRootFingerprint,
+          connectionGeneration: first.connectionGeneration,
+          teamName: first.teamName,
+          runId: first.runId,
         }),
         laneId: execution.laneId,
         memberNames: tokens.map((token) => token.memberName),
@@ -502,7 +537,7 @@ export class MemberLaneCommands {
 
   private forgetLaneGroup(execution: LaneGroupExecution): void {
     if (execution.tokens.length === 0) return;
-    this.laneGroups.delete(laneGroupKey(execution.tokens[0]!, execution.laneId));
+    this.laneGroups.delete(laneGroupKey(execution.tokens[0], execution.laneId));
   }
 
   /** Stops one lane and releases its members; idempotent per execution. */
@@ -524,7 +559,7 @@ export class MemberLaneCommands {
 
   private laneGroupsForRun(team: TeamRunIdentity): LaneGroupExecution[] {
     return [...this.laneGroups.values()].filter(
-      (group) => key(group.tokens[0]!, '') === key(team, '')
+      (group) => key(group.tokens[0], '') === key(team, '')
     );
   }
 
@@ -532,7 +567,7 @@ export class MemberLaneCommands {
   laneGroupsFor(team: TeamRunIdentity, memberName: string): LaneGroupExecution[] {
     return [...this.laneGroups.values()].filter(
       (group) =>
-        key(group.tokens[0]!, '') === key(team, '') &&
+        key(group.tokens[0], '') === key(team, '') &&
         group.tokens.some((token) => token.memberName === memberName)
     );
   }

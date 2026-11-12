@@ -3,7 +3,7 @@ import type { PersistedLeadRequest } from './LeadRequestDeliveryPorts';
 export type LeadInputClaim =
   | Readonly<{ state: 'claimed'; operationId: string }>
   | Readonly<{ state: 'sent' }>
-  | Readonly<{ state: 'unconfirmed' }>;
+  | Readonly<{ state: 'unconfirmed'; operationId: string }>;
 
 /** Durable admission already has an older human request without a confirmed reply. */
 export class PreviousDurableRequestActiveError extends Error {

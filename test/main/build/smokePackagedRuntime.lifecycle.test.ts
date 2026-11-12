@@ -41,7 +41,10 @@ async function waitFor(name) {
 (async () => {
   await waitFor('runtime-start');
   const child = spawn(process.execPath, [${JSON.stringify(childFile)}], {
-    cwd: process.cwd(), env: process.env, stdio: ['ignore', 'ignore', 'ignore', 'ipc']
+    cwd: process.cwd(), env: process.env, stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
+    // Windows terminates non-detached children together with their owner, so an
+    // owner-dependent child can only outlive the owner as a detached process.
+    detached: true
   });
   await new Promise((resolve, reject) => {
     child.once('error', reject);
@@ -103,5 +106,7 @@ describe('packaged runtime owner lifecycle', () => {
     } finally {
       failure.mockRestore();
     }
-  }, 20_000);
+    // Windows reads the owned-process census through CIM (~700 ms per sample), so
+    // the 5 s retirement window plus failure cleanup outlasts the 20 s budget.
+  }, 60_000);
 });

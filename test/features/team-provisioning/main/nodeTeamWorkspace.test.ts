@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { createSdkRuntimePlan, rejectUnexpectedRecovery } from './nodeMemberRuntimeFixture';
 import { execFile } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -61,6 +62,13 @@ beforeEach(async () => {
     baseWorkingDirectory: repo,
     isolation: 'worktree',
     instructions: 'TEST',
+    specIntegration: {
+      scope: { projects: ['TEST/project'], bindings: [] },
+      environment: {
+        OMP_SPEC_REGISTRY_URL: 'http://127.0.0.1:8090',
+        OMP_SPEC_REGISTRY_TOKEN: 'TEST-registry-credential',
+      },
+    },
   };
 }, 60_000);
 
@@ -244,17 +252,14 @@ describe('configured persistent team workspaces', { timeout: 60_000 }, () => {
     // РИСК: Node proves OS cwd ownership and file preservation, not model/provider acceptance.
     const runtime = new NodeMemberRuntime(
       {
-        prepare() {
-          return Promise.resolve({
-            executable: process.execPath,
-            args: [
-              '-e',
-              "require('node:fs').writeFileSync('TEST-child.txt',process.cwd());setInterval(()=>{},1000)",
-            ],
-            cwd: prepared.workingDirectory,
-            env: process.env,
-          });
+        async prepare(_settings, token) {
+          return createSdkRuntimePlan(
+            "require('node:fs').writeFileSync('TEST-child.txt',process.cwd());await ready();setInterval(()=>{},1000)",
+            token,
+            { cwd: prepared.workingDirectory }
+          );
         },
+        recover: rejectUnexpectedRecovery,
       },
       async (_token, operation) => operation()
     );
@@ -270,7 +275,7 @@ describe('configured persistent team workspaces', { timeout: 60_000 }, () => {
     );
     try {
       await expect
-        .poll(async () => readFile(marker, 'utf8').catch(() => ''))
+        .poll(async () => readFile(marker, 'utf8').catch(() => ''), { timeout: 20_000 })
         .toBe(prepared.workingDirectory);
     } finally {
       await child.stop();

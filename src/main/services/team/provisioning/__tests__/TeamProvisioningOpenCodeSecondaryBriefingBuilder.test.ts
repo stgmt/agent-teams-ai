@@ -9,11 +9,19 @@ import {
 
 function createPorts(briefing: unknown): {
   createController: ReturnType<typeof vi.fn>;
+  readTasks: ReturnType<typeof vi.fn>;
   getClaudeBasePath: ReturnType<typeof vi.fn>;
   memberBriefing: ReturnType<typeof vi.fn>;
   ports: OpenCodeSecondaryBriefingBuilderPorts;
 } {
   const memberBriefing = vi.fn(async () => briefing);
+  const readTasks = vi.fn(async () => [
+    {
+      id: 'task-1',
+      subject: 'Investigate rollout',
+      status: 'pending' as const,
+    },
+  ]);
   const createController = vi.fn(() => ({
     taskBoard: {
       memberBriefing,
@@ -26,10 +34,12 @@ function createPorts(briefing: unknown): {
 
   return {
     createController,
+    readTasks,
     getClaudeBasePath,
     memberBriefing,
     ports: {
       createController,
+      readTasks,
       getClaudeBasePath,
     },
   };
@@ -37,7 +47,7 @@ function createPorts(briefing: unknown): {
 
 describe('TeamProvisioningOpenCodeSecondaryBriefingBuilder', () => {
   it('loads the OpenCode member briefing through the controller port and wraps it for launch', async () => {
-    const { createController, getClaudeBasePath, memberBriefing, ports } = createPorts(
+    const { createController, readTasks, getClaudeBasePath, memberBriefing, ports } = createPorts(
       '  Builder briefing\nBearer ABCDEFGHIJKLMNOP  '
     );
     const builder = createTeamProvisioningOpenCodeSecondaryBriefingBuilder(ports);
@@ -48,10 +58,20 @@ describe('TeamProvisioningOpenCodeSecondaryBriefingBuilder', () => {
     });
 
     expect(getClaudeBasePath).toHaveBeenCalledTimes(1);
+    expect(readTasks).toHaveBeenCalledWith('atlas-hq');
     expect(createController).toHaveBeenCalledWith({
       teamName: 'atlas-hq',
       claudeDir: '/home/test/.claude',
       allowUserMessageSender: false,
+      // The controller projects the app's detached canonical read instead of calling the
+      // app-bound task API from inside the app.
+      readOnlyTaskSnapshot: [
+        {
+          id: 'task-1',
+          subject: 'Investigate rollout',
+          status: 'pending',
+        },
+      ],
     });
     expect(memberBriefing).toHaveBeenCalledWith('Builder', {
       runtimeProvider: 'opencode',

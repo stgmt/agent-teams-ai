@@ -63,6 +63,65 @@ describe('native team config recovery', () => {
     expect(invalidate).toHaveBeenCalledWith('test-team');
   });
 
+  it('durably records lane attempts before acceptance and releases only the exact attempt', async () => {
+    const { config, store, teamsRoot } = await setup();
+    await store.mutate('test-team', new AbortController().signal, async (current) => ({
+      ...current,
+      leadAgentId: 'team-lead@test-team',
+      members: [{ name: 'team-lead', agentId: 'team-lead@test-team', providerId: 'opencode' }],
+    }));
+    const token = {
+      ...run,
+      memberName: 'team-lead',
+      generation: 3,
+      operationId: 'TEST-lane-attempt',
+    };
+    const readMember = async () => {
+      const document = JSON.parse(
+        await readFile(join(teamsRoot, 'test-team', 'config.json'), 'utf8')
+      );
+      return document.members[0];
+    };
+    await config.recordLaneAttempts([token], 'primary');
+    expect(await readMember()).toMatchObject({
+      runtimeGeneration: 3,
+      runtimeOperationId: 'TEST-lane-attempt',
+      runtimeLaneId: 'primary',
+    });
+    expect((await readMember()).runtimePid).toBeUndefined();
+    await config.recordLaneAttempts([token], 'primary', {
+      'team-lead': {
+        laneId: 'primary',
+        sessionId: 'TEST-lane-session',
+        hostPid: process.pid,
+        runtimeAlive: true,
+        bootstrapConfirmed: true,
+        permissionBlocked: false,
+      },
+    });
+    const restarted = new NodeNativeTeamConfig({
+      teamsRoot,
+      settings: {} as never,
+      invalidate: vi.fn(),
+    });
+    await restarted.releaseLaneAttempts([{ ...token, generation: 2 }], 'primary');
+    expect(await readMember()).toMatchObject({
+      runtimePid: process.pid,
+      runtimeSessionId: 'TEST-lane-session',
+      runtimeOperationId: 'TEST-lane-attempt',
+    });
+    await restarted.releaseLaneAttempts([token], 'primary');
+    const released = await readMember();
+    for (const field of [
+      'runtimePid',
+      'runtimeSessionId',
+      'runtimeOperationId',
+      'runtimeGeneration',
+      'runtimeLaneId',
+    ])
+      expect(released[field]).toBeUndefined();
+  });
+
   it('releases process rows whose recorded PID is gone, and keeps a live one', async () => {
     const { config, store, teamsRoot } = await setup();
     const deadPid = await new Promise<number>((resolve, reject) => {
@@ -90,7 +149,9 @@ describe('native team config recovery', () => {
     }));
 
     await expect(config.recoverOrphanedClaim('test-team', () => false)).resolves.toBe(true);
-    const after = JSON.parse(await readFile(join(teamsRoot, 'test-team', 'config.json'), 'utf8')) as {
+    const after = JSON.parse(
+      await readFile(join(teamsRoot, 'test-team', 'config.json'), 'utf8')
+    ) as {
       members: Record<string, unknown>[];
     };
     const byName = Object.fromEntries(after.members.map((member) => [member.name, member]));

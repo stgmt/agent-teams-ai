@@ -47,8 +47,10 @@ function fixture(id = 'local') {
   // Only the external filesystem is replaced. Scanner/parser/builder/cache/lifecycle are real.
   const provider: FileSystemProvider = {
     type: 'ssh',
-    exists: (path) => {
+    exists: (target) => {
       filesystemCalls++;
+      // Storage resolution joins paths with the host separator; compare normalized segments.
+      const path = target.replaceAll('\\', '/');
       return Promise.resolve(
         path.endsWith(`${session}.jsonl`) ||
           path.endsWith('/subagents/agent-worker-a.jsonl') ||

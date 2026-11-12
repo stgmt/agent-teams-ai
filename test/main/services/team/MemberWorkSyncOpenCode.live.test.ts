@@ -83,104 +83,105 @@ liveDescribe('Member work sync OpenCode live e2e', () => {
     }
   }, 90_000);
 
-  it(
-    'delivers a work-sync nudge to a real OpenCode member and accepts its still-working report',
-    async () => {
-      const selectedModel = process.env.OPENCODE_E2E_MODEL?.trim() || DEFAULT_MODEL;
-      const projectPath = path.join(tempDir, 'project');
-      await fs.mkdir(projectPath, { recursive: true });
-      await fs.writeFile(
-        path.join(projectPath, 'README.md'),
-        '# Member work sync OpenCode live e2e\n\nKeep this project intentionally tiny.\n',
-        'utf8'
-      );
+  it('delivers a work-sync nudge to a real OpenCode member and accepts its still-working report', async () => {
+    const selectedModel = process.env.OPENCODE_E2E_MODEL?.trim() || DEFAULT_MODEL;
+    const projectPath = path.join(tempDir, 'project');
+    await fs.mkdir(projectPath, { recursive: true });
+    await fs.writeFile(
+      path.join(projectPath, 'README.md'),
+      '# Member work sync OpenCode live e2e\n\nKeep this project intentionally tiny.\n',
+      'utf8'
+    );
 
-      let activeService: OpenCodeLiveHarness['svc'] | null = null;
-      harness = await createOpenCodeLiveHarness({
-        tempDir,
-        selectedModel,
-        projectPath,
-        configureServices: (svc) => {
-          activeService = svc;
-          const configReader = new TeamConfigReader();
-          feature = createMemberWorkSyncFeature({
-            isManagedByThisProfile: async () => true,
-    lifecycleIdentity: createTestWorkSyncIdentity(),
-            teamsBasePath: getTeamsBasePath(),
-            configReader,
-            taskReader: new TeamTaskReader(),
-            kanbanManager: new TeamKanbanManager(),
-            membersMetaStore: new TeamMembersMetaStore(),
-            isTeamActive: (name) => svc.isTeamAlive(name) || svc.hasProvisioningRun(name),
-            listLifecycleActiveTeamNames: async () => (teamName ? [teamName] : []),
-            queueQuietWindowMs: 1,
-          });
-          svc.setTeamChangeEmitter((event: TeamChangeEvent) => feature!.noteTeamChange(event));
-          svc.setRuntimeTurnSettledEnvironmentProvider((input) =>
-            feature!.buildRuntimeTurnSettledEnvironment(input)
-          );
-          return { memberWorkSyncFeature: feature! };
-        },
-      });
-      expect(activeService).toBe(harness.svc);
-
-      const memberName = 'bob';
-      const marker = `member-work-sync-opencode-live-${Date.now()}`;
-      teamName = `member-work-sync-opencode-${Date.now()}`;
-      const progressEvents: TeamProvisioningProgress[] = [];
-
-      await harness.svc.createTeam(
-        {
-          teamName,
-          cwd: projectPath,
-          providerId: 'opencode',
-          model: selectedModel,
-          skipPermissions: true,
-          prompt: [
-            'Keep launch work minimal.',
-            'If you receive a member_work_sync_nudge, call member_work_sync_status first.',
-            'Then call member_work_sync_report with state "still_working", the returned agendaFingerprint/reportToken, and taskIds from the nudge.',
-            'Do not complete the task and do not reply only with acknowledgement.',
-          ].join(' '),
-          members: [
-            {
-              name: memberName,
-              role: 'Developer',
-              providerId: 'opencode',
-              model: selectedModel,
-            },
-          ],
-        },
-        (progress) => {
-          progressEvents.push(progress);
-        }
-      );
-
-      await waitUntil(async () => {
-        const last = progressEvents.at(-1);
-        if (last?.state === 'failed') {
-          throw new Error(formatProgressDump(progressEvents));
-        }
-        return progressEvents.some((progress) =>
-          progress.message.includes('OpenCode team launch is ready')
+    let activeService: OpenCodeLiveHarness['svc'] | null = null;
+    harness = await createOpenCodeLiveHarness({
+      tempDir,
+      selectedModel,
+      projectPath,
+      configureServices: (svc) => {
+        activeService = svc;
+        const configReader = new TeamConfigReader();
+        feature = createMemberWorkSyncFeature({
+          isManagedByThisProfile: async () => true,
+          lifecycleIdentity: createTestWorkSyncIdentity(),
+          teamsBasePath: getTeamsBasePath(),
+          configReader,
+          taskReader: new TeamTaskReader(),
+          kanbanManager: new TeamKanbanManager(),
+          membersMetaStore: new TeamMembersMetaStore(),
+          isTeamActive: (name) => svc.isTeamAlive(name) || svc.hasProvisioningRun(name),
+          listLifecycleActiveTeamNames: async () => (teamName ? [teamName] : []),
+          queueQuietWindowMs: 1,
+        });
+        svc.setTeamChangeEmitter((event: TeamChangeEvent) => feature!.noteTeamChange(event));
+        svc.setRuntimeTurnSettledEnvironmentProvider((input) =>
+          feature!.buildRuntimeTurnSettledEnvironment(input)
         );
-      }, 240_000);
+        return { memberWorkSyncFeature: feature! };
+      },
+    });
+    expect(activeService).toBe(harness.svc);
 
-      await seedShadowReadyMetrics({ teamName, memberName });
-      const task = await new TeamDataService().createTask(teamName, {
-        subject: `Member work sync OpenCode live nudge ${marker}`,
-        owner: memberName,
-        startImmediately: false,
+    const memberName = 'bob';
+    const marker = `member-work-sync-opencode-live-${Date.now()}`;
+    teamName = `member-work-sync-opencode-${Date.now()}`;
+    const progressEvents: TeamProvisioningProgress[] = [];
+
+    await harness.svc.createTeam(
+      {
+        teamName,
+        cwd: projectPath,
+        providerId: 'opencode',
+        model: selectedModel,
+        skipPermissions: true,
         prompt: [
-          `This is a live member-work-sync OpenCode validation task. Marker: ${marker}.`,
-          'Do not edit files and do not complete this task.',
-          'Only report still_working if member-work-sync asks you to synchronize.',
-        ].join('\n'),
-      });
-      feature!.noteTeamChange({ type: 'task', teamName, taskId: task.id });
+          'Keep launch work minimal.',
+          'If you receive a member_work_sync_nudge, call member_work_sync_status first.',
+          'Then call member_work_sync_report with state "still_working", the returned agendaFingerprint/reportToken, and taskIds from the nudge.',
+          'Do not complete the task and do not reply only with acknowledgement.',
+        ].join(' '),
+        members: [
+          {
+            name: memberName,
+            role: 'Developer',
+            providerId: 'opencode',
+            model: selectedModel,
+          },
+        ],
+      },
+      (progress) => {
+        progressEvents.push(progress);
+      }
+    );
 
-      const inboxPath = path.join(getTeamsBasePath(), teamName, 'inboxes', `${memberName}.json`);
-      await waitUntil(async () => {
+    await waitUntil(async () => {
+      const last = progressEvents.at(-1);
+      if (last?.state === 'failed') {
+        throw new Error(formatProgressDump(progressEvents));
+      }
+      return progressEvents.some((progress) =>
+        progress.message.includes('OpenCode team launch is ready')
+      );
+    }, 240_000);
+
+    await seedShadowReadyMetrics({ teamName, memberName });
+    const task = await new TeamDataService((teamName) =>
+      harness!.svc.getTeamAgentRuntimeSnapshot(teamName)
+    ).createTask(teamName, {
+      subject: `Member work sync OpenCode live nudge ${marker}`,
+      owner: memberName,
+      startImmediately: false,
+      prompt: [
+        `This is a live member-work-sync OpenCode validation task. Marker: ${marker}.`,
+        'Do not edit files and do not complete this task.',
+        'Only report still_working if member-work-sync asks you to synchronize.',
+      ].join('\n'),
+    });
+    feature!.noteTeamChange({ type: 'task', teamName, taskId: task.id });
+
+    const inboxPath = path.join(getTeamsBasePath(), teamName, 'inboxes', `${memberName}.json`);
+    await waitUntil(
+      async () => {
         const status = await feature!.getStatus({ teamName: teamName!, memberName });
         const inbox = await readInboxMessages(inboxPath);
         return (
@@ -191,38 +192,45 @@ liveDescribe('Member work sync OpenCode live e2e', () => {
               typeof message.messageId === 'string'
           )
         );
-      }, 60_000, 500, async () =>
+      },
+      60_000,
+      500,
+      async () =>
         formatMemberWorkSyncDiagnostics({
           feature: feature!,
           teamName: teamName!,
           memberName,
           taskId: task.id,
         })
-      );
+    );
 
-      const nudge = (await readInboxMessages(inboxPath)).find(
-        (message) => message.messageKind === 'member_work_sync_nudge'
-      );
-      expect(nudge?.messageId).toBeTruthy();
+    const nudge = (await readInboxMessages(inboxPath)).find(
+      (message) => message.messageKind === 'member_work_sync_nudge'
+    );
+    expect(nudge?.messageId).toBeTruthy();
 
-      let lastRelay: Awaited<
-        ReturnType<OpenCodeLiveHarness['svc']['relayOpenCodeMemberInboxMessages']>
-      > | null = null;
-      await waitUntil(async () => {
-        lastRelay = await harness!.svc.relayOpenCodeMemberInboxMessages(teamName!, memberName, {
-          onlyMessageId: nudge!.messageId,
-          source: 'manual',
-          deliveryMetadata: {
-            replyRecipient: 'user',
-          },
-        });
-        return Boolean(lastRelay.lastDelivery?.delivered);
-      }, 120_000);
+    let lastRelay: Awaited<
+      ReturnType<OpenCodeLiveHarness['svc']['relayOpenCodeMemberInboxMessages']>
+    > | null = null;
+    await waitUntil(async () => {
+      lastRelay = await harness!.svc.relayOpenCodeMemberInboxMessages(teamName!, memberName, {
+        onlyMessageId: nudge!.messageId,
+        source: 'manual',
+        deliveryMetadata: {
+          replyRecipient: 'user',
+        },
+      });
+      return Boolean(lastRelay.lastDelivery?.delivered);
+    }, 120_000);
 
-      await waitUntil(async () => {
+    await waitUntil(
+      async () => {
         const status = await feature!.getStatus({ teamName: teamName!, memberName });
         return status.report?.accepted === true && status.report.state === 'still_working';
-      }, 180_000, 2_000, async () =>
+      },
+      180_000,
+      2_000,
+      async () =>
         [
           `Last OpenCode relay: ${JSON.stringify(lastRelay, null, 2)}`,
           await formatMemberWorkSyncDiagnostics({
@@ -232,24 +240,22 @@ liveDescribe('Member work sync OpenCode live e2e', () => {
             taskId: task.id,
           }),
         ].join('\n')
-      );
+    );
 
-      await waitUntil(async () => {
-        await feature!.drainRuntimeTurnSettledEvents();
-        const metas = await readRuntimeTurnSettledProcessedMetas(getTeamsBasePath());
-        return metas.some(({ meta }) => {
-          const event = meta.event as Record<string, unknown> | undefined;
-          return event?.provider === 'opencode' && event.teamName === teamName;
-        });
-      }, 60_000);
-
-      await expect(feature!.dispatchDueNudges([teamName])).resolves.toMatchObject({
-        claimed: 0,
-        delivered: 0,
+    await waitUntil(async () => {
+      await feature!.drainRuntimeTurnSettledEvents();
+      const metas = await readRuntimeTurnSettledProcessedMetas(getTeamsBasePath());
+      return metas.some(({ meta }) => {
+        const event = meta.event as Record<string, unknown> | undefined;
+        return event?.provider === 'opencode' && event.teamName === teamName;
       });
-    },
-    420_000
-  );
+    }, 60_000);
+
+    await expect(feature!.dispatchDueNudges([teamName])).resolves.toMatchObject({
+      claimed: 0,
+      delivered: 0,
+    });
+  }, 420_000);
 
   idleLiveIt(
     'bridges a real OpenCode idle turn-settled event into work-sync recovery',
@@ -268,7 +274,7 @@ liveDescribe('Member work sync OpenCode live e2e', () => {
       const taskId = 'task-opencode-idle';
       feature = createMemberWorkSyncFeature({
         isManagedByThisProfile: async () => true,
-    lifecycleIdentity: createTestWorkSyncIdentity(),
+        lifecycleIdentity: createTestWorkSyncIdentity(),
         teamsBasePath: getTeamsBasePath(),
         configReader: {
           getConfig: async () => ({
@@ -325,9 +331,7 @@ liveDescribe('Member work sync OpenCode live e2e', () => {
         await feature!.drainRuntimeTurnSettledEvents();
         const status = await feature!.getStatus({ teamName: teamName!, memberName });
         const inbox = await readInboxMessages(inboxPath);
-        const nudges = inbox.filter(
-          (message) => message.messageKind === 'member_work_sync_nudge'
-        );
+        const nudges = inbox.filter((message) => message.messageKind === 'member_work_sync_nudge');
         return (
           status.diagnostics.includes('runtime_stall:same_agenda_still_needs_sync') &&
           nudges.length >= 2 &&

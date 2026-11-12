@@ -2,6 +2,7 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { installNativeTaskControlFixture } from './nativeSdkTestHarness';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -18,6 +19,7 @@ import type { MemberRuntimeEvents } from '../../../../src/features/team-provisio
 import type { InvokeIpcWithResult } from '../../../../src/features/team-provisioning/preload';
 import type { IpcMainInvokeEvent, WebContents } from 'electron';
 
+const bindTaskControl = installNativeTaskControlFixture();
 const directories: string[] = [];
 afterEach(async () => {
   await Promise.all(
@@ -38,6 +40,7 @@ async function setup() {
   const teamsRoot = join(root, 'teams');
   const owner = { appInstanceId: 'TEST-app', dataRootFingerprint: root, connectionGeneration: 1 };
   const run = { ...owner, teamName: 'test-team', runId: 'TEST-run' };
+  await bindTaskControl(root, owner);
   await mkdir(join(teamsRoot, run.teamName), { recursive: true });
   await writeFile(
     join(teamsRoot, run.teamName, 'config.json'),
@@ -57,6 +60,13 @@ async function setup() {
           team,
           memberName,
           configurationRevision: 'TEST-revision',
+          specIntegration: {
+            scope: { projects: ['TEST/project'], bindings: [] },
+            environment: {
+              OMP_SPEC_REGISTRY_URL: 'http://127.0.0.1:8090',
+              OMP_SPEC_REGISTRY_TOKEN: 'TEST-registry-credential',
+            },
+          },
           providerId: 'TEST',
           model: null,
           workingDirectory: root,
@@ -133,11 +143,14 @@ async function setup() {
           aliveRunId: () => Promise.resolve(lifecycle.registry.aliveRunId(run.teamName)),
         },
         taskChanges: { read: () => Promise.resolve(null) },
+        canReplayLeadInput: () => false,
         sendLeadMessage: (identity, text) => send(identity, text),
       },
       reporting: {
         teamsRoot,
         members: { getMeta: meta },
+        // The bound fixture team has no canonical tasks; a report over an empty board is the case under test.
+        tasks: () => Promise.resolve([]),
         leadName: () => Promise.resolve('team-lead'),
         changed,
       },

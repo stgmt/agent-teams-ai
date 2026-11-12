@@ -40,6 +40,12 @@ interface Dependencies {
   teamsRoot: string;
   members: Pick<TeamMembersMetaStore, 'getMeta'>;
   lifecycle(run: LeadReportRunIdentity): Promise<Readonly<TeamLifecycleSnapshot> | null>;
+  /**
+   * Canonical team tasks already read by the app that owns the registry token. The
+   * controller projects this detached snapshot; it never asks the app over its own
+   * control API, which would park the thread serving that request.
+   */
+  tasks(run: LeadReportRunIdentity): Promise<readonly TeamTask[]>;
   taskChanges(input: {
     run: LeadReportRunIdentity;
     task: TeamTask;
@@ -60,7 +66,10 @@ const MAX_DESCRIPTION_CHARS = 600;
 function untrustedText(value: unknown): string {
   const text =
     typeof value === 'string'
-      ? value.replace(/[\p{Cc}]+/gu, ' ').replace(/\s+/gu, ' ').trim()
+      ? value
+          .replace(/\p{Cc}+/gu, ' ')
+          .replace(/\s+/gu, ' ')
+          .trim()
       : '';
   return text.length > MAX_DESCRIPTION_CHARS
     ? `${text.slice(0, MAX_DESCRIPTION_CHARS - 1)}…`
@@ -114,7 +123,7 @@ export class NodeLeadReportSources implements LeadReportSources {
   }
 
   async tasks(run: LeadReportRunIdentity): Promise<TasksRead> {
-    const items = this.board(run, 'tasks');
+    const items = await this.board(run, 'tasks');
     const source = this.stamp('task-board', items);
     const tasks: TasksRead['tasks'][number][] = [];
     for (const item of items) {
@@ -176,7 +185,7 @@ export class NodeLeadReportSources implements LeadReportSources {
   }
 
   async results(run: LeadReportRunIdentity): Promise<ResultsRead> {
-    const items = this.board(run, 'results');
+    const items = await this.board(run, 'results');
     const evidence: EvidenceRef[] = [];
     const errors: SourceError[] = [];
     const source = this.stamp('task-results', items);
@@ -280,13 +289,28 @@ export class NodeLeadReportSources implements LeadReportSources {
     });
   }
 
-  private board(run: LeadReportRunIdentity, source: 'tasks' | 'results'): AgendaItem[] {
+  /**
+   * Projects canonical tasks into lead-report facts. The app owns the registry read, so
+   * the controller receives the detached snapshot: resolving the app-bound task API
+   * here would block this thread until the app's own control server could answer.
+   */
+  private async board(
+    run: LeadReportRunIdentity,
+    source: 'tasks' | 'results'
+  ): Promise<AgendaItem[]> {
     this.validate(run);
+    let tasks: readonly TeamTask[];
+    try {
+      tasks = await this.deps.tasks(run);
+    } catch (error) {
+      throw this.sourceFailure(source, error);
+    }
     try {
       const controller = agentTeamsController.createController({
         teamName: run.teamName,
         claudeDir: dirname(this.deps.teamsRoot),
         allowUserMessageSender: true,
+        readOnlyTaskSnapshot: [...tasks],
       });
       return controller.taskBoard.readLeadReportFacts() as AgendaItem[];
     } catch (error) {

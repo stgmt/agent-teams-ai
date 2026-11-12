@@ -42,6 +42,7 @@ const DERIVED_FIELDS = new Set([
   'displayId',
   'blocks',
   'updatedAt',
+  'deletedAt',
   'status',
   'registryStatus',
   'registryEntity',

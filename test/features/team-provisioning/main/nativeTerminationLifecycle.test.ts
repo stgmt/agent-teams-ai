@@ -1,4 +1,6 @@
 // @vitest-environment node
+import { createSdkRuntimePlan, rejectUnexpectedRecovery } from './nodeMemberRuntimeFixture';
+import type { NodeMemberLaunchPlanner } from '../../../../src/features/team-provisioning/main/adapters/output/NodeMemberRuntime';
 import { ChildProcess } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -17,17 +19,11 @@ it.each(['stop', 'shutdown'] as const)(
     const context = new BoundControlContext('TEST-app', root);
     const owner = context.snapshot();
     const run = { ...owner, teamName: 'test-team', runId: 'TEST-run' };
-    const prepare = vi.fn(() =>
-      Promise.resolve({
-        executable: process.execPath,
-        args: ['-e', "console.log('TEST-ready');setInterval(()=>{},1000)"],
-        cwd: root,
-        env: process.env,
-        observeOutput: (line: string) => (line === 'TEST-ready' ? ('connected' as const) : null),
-      })
+    const prepare = vi.fn<NodeMemberLaunchPlanner['prepare']>((_settings, token) =>
+      createSdkRuntimePlan('await ready();setInterval(()=>{},1000)', token, { cwd: root })
     );
     const runtime = new NodeMemberRuntime(
-      { prepare },
+      { prepare, recover: rejectUnexpectedRecovery },
       async (expected, operation) => {
         const release = context.admit(expected);
         try {
@@ -47,6 +43,13 @@ it.each(['stop', 'shutdown'] as const)(
             team,
             memberName,
             configurationRevision: 'TEST-revision',
+            specIntegration: {
+              scope: { projects: ['TEST/project'], bindings: [] },
+              environment: {
+                OMP_SPEC_REGISTRY_URL: 'http://127.0.0.1:8090',
+                OMP_SPEC_REGISTRY_TOKEN: 'TEST-registry-credential',
+              },
+            },
             providerId: 'TEST-node-process',
             model: null,
             workingDirectory: root,
@@ -60,7 +63,9 @@ it.each(['stop', 'shutdown'] as const)(
       await lifecycle.teams.launch(run, [{ memberName: 'team-lead', role: 'lead' }]);
       await lifecycle.commands.settled(run, 'team-lead');
       await expect
-        .poll(() => lifecycle.snapshot(run.teamName).members['team-lead'].phase)
+        .poll(() => lifecycle.snapshot(run.teamName).members['team-lead'].phase, {
+          timeout: 20_000,
+        })
         .toBe('ready');
       const identity = lifecycle.snapshot(run.teamName).members['team-lead'].process!;
       const kill = ChildProcess.prototype.kill;

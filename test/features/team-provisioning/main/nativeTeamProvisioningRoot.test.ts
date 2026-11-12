@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { installNativeSdkHostFixture } from './nativeSdkTestHarness';
 import { mkdirSync, mkdtempSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -11,9 +12,13 @@ import {
   createNativeTeamProvisioningRoot,
   type NativeTeamProvisioningRootDependencies,
 } from '../../../../src/features/team-provisioning/main/composition/createNativeTeamProvisioningRoot';
-import { claimTeamForThisProfile, createTeamProfileOwnership } from '../../../../src/main/services/team/provisioning/TeamProvisioningProfileOwnership';
+import {
+  claimTeamForThisProfile,
+  createTeamProfileOwnership,
+} from '../../../../src/main/services/team/provisioning/TeamProvisioningProfileOwnership';
 
 import type { NativeDesktopTeamRuntimeDependencies } from '../../../../src/features/team-provisioning/main/composition/createNativeDesktopTeamRuntime';
+const sdkHost = installNativeSdkHostFixture();
 
 const owner = {
   appInstanceId: 'TEST-app',
@@ -31,6 +36,7 @@ afterEach(async () => {
 function runtimeDeps(teamsRoot: string): NativeDesktopTeamRuntimeDependencies {
   return {
     owner,
+    sdkHost: sdkHost(),
     currentContext: () => owner,
     teamsRoot,
     settings: {
@@ -140,10 +146,16 @@ describe('native team provisioning root', () => {
     mkdirSync(join(teamsRoot, 'own-team'));
     mkdirSync(join(teamsRoot, 'foreign-team'));
     await claimTeamForThisProfile({
-      teamsBasePath: teamsRoot, teamName: 'own-team', reason: 'create', profileScope: 'own',
+      teamsBasePath: teamsRoot,
+      teamName: 'own-team',
+      reason: 'create',
+      profileScope: 'own',
     });
     await claimTeamForThisProfile({
-      teamsBasePath: teamsRoot, teamName: 'foreign-team', reason: 'create', profileScope: 'foreign',
+      teamsBasePath: teamsRoot,
+      teamName: 'foreign-team',
+      reason: 'create',
+      profileScope: 'foreign',
     });
     const deps = buildDeps(teamsRoot);
     deps.runtimeDeps.profileOwnership = createTeamProfileOwnership({

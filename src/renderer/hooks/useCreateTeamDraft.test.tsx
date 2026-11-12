@@ -59,6 +59,20 @@ async function renderLoadedDraft(
   });
 }
 
+/**
+ * Reports the hook result on every render, including renders before the saved
+ * draft has loaded, which the effect-based probes cannot observe.
+ */
+const RenderProbe = ({
+  onRender,
+}: {
+  onRender: (draft: UseCreateTeamDraftResult) => void;
+}): React.JSX.Element | null => {
+  onRender(useCreateTeamDraft());
+
+  return null;
+};
+
 describe('useCreateTeamDraft', () => {
   beforeEach(() => {
     vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
@@ -163,20 +177,10 @@ describe('useCreateTeamDraft', () => {
       document.body.appendChild(host);
       let root = createRoot(host);
       let loadedDraft: ReturnType<typeof useCreateTeamDraft> | null = null;
-      const render = async () => {
-        await act(async () => {
-          root.render(
-            React.createElement(HookProbeWithDraft, {
-              onLoaded: (draft) => {
-                loadedDraft = draft;
-              },
-            })
-          );
-          await Promise.resolve();
-          await Promise.resolve();
-        });
+      const onLoaded = (draft: ReturnType<typeof useCreateTeamDraft>): void => {
+        loadedDraft = draft;
       };
-      await render();
+      await renderLoadedDraft(root, onLoaded);
       act(() => {
         loadedDraft?.setTeamName('draft-runtime-intent');
         loadedDraft?.setRuntimeSelection(1, 'codex', model);
@@ -193,7 +197,7 @@ describe('useCreateTeamDraft', () => {
       loadSnapshotMock.mockResolvedValue(saved);
       loadedDraft = null;
       root = createRoot(host);
-      await render();
+      await renderLoadedDraft(root, onLoaded);
       expect(loadedDraft).toEqual(
         expect.objectContaining({
           runtimeSelectionVersion: 1,
@@ -211,20 +215,10 @@ describe('useCreateTeamDraft', () => {
     document.body.appendChild(host);
     let root = createRoot(host);
     let loadedDraft: UseCreateTeamDraftResult | null = null;
-    const render = async () => {
-      await act(async () => {
-        root.render(
-          React.createElement(HookProbeWithDraft, {
-            onLoaded: (draft) => {
-              loadedDraft = draft;
-            },
-          })
-        );
-        await Promise.resolve();
-        await Promise.resolve();
-      });
+    const onLoaded = (draft: UseCreateTeamDraftResult): void => {
+      loadedDraft = draft;
     };
-    await render();
+    await renderLoadedDraft(root, onLoaded);
     act(() => {
       loadedDraft?.setSpecProject('project-alpha');
       loadedDraft?.setSpecSlug('delivery-plan');
@@ -244,7 +238,7 @@ describe('useCreateTeamDraft', () => {
     loadSnapshotMock.mockResolvedValue(saved);
     loadedDraft = null;
     root = createRoot(host);
-    await render();
+    await renderLoadedDraft(root, onLoaded);
     expect(loadedDraft).toEqual(
       expect.objectContaining({ specProject: 'project-alpha', specSlug: 'delivery-plan' })
     );
@@ -264,11 +258,15 @@ describe('useCreateTeamDraft', () => {
     document.body.appendChild(host);
     const root = createRoot(host);
     let currentDraft: UseCreateTeamDraftResult | undefined;
-    const Probe = () => {
-      currentDraft = useCreateTeamDraft();
-      return null;
-    };
-    act(() => root.render(React.createElement(Probe)));
+    act(() =>
+      root.render(
+        React.createElement(RenderProbe, {
+          onRender: (draft) => {
+            currentDraft = draft;
+          },
+        })
+      )
+    );
     act(() => currentDraft?.setSpecProject('fresh-project'));
     await act(async () => {
       finishLoad({ specProject: 'old-project', specSlug: 'old-spec' });

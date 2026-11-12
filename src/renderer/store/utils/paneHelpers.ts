@@ -114,6 +114,13 @@ export function syncFocusedPaneState(layout: PaneLayout): {
 }
 
 /**
+ * Root-level tab state synchronized from the focused pane.
+ */
+export function syncFromLayout(layout: PaneLayout) {
+  return { paneLayout: layout, ...syncFocusedPaneState(layout) };
+}
+
+/**
  * Get all tabs across all panes (flat list).
  */
 export function getAllTabs(layout: PaneLayout): Tab[] {

@@ -1,17 +1,27 @@
 import { clearStaleProcessRuntimeMetadataFromMember } from '@main/services/team/provisioning/StaleProcessRuntimeMetadataCleanup';
 import { validateMemberName } from '@main/services/team/TeamIdentifierValidation';
 import { inspectProcessesByPid } from '@main/utils/processInspection';
-import type { ProcessInspection } from '@main/utils/processInspection';
 
 import { isNativeRuntimeProvider } from '../../infrastructure/nativeRuntimeProvider';
 import { NativeTeamConfigStore } from '../../infrastructure/NativeTeamConfigStore';
 import { isNativeTeamRunOwner } from '../../infrastructure/nativeTeamRunOwnership';
 
-import type { TeamRunIdentity } from '../../../contracts';
+import type {
+  MemberLaneObservation,
+  MemberProcessToken,
+  TeamRunIdentity,
+} from '../../../contracts';
 import type { ConfiguredMemberLaunch } from '../../../core/application/ports/MemberRuntimePorts';
 import type { NativeTeamConfig } from '../../infrastructure/NativeTeamConfigStore';
 import type { NodeTeamLaunchSettings } from './NodeTeamLaunchSettings';
+import type { AppConnectionContext } from '@features/external-agent-connection/contracts';
+import type { ProcessInspection } from '@main/utils/processInspection';
 
+export interface NativeRunRecovery {
+  run: Readonly<TeamRunIdentity>;
+  members: readonly NativeTeamConfig[];
+  configurationRevision: string;
+}
 interface Dependencies {
   teamsRoot: string;
   settings: Pick<NodeTeamLaunchSettings, 'runtimeConfiguration'>;
@@ -124,12 +134,12 @@ function liveNativeStartConfirms(
 }
 
 /** One process snapshot for the whole roster; absence means "unknown", never "dead". */
-async function inspectRoster(
-  members: NativeTeamConfig[]
-): Promise<Map<number, ProcessInspection>> {
+async function inspectRoster(members: NativeTeamConfig[]): Promise<Map<number, ProcessInspection>> {
   const pids = members
     .map((member) => member.runtimePid)
-    .filter((pid): pid is number => typeof pid === 'number' && Number.isSafeInteger(pid) && pid > 0);
+    .filter(
+      (pid): pid is number => typeof pid === 'number' && Number.isSafeInteger(pid) && pid > 0
+    );
   if (pids.length === 0) return new Map();
   return inspectProcessesByPid(pids).catch(() => new Map<number, ProcessInspection>());
 }
@@ -185,7 +195,10 @@ async function clearStaleLegacyProcessRows(
       inspection.command.trim().length > 0 &&
       !inspection.command.includes('--team-name') &&
       !inspection.command.includes('--agent-id');
-    if (reusedByStartTime || (foreignCommand && !liveNativeStartConfirms(recordedStart, inspection))) {
+    if (
+      reusedByStartTime ||
+      (foreignCommand && !liveNativeStartConfirms(recordedStart, inspection))
+    ) {
       const released = { ...cleaned.member };
       if (liveNative) {
         delete released.runtimeProcessBirthId;
@@ -212,6 +225,13 @@ async function releaseDeadProcessRows(members: NativeTeamConfig[]): Promise<bool
   const inspections = await inspectRoster(members);
   for (let index = 0; index < members.length; index++) {
     const member = members[index];
+    // Adapter lane/session ownership is reconciled by its runtime, not by a host PID.
+    if (
+      (member.providerId ?? member.provider) === 'opencode' ||
+      member.runtimeLaneId != null ||
+      member.runtimeSessionId != null
+    )
+      continue;
     const pid = member.runtimePid;
     if (typeof pid !== 'number' || !Number.isSafeInteger(pid) || pid <= 0) continue;
     const fields = ['runtimePid', 'runtimeProcessBirthId', 'runtimeOperationId'] as const;
@@ -220,14 +240,13 @@ async function releaseDeadProcessRows(members: NativeTeamConfig[]): Promise<bool
     if (!inspection) continue;
     const recordedStart =
       typeof member.runtimeStartedAt === 'number' ? member.runtimeStartedAt : null;
-    // Same rule as the launch path: a process that started well before the
-    // recorded launch is not ours, so recovery must release it too instead of
-    // leaving the team blocked until the next launch attempt.
+    // A clearly different OS creation time fences both older foreign processes
+    // and PIDs reused after the recorded native attempt. Near-clock skew is unknown.
     const reused =
       inspection.status === 'found' &&
       typeof inspection.startedAt === 'number' &&
       recordedStart !== null &&
-      inspection.startedAt < recordedStart - PROCESS_START_TOLERANCE_MS;
+      Math.abs(inspection.startedAt - recordedStart) > PROCESS_START_TOLERANCE_MS;
     if (inspection.status !== 'not_found' && !reused) continue;
     const released = { ...member };
     for (const field of fields) delete released[field];
@@ -278,6 +297,7 @@ export class NodeNativeTeamConfig {
         description: configured.description,
         createdAt: current?.createdAt ?? configured.createdAt,
         leadAgentId: `${leads[0].launch.memberName}@${run.teamName}`,
+        specScope: leads[0].launch.specIntegration.scope,
         members,
         appManagedRun: {
           identity: { ...run },
@@ -285,6 +305,9 @@ export class NodeNativeTeamConfig {
         },
       };
       delete config.leadSessionId;
+      delete config.specBindings;
+      delete config.specProject;
+      delete config.specSlug;
       return config;
     });
     this.ports.invalidate(run.teamName);
@@ -355,6 +378,128 @@ export class NodeNativeTeamConfig {
       return next;
     });
     this.ports.invalidate(run.teamName);
+  }
+
+  async releaseLaneAttempts(
+    tokens: readonly Readonly<MemberProcessToken>[],
+    laneId: string
+  ): Promise<void> {
+    const first = tokens[0];
+    if (!first) return;
+    await this.store.mutate(first.teamName, new AbortController().signal, async (current) => {
+      const claim = record(current?.appManagedRun);
+      if (!current || !isNativeTeamRunOwner(claim?.identity, first)) return null;
+      const members = rows(current);
+      for (const token of tokens) {
+        const member = members.find((row) => row.name === token.memberName);
+        if (
+          !member ||
+          member.runtimeOperationId !== token.operationId ||
+          member.runtimeGeneration !== token.generation ||
+          (member.runtimeLaneId != null && member.runtimeLaneId !== laneId)
+        )
+          continue;
+        for (const field of [
+          'runtimePid',
+          'runtimeProcessBirthId',
+          'runtimeOperationId',
+          'runtimeGeneration',
+          'runtimeSessionId',
+          'runtimeLaneId',
+          'runtimeStartedAt',
+        ])
+          delete member[field];
+      }
+      return { ...current, members };
+    });
+  }
+
+  async recordLaneAttempts(
+    tokens: readonly Readonly<MemberProcessToken>[],
+    laneId: string,
+    observations?: Readonly<Record<string, Readonly<MemberLaneObservation>>>
+  ): Promise<void> {
+    const first = tokens[0];
+    if (!first) throw new Error('Lane attempt requires members');
+    await this.store.mutate(first.teamName, new AbortController().signal, async (current) => {
+      const claim = record(current?.appManagedRun);
+      if (!current || !isNativeTeamRunOwner(claim?.identity, first))
+        throw new Error('Lane attempt has no native run owner');
+      const members = rows(current);
+      for (const token of tokens) {
+        if (!isNativeTeamRunOwner(first, token)) throw new Error('Lane attempt crosses runs');
+        const member = members.find((row) => row.name === token.memberName);
+        const observation = observations?.[token.memberName];
+        if (!member || (observations && !observation))
+          throw new Error('Lane attempt member evidence is unavailable');
+        Object.assign(member, {
+          runtimeLaneId: laneId,
+          runtimeGeneration: token.generation,
+          runtimeOperationId: token.operationId,
+          ...(observation
+            ? { runtimeSessionId: observation.sessionId, runtimePid: observation.hostPid }
+            : {}),
+        });
+      }
+      return { ...current, members };
+    });
+  }
+
+  /**
+   * Transfer only a persisted run in this data root. The callback reobserves its
+   * attempts before the claim is published under the new app context.
+   */
+  async recoverLiveRun(
+    teamName: string,
+    owner: Readonly<AppConnectionContext>,
+    adopt: (recovery: NativeRunRecovery) => Promise<boolean>
+  ): Promise<boolean> {
+    let recovered = false;
+    await this.store.mutate(teamName, new AbortController().signal, async (current) => {
+      if (!current || current.deletedAt || current.name !== teamName) return null;
+      const claim = record(current.appManagedRun);
+      const previous = record(claim?.identity);
+      if (
+        !previous ||
+        previous.dataRootFingerprint !== owner.dataRootFingerprint ||
+        previous.teamName !== teamName ||
+        typeof previous.runId !== 'string' ||
+        !previous.runId ||
+        typeof claim?.configurationRevision !== 'string'
+      )
+        return null;
+      const members = recoverableRows(current);
+      if (!members) return null;
+      await releaseDeadProcessRows(members);
+      const inspections = await inspectRoster(members);
+      const candidates = members.map((member) => {
+        const inspection =
+          typeof member.runtimePid === 'number' ? inspections.get(member.runtimePid) : null;
+        // Adoption needs an exact process birth, not the legacy cleanup grace window.
+        const confirmed =
+          inspection?.status === 'found' &&
+          typeof inspection.startedAt === 'number' &&
+          member.runtimeStartedAt === inspection.startedAt;
+        return {
+          ...member,
+          recoveryRole: member.agentId === current.leadAgentId ? 'lead' : 'member',
+          recoveryProcessStartedAt: confirmed ? inspection.startedAt : undefined,
+        };
+      });
+      const run = Object.freeze({ ...owner, teamName, runId: previous.runId });
+      if (
+        !(await adopt({
+          run,
+          members: candidates,
+          configurationRevision: claim.configurationRevision,
+        }))
+      )
+        return null;
+      recovered = true;
+      return { ...current, members, appManagedRun: { ...claim, identity: run } };
+    });
+    if (recovered) this.ports.invalidate(teamName);
+    return recovered;
   }
 
   /**

@@ -223,7 +223,9 @@ liveDescribe('OpenCode team provisioning live e2e', () => {
       });
 
       const taskReader = new TeamTaskReader();
-      const task = await new TeamDataService().createTask(teamName, {
+      const task = await new TeamDataService((teamName) =>
+        svc.getTeamAgentRuntimeSnapshot(teamName)
+      ).createTask(teamName, {
         subject: `Live file proof ${proofToken}`,
         owner: 'alice',
         startImmediately: true,

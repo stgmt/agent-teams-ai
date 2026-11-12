@@ -44,10 +44,6 @@ import type {
   TeamTask,
 } from '@shared/types';
 
-// Re-exported for backwards compatibility: these roster helpers used to live here.
-export { buildLeadRosterContextBlock } from './TeamProvisioningLeadRosterContext';
-export { buildCompactMembersRoster, buildMembersPrompt } from './TeamProvisioningRosterPrompt';
-
 const { protocols } = agentTeamsControllerModule;
 
 export interface TeamProvisioningHydrationRun {

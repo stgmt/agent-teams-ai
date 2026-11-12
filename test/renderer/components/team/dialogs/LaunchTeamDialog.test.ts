@@ -27,7 +27,8 @@ const createTeamDraftMock = vi.hoisted(() => ({
     setRuntimeSelection: vi.fn(),
     teamName: 'team-alpha',
     setTeamName: vi.fn(),
-    specProject: '',
+    // Create requires a selected registry project, so the draft carries one.
+    specProject: 'owner/project',
     setSpecProject: vi.fn(),
     specSlug: '',
     setSpecSlug: vi.fn(),
@@ -139,7 +140,16 @@ vi.mock('@renderer/api', () => ({
       ),
     },
     teams: {
-      discoverSpecRegistry: vi.fn(async () => ({ url: 'http://registry.test', projects: [] })),
+      // Create requires the registry credential to be configured before it submits.
+      getSpecRegistryCredentialStatus: vi.fn(async () => ({
+        configured: true,
+        url: 'http://registry.test',
+        source: 'store' as const,
+      })),
+      discoverSpecRegistry: vi.fn(async () => ({
+        url: 'http://registry.test',
+        projects: [{ id: 'owner/project', specs: [] }],
+      })),
       createConfig: vi.fn(async () => {}),
       getSavedRequest: vi.fn(async () => null),
       replaceMembers: vi.fn(async () => {}),
@@ -799,6 +809,13 @@ describe('LaunchTeamDialog', () => {
       vi.mocked(computeModelMock).mockImplementation(computeEffectiveTeamModel);
       const selected = phase === 'explicit' ? 'gateway/explicit' : '';
       const projectPath = createTeamDraftMock.state.selectedProjectPath;
+      if (phase === 'unready') {
+        // The real draft setter applies the forced default project; the unready
+        // evidence must follow that selection instead of the previous project.
+        createTeamDraftMock.state.setSelectedProjectPath.mockImplementation((path: string) => {
+          createTeamDraftMock.state.selectedProjectPath = path;
+        });
+      }
       createTeamDraftMock.state.launchTeam = false;
       createTeamDraftMock.state.soloTeam = true;
       createTeamDraftMock.state.runtimeSelectionVersion = 1;
@@ -877,7 +894,14 @@ describe('LaunchTeamDialog', () => {
                 ? 'catalog-fallback'
                 : undefined
         );
-        expect(request?.cwd).toBe(phase === 'dropped-cwd' ? undefined : projectPath);
+        expect(request?.cwd).toBe(
+          phase === 'dropped-cwd'
+            ? undefined
+            : // The forced default selection is applied, so the create uses that project.
+              phase === 'unready'
+              ? `${projectPath}-next`
+              : projectPath
+        );
         expect(createTeamDraftMock.state.runtimeModel).toBe(
           phase === 'unresolved' ? undefined : selected
         );

@@ -1,5 +1,5 @@
 import { TeamPromptManagement } from '@features/team-prompt-management/main';
-import { getTeamDataWorkerClient } from '@main/services/team/TeamDataWorkerClient';
+import { getTeamDataWorkerCache } from '@main/services/team/TeamDataWorkerClient';
 
 import type { DesktopExternalAgentConnection } from '@features/external-agent-connection/main';
 import type { TeamDataService } from '@main/services/team/TeamDataService';
@@ -44,7 +44,7 @@ export function composeTeamPromptManagement(
     replaceMembers: (name, request) => data.replaceMembers(name, request),
     deleteTeam: (name) => data.deleteTeam(name),
     emit: (event) => {
-      getTeamDataWorkerClient().invalidateTeamConfig(event.teamName);
+      getTeamDataWorkerCache()?.invalidateTeamConfig(event.teamName);
       emit(event);
     },
   });

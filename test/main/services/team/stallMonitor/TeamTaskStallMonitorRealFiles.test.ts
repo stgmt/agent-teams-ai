@@ -1,4 +1,4 @@
-import * as agentTeamsControllerModule from 'agent-teams-controller';
+import { registryTaskFixtureService } from '../../../../helpers/teamRuntimeSnapshot';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -11,27 +11,70 @@ import { TeamTaskStallMonitor } from '../../../../../src/main/services/team/stal
 import { TeamTaskStallNotifier } from '../../../../../src/main/services/team/stallMonitor/TeamTaskStallNotifier';
 import { TeamTaskStallPolicy } from '../../../../../src/main/services/team/stallMonitor/TeamTaskStallPolicy';
 import { TeamTaskStallSnapshotSource } from '../../../../../src/main/services/team/stallMonitor/TeamTaskStallSnapshotSource';
-import { TeamDataService } from '../../../../../src/main/services/team/TeamDataService';
 
 import type { ActiveTeamRegistry } from '../../../../../src/main/services/team/stallMonitor/ActiveTeamRegistry';
 import type { TaskStallAlert } from '../../../../../src/main/services/team/stallMonitor/TeamTaskStallTypes';
+import type { TeamTask } from '../../../../../src/shared/types';
 
-const { createController } = agentTeamsControllerModule;
-
-// Level L2 of the lead-status bugfix: the real monitor, snapshot source, policy, journal,
-// notifier, TeamDataService and controller on real team files in a temp Claude root.
-// Members are Claude (not OpenCode), as in my-team. Thresholds are the real
-// environment variables of the monitor, set small so a scan cycle takes a fraction of a second.
+// Real monitor, policy, journal, notifier and inbox persistence over an explicit unit registry dataset.
+// Runtime/model processing are not exercised here; this is not live acceptance evidence.
 
 const SIGNAL_SUMMARY = 'Potential stalled tasks detected';
 const TEAM = 'fixture';
 
-describe('stall monitor on real team files (R9)', () => {
+describe('stall monitor with registry tasks and real team journal/inbox files (R9)', () => {
   let claudeRoot = '';
   let monitor: TeamTaskStallMonitor | null = null;
+  const registryTasks: TeamTask[] = [];
+  const service = () => {
+    const instance = registryTaskFixtureService({
+      readBoardSnapshot: async (_teamName, options) =>
+        structuredClone(
+          registryTasks.filter((task) => options?.includeDeleted || task.status !== 'deleted')
+        ),
+    });
+    // The app wires profile ownership before any background writer runs; this
+    // fixture team belongs to the running profile.
+    instance.setTeamProfileOwnership(async () => true);
+    return instance;
+  };
 
   const teamDir = () => join(claudeRoot, 'teams', TEAM);
-  const board = () => createController({ teamName: TEAM, claudeDir: claudeRoot }).taskBoard;
+  // Fixture registry mutations; there is deliberately no controller/local-file task writer.
+  const board = () => ({
+    createTask(request: {
+      subject: string;
+      owner: string;
+      blockedBy?: string[];
+      needsClarification?: 'lead' | 'user';
+    }) {
+      const task: TeamTask = {
+        ...request,
+        id: `registry-fixture-${registryTasks.length + 1}`,
+        displayId: String(registryTasks.length + 1),
+        status: 'pending',
+        createdAt: new Date().toISOString(),
+      };
+      registryTasks.push(task);
+      return structuredClone(task);
+    },
+    startTask(id: string, actor: string) {
+      const task = registryTasks.find((task) => task.id === id);
+      if (!task) throw new Error(`Registry fixture task not found: ${id}`);
+      task.status = 'in_progress';
+      task.workIntervals = [{ startedAt: new Date().toISOString() }];
+      task.historyEvents = [
+        {
+          id: `start-${id}`,
+          type: 'status_changed',
+          from: 'pending',
+          to: 'in_progress',
+          actor,
+          timestamp: new Date().toISOString(),
+        },
+      ];
+    },
+  });
   const inbox = (member: string): { from?: string; summary?: string; text?: string }[] => {
     const file = join(teamDir(), 'inboxes', `${member}.json`);
     return existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : [];
@@ -45,15 +88,23 @@ describe('stall monitor on real team files (R9)', () => {
     stop: async () => undefined,
     noteTeamChange: () => undefined,
     listActiveTeams: async () => [TEAM],
+    isTeamOfThisProfile: async () => true,
   } as unknown as ActiveTeamRegistry;
 
   const startMonitor = () => {
     monitor = new TeamTaskStallMonitor(
       registry,
-      new TeamTaskStallSnapshotSource(),
+      new TeamTaskStallSnapshotSource({
+        taskReader: {
+          getTasks: async () =>
+            structuredClone(registryTasks.filter((task) => task.status !== 'deleted')),
+          getDeletedTasks: async () =>
+            structuredClone(registryTasks.filter((task) => task.status === 'deleted')),
+        },
+      }),
       new TeamTaskStallPolicy(),
       new TeamTaskStallJournal({ store: new JsonTaskStallJournalStore() }),
-      new TeamTaskStallNotifier(new TeamDataService())
+      new TeamTaskStallNotifier(service())
     );
     monitor.start();
   };
@@ -63,6 +114,7 @@ describe('stall monitor on real team files (R9)', () => {
   beforeEach(() => {
     claudeRoot = mkdtempSync(join(tmpdir(), 'stall-monitor-real-'));
     setClaudeBasePathOverride(claudeRoot);
+    registryTasks.length = 0;
     mkdirSync(teamDir(), { recursive: true });
     // The snapshot source needs the project directory of the team, as a running team has.
     const workspace = join(claudeRoot, 'workspace');
@@ -77,8 +129,9 @@ describe('stall monitor on real team files (R9)', () => {
         projectPath: workspace,
         leadSessionId: 'lead-session-1',
         members: [
-          { name: 'alice', role: 'team-lead', providerId: 'anthropic' },
-          { name: 'bob', role: 'developer', providerId: 'anthropic' },
+          // The runtime lead is identified by agentType, never by a reserved role alone.
+          { name: 'alice', agentType: 'team-lead', role: 'team-lead', providerId: 'anthropic' },
+          { name: 'bob', agentType: 'general-purpose', role: 'developer', providerId: 'anthropic' },
         ],
       })
     );
@@ -108,7 +161,7 @@ describe('stall monitor on real team files (R9)', () => {
     expect(signals()[0].text).toContain(String((task as { displayId?: string }).displayId));
   });
 
-  it('S4.2: a work stall alert passes the real notifier, TeamDataService and controller into the lead inbox', async () => {
+  it('S4.2: a work stall alert passes the real notifier and TeamDataService into the lead inbox', async () => {
     // The work thresholds (4 to 10 minutes) are constants of the policy, not environment
     // variables, so the scan is not driven here; the live run (S4.1 in L3) covers the full chain.
     const task = board().createTask({ subject: 'Reconcile the ledger', owner: 'bob' });
@@ -130,7 +183,7 @@ describe('stall monitor on real team files (R9)', () => {
       },
     } as TaskStallAlert;
 
-    await new TeamTaskStallNotifier(new TeamDataService()).notifyLead(TEAM, [alert]);
+    await new TeamTaskStallNotifier(service()).notifyLead(TEAM, [alert]);
 
     expect(signals()).toHaveLength(1);
     expect(signals()[0].from).toBe('system');

@@ -170,12 +170,25 @@ describe('immutable mixed inbox and history boundary', () => {
     expect(
       envelope.message.content.filter((block: { type: string }) => block.type === 'document')
     ).toHaveLength(1);
-    expect(
-      envelope.message.content.some(
-        (block: { type: string; text?: string }) =>
-          block.type === 'text' && block.text?.includes(prepared.fileReferences[0].filePath)
-      )
-    ).toBe(true);
+    const envelopeText = envelope.message.content
+      .filter((block: { type: string }) => block.type === 'text')
+      .map((block: { text: string }) => block.text)
+      .join('\n');
+    // The descriptors are embedded as JSON inside the agent-facing block; parsing them keeps the
+    // assertion valid for both POSIX and Windows path separators.
+    const descriptors = JSON.parse(
+      envelopeText.slice(envelopeText.indexOf('[{'), envelopeText.lastIndexOf('}]') + 2)
+    );
+    expect(descriptors).toEqual([
+      {
+        filename: 'ref',
+        path: prepared.fileReferences[0].filePath,
+        size: 2,
+        sha256: createHash('sha256')
+          .update(Buffer.from([0, 255]))
+          .digest('hex'),
+      },
+    ]);
     expect(serialized).not.toContain('application/octet-stream');
     expect(await fs.readFile(prepared.fileReferences[0].filePath)).toEqual(Buffer.from([0, 255]));
   });

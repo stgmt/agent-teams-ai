@@ -47,7 +47,7 @@ interface OrgGraphToolbarProps extends GraphControlRenderProps {
   };
 }
 
-export function OrgGraphToolbar({
+export const OrgGraphToolbar = ({
   activeViewMode,
   viewModes,
   isSearchOpen,
@@ -63,7 +63,7 @@ export function OrgGraphToolbar({
   onZoomOut,
   onZoomToFit,
   labels,
-}: Readonly<OrgGraphToolbarProps>): React.JSX.Element {
+}: Readonly<OrgGraphToolbarProps>): React.JSX.Element => {
   const [isFiltersOpen, setIsFiltersOpen] = useState(false);
   const filtersRef = useRef<HTMLDivElement>(null);
   const activeFilterCount = Number(!filters.showTasks) + Number(!filters.showEdges);
@@ -265,4 +265,4 @@ export function OrgGraphToolbar({
       </div>
     </TooltipProvider>
   );
-}
+};

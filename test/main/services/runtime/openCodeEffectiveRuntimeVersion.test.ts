@@ -23,29 +23,46 @@ describe('readOpenCodeEffectiveRuntimeStatus', () => {
     return binaryPath;
   }
 
+  // The pinned runtime ships the V1-only, Claude-only delivery (no V2 engine
+  // contract), so only stable V1 overrides may win over the managed runtime.
   it.each([
-    ['2.0.0', true],
-    ['opencode v2.0.32', true],
-    ['2.0.21', true],
-    ['opencode v2.0.21', true],
-    ['opencode v2.0.26', true],
-    ['2.1.4', true],
+    ['1.18.35', true],
+    ['1.16.0', true],
+    ['2.0.0', false],
+    ['opencode v2.0.32', false],
+    ['2.0.21', false],
+    ['opencode v2.0.21', false],
+    ['opencode v2.0.26', false],
+    ['2.1.4', false],
     ['3.0.0', false],
     ['2.0.32-beta.1', false],
     ['2.0.32+build.7', false],
-  ])('reports effective native runtime overrides recognized by the pinned range (%s)', async (version, supported) => {
-    const binaryPath = await writeBinary('TEST-v2-opencode');
-    const defaultStatus = { installed: true, version: '1.18.35' };
-    const readDefaultStatus = vi.fn(() => Promise.resolve(defaultStatus));
-    const probe = vi.fn(() => Promise.resolve({ ok: true, version }));
-    await expect(readOpenCodeEffectiveRuntimeStatus(
-      { OPENCODE_BIN_PATH: binaryPath }, readDefaultStatus, probe
-    )).resolves.toEqual(supported ? {
-      installed: true, version, binaryOverrideEnvName: 'OPENCODE_BIN_PATH',
-    } : defaultStatus);
-    expect(readDefaultStatus).toHaveBeenCalledTimes(supported ? 0 : 1);
-    expect(probe).toHaveBeenCalledWith(binaryPath);
-  });
+  ])(
+    'reports effective native runtime overrides recognized by the pinned runtime contract (%s)',
+    async (version, supported) => {
+      const binaryPath = await writeBinary('TEST-v2-opencode');
+      const defaultStatus = { installed: true, version: '1.18.35' };
+      const readDefaultStatus = vi.fn(() => Promise.resolve(defaultStatus));
+      const probe = vi.fn(() => Promise.resolve({ ok: true, version }));
+      await expect(
+        readOpenCodeEffectiveRuntimeStatus(
+          { OPENCODE_BIN_PATH: binaryPath },
+          readDefaultStatus,
+          probe
+        )
+      ).resolves.toEqual(
+        supported
+          ? {
+              installed: true,
+              version,
+              binaryOverrideEnvName: 'OPENCODE_BIN_PATH',
+            }
+          : defaultStatus
+      );
+      expect(readDefaultStatus).toHaveBeenCalledTimes(supported ? 0 : 1);
+      expect(probe).toHaveBeenCalledWith(binaryPath);
+    }
+  );
 
   it('uses the selected managed runtime without an explicit override', async () => {
     const readDefaultStatus = vi.fn(() => Promise.resolve({ installed: true, version: '1.18.32' }));

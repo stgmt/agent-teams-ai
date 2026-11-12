@@ -1,3 +1,4 @@
+import { knownEmptyTeamRuntimeSnapshot } from '../../../../helpers/teamRuntimeSnapshot';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -135,7 +136,7 @@ function createMonitor(
 ) {
   const journal = new TeamTaskStallJournal({ alertCooldownMs: 10 * 60_000 });
   const markAlerted = vi.spyOn(journal, 'markAlerted');
-  const teamDataService = new TeamDataService();
+  const teamDataService = new TeamDataService(knownEmptyTeamRuntimeSnapshot);
   teamDataService.setTeamProfileOwnership(async () => true);
   const notifier = new TeamTaskStallNotifier(teamDataService, {
     relayOpenCodeMemberInboxMessages,

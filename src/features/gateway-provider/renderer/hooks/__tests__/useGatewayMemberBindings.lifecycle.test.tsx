@@ -55,7 +55,7 @@ let root: Root | null;
 let host: HTMLDivElement;
 let latest: ReturnType<typeof useGatewayMemberBindings>;
 
-function Harness({
+const Harness = ({
   mode,
   retainedOwnerKey,
   teamName = allocated.teamName,
@@ -63,10 +63,10 @@ function Harness({
   mode: Mode;
   retainedOwnerKey?: string;
   teamName?: string;
-}) {
+}) => {
   latest = useGatewayMemberBindings(teamName, { memberNames, mode, retainedOwnerKey });
   return null;
-}
+};
 
 async function mount(mode: Mode, retainedOwnerKey?: string, teamName?: string) {
   await act(async () => {

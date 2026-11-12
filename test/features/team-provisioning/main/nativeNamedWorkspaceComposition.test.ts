@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { installNativeSdkHostFixture } from './nativeSdkTestHarness';
 import { execFile } from 'node:child_process';
 import { watch } from 'node:fs';
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
@@ -12,6 +13,7 @@ import { BoundControlContext } from '../../../../src/features/external-agent-con
 import { createNativeTeamLifecycle } from '../../../../src/features/team-provisioning/main/composition/createNativeTeamLifecycle';
 
 import type { ConfiguredMemberLaunch } from '../../../../src/features/team-provisioning/core/application/ports/MemberRuntimePorts';
+const sdkHost = installNativeSdkHostFixture();
 
 const exec = promisify(execFile);
 let root: string;
@@ -60,6 +62,7 @@ async function setup(worktree: string, cwd = repo) {
   // РИСК: real Git/config ordering is covered; provider preparation ends before model CLI/authentication.
   const lifecycle = createNativeTeamLifecycle({
     owner: context.snapshot(),
+    sdkHost: sdkHost(),
     readStartupTasks: async () => [],
     createController: () => ({
       taskBoard: { deliverStartupWorkAsync: async () => ({ delivered: [], skipped: [] }) },
@@ -70,7 +73,14 @@ async function setup(worktree: string, cwd = repo) {
     settings: {
       metadata: {
         getMeta: () =>
-          Promise.resolve({ version: 1, providerId: 'anthropic', cwd, worktree, createdAt: 1 }),
+          Promise.resolve({
+            version: 1,
+            providerId: 'anthropic',
+            cwd,
+            worktree,
+            createdAt: 1,
+            specScope: { projects: ['TEST/project'], bindings: [] },
+          }),
       },
       members: {
         getMeta: () =>
@@ -83,6 +93,10 @@ async function setup(worktree: string, cwd = repo) {
             ],
           }),
       },
+      specRegistryEnvironment: async () => ({
+        OMP_SPEC_REGISTRY_URL: 'http://127.0.0.1:8090',
+        OMP_SPEC_REGISTRY_TOKEN: 'TEST-registry-credential',
+      }),
     },
     provider: {
       prepareWorkspaceTrust: async (launch) => {

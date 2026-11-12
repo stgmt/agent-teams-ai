@@ -1776,6 +1776,7 @@ describe('agent-teams-mcp tools', () => {
           claudeDir,
           teamName,
           subject: `Lead alias task ${index + 1}`,
+          requirements: ['FR-1'],
           owner: 'alice',
           [actorField]: actor,
         })
@@ -1788,8 +1789,7 @@ describe('agent-teams-mcp tools', () => {
     ) as Array<{ from: string }>;
     expect(aliceInbox.map((message) => message.from)).toEqual(Array(4).fill('team-lead'));
 
-    const taskDir = path.join(claudeDir, 'tasks', teamName);
-    const taskFilesBeforeRejectedActor = fs.readdirSync(taskDir);
+    const tasksBeforeRejectedActor = (await registryTasks(teamName)).length;
     await expect(
       getTool('task_create').execute({
         claudeDir,
@@ -1800,7 +1800,7 @@ describe('agent-teams-mcp tools', () => {
     ).rejects.toThrow(
       'Unknown task actor "leader". Use the team lead "team-lead", a configured team member name, or "user" only when acting for the user.'
     );
-    expect(fs.readdirSync(taskDir)).toEqual(taskFilesBeforeRejectedActor);
+    expect(await registryTasks(teamName)).toHaveLength(tasksBeforeRejectedActor);
   });
 
   it('records the lead alias as a custom-named configured lead, not as a literal team-lead', async () => {
@@ -1819,6 +1819,7 @@ describe('agent-teams-mcp tools', () => {
           claudeDir,
           teamName,
           subject: `Created by alias ${actor}`,
+          requirements: ['FR-1'],
           createdBy: actor,
         })
       );
@@ -1845,6 +1846,7 @@ describe('agent-teams-mcp tools', () => {
           claudeDir,
           teamName,
           subject: `Created by ${actor}`,
+          requirements: ['FR-1'],
           createdBy: actor,
         })
       );
@@ -1866,6 +1868,7 @@ describe('agent-teams-mcp tools', () => {
         claudeDir,
         teamName,
         subject: 'Created by the unmarked lead',
+        requirements: ['FR-1'],
         createdBy: 'lead',
       })
     );
@@ -2526,24 +2529,37 @@ describe('agent-teams-mcp tools', () => {
     delete process.env.AGENT_TEAMS_BOUND_CONTEXT_JSON;
     process.env.AGENT_TEAMS_MCP_CLAUDE_DIR = forcedClaudeDir;
     try {
-      const sent = parseJsonToolResult(
-        await getTool('message_send').execute({
+      const registered = parseJsonToolResult(
+        await getTool('process_register').execute({
+          claudeDir: wrongClaudeDir,
+          teamName,
+          pid: process.pid,
+          label: 'forced-root',
+          from: 'bob',
+        })
+      );
+
+      expect(registered.pid).toBe(process.pid);
+      const forcedProcessesPath = path.join(forcedClaudeDir, 'teams', teamName, 'processes.json');
+      expect(JSON.parse(fs.readFileSync(forcedProcessesPath, 'utf8'))).toEqual([
+        expect.objectContaining({ pid: process.pid, label: 'forced-root' }),
+      ]);
+      expect(fs.existsSync(path.join(wrongClaudeDir, 'teams', teamName))).toBe(false);
+
+      // No app-bound control context means no canonical task backend, so the
+      // board-completion guard refuses to deliver an unverified user message.
+      await expect(
+        getTool('message_send').execute({
           claudeDir: wrongClaudeDir,
           teamName,
           to: 'user',
           text: 'Forced root reply',
           from: 'bob',
         })
-      );
-
-      expect(sent.deliveredToInbox).toBe(true);
+      ).rejects.toMatchObject({ code: 'KANBAN_TRANSITION_UNCERTAIN' });
       const forcedInboxPath = path.join(forcedClaudeDir, 'teams', teamName, 'inboxes', 'user.json');
       const wrongInboxPath = path.join(wrongClaudeDir, 'teams', teamName, 'inboxes', 'user.json');
-      expect(JSON.parse(fs.readFileSync(forcedInboxPath, 'utf8'))[0]).toMatchObject({
-        from: 'bob',
-        to: 'user',
-        text: 'Forced root reply',
-      });
+      expect(fs.existsSync(forcedInboxPath)).toBe(false);
       expect(fs.existsSync(wrongInboxPath)).toBe(false);
     } finally {
       if (previousForcedDir === undefined) {
@@ -3508,7 +3524,12 @@ describe('agent-teams-mcp tools', () => {
     const filePath = path.join(claudeDir, 'scoped-note.txt');
     fs.writeFileSync(filePath, 'scoped attachment');
     const scope = { project: 'workspace/alpha', spec: 'scope-contract' };
-    const args = (fields: Record<string, unknown>) => ({ claudeDir, teamName, ...scope, ...fields });
+    const args = (fields: Record<string, unknown>) => ({
+      claudeDir,
+      teamName,
+      ...scope,
+      ...fields,
+    });
 
     const target = parseJsonToolResult(
       await getTool('task_create').execute(
@@ -3540,20 +3561,30 @@ describe('agent-teams-mcp tools', () => {
         args({ taskId: task.id, description: 'Updated scoped description' })
       )
     );
-    expect(updated.description).toBe('Updated scoped description');
+    expect(updated).toMatchObject({ id: task.id, subject: 'Scoped task' });
+    expect(
+      parseJsonToolResult(await getTool('task_get').execute(args({ taskId: task.id }))).description
+    ).toBe('Updated scoped description');
 
     const linked = parseJsonToolResult(
       await getTool('task_link').execute(
         args({ taskId: task.id, targetId: target.id, relationship: 'related' })
       )
     );
-    expect(linked.related).toContain(target.id);
+    expect(linked).toMatchObject({ id: task.id });
+    expect(
+      parseJsonToolResult(await getTool('task_get').execute(args({ taskId: task.id }))).related
+    ).toContain(target.id);
     const unlinked = parseJsonToolResult(
       await getTool('task_unlink').execute(
         args({ taskId: task.id, targetId: target.id, relationship: 'related' })
       )
     );
-    expect(unlinked.related ?? []).not.toContain(target.id);
+    expect(unlinked).toMatchObject({ id: task.id });
+    expect(
+      parseJsonToolResult(await getTool('task_get').execute(args({ taskId: task.id }))).related ??
+        []
+    ).not.toContain(target.id);
 
     const comment = parseJsonToolResult(
       await getTool('task_add_comment').execute(
@@ -3564,9 +3595,7 @@ describe('agent-teams-mcp tools', () => {
     await getTool('task_attach_comment_file').execute(
       args({ taskId: task.id, commentId, filePath, mode: 'copy' })
     );
-    await getTool('task_attach_file').execute(
-      args({ taskId: task.id, filePath, mode: 'copy' })
-    );
+    await getTool('task_attach_file').execute(args({ taskId: task.id, filePath, mode: 'copy' }));
     const commentDetail = parseJsonToolResult(
       await getTool('task_get_comment').execute(args({ taskId: task.id, commentId }))
     );
@@ -3576,9 +3605,7 @@ describe('agent-teams-mcp tools', () => {
       attachments: [expect.objectContaining({ filename: 'scoped-note.txt' })],
     });
 
-    await getTool('task_set_clarification').execute(
-      args({ taskId: task.id, value: 'user' })
-    );
+    await getTool('task_set_clarification').execute(args({ taskId: task.id, value: 'user' }));
     const fullTask = parseJsonToolResult(
       await getTool('task_get').execute(args({ taskId: task.id }))
     );
@@ -3688,9 +3715,11 @@ describe('agent-teams-mcp tools', () => {
       owner: 'alice',
     });
     const askBriefing = async () =>
-      ((await getTool('task_briefing').execute({ claudeDir, teamName, memberName: 'alice' })) as {
-        content: Array<{ text: string }>;
-      }).content[0]?.text ?? '';
+      (
+        (await getTool('task_briefing').execute({ claudeDir, teamName, memberName: 'alice' })) as {
+          content: Array<{ text: string }>;
+        }
+      ).content[0]?.text ?? '';
 
     const unconfirmed = await publishAppConfirming(claudeDir, teamName, { alice: false });
     let held: string;

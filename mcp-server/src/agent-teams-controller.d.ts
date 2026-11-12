@@ -418,16 +418,6 @@ declare module 'agent-teams-controller' {
     memberWorkSyncReport(flags: Record<string, unknown>): Promise<unknown>;
   }
 
-  export interface ControllerTeamSpecBinding {
-    project: string;
-    spec: string;
-  }
-
-  export interface ControllerSpecBindingsApi {
-    listTeamSpecBindings(scopeCredential?: string | null): ControllerTeamSpecBinding[];
-    linkTeamSpec(binding: ControllerTeamSpecBinding, scopeCredential?: string | null): ControllerTeamSpecBinding[];
-  }
-  export const appScopedSpecBindings: ControllerSpecBindingsApi;
 
   export interface ControllerSpecToolDescriptor {
     readonly name: string;
@@ -436,7 +426,8 @@ declare module 'agent-teams-controller' {
   }
 
   export interface ControllerSpecScope {
-    readonly teamId: string | null;
+    readonly projects: readonly string[];
+    readonly teamId?: string;
     readonly bindings: readonly { project: string; spec: string }[];
   }
 
@@ -450,6 +441,7 @@ declare module 'agent-teams-controller' {
   }
 
   export const specGateway: {
+    validateTeamSpecScope(value: unknown): ControllerSpecScope;
     createTeamSpecGateway(options: {
       transport: {
         listTools(): Promise<Record<string, unknown>>;
@@ -502,7 +494,6 @@ declare module 'agent-teams-controller' {
     crossTeam: ControllerCrossTeamApi;
     runtime: ControllerRuntimeApi;
     workSync: ControllerWorkSyncApi;
-    specBindings: ControllerSpecBindingsApi;
   }
 
   export function createController(options: ControllerContextOptions): AgentTeamsController;

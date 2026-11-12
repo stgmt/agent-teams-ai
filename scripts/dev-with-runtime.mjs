@@ -8,7 +8,6 @@ import path from 'node:path';
 import process from 'node:process';
 import { once } from 'node:events';
 import readline from 'node:readline';
-import { fileURLToPath } from 'node:url';
 
 import { formatGitHubReleaseDownloadError } from './lib/github-release-download-error.mjs';
 import { ensureMinimumNodeOldSpaceEnv } from './lib/node-options.mjs';
@@ -31,7 +30,7 @@ import { validateWindowsRuntimeLock } from './lib/windows-runtime-lock.mjs';
 
 const runAndCapture = createRuntimeCommandCapture(spawnSyncWithWindowsShell);
 
-const scriptDir = path.dirname(fileURLToPath(import.meta.url));
+const scriptDir = import.meta.dirname;
 const uiRepoRoot = path.resolve(scriptDir, '..');
 const runtimeRepoRoot = process.env.CLAUDE_DEV_RUNTIME_ROOT?.trim() ?? '';
 const explicitRuntimeCliPath = process.env.CLAUDE_AGENT_TEAMS_ORCHESTRATOR_CLI_PATH?.trim() ?? '';

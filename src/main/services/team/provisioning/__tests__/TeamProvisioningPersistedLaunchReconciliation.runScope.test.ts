@@ -354,7 +354,12 @@ describe('untracked persisted launch cleanup with the real publication store', (
           code: 'ENOENT',
         });
       } else {
-        expect(await store.read('demo')).toMatchObject({
+        // Asserted from the persisted bytes: with unreadable freshness the store's own read
+        // reports "unknown" (null), which cannot tell a surviving publication from a cleared one.
+        const persistedPublication = JSON.parse(
+          await readFile(getTeamLaunchStatePath('demo'), 'utf8')
+        ) as PersistedTeamLaunchSnapshot;
+        expect(persistedPublication).toMatchObject({
           publicationRunId:
             transition.includes('successor') && transition !== 'freshness-successor'
               ? 'successor-run'

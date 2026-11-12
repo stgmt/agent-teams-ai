@@ -31,14 +31,14 @@ export interface TeamNotRunningDialogProps {
   onLaunch: () => void;
 }
 
-export function TeamNotRunningDialog({
+export const TeamNotRunningDialog = ({
   open,
   teamName,
   episode,
   queuedCount,
   onClose,
   onLaunch,
-}: Readonly<TeamNotRunningDialogProps>): React.JSX.Element | null {
+}: Readonly<TeamNotRunningDialogProps>): React.JSX.Element | null => {
   const { t } = useAppTranslation('team');
   const formatters = useLocaleFormatters();
   const launchButtonRef = useRef<HTMLButtonElement>(null);
@@ -97,4 +97,4 @@ export function TeamNotRunningDialog({
       </DialogContent>
     </Dialog>
   );
-}
+};

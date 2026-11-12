@@ -1,3 +1,4 @@
+import { knownEmptyTeamRuntimeSnapshot } from '../../../helpers/teamRuntimeSnapshot';
 import * as nativeFs from 'node:fs';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
@@ -232,7 +233,7 @@ describe('team attachment permanent deletion', () => {
       });
 
     try {
-      const dataService = new TeamDataService();
+      const dataService = new TeamDataService(knownEmptyTeamRuntimeSnapshot);
       await expect(
         backupService.withPermanentDeletionTargetFence(deleting, async (isTargetCurrent) => {
           if (
@@ -296,7 +297,7 @@ describe('team attachment permanent deletion', () => {
       fs.writeFile(path.join(taskAttachmentDir, 'attachment-1.txt'), 'original-task-attachment'),
     ]);
 
-    const dataService = new TeamDataService();
+    const dataService = new TeamDataService(knownEmptyTeamRuntimeSnapshot);
     const firstService = new TeamBackupService();
     await firstService.initialize();
     const prepared = await firstService.beginPermanentDeletion(teamName);
@@ -526,7 +527,7 @@ describe('team attachment permanent deletion', () => {
         true
       );
 
-      const dataService = new TeamDataService();
+      const dataService = new TeamDataService(knownEmptyTeamRuntimeSnapshot);
       const resumeExactDeletion = (): Promise<boolean> =>
         recoveredService.withPermanentDeletionTargetFence(
           recovered,
@@ -633,7 +634,7 @@ describe('team attachment permanent deletion', () => {
     );
     await fs.writeFile(originalFile, 'exact-original-tree');
 
-    const dataService = new TeamDataService();
+    const dataService = new TeamDataService(knownEmptyTeamRuntimeSnapshot);
 
     const firstService = new TeamBackupService();
     await firstService.initialize();

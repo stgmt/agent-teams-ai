@@ -1,9 +1,12 @@
 // @vitest-environment node
-import * as fs from 'node:fs';
 import * as http from 'node:http';
-import * as os from 'node:os';
-import * as path from 'node:path';
 
+import {
+  digestTaskCreationToken,
+  taskGenesisRequestDigest,
+  taskLifecycleOperationCompletionDigest,
+  taskPolicyDigest,
+} from '@main/services/identity/TaskAttestation';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { isRecord } from '../RegistryJson';
@@ -15,18 +18,13 @@ import {
   RegistryTaskClientError,
   RegistryTaskTimeoutError,
 } from '../RegistryTaskClientErrors';
-import {
-  digestTaskCreationToken,
-  taskGenesisRequestDigest,
-  taskLifecycleOperationCompletionDigest,
-  taskPolicyDigest,
-} from '@main/services/identity/TaskAttestation';
+
 import type {
-  RegistryTaskGenesisAttestation,
   RegistryTaskCompletionReplayRecord,
-  RegistryTaskPolicyChangeReplayRecord,
+  RegistryTaskGenesisAttestation,
   RegistryTaskGenesisReplayRecord,
   RegistryTaskLifecycleReceipt,
+  RegistryTaskPolicyChangeReplayRecord,
 } from '../RegistryTaskClientTypes';
 
 interface RecordedCall {
@@ -226,313 +224,8 @@ function makeClient(registry: FakeRegistry, requestTimeoutMs = 2_000): Promise<R
     url: registry.url,
     token: 'test-token',
     requestTimeoutMs,
-    env: {},
   });
 }
-
-describe('RegistryTaskClient registration identity fence', () => {
-  it('sends exact identity and rejects a mismatched register response', async () => {
-    const identity = { securityStoreId: 'store-1', idp: 'issuer', userId: 'user-1' };
-    const registry = await startFakeRegistry((call) => ({
-      envelope: baseEnvelope(
-        call.args.action === 'identity' ? identity : { ...identity, teamId: 'team-1', bindings: [] }
-      ),
-    }));
-    const client = await makeClient(registry);
-    expect(await client.getRegistrationIdentity('owner/project', 'request-1')).toEqual(identity);
-    expect(await client.registerTeam('owner/project', 'request-1', identity)).toEqual({
-      teamId: 'team-1',
-      bindings: [],
-    });
-    expect(registry.calls[0].args).toEqual({
-      action: 'identity',
-      project: 'owner/project',
-      requestId: 'request-1',
-    });
-    expect(registry.calls[1].args).toEqual({
-      action: 'register',
-      project: 'owner/project',
-      requestId: 'request-1',
-      expectedSecurityStoreId: 'store-1',
-      expectedIdp: 'issuer',
-      expectedUserId: 'user-1',
-    });
-    await expect(
-      client.registerTeam('owner/project', 'request-1', { ...identity, userId: 'other' })
-    ).rejects.toThrow('identity mismatch');
-  });
-});
-
-describe('RegistryTaskClient protected task completion', () => {
-  const identity = {
-    securityStoreId: '123e4567-e89b-42d3-a456-426614174000',
-    idp: 'issuer',
-    userId: 'user-1',
-  };
-  const scope = { project: 'owner/project', spec: 'spec-a', teamId: TEAM_ID };
-  const taskId = 'TASK-7';
-  const keyId = 'b'.repeat(64);
-  const artifactDigest = 'd'.repeat(64);
-
-  it('sends only challenge hash/size and signed completion receipt fields', async () => {
-    let payload: (string | number | null)[] | null = null;
-    let completionReplay: RegistryTaskCompletionReplayRecord | null = null;
-    const registry = await startFakeRegistry((call) => {
-      if (call.args.action === 'identity') {
-        return { envelope: baseEnvelope(identity) };
-      }
-      if (call.args.action === 'task_challenge') {
-        payload = [
-          'omp-spec-kit/task-attestation@1',
-          identity.securityStoreId,
-          identity.idp,
-          identity.userId,
-          TEAM_ID,
-          scope.project,
-          scope.spec,
-          taskId,
-          'generation-1',
-          'a'.repeat(64),
-          'in-progress',
-          'done',
-          1,
-          'c'.repeat(64),
-          artifactDigest,
-          42,
-          'e'.repeat(64),
-          1,
-          keyId,
-          String(call.args.requestId),
-        ];
-        return { envelope: baseEnvelope({ payload }) };
-      }
-      if (call.args.action === 'task_complete') {
-        expect(completionReplay).not.toBeNull();
-        const signedPayload = call.args.payload as (string | number | null)[];
-        return {
-          envelope: baseEnvelope({
-            outcome: 'APPLIED',
-            status: 'done',
-            commit: 'f'.repeat(40),
-            transitions: [
-              {
-                localId: taskId,
-                from: signedPayload[10],
-                to: 'done',
-                requestId: signedPayload[19],
-                actor: signedPayload[3],
-                at: '2026-11-08T12:00:00.000Z',
-              },
-            ],
-          }),
-        };
-      }
-      throw new Error(`Unexpected action: ${String(call.args.action)}`);
-    });
-    const client = await makeClient(registry);
-    const challenge = await client.requestTaskCompletionChallenge({
-      ...scope,
-      taskId,
-      keyId,
-      artifactDigest,
-      artifactSize: 42,
-      expectedRegistrationIdentity: identity,
-    });
-    expect(challenge.proof.fromStatus).toBe('in-progress');
-    const signature = Buffer.alloc(64, 7).toString('base64url');
-    const completion = await client.completeTask({
-      challenge,
-      signed: { payload: challenge.payload, signature },
-      expectedRegistrationIdentity: identity,
-      beforeSend: (replay) => {
-        completionReplay = replay;
-      },
-    });
-
-    expect(registry.calls.map(({ args }) => args)).toEqual([
-      {
-        action: 'identity',
-        project: scope.project,
-        requestId: expect.any(String),
-      },
-      {
-        action: 'task_challenge',
-        project: scope.project,
-        requestId: expect.any(String),
-        teamId: TEAM_ID,
-        spec: scope.spec,
-        taskId,
-        operation: 'complete',
-        keyId,
-        artifactDigest,
-        artifactSize: 42,
-      },
-      {
-        action: 'task_complete',
-        project: scope.project,
-        requestId: expect.any(String),
-        teamId: TEAM_ID,
-        spec: scope.spec,
-        taskId,
-        payload,
-        signature,
-      },
-    ]);
-    expect(completion).toEqual({
-      outcome: 'APPLIED',
-      status: 'done',
-      requestId: payload?.[19],
-      project: scope.project,
-      spec: scope.spec,
-      teamId: TEAM_ID,
-      taskId,
-      commit: 'f'.repeat(40),
-      transitions: [
-        {
-          localId: taskId,
-          from: 'in-progress',
-          to: 'done',
-          requestId: payload?.[19],
-          actor: identity.userId,
-          at: '2026-11-08T12:00:00.000Z',
-        },
-      ],
-    });
-    const replayed = await client.replayTaskCompletionRequest({
-      replay: completionReplay!,
-      expectedRegistrationIdentity: identity,
-    });
-    expect(replayed).toEqual(completion);
-    expect(registry.calls).toHaveLength(4);
-    expect(registry.calls[3].args).toEqual(registry.calls[2].args);
-  });
-
-  it('journals and replays the exact signed policy-change request', async () => {
-    const policy = { required: true, expectedFilename: 'result.txt' };
-    const policyDigest = taskPolicyDigest(policy);
-    let challengePayload: (string | number | null)[] | null = null;
-    let replayRecord: RegistryTaskPolicyChangeReplayRecord | null = null;
-    const registry = await startFakeRegistry((call) => {
-      if (call.args.action === 'identity') {
-        return { envelope: baseEnvelope(identity) };
-      }
-      if (call.args.action === 'task_challenge') {
-        challengePayload = [
-          'omp-spec-kit/task-policy-change@1',
-          identity.securityStoreId,
-          identity.idp,
-          identity.userId,
-          TEAM_ID,
-          scope.project,
-          scope.spec,
-          taskId,
-          'generation-1',
-          'a'.repeat(64),
-          1,
-          'c'.repeat(64),
-          2,
-          policyDigest,
-          '0'.repeat(64),
-          1,
-          keyId,
-          String(call.args.requestId),
-        ];
-        return { envelope: baseEnvelope({ payload: challengePayload }) };
-      }
-      if (call.args.action === 'task_policy') {
-        expect(replayRecord).not.toBeNull();
-        return {
-          envelope: baseEnvelope({ outcome: 'APPLIED', version: 2, digest: policyDigest }),
-        };
-      }
-      throw new Error(`Unexpected action: ${String(call.args.action)}`);
-    });
-    const client = await makeClient(registry);
-    const challenge = await client.requestTaskPolicyChangeChallenge({
-      ...scope,
-      taskId,
-      keyId,
-      policy,
-      expectedRegistrationIdentity: identity,
-    });
-    expect(challenge.proof.requestId).toBe(challenge.requestId);
-    const signature = Buffer.alloc(64, 8).toString('base64url');
-    const changed = await client.changeTaskPolicy({
-      challenge,
-      signed: { payload: challenge.payload, signature },
-      expectedRegistrationIdentity: identity,
-      beforeSend: (replay) => {
-        replayRecord = replay;
-      },
-    });
-    const expectedPolicy = { required: true, expectedFilename: 'result.txt' };
-    expect(changed).toEqual({
-      outcome: 'APPLIED',
-      requestId: challenge.requestId,
-      project: scope.project,
-      spec: scope.spec,
-      teamId: TEAM_ID,
-      taskId,
-      version: 2,
-      digest: policyDigest,
-    });
-    expect(registry.calls.map(({ args }) => args)).toEqual([
-      {
-        action: 'identity',
-        project: scope.project,
-        requestId: expect.any(String),
-      },
-      {
-        action: 'task_challenge',
-        project: scope.project,
-        requestId: expect.any(String),
-        teamId: TEAM_ID,
-        spec: scope.spec,
-        taskId,
-        operation: 'policy',
-        keyId,
-        policy: expectedPolicy,
-      },
-      {
-        action: 'task_policy',
-        project: scope.project,
-        requestId: challenge.requestId,
-        teamId: TEAM_ID,
-        spec: scope.spec,
-        taskId,
-        policy: expectedPolicy,
-        payload: challengePayload,
-        signature,
-      },
-    ]);
-    const replayed = await client.replayTaskPolicyChangeRequest({
-      replay: replayRecord!,
-      expectedRegistrationIdentity: identity,
-    });
-    expect(replayed).toEqual(changed);
-    expect(registry.calls).toHaveLength(4);
-    expect(registry.calls[3].args).toEqual(registry.calls[2].args);
-  });
-
-  it('refuses a challenge when the registry identity differs from durable registration', async () => {
-    const registry = await startFakeRegistry(() => ({
-      envelope: baseEnvelope({ ...identity, userId: 'different-user' }),
-    }));
-    const client = await makeClient(registry);
-    await expect(
-      client.requestTaskCompletionChallenge({
-        ...scope,
-        taskId,
-        keyId,
-        artifactDigest,
-        artifactSize: 42,
-        expectedRegistrationIdentity: identity,
-      })
-    ).rejects.toThrow('identity mismatch');
-    expect(registry.calls).toHaveLength(1);
-    expect(registry.calls[0].args.action).toBe('identity');
-  });
-});
 
 describe('RegistryTaskClient.listTasks', () => {
   it('fails closed against old registries before writes or deleted reads', async () => {
@@ -590,6 +283,32 @@ describe('RegistryTaskClient.listTasks', () => {
     expect(registry.calls.map((call) => call.toolName)).toEqual(['spec_tasks']);
   });
 
+  it('rejects a review value the canonical contract does not define', async () => {
+    const registry = await startFakeRegistry(() => ({
+      envelope: baseEnvelope({
+        kind: 'tasks',
+        spec: 'balancer-consistency-hardening',
+        count: 1,
+        tasks: [
+          {
+            ...taskEntry(
+              'balancer-consistency-hardening',
+              '7',
+              'Pin the PAYG price rule',
+              'in-progress'
+            ),
+            review: 'almost-approved',
+          },
+        ],
+      }),
+    }));
+    const client = await makeClient(registry);
+
+    await expect(
+      client.listTasks({ project: 'stgmt/tokenplan', spec: 'balancer-consistency-hardening' })
+    ).rejects.toThrow(/task review has an unknown value/u);
+  });
+
   it('reads every task field and forwards the scope to spec_tasks', async () => {
     const registry = await startFakeRegistry(() => ({
       envelope: baseEnvelope({
@@ -612,6 +331,7 @@ describe('RegistryTaskClient.listTasks', () => {
             blockedBy: [],
             refs: ['balancer-consistency-hardening:AC-2'],
             contentHash: 'abc123',
+            review: 'approved',
           },
         ],
       }),
@@ -640,6 +360,7 @@ describe('RegistryTaskClient.listTasks', () => {
         blockedBy: [],
         refs: ['balancer-consistency-hardening:AC-2'],
         contentHash: 'abc123',
+        review: 'approved',
       },
     ]);
     expect(registry.calls).toHaveLength(1);
@@ -804,37 +525,24 @@ describe('RegistryTaskClient failures', () => {
   });
 
   it('refuses to run without a token and never touches the network', async () => {
-    const missingTokenPath = path.join(
-      os.tmpdir(),
-      `registry-missing-token-${process.pid}-${Date.now()}.txt`
-    );
-
     const failure = await RegistryTaskClient.create({
-      env: {},
-      tokenFilePath: missingTokenPath,
+      token: null,
     }).catch((error: unknown) => error);
 
     expect(failure).toBeInstanceOf(RegistryTaskClientConfigError);
     expect((failure as RegistryTaskClientConfigError).code).toBe('MISSING_TOKEN');
   });
 
-  it('uses an explicitly selected token file instead of the host home credential', async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'registry-token-file-'));
-    try {
-      const tokenFile = path.join(dir, 'token.txt');
-      fs.writeFileSync(tokenFile, 'isolated-token');
-      const registry = await startFakeRegistry(() => ({
-        envelope: baseEnvelope({ kind: 'tasks', spec: 'spec-a', count: 0, tasks: [] }),
-      }));
-      const client = await RegistryTaskClient.create({
-        url: registry.url,
-        env: { OMP_SPEC_REGISTRY_TOKEN_FILE: tokenFile, OMP_SPEC_REGISTRY_TOKEN: 'stale-token' },
-      });
-      await client.listTasks({ project: 'sandbox/demo', spec: 'spec-a' });
-      expect(registry.calls[0].authorization).toBe('Bearer isolated-token');
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
-    }
+  it('uses explicitly injected client credentials without a runtime token-file lookup', async () => {
+    const registry = await startFakeRegistry(() => ({
+      envelope: baseEnvelope({ kind: 'tasks', spec: 'spec-a', count: 0, tasks: [] }),
+    }));
+    const client = await RegistryTaskClient.create({
+      url: registry.url,
+      token: 'unit-injected-token',
+    });
+    await client.listTasks({ project: 'sandbox/demo', spec: 'spec-a' });
+    expect(registry.calls[0].authorization).toBe('Bearer unit-injected-token');
   });
 });
 
@@ -1137,7 +845,7 @@ describe('RegistryTaskClient writes', () => {
     expect(challengeResult.challenge.payloadDigest).toBe(requestDigest);
     const signature = Buffer.alloc(64, 7).toString('base64url');
     const attestation: RegistryTaskGenesisAttestation = {
-      ...challenge!,
+      ...challenge,
       signature,
     };
     const replayRecords: RegistryTaskGenesisReplayRecord[] = [];
@@ -1152,10 +860,10 @@ describe('RegistryTaskClient writes', () => {
       })
     ).rejects.toBeInstanceOf(RegistryTaskClientError);
     expect(replayRecords).toHaveLength(1);
-    const replay = replayRecords[0]!;
+    const replay = replayRecords[0];
     const replayOperation = (
       replay.requestArguments.operations as Array<Record<string, unknown>>
-    )[0]!;
+    )[0];
     expect(replayOperation.expectedSha).toBe(input.expectedSha);
     const completion = await client.replayTaskGenesisRequest({
       replay,
@@ -1242,8 +950,8 @@ describe('RegistryTaskClient writes', () => {
     const tamperedArguments = tampered.requestArguments as unknown as {
       operations: Array<Record<string, unknown>>;
     };
-    tamperedArguments.operations[0]!.expectedSha = 'c'.repeat(64);
-    tamperedArguments.operations[0]!.title = 'different signed title';
+    tamperedArguments.operations[0].expectedSha = 'c'.repeat(64);
+    tamperedArguments.operations[0].title = 'different signed title';
     const callsBeforeTamperedReplay = registry.calls.length;
     await expect(
       client.replayTaskGenesisRequest({

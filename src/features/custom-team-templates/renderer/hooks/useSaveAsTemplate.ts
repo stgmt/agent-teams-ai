@@ -271,11 +271,10 @@ export function useSaveAsTemplate({
         setAttempt({ status: 'idConflict', templateId: result.templateId });
         return;
       case 'notSaved':
-        // An older server may report absence, but a previous writer can still
-        // be running. Do not make the original save retryable from a read.
-        setAttempt({ status: 'unresolved', templateId: result.templateId });
-        return;
       case 'unresolved':
+        // An older server may report absence, but a previous writer can still
+        // be running. A read never makes the original save retryable, so the
+        // outcome stays unresolved for the user to decide.
         setAttempt({ status: 'unresolved', templateId: result.templateId });
         return;
       case 'storageUnavailable':

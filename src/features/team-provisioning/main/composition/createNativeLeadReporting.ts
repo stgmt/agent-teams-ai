@@ -11,7 +11,12 @@ import type { NodeLeadReporting } from '@features/lead-reporting/main';
 interface Dependencies {
   lifecycle: Pick<
     NativeTeamLifecycle,
-    'resolveLeadCredential' | 'snapshot' | 'queries' | 'taskChanges' | 'sendLeadMessage'
+    | 'resolveLeadCredential'
+    | 'snapshot'
+    | 'queries'
+    | 'taskChanges'
+    | 'sendLeadMessage'
+    | 'canReplayLeadInput'
   >;
   reporting: Omit<
     Parameters<typeof createNodeLeadReporting>[0],
@@ -72,7 +77,9 @@ export function createNativeLeadReporting(deps: Dependencies): NativeLeadReporti
       readDelivered: (run, id) => history.readDelivered(run, id),
     }),
     accept: (request) => reporting.acceptHumanRequest(request),
-    send: (run, text) => deps.lifecycle.sendLeadMessage(run, text),
+    canReplayUnconfirmed: (run) => deps.lifecycle.canReplayLeadInput(run),
+    send: (run, text, operationId) =>
+      deps.lifecycle.sendLeadMessage(run, text, undefined, operationId),
   });
   const reporting = createNodeLeadReporting({
     ...deps.reporting,

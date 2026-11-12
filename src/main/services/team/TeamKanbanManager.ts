@@ -9,9 +9,9 @@ import { createController } from 'agent-teams-controller';
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { withTeamBoardLockForSyncOperation } from './boardLock';
 import { ExecutionTaskStore } from './execution/ExecutionTaskStore';
 import { resolveTeamSpecBindings } from './registry/TeamSpecBinding';
+import { withTeamBoardLockForSyncOperation } from './boardLock';
 import { TeamConfigReader } from './TeamConfigReader';
 
 import type { KanbanColumnId, KanbanState, UpdateKanbanPatch } from '@shared/types';

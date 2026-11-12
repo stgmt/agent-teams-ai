@@ -113,11 +113,8 @@ describe('JSON canonical status CAS', () => {
     let blocked = false;
     vi.spyOn(fs.promises, 'open').mockImplementation(async (...args: Parameters<typeof open>) => {
       const handle = await open(...args);
-      if (
-        !blocked &&
-        dirname(String(args[0])) === dirname(path) &&
-        String(args[0]).includes('/.tmp.')
-      ) {
+      const target = String(args[0]).replaceAll('\\', '/');
+      if (!blocked && dirname(String(args[0])) === dirname(path) && target.includes('/.tmp.')) {
         blocked = true;
         const sync = handle.sync.bind(handle);
         vi.spyOn(handle, 'sync').mockImplementation(async () => {
@@ -184,10 +181,12 @@ describe('JSON canonical status CAS', () => {
       const open = fs.promises.open.bind(fs.promises);
       vi.spyOn(fs.promises, 'open').mockImplementation(async (...args: Parameters<typeof open>) => {
         const handle = await open(...args);
-        const target = String(args[0]);
+        const target = String(args[0]).replaceAll('\\', '/');
         if (
-          (cut === 'file_sync' && dirname(target) === dirname(path) && target.includes('/.tmp.')) ||
-          (cut === 'directory_sync' && target === dirname(path))
+          (cut === 'file_sync' &&
+            dirname(String(args[0])) === dirname(path) &&
+            target.includes('/.tmp.')) ||
+          (cut === 'directory_sync' && String(args[0]) === dirname(path))
         ) {
           vi.spyOn(handle, 'sync').mockRejectedValue(
             Object.assign(new Error('test EIO'), { code: 'EIO' })

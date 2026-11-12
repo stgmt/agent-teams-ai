@@ -16,6 +16,37 @@ vi.mock('@main/utils/directoryPresence', async (importOriginal) => ({
   isMissingDirectory: () => Promise.resolve(false),
 }));
 
+// The pinned runtime of this branch is released `opencodeV2Delivery: "off"`, so the real lock
+// recognizes no V2 version at all. These cases exercise the V2 policy path, so the fixture pins
+// the qualifying contract a V2-serving runtime publishes; the real lock's V2-off answer stays
+// covered by the opencode-compatibility generation tests.
+vi.mock('../../../../runtime.lock.json', async (importOriginal) => {
+  const actual = await importOriginal<{ default: Record<string, unknown> }>();
+  const assets = (actual.default.assets ?? {}) as Record<string, unknown>;
+  const platformKeys = Object.keys(assets).length > 0 ? Object.keys(assets) : ['win32-x64'];
+  return {
+    default: {
+      ...actual.default,
+      opencodeV2: {
+        cliVersionPolicy: 'stable-v2-qualified-engine',
+        range: { minimum: '2.0.0', below: '3.0.0' },
+        qualified: Object.fromEntries(
+          [
+            'darwin-arm64',
+            'darwin-x64',
+            'linux-arm64',
+            'linux-x64',
+            'win32-arm64',
+            'win32-x64',
+          ].map((key) => [key, ['2.1.4']])
+        ),
+      },
+      // A V2-serving runtime publishes a delivery record for every released platform.
+      opencodeV2Delivery: Object.fromEntries(platformKeys.map((key) => [key, {}])),
+    },
+  };
+});
+
 // Renderer modules read localStorage while they load; this suite runs in Node.
 const localStorageState = new Map<string, string>();
 vi.stubGlobal('localStorage', {

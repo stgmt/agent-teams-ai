@@ -53,6 +53,7 @@ export class HttpServer {
   private port: number = 3456;
   private running: boolean = false;
   private startingPromise: Promise<number> | null = null;
+  private nativeClaudeSdkHost: HttpServices['nativeClaudeSdkHost'] | null = null;
 
   /**
    * Start the HTTP server.
@@ -88,6 +89,11 @@ export class HttpServer {
     host: string
   ): Promise<number> {
     this.app = Fastify({ logger: false });
+    this.nativeClaudeSdkHost = services.nativeClaudeSdkHost ?? null;
+    const recoveryPort = (await this.nativeClaudeSdkHost?.recoverEndpoint()) ?? null;
+    if (this.nativeClaudeSdkHost && host !== '127.0.0.1')
+      throw new Error('Native SDK requires the application loopback listener');
+    this.nativeClaudeSdkHost?.attach(this.app.server);
 
     // Register CORS
     const corsOrigin = process.env.CORS_ORIGIN;
@@ -148,18 +154,21 @@ export class HttpServer {
       registerHttpRoutes(this.app, services, sshModeSwitchCallback);
     }
 
-    // Try ports starting from preferredPort
-    for (let attempt = 0; attempt <= 10; attempt++) {
-      const tryPort = preferredPort + attempt;
+    // Surviving SDK processes retain the exact URL. Only a first allocation may fall forward.
+    const firstPort = recoveryPort ?? preferredPort;
+    const lastAttempt = recoveryPort === null ? 10 : 0;
+    for (let attempt = 0; attempt <= lastAttempt; attempt++) {
+      const tryPort = firstPort + attempt;
       try {
         await this.app.listen({ host, port: tryPort });
+        await this.nativeClaudeSdkHost?.listening(tryPort);
         this.port = tryPort;
         this.running = true;
         logger.info(`HTTP server started on http://${host}:${tryPort}`);
         return tryPort;
       } catch (err: unknown) {
         const error = err as NodeJS.ErrnoException;
-        if (error.code === 'EADDRINUSE') {
+        if (error.code === 'EADDRINUSE' && recoveryPort === null) {
           logger.info(`Port ${tryPort} in use, trying next...`);
           continue;
         }
@@ -174,6 +183,8 @@ export class HttpServer {
    * Stop the HTTP server gracefully.
    */
   async stop(): Promise<void> {
+    await this.nativeClaudeSdkHost?.close();
+    this.nativeClaudeSdkHost = null;
     if (this.app && this.running) {
       await this.app.close();
       this.running = false;

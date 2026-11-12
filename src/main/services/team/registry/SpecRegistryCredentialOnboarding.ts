@@ -1,17 +1,17 @@
+import agentTeamsController from 'agent-teams-controller';
+
 import { RegistryMcpTransport } from './RegistryMcpTransport';
+import { resolveRegistryTaskClientConfig } from './RegistryTaskClientConfig';
 import {
-  SpecRegistryCredentialStore,
   createElectronCredentialCipher,
+  SpecRegistryCredentialStore,
 } from './SpecRegistryCredentialStore';
-import {
-  getRegistryTokenFilePath,
-  resolveRegistryTaskClientConfig,
-} from './RegistryTaskClientConfig';
 
 import type { SpecRegistryCredential } from './SpecRegistryCredentialStore';
 import type { SpecRegistryCredentialStatus, SpecRegistryProbeResult } from '@shared/types';
 
 const PROBE_TIMEOUT_MS = 10_000;
+const { specGateway } = agentTeamsController;
 
 function store(): SpecRegistryCredentialStore {
   return new SpecRegistryCredentialStore(createElectronCredentialCipher());
@@ -22,24 +22,14 @@ export async function readSpecRegistryCredentialStatus(): Promise<SpecRegistryCr
   const credentialStore = store();
   const stored = await credentialStore.read();
   if (stored) return { configured: true, url: stored.url, source: 'store' };
-  try {
-    const resolved = await resolveRegistryTaskClientConfig({ credentialStore });
-    const source = process.env.OMP_SPEC_REGISTRY_TOKEN?.trim()
-      ? 'environment'
-      : getRegistryTokenFilePath()
-        ? 'file'
-        : 'none';
-    return { configured: true, url: resolved.url, source };
-  } catch {
-    return { configured: false, url: null, source: 'none' };
-  }
+  return { configured: false, url: null, source: 'none' };
 }
 
 async function probe(url: string, token: string): Promise<SpecRegistryProbeResult> {
   try {
     const transport = new RegistryMcpTransport({ url, token, requestTimeoutMs: PROBE_TIMEOUT_MS });
     const result = await transport.listTools();
-    const tools = Array.isArray(result.tools) ? result.tools : [];
+    const tools = specGateway.readToolDescriptors(result);
     return { ok: true, url, toolCount: tools.length, errorCode: null };
   } catch (error) {
     const code = (error as { code?: unknown }).code;
@@ -75,8 +65,7 @@ export async function saveSpecRegistryCredential(input: {
   const url = input.url.trim();
   const token = input.token.trim();
   const result = await probe(url, token);
-  if (!result.ok) return result;
-  await store().save({ url, token });
+  if (result.ok) await store().save({ url, token });
   return result;
 }
 

@@ -2,6 +2,19 @@ import { resolve } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { teamRuntimeSnapshotFromProcesses } from '../../../helpers/teamRuntimeSnapshot';
+
+import type { TeamTask } from '@shared/types';
+
+const unexpectedBoardSnapshots = {
+  async readBoardSnapshot(): Promise<never> {
+    throw new Error('Unexpected registry board read in class-only worker fixture');
+  },
+};
+
+// Case-local imports are intentional: resetModules isolates worker singleton and
+// root state between cases, including the domain error constructor's identity.
+
 const rootA = resolve('/TEST/claude-root-a');
 const rootB = resolve('/TEST/claude-root-b');
 
@@ -84,6 +97,101 @@ describe('TeamDataWorkerClient', () => {
     hoisted.throwPostMessageForOps.clear();
   });
 
+  it('exposes only the existing worker cache without constructing a worker or reading the registry', async () => {
+    const { getTeamDataWorkerCache, getTeamDataWorkerClient } =
+      await import('../../../../src/main/services/team/TeamDataWorkerClient');
+    const readBoardSnapshot = vi.fn(unexpectedBoardSnapshots.readBoardSnapshot);
+
+    expect(getTeamDataWorkerCache()).toBeNull();
+    expect(hoisted.createMockWorker).not.toHaveBeenCalled();
+
+    const client = getTeamDataWorkerClient({ readBoardSnapshot });
+    expect(getTeamDataWorkerCache()).toBe(client);
+    expect(hoisted.createMockWorker).not.toHaveBeenCalled();
+    expect(readBoardSnapshot).not.toHaveBeenCalled();
+    client.dispose();
+  });
+
+  it('revives registry refusal identity without retrying the authenticated read', async () => {
+    const { TeamDataWorkerClient } =
+      await import('../../../../src/main/services/team/TeamDataWorkerClient');
+    const { RegistryTaskProviderError } =
+      await import('../../../../src/main/services/team/registry/RegistryTaskProvider');
+    const readBoardSnapshot = vi.fn(unexpectedBoardSnapshots.readBoardSnapshot);
+    const client = new TeamDataWorkerClient({ readBoardSnapshot });
+    hoisted.skipResponsesForOps.add('getTeamData');
+    const result = client
+      .getTeamData('TEST-team', teamRuntimeSnapshotFromProcesses('TEST-team', []))
+      .catch((error: unknown) => error);
+    const worker = hoisted.workers[0];
+    const request = worker.messages[0] as { id: string };
+    const failure = {
+      code: 'REGISTRY_REFUSED',
+      teamName: 'TEST-team',
+      project: 'TEST-project',
+      spec: 'TEST-spec',
+      causeCode: 'PROJECT_NOT_ALLOWED',
+      message: 'Registry denied the requested project',
+    };
+    worker.handlers.get('message')?.({
+      id: request.id,
+      ok: false,
+      error: failure.message,
+      registryFailure: failure,
+    });
+    const error = await result;
+    expect(error).toBeInstanceOf(RegistryTaskProviderError);
+    expect(error).toMatchObject(failure);
+    expect(readBoardSnapshot).not.toHaveBeenCalled();
+    client.dispose();
+  });
+
+  it.each(['replacement', 'root'] as const)(
+    'discards an in-flight registry snapshot after a %s boundary',
+    async (boundary) => {
+      const { setClaudeBasePathOverride } = await import('../../../../src/main/utils/pathDecoder');
+      const { TeamDataWorkerClient } =
+        await import('../../../../src/main/services/team/TeamDataWorkerClient');
+      setClaudeBasePathOverride(rootA);
+      let resolve!: (tasks: TeamTask[]) => void;
+      const promise = new Promise<TeamTask[]>((resolvePromise) => {
+        resolve = resolvePromise;
+      });
+      const readBoardSnapshot = vi.fn(() => promise);
+      const client = new TeamDataWorkerClient({ readBoardSnapshot });
+      await client.getTeamData('TEST-team', teamRuntimeSnapshotFromProcesses('TEST-team', []));
+      const retiredWorker = hoisted.workers[0];
+      retiredWorker.handlers.get('message')?.({
+        id: 'TEST-registry-read',
+        op: 'readRegistryBoard',
+        payload: { teamName: 'TEST-team' },
+      });
+      expect(readBoardSnapshot).toHaveBeenCalledOnce();
+      if (boundary === 'replacement') {
+        client.dispose();
+        await client.getTeamData('TEST-team', teamRuntimeSnapshotFromProcesses('TEST-team', []));
+      } else {
+        setClaudeBasePathOverride(rootB);
+      }
+      resolve([{ id: 'TEST-old-profile-task' } as TeamTask]);
+      await Promise.resolve();
+      await Promise.resolve();
+      for (const worker of hoisted.workers) {
+        expect(worker.messages).not.toContainEqual(
+          expect.objectContaining({ op: 'registryBoardResult' })
+        );
+      }
+      // A retired/root-mismatched worker cannot start another authenticated read either.
+      retiredWorker.handlers.get('message')?.({
+        id: 'TEST-late-read',
+        op: 'readRegistryBoard',
+        payload: { teamName: 'TEST-team' },
+      });
+      expect(readBoardSnapshot).toHaveBeenCalledOnce();
+      client.dispose();
+    }
+  );
+
   it('binds each worker to the configured root and retires old reads on a root switch', async () => {
     const { setClaudeBasePathOverride } = await import('../../../../src/main/utils/pathDecoder');
     const { TeamDataWorkerClient } =
@@ -91,8 +199,10 @@ describe('TeamDataWorkerClient', () => {
     setClaudeBasePathOverride(rootA);
     hoisted.skipResponsesForOps.add('getTeamData');
     hoisted.skipResponsesForOps.add('getMessagesPage');
-    const client = new TeamDataWorkerClient();
-    const active = client.getTeamData('TEST-team').catch((error: unknown) => error);
+    const client = new TeamDataWorkerClient(unexpectedBoardSnapshots);
+    const active = client
+      .getTeamData('TEST-team', teamRuntimeSnapshotFromProcesses('TEST-team', []))
+      .catch((error: unknown) => error);
     const queued = client
       .getMessagesPage('TEST-team', { limit: 50 })
       .catch((error: unknown) => error);
@@ -103,7 +213,10 @@ describe('TeamDataWorkerClient', () => {
     client.dispose();
     expect(retiredWorker.terminate).toHaveBeenCalledOnce();
     expect(hoisted.workers).toHaveLength(1);
-    const replacement = client.getTeamData('TEST-team');
+    const replacement = client.getTeamData(
+      'TEST-team',
+      teamRuntimeSnapshotFromProcesses('TEST-team', [])
+    );
     const replacementWorker = hoisted.workers[1];
     const current = replacementWorker.messages[0] as { id: string };
     expect(await active).toMatchObject({ failure: { kind: 'disposed' } });
@@ -149,15 +262,19 @@ describe('TeamDataWorkerClient', () => {
       await import('../../../../src/main/services/team/TeamDataWorkerClient');
     setClaudeBasePathOverride(rootA);
     hoisted.skipResponsesForOps.add('getTeamData');
-    const client = new TeamDataWorkerClient();
-    const failed = client.getTeamData('TEST-team').catch((error: unknown) => error);
+    const client = new TeamDataWorkerClient(unexpectedBoardSnapshots);
+    const failed = client
+      .getTeamData('TEST-team', teamRuntimeSnapshotFromProcesses('TEST-team', []))
+      .catch((error: unknown) => error);
     hoisted.workers[0].handlers.get('error')?.(new Error('Worker call timeout after 30000ms'));
     expect(await failed).toMatchObject({ failure: { kind: 'recovering' } });
 
     setClaudeBasePathOverride(rootB);
     client.dispose();
     hoisted.skipResponsesForOps.delete('getTeamData');
-    await expect(client.getTeamData('TEST-team')).resolves.toMatchObject({ teamName: 'TEST-team' });
+    await expect(
+      client.getTeamData('TEST-team', teamRuntimeSnapshotFromProcesses('TEST-team', []))
+    ).resolves.toMatchObject({ teamName: 'TEST-team' });
     expect(hoisted.createMockWorker).toHaveBeenNthCalledWith(2, expect.any(String), {
       workerData: rootB,
     });
@@ -167,11 +284,11 @@ describe('TeamDataWorkerClient', () => {
   it('deduplicates concurrent getTeamData calls for the same team', async () => {
     const { TeamDataWorkerClient } =
       await import('../../../../src/main/services/team/TeamDataWorkerClient');
-    const client = new TeamDataWorkerClient();
+    const client = new TeamDataWorkerClient(unexpectedBoardSnapshots);
 
     const [first, second] = await Promise.all([
-      client.getTeamData('my-team'),
-      client.getTeamData('my-team'),
+      client.getTeamData('my-team', teamRuntimeSnapshotFromProcesses('my-team', [])),
+      client.getTeamData('my-team', teamRuntimeSnapshotFromProcesses('my-team', [])),
     ]);
 
     expect(first).toEqual(second);
@@ -188,11 +305,13 @@ describe('TeamDataWorkerClient', () => {
   it('does not deduplicate thin and full getTeamData calls together', async () => {
     const { TeamDataWorkerClient } =
       await import('../../../../src/main/services/team/TeamDataWorkerClient');
-    const client = new TeamDataWorkerClient();
+    const client = new TeamDataWorkerClient(unexpectedBoardSnapshots);
 
     await Promise.all([
-      client.getTeamData('my-team'),
-      client.getTeamData('my-team', { includeMemberBranches: false }),
+      client.getTeamData('my-team', teamRuntimeSnapshotFromProcesses('my-team', [])),
+      client.getTeamData('my-team', teamRuntimeSnapshotFromProcesses('my-team', []), {
+        includeMemberBranches: false,
+      }),
     ]);
 
     expect(hoisted.workers).toHaveLength(1);
@@ -215,11 +334,13 @@ describe('TeamDataWorkerClient', () => {
   it('deduplicates explicit full getTeamData options with the default request', async () => {
     const { TeamDataWorkerClient } =
       await import('../../../../src/main/services/team/TeamDataWorkerClient');
-    const client = new TeamDataWorkerClient();
+    const client = new TeamDataWorkerClient(unexpectedBoardSnapshots);
 
     await Promise.all([
-      client.getTeamData('my-team'),
-      client.getTeamData('my-team', { includeMemberBranches: true }),
+      client.getTeamData('my-team', teamRuntimeSnapshotFromProcesses('my-team', [])),
+      client.getTeamData('my-team', teamRuntimeSnapshotFromProcesses('my-team', []), {
+        includeMemberBranches: true,
+      }),
     ]);
 
     expect(hoisted.workers).toHaveLength(1);
@@ -238,11 +359,15 @@ describe('TeamDataWorkerClient', () => {
   it('deduplicates concurrent thin getTeamData calls for the same team', async () => {
     const { TeamDataWorkerClient } =
       await import('../../../../src/main/services/team/TeamDataWorkerClient');
-    const client = new TeamDataWorkerClient();
+    const client = new TeamDataWorkerClient(unexpectedBoardSnapshots);
 
     const [first, second] = await Promise.all([
-      client.getTeamData('my-team', { includeMemberBranches: false }),
-      client.getTeamData('my-team', { includeMemberBranches: false }),
+      client.getTeamData('my-team', teamRuntimeSnapshotFromProcesses('my-team', []), {
+        includeMemberBranches: false,
+      }),
+      client.getTeamData('my-team', teamRuntimeSnapshotFromProcesses('my-team', []), {
+        includeMemberBranches: false,
+      }),
     ]);
 
     expect(first).toEqual(second);
@@ -259,9 +384,9 @@ describe('TeamDataWorkerClient', () => {
   it('does not queue warmup behind an already running worker', async () => {
     const { TeamDataWorkerClient } =
       await import('../../../../src/main/services/team/TeamDataWorkerClient');
-    const client = new TeamDataWorkerClient();
+    const client = new TeamDataWorkerClient(unexpectedBoardSnapshots);
 
-    await client.getTeamData('my-team');
+    await client.getTeamData('my-team', teamRuntimeSnapshotFromProcesses('my-team', []));
     await client.prewarm();
 
     expect(hoisted.workers).toHaveLength(1);
@@ -278,9 +403,9 @@ describe('TeamDataWorkerClient', () => {
     const { TeamDataWorkerClient } =
       await import('../../../../src/main/services/team/TeamDataWorkerClient');
     hoisted.skipResponsesForOps.add('getTeamData');
-    const client = new TeamDataWorkerClient();
+    const client = new TeamDataWorkerClient(unexpectedBoardSnapshots);
 
-    const first = client.getTeamData('my-team');
+    const first = client.getTeamData('my-team', teamRuntimeSnapshotFromProcesses('my-team', []));
     const second = client.getMessagesPage('my-team', { cursor: null, limit: 50 });
 
     expect(hoisted.workers).toHaveLength(1);
@@ -312,8 +437,8 @@ describe('TeamDataWorkerClient', () => {
   it('sends best-effort team config invalidation to the worker', async () => {
     const { TeamDataWorkerClient } =
       await import('../../../../src/main/services/team/TeamDataWorkerClient');
-    const client = new TeamDataWorkerClient();
-    await client.getTeamData('my-team');
+    const client = new TeamDataWorkerClient(unexpectedBoardSnapshots);
+    await client.getTeamData('my-team', teamRuntimeSnapshotFromProcesses('my-team', []));
     hoisted.workers[0].messages.length = 0;
 
     client.invalidateTeamConfig('my-team');
@@ -334,8 +459,8 @@ describe('TeamDataWorkerClient', () => {
   it('sends a run-stamped advisory reset to the worker', async () => {
     const { TeamDataWorkerClient } =
       await import('../../../../src/main/services/team/TeamDataWorkerClient');
-    const client = new TeamDataWorkerClient();
-    await client.getTeamData('my-team');
+    const client = new TeamDataWorkerClient(unexpectedBoardSnapshots);
+    await client.getTeamData('my-team', teamRuntimeSnapshotFromProcesses('my-team', []));
     hoisted.workers[0].messages.length = 0;
 
     client.resetMemberRuntimeAdvisoriesForNewRun('my-team', 1_724_780_000_000);
@@ -358,8 +483,8 @@ describe('TeamDataWorkerClient', () => {
   it('replays the advisory run-scope floor into a respawned worker before the first read', async () => {
     const { TeamDataWorkerClient } =
       await import('../../../../src/main/services/team/TeamDataWorkerClient');
-    const client = new TeamDataWorkerClient();
-    await client.getTeamData('my-team');
+    const client = new TeamDataWorkerClient(unexpectedBoardSnapshots);
+    await client.getTeamData('my-team', teamRuntimeSnapshotFromProcesses('my-team', []));
 
     client.resetMemberRuntimeAdvisoriesForNewRun('my-team', 1_724_780_000_000);
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -367,7 +492,7 @@ describe('TeamDataWorkerClient', () => {
     // A clean exit is not fatal, so the next request respawns immediately.
     hoisted.workers[0].handlers.get('exit')?.(0);
 
-    await client.getTeamData('my-team');
+    await client.getTeamData('my-team', teamRuntimeSnapshotFromProcesses('my-team', []));
 
     expect(hoisted.workers).toHaveLength(2);
     expect(hoisted.workers[1].messages).toHaveLength(2);
@@ -386,7 +511,7 @@ describe('TeamDataWorkerClient', () => {
   it('defers an advisory reset issued with no live worker and replays it on the next spawn', async () => {
     const { TeamDataWorkerClient } =
       await import('../../../../src/main/services/team/TeamDataWorkerClient');
-    const client = new TeamDataWorkerClient();
+    const client = new TeamDataWorkerClient(unexpectedBoardSnapshots);
 
     client.resetMemberRuntimeAdvisoriesForNewRun('my-team', 1_724_780_000_000);
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -397,7 +522,7 @@ describe('TeamDataWorkerClient', () => {
     );
     vi.mocked(console.warn).mockClear();
 
-    await client.getTeamData('my-team');
+    await client.getTeamData('my-team', teamRuntimeSnapshotFromProcesses('my-team', []));
 
     expect(hoisted.workers).toHaveLength(1);
     expect(hoisted.workers[0].messages[0]).toMatchObject({
@@ -411,7 +536,7 @@ describe('TeamDataWorkerClient', () => {
   it('replays only the latest floor per team and does not replay a rejected team name', async () => {
     const { TeamDataWorkerClient } =
       await import('../../../../src/main/services/team/TeamDataWorkerClient');
-    const client = new TeamDataWorkerClient();
+    const client = new TeamDataWorkerClient(unexpectedBoardSnapshots);
 
     client.resetMemberRuntimeAdvisoriesForNewRun('my-team', 1_724_780_000_000);
     client.resetMemberRuntimeAdvisoriesForNewRun('my-team', 1_724_781_000_000);
@@ -419,7 +544,7 @@ describe('TeamDataWorkerClient', () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     vi.mocked(console.warn).mockClear();
 
-    await client.getTeamData('my-team');
+    await client.getTeamData('my-team', teamRuntimeSnapshotFromProcesses('my-team', []));
 
     expect(hoisted.workers[0].messages).toHaveLength(2);
     expect(hoisted.workers[0].messages[0]).toMatchObject({
@@ -433,7 +558,7 @@ describe('TeamDataWorkerClient', () => {
   it('deduplicates concurrent getMessagesPage calls with the same page key', async () => {
     const { TeamDataWorkerClient } =
       await import('../../../../src/main/services/team/TeamDataWorkerClient');
-    const client = new TeamDataWorkerClient();
+    const client = new TeamDataWorkerClient(unexpectedBoardSnapshots);
 
     const [first, second] = await Promise.all([
       client.getMessagesPage('my-team', { cursor: null, limit: 50 }),
@@ -454,7 +579,7 @@ describe('TeamDataWorkerClient', () => {
   it('does not deduplicate getMessagesPage calls with different live overlays', async () => {
     const { TeamDataWorkerClient } =
       await import('../../../../src/main/services/team/TeamDataWorkerClient');
-    const client = new TeamDataWorkerClient();
+    const client = new TeamDataWorkerClient(unexpectedBoardSnapshots);
 
     await Promise.all([
       client.getMessagesPage('my-team', {
@@ -518,7 +643,7 @@ describe('TeamDataWorkerClient', () => {
   it('does not deduplicate live overlays that differ only by text content', async () => {
     const { TeamDataWorkerClient } =
       await import('../../../../src/main/services/team/TeamDataWorkerClient');
-    const client = new TeamDataWorkerClient();
+    const client = new TeamDataWorkerClient(unexpectedBoardSnapshots);
 
     await Promise.all([
       client.getMessagesPage('my-team', {
@@ -560,7 +685,7 @@ describe('TeamDataWorkerClient', () => {
   it('does not deduplicate live overlays that differ only by routing metadata', async () => {
     const { TeamDataWorkerClient } =
       await import('../../../../src/main/services/team/TeamDataWorkerClient');
-    const client = new TeamDataWorkerClient();
+    const client = new TeamDataWorkerClient(unexpectedBoardSnapshots);
 
     await Promise.all([
       client.getMessagesPage('my-team', {
@@ -610,7 +735,7 @@ describe('TeamDataWorkerClient', () => {
   it('caps live overlay payloads before queueing worker message-page calls', async () => {
     const { TeamDataWorkerClient } =
       await import('../../../../src/main/services/team/TeamDataWorkerClient');
-    const client = new TeamDataWorkerClient();
+    const client = new TeamDataWorkerClient(unexpectedBoardSnapshots);
     const liveMessages = Array.from({ length: 205 }, (_, index) => ({
       from: 'team-lead',
       text: `live ${index}`,
@@ -644,8 +769,8 @@ describe('TeamDataWorkerClient', () => {
   it('sends best-effort message feed invalidation to the worker', async () => {
     const { TeamDataWorkerClient } =
       await import('../../../../src/main/services/team/TeamDataWorkerClient');
-    const client = new TeamDataWorkerClient();
-    await client.getTeamData('my-team');
+    const client = new TeamDataWorkerClient(unexpectedBoardSnapshots);
+    await client.getTeamData('my-team', teamRuntimeSnapshotFromProcesses('my-team', []));
     hoisted.workers[0].messages.length = 0;
 
     client.invalidateTeamMessageFeed('my-team');
@@ -664,7 +789,7 @@ describe('TeamDataWorkerClient', () => {
   it('keeps in-flight getMessagesPage dedupe when invalidating message feed', async () => {
     const { TeamDataWorkerClient } =
       await import('../../../../src/main/services/team/TeamDataWorkerClient');
-    const client = new TeamDataWorkerClient();
+    const client = new TeamDataWorkerClient(unexpectedBoardSnapshots);
 
     const first = client.getMessagesPage('my-team', { cursor: null, limit: 50 });
     client.invalidateTeamMessageFeed('my-team');
@@ -684,11 +809,11 @@ describe('TeamDataWorkerClient', () => {
   it('keeps in-flight getTeamData dedupe when invalidating team config', async () => {
     const { TeamDataWorkerClient } =
       await import('../../../../src/main/services/team/TeamDataWorkerClient');
-    const client = new TeamDataWorkerClient();
+    const client = new TeamDataWorkerClient(unexpectedBoardSnapshots);
 
-    const first = client.getTeamData('my-team');
+    const first = client.getTeamData('my-team', teamRuntimeSnapshotFromProcesses('my-team', []));
     client.invalidateTeamConfig('my-team');
-    const second = client.getTeamData('my-team');
+    const second = client.getTeamData('my-team', teamRuntimeSnapshotFromProcesses('my-team', []));
 
     await Promise.all([first, second]);
 
@@ -704,13 +829,27 @@ describe('TeamDataWorkerClient', () => {
   it('keeps both thin and full getTeamData dedupe when invalidating team config', async () => {
     const { TeamDataWorkerClient } =
       await import('../../../../src/main/services/team/TeamDataWorkerClient');
-    const client = new TeamDataWorkerClient();
+    const client = new TeamDataWorkerClient(unexpectedBoardSnapshots);
 
-    const firstFull = client.getTeamData('my-team');
-    const firstThin = client.getTeamData('my-team', { includeMemberBranches: false });
+    const firstFull = client.getTeamData(
+      'my-team',
+      teamRuntimeSnapshotFromProcesses('my-team', [])
+    );
+    const firstThin = client.getTeamData(
+      'my-team',
+      teamRuntimeSnapshotFromProcesses('my-team', []),
+      { includeMemberBranches: false }
+    );
     client.invalidateTeamConfig('my-team');
-    const secondFull = client.getTeamData('my-team');
-    const secondThin = client.getTeamData('my-team', { includeMemberBranches: false });
+    const secondFull = client.getTeamData(
+      'my-team',
+      teamRuntimeSnapshotFromProcesses('my-team', [])
+    );
+    const secondThin = client.getTeamData(
+      'my-team',
+      teamRuntimeSnapshotFromProcesses('my-team', []),
+      { includeMemberBranches: false }
+    );
 
     await Promise.all([firstFull, firstThin, secondFull, secondThin]);
 
@@ -721,22 +860,13 @@ describe('TeamDataWorkerClient', () => {
       'getTeamData',
     ]);
 
-    const payloads = hoisted.workers[0].messages.map(
-      (message) => (message as { payload: unknown }).payload
-    );
-    expect(payloads).toEqual([
-      { teamName: 'my-team' },
-      { teamName: 'my-team' },
-      { teamName: 'my-team', options: { includeMemberBranches: false } },
-    ]);
-
     client.dispose();
   });
 
   it('deduplicates concurrent getMemberActivityMeta calls for the same team', async () => {
     const { TeamDataWorkerClient } =
       await import('../../../../src/main/services/team/TeamDataWorkerClient');
-    const client = new TeamDataWorkerClient();
+    const client = new TeamDataWorkerClient(unexpectedBoardSnapshots);
 
     const [first, second] = await Promise.all([
       client.getMemberActivityMeta('my-team'),
@@ -758,10 +888,12 @@ describe('TeamDataWorkerClient', () => {
     const { TeamDataWorkerClient } =
       await import('../../../../src/main/services/team/TeamDataWorkerClient');
     hoisted.skipResponsesForOps.add('getTeamData');
-    const client = new TeamDataWorkerClient();
+    const client = new TeamDataWorkerClient(unexpectedBoardSnapshots);
 
-    const full = client.getTeamData('my-team');
-    const thin = client.getTeamData('my-team', { includeMemberBranches: false });
+    const full = client.getTeamData('my-team', teamRuntimeSnapshotFromProcesses('my-team', []));
+    const thin = client.getTeamData('my-team', teamRuntimeSnapshotFromProcesses('my-team', []), {
+      includeMemberBranches: false,
+    });
 
     expect(hoisted.workers).toHaveLength(1);
     expect(hoisted.workers[0].messages).toHaveLength(1);
@@ -773,7 +905,7 @@ describe('TeamDataWorkerClient', () => {
 
     hoisted.skipResponsesForOps.delete('getTeamData');
 
-    await client.getTeamData('my-team');
+    await client.getTeamData('my-team', teamRuntimeSnapshotFromProcesses('my-team', []));
     expect(hoisted.workers).toHaveLength(2);
     expect(hoisted.workers[1].messages).toHaveLength(1);
 
@@ -785,9 +917,9 @@ describe('TeamDataWorkerClient', () => {
     const { TeamDataWorkerClient } =
       await import('../../../../src/main/services/team/TeamDataWorkerClient');
     hoisted.skipResponsesForOps.add('getTeamData');
-    const client = new TeamDataWorkerClient();
+    const client = new TeamDataWorkerClient(unexpectedBoardSnapshots);
 
-    const first = client.getTeamData('my-team');
+    const first = client.getTeamData('my-team', teamRuntimeSnapshotFromProcesses('my-team', []));
     expect(hoisted.workers).toHaveLength(1);
 
     const fatal = Object.assign(
@@ -798,13 +930,13 @@ describe('TeamDataWorkerClient', () => {
 
     await expect(first).rejects.toThrow('Worker terminated due to reaching memory limit');
 
-    const second = client.getTeamData('my-team');
+    const second = client.getTeamData('my-team', teamRuntimeSnapshotFromProcesses('my-team', []));
     await expect(second).rejects.toThrow('Team data worker recovering after fatal failure');
     expect(hoisted.workers).toHaveLength(1);
 
     hoisted.skipResponsesForOps.delete('getTeamData');
     await vi.advanceTimersByTimeAsync(30_001);
-    await client.getTeamData('my-team');
+    await client.getTeamData('my-team', teamRuntimeSnapshotFromProcesses('my-team', []));
     expect(hoisted.workers).toHaveLength(2);
 
     client.dispose();
@@ -816,8 +948,10 @@ describe('TeamDataWorkerClient', () => {
     const { TeamDataWorkerClient } =
       await import('../../../../src/main/services/team/TeamDataWorkerClient');
     hoisted.skipResponsesForOps.add('getTeamData');
-    const client = new TeamDataWorkerClient();
-    const first = client.getTeamData('TEST-team').catch((error: unknown) => error);
+    const client = new TeamDataWorkerClient(unexpectedBoardSnapshots);
+    const first = client
+      .getTeamData('TEST-team', teamRuntimeSnapshotFromProcesses('TEST-team', []))
+      .catch((error: unknown) => error);
     hoisted.workers[0].handlers.get('error')?.(new Error('Worker call timeout after 30000ms'));
     const firstError = (await first) as {
       message: string;
@@ -826,11 +960,15 @@ describe('TeamDataWorkerClient', () => {
     expect(firstError.message).toBe('Worker call timeout after 30000ms');
     expect(firstError.failure).toMatchObject({ kind: 'recovering', retryAt: 31000 });
     expect(firstError.failure.recoveryId).toMatch(/^[a-zA-Z0-9-]+$/);
-    const second = await client.getTeamData('TEST-team').catch((error: unknown) => error);
+    const second = await client
+      .getTeamData('TEST-team', teamRuntimeSnapshotFromProcesses('TEST-team', []))
+      .catch((error: unknown) => error);
     expect(second).toMatchObject({ failure: firstError.failure });
     expect(hoisted.workers).toHaveLength(1);
     await vi.advanceTimersByTimeAsync(30000);
-    const third = client.getTeamData('TEST-team').catch((error: unknown) => error);
+    const third = client
+      .getTeamData('TEST-team', teamRuntimeSnapshotFromProcesses('TEST-team', []))
+      .catch((error: unknown) => error);
     expect(hoisted.workers).toHaveLength(2);
     hoisted.workers[1].handlers.get('error')?.(new Error('Worker call timeout after 30000ms'));
     const thirdError = (await third) as { failure: { recoveryId: string; retryAt: number } };
@@ -843,15 +981,19 @@ describe('TeamDataWorkerClient', () => {
     hoisted.skipResponsesForOps.add('getTeamData');
     const { TeamDataWorkerClient } =
       await import('../../../../src/main/services/team/TeamDataWorkerClient');
-    const client = new TeamDataWorkerClient();
-    const first = client.getTeamData('TEST-team').catch((error: unknown) => error);
+    const client = new TeamDataWorkerClient(unexpectedBoardSnapshots);
+    const first = client
+      .getTeamData('TEST-team', teamRuntimeSnapshotFromProcesses('TEST-team', []))
+      .catch((error: unknown) => error);
     hoisted.workers[0].handlers.get('exit')?.(0);
     await first;
     let settled = false;
-    const second = client.getTeamData('TEST-team').then((value) => {
-      settled = true;
-      return value;
-    });
+    const second = client
+      .getTeamData('TEST-team', teamRuntimeSnapshotFromProcesses('TEST-team', []))
+      .then((value) => {
+        settled = true;
+        return value;
+      });
     const current = hoisted.workers[1].messages[0] as { id: string };
     hoisted.workers[0].handlers.get('message')?.({
       id: current.id,
@@ -883,14 +1025,16 @@ describe('TeamDataWorkerClient', () => {
     const { TeamDataWorkerClient } =
       await import('../../../../src/main/services/team/TeamDataWorkerClient');
     hoisted.throwPostMessageForOps.add('getTeamData');
-    const client = new TeamDataWorkerClient();
+    const client = new TeamDataWorkerClient(unexpectedBoardSnapshots);
 
-    await expect(client.getTeamData('my-team')).rejects.toThrow('post failed for getTeamData');
+    await expect(
+      client.getTeamData('my-team', teamRuntimeSnapshotFromProcesses('my-team', []))
+    ).rejects.toThrow('post failed for getTeamData');
     expect(hoisted.workers).toHaveLength(1);
 
     hoisted.throwPostMessageForOps.delete('getTeamData');
     await vi.advanceTimersByTimeAsync(30_001);
-    await client.getTeamData('my-team');
+    await client.getTeamData('my-team', teamRuntimeSnapshotFromProcesses('my-team', []));
 
     expect(hoisted.workers).toHaveLength(1);
     expect(hoisted.workers[0].messages).toHaveLength(1);
@@ -901,7 +1045,7 @@ describe('TeamDataWorkerClient', () => {
   it('does not spawn a worker only to send config invalidation', async () => {
     const { TeamDataWorkerClient } =
       await import('../../../../src/main/services/team/TeamDataWorkerClient');
-    const client = new TeamDataWorkerClient();
+    const client = new TeamDataWorkerClient(unexpectedBoardSnapshots);
 
     client.invalidateTeamConfig('my-team');
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -913,8 +1057,8 @@ describe('TeamDataWorkerClient', () => {
     vi.useFakeTimers();
     const { TeamDataWorkerClient } =
       await import('../../../../src/main/services/team/TeamDataWorkerClient');
-    const client = new TeamDataWorkerClient();
-    await client.getTeamData('my-team');
+    const client = new TeamDataWorkerClient(unexpectedBoardSnapshots);
+    await client.getTeamData('my-team', teamRuntimeSnapshotFromProcesses('my-team', []));
     hoisted.workers[0].messages.length = 0;
     hoisted.skipResponsesForOps.add('invalidateTeamMessageFeed');
 

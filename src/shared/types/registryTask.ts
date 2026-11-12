@@ -59,6 +59,12 @@ export interface TeamSpecBinding {
   spec: string;
 }
 
+/** Allowed projects remain usable before the team creates its first specification. */
+export interface TeamSpecScope {
+  projects: string[];
+  bindings: TeamSpecBinding[];
+}
+
 export interface RegistryRegistrationIdentity {
   securityStoreId: string;
   idp: string;
@@ -69,7 +75,7 @@ export interface RegistryRegistrationIdentity {
 export interface SpecRegistryCredentialStatus {
   configured: boolean;
   url: string | null;
-  source: 'store' | 'environment' | 'file' | 'none';
+  source: 'store' | 'none';
 }
 
 /** Result of probing a registry endpoint and token without writing. */

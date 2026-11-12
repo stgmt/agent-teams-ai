@@ -3,7 +3,7 @@ import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
 
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import * as controllerModule from '../src/controller';
 import { registerTaskTools } from '../src/tools/taskTools';
@@ -21,10 +21,30 @@ type Tool = {
   execute(args: Record<string, unknown>): Promise<unknown>;
 };
 
+const APP_BINDING_ENV_KEYS = [
+  'AGENT_TEAMS_BOUND_CONTROL_URL',
+  'AGENT_TEAMS_BOUND_CONTEXT_JSON',
+  'AGENT_TEAMS_MCP_CLAUDE_DIR',
+] as const;
+
 describe('required artifacts through MCP tools', () => {
   let dir = '';
+  let previousBindingEnvironment: Record<string, string | undefined>;
+  beforeEach(() => {
+    previousBindingEnvironment = Object.fromEntries(
+      APP_BINDING_ENV_KEYS.map((key) => [key, process.env[key]])
+    );
+    // These cases run the controller's local task board, which is only
+    // selectable when no app binding is installed.
+    for (const key of APP_BINDING_ENV_KEYS) delete process.env[key];
+  });
   afterEach(() => {
     vi.restoreAllMocks();
+    for (const key of APP_BINDING_ENV_KEYS) {
+      const value = previousBindingEnvironment[key];
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
     if (dir) {
       const target = path.resolve(dir);
       if (
@@ -56,14 +76,19 @@ describe('required artifacts through MCP tools', () => {
         ],
       })
     );
-    const desktop = createController({ teamName, claudeDir: dir }).taskBoard;
+    const desktop = createController({ teamName, claudeDir: dir, localTaskBoard: true }).taskBoard;
     const task = desktop.createTask({ subject: 'Artifact task', owner: 'worker' });
     desktop.updateTaskFields(task.id, {
       artifactRequired: true,
       artifactExpectedFilename: 'result.txt',
     });
     vi.spyOn(controllerModule, 'getController').mockImplementation((name, claudeDir) =>
-      createController({ teamName: name, claudeDir, allowUserMessageSender: false })
+      createController({
+        teamName: name,
+        claudeDir,
+        allowUserMessageSender: false,
+        localTaskBoard: true,
+      })
     );
     const tools = new Map<string, Tool>();
     registerTaskTools({ addTool: (tool: Tool) => tools.set(tool.name, tool) } as never);
@@ -122,7 +147,11 @@ describe('required artifacts through MCP tools', () => {
         ],
       })
     );
-    const board = createController({ teamName: 'fixture', claudeDir: dir }).taskBoard;
+    const board = createController({
+      teamName: 'fixture',
+      claudeDir: dir,
+      localTaskBoard: true,
+    }).taskBoard;
     const task = board.createTask({ subject: 'fixture', owner: 'worker' });
     board.completeTask(task.id, 'worker');
     const original = taskStore.updateTask;
@@ -136,7 +165,12 @@ describe('required artifacts through MCP tools', () => {
       spy.mockRestore();
     }
     vi.spyOn(controllerModule, 'getController').mockImplementation((teamName, claudeDir) =>
-      createController({ teamName, claudeDir, allowUserMessageSender: false })
+      createController({
+        teamName,
+        claudeDir,
+        allowUserMessageSender: false,
+        localTaskBoard: true,
+      })
     );
     const tools = new Map<string, Tool>();
     registerTaskTools({ addTool: (tool: Tool) => tools.set(tool.name, tool) } as never);

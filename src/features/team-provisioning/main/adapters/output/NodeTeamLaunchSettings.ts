@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { isAbsolute } from 'node:path';
 
 import { buildEffectiveTeamMemberSpec } from '@main/services/team/provisioning/TeamProvisioningMemberSpecs';
+import { resolveTeamSpecScope } from '@main/services/team/registry/TeamSpecBinding';
 import { validateTeamName } from '@main/services/team/TeamIdentifierValidation';
 import { isCanonicalSettingsLeadMember } from '@shared/utils/leadDetection';
 import { normalizeOptionalTeamProviderId } from '@shared/utils/teamProvider';
@@ -20,7 +21,12 @@ import type {
 } from '../../../core/application/ports/TeamWorkspacePorts';
 import type { TeamMembersMetaStore } from '@main/services/team/TeamMembersMetaStore';
 import type { TeamMetaFile, TeamMetaStore } from '@main/services/team/TeamMetaStore';
-import type { TeamCreateRequest, TeamMember, TeamMemberMcpPolicy } from '@shared/types';
+import type {
+  TeamCreateRequest,
+  TeamMember,
+  TeamMemberMcpPolicy,
+  TeamSpecScope,
+} from '@shared/types';
 
 interface Dependencies {
   teamsRoot: string;
@@ -132,63 +138,21 @@ function revision(meta: TeamMetaFile, members: readonly TeamMember[]): string {
     .digest('hex');
 }
 
-/**
- * Bound specifications are the only scope a team's tasks may use. The agent has
- * no way to discover them from the app tools, so the launch carries the list
- * and the registry recipe with it.
- */
-function renderSpecBindingInstructions(
-  bindings: readonly { project: string; spec: string }[]
-): string {
-  const list = bindings.map((binding) => `- ${binding.project} / ${binding.spec}`).join('\n');
+function renderSpecBindingInstructions(scope: Readonly<TeamSpecScope>): string {
   return [
-    '## Spec-driven development (SDD)',
-    'This team works spec-driven: the specification in the registry is the source of truth for what is built,',
-    'why it is built and how it is accepted. Requirements, design, acceptance criteria and tasks live in the corpus;',
-    'board tasks are registry tasks, not loose notes. Change the corpus first, then the code, then report the outcome.',
-    'The loop is: read the corpus -> write requirements/design/acceptance -> validation passes -> create the task in the',
-    'registry -> assign it -> execute -> record the result on the task -> close it.',
-    '',
-    'You reach the corpus through the app MCP server only. The `omp-spec-kit` plugin is deliberately not mounted for this',
-    'team (its registry credentials are removed from your environment), so a second writer cannot touch the same corpus.',
-    'If plugin tools appear, do not use them; the only spec surface you work with is `team_spec_*`.',
-    '`.omp-spec-kit/project.json` in the repository is a binding marker, not another channel.',
-    '',
-    'This team is bound to these registry specifications:',
-    list,
-    '',
-    'A specification is a full corpus, not one file: README, USER_STORIES, USE_CASES, RESEARCH, REQUIREMENTS, FR, NFR,',
-    'ACCEPTANCE_CRITERIA, DESIGN, TASKS, FILE_CHANGES, CHANGELOG, FIXTURES, its `.feature` scenarios and `_SCHEMA.md`;',
-    'a roadmap spec additionally owns ROADMAP.md and links other specs through `Refs:`/`Implements:` edges.',
-    'Work through the spec MCP only. File tools on the corpus are refused by the specification hook.',
-    '',
-    'The app MCP server exposes the registry tools as team_spec_<name>; use those names, not the registry names.',
-    'Read first: team_spec_spec_catalog { project, view: "specs" | "inventory" } -> team_spec_spec_documents { action: "list" },',
-    '{ action: "read", doc } -> team_spec_spec_entities { mode: "find" | "get" } -> team_spec_spec_tasks { statuses } -> team_spec_spec_inspect { check: "validation" }.',
-    'team_spec_spec_tasks hides finished tasks unless you pass statuses: ["done"].',
-    '',
-    'Writes happen under a lease and a fresh requestId:',
-    '1. team_spec_spec_claim { project, spec } before the first write; team_spec_spec_release when you are done. A foreign lease answers CLAIM_HELD.',
-    '2. team_spec_spec_patch { intent, project, spec, reason, requestId, dryRun: false, ... } is the only writer. Preview with dryRun: true.',
-    '',
-    'Lifecycle intents and what they are for:',
-    '- patch: replace_document / replace_in_section for README, USER_STORIES, USE_CASES, RESEARCH, DESIGN, FILE_CHANGES, CHANGELOG, FIXTURES.',
-    '- amendRequirement, addAcceptanceCriterion: change FR/NFR text or add AC.',
-    '- upsert_task / replace_task_status / replace_task_owner / replace_task_links: TASKS.md. Free-form task text is refused (STRUCTURED_TASK_OP_REQUIRED).',
-    '- setEntityStatus (expectedStatus required), setRequirementMetadata, addPhase: entity metadata and phases.',
-    '- createSpec (first call answers ELICITATION_REQUIRED: read the elicitation skill, then retry with a new requestId), setSpecStatus, archiveSpec, renameSpecDoc, deleteSpecDoc, deleteEntity.',
-    '- addBacklogTask, registerIncidentBacklog: backlog and incidents.',
-    '- createRoadmap (slug must match roadmap-*), assembleRoadmap: build ROADMAP.md from covered specs.',
-    '',
-    'Scenarios: changing, renaming, deleting or archiving a specification that carries `.feature` scenarios needs a designReview',
-    'receipt in the same spec_patch, otherwise the hook answers DESIGN_REVIEW_REQUIRED. DESIGN.md edits do not require it.',
-    'Scenario ids stay stable (@id:SCEN-...).',
-    'Roadmap work: create the roadmap spec with createRoadmap, write TASKS.md entries whose Requirements/Refs point at the covered',
-    'spec requirements, then run assembleRoadmap and check the result with spec_inspect validation and spec_graph edges.',
-    '',
-    'Tasks created here appear on the team board. Keep lifecycle in the app: task_add_comment carries the result,',
-    'task_set_owner assigns, task_start/task_complete record work intervals and review.',
-    'Pass requirements: ["FR-1"] (ids from the corpus) on creation; a task without a requirement is refused.',
+    '## Specification workflow',
+    'The registry is the authority for specifications, design, roadmaps and tasks.',
+    'Use the mounted specification MCP tools and their current schemas for the full requirements → design → execution → review lifecycle.',
+    'Do not read or write the specification corpus through local files or another plugin.',
+    'Permitted registry projects:',
+    ...scope.projects.map((project) => `- ${project}`),
+    'Bound specifications:',
+    ...scope.bindings.map((binding) => `- ${binding.project} / ${binding.spec}`),
+    ...(!scope.bindings.length
+      ? ['Create the first specification in a permitted project through the registry tools.']
+      : []),
+    'Use the supplied project scope; creating a specification never widens project access.',
+    'Read the available tool schemas before invoking a capability; never invent tool names or fields.',
   ].join('\n');
 }
 
@@ -239,6 +203,43 @@ export class NodeTeamLaunchSettings implements MemberLaunchSettingsPort {
     signal.addEventListener('abort', cancel, { once: true });
     this.detachCancellation.set(run.teamName, () => signal.removeEventListener('abort', cancel));
     return captured;
+  }
+
+  /** Restore only persisted workspace authority; never allocate Git or replay launch/bootstrap. */
+  async restore(
+    run: TeamRunIdentity,
+    workspace: Readonly<PreparedTeamWorkspace>,
+    signal: AbortSignal = new AbortController().signal
+  ): Promise<void> {
+    signal.throwIfAborted();
+    if (
+      !isAbsolute(workspace.workingDirectory) ||
+      (workspace.worktree &&
+        (!isAbsolute(workspace.worktree.baseRepoPath) || !workspace.worktree.branchName.trim()))
+    )
+      throw new Error('Invalid persisted team workspace');
+    const previous = this.captured.get(run.teamName);
+    const captured = await this.capture(run, signal);
+    try {
+      const { meta, members } = await this.read(run.teamName);
+      signal.throwIfAborted();
+      if (revision(meta, members) !== captured.configurationRevision)
+        throw new Error('Canonical team launch settings changed during restoration');
+      if (meta.worktree !== undefined && !workspace.worktree)
+        throw new Error('Persisted team worktree context is missing');
+      if (this.captured.get(run.teamName) !== captured)
+        throw new Error('Team run settings were not captured');
+      this.workspaces.set(
+        captured,
+        Object.freeze({
+          workingDirectory: workspace.workingDirectory,
+          ...(workspace.worktree ? { worktree: Object.freeze({ ...workspace.worktree }) } : {}),
+        })
+      );
+    } catch (error) {
+      if (!previous && this.captured.get(run.teamName) === captured) this.release(run);
+      throw error;
+    }
   }
 
   async prepareWorkspace(
@@ -341,8 +342,8 @@ export class NodeTeamLaunchSettings implements MemberLaunchSettingsPort {
     }
     const member = this.withConfiguredLead(members).find((entry) => entry.name === memberName);
     if (!member) return null;
-    const specMcpServerEnv = await this.resolveSpecMcpServerEnv(meta);
-    return this.resolveMember(run, captured, meta, member, specMcpServerEnv);
+    const integration = await this.resolveSpecIntegration(meta);
+    return this.resolveMember(run, captured, meta, member, integration);
   }
 
   async runtimeConfiguration(run: TeamRunIdentity): Promise<Readonly<ConfiguredNativeTeam>> {
@@ -352,7 +353,7 @@ export class NodeTeamLaunchSettings implements MemberLaunchSettingsPort {
     if (revision(meta, members) !== captured.configurationRevision) {
       throw new Error('Canonical team launch settings changed after admission');
     }
-    const specMcpServerEnv = await this.resolveSpecMcpServerEnv(meta);
+    const integration = await this.resolveSpecIntegration(meta);
     return Object.freeze({
       configurationRevision: captured.configurationRevision,
       createdAt: meta.createdAt,
@@ -360,7 +361,7 @@ export class NodeTeamLaunchSettings implements MemberLaunchSettingsPort {
       members: Object.freeze(
         this.withConfiguredLead(members).map((member) =>
           Object.freeze({
-            launch: this.resolveMember(run, captured, meta, member, specMcpServerEnv),
+            launch: this.resolveMember(run, captured, meta, member, integration),
             color: member.color,
             joinedAt: member.joinedAt ?? meta.createdAt,
           })
@@ -374,7 +375,7 @@ export class NodeTeamLaunchSettings implements MemberLaunchSettingsPort {
     captured: Readonly<CapturedTeam>,
     meta: TeamMetaFile,
     member: TeamMember,
-    specMcpServerEnv?: Readonly<Record<string, string>>
+    specIntegration: ConfiguredMemberLaunch['specIntegration']
   ): Readonly<ConfiguredMemberLaunch> {
     const lead = isCanonicalSettingsLeadMember(member);
     const effective = lead
@@ -391,9 +392,7 @@ export class NodeTeamLaunchSettings implements MemberLaunchSettingsPort {
           effort: meta.effort as TeamCreateRequest['effort'],
           syncModelsWithLead: meta.syncModelsWithLead,
         });
-    const specInstructions = meta.specBindings?.length
-      ? renderSpecBindingInstructions(meta.specBindings)
-      : undefined;
+    const specInstructions = renderSpecBindingInstructions(specIntegration.scope);
     const providerId = normalizeOptionalTeamProviderId(effective.providerId);
     if (!providerId) throw new Error('Configured member provider is required');
     const workspace = this.workspaces.get(captured);
@@ -419,18 +418,7 @@ export class NodeTeamLaunchSettings implements MemberLaunchSettingsPort {
       skipPermissions: meta.skipPermissions !== false,
       limitContext: meta.limitContext === true,
       extraCliArgs: meta.extraCliArgs,
-      ...(specMcpServerEnv ? { specMcpServerEnv } : {}),
-      ...(meta.specBindings?.length
-        ? {
-            specScope: {
-              teamId: typeof meta.registryTeamId === 'string' ? meta.registryTeamId : null,
-              bindings: meta.specBindings.map((binding) => ({
-                project: binding.project,
-                spec: binding.spec,
-              })),
-            },
-          }
-        : {}),
+      specIntegration,
       workingDirectory,
       baseWorkingDirectory,
       worktree: !member.cwd?.trim() ? workspace?.worktree : undefined,
@@ -445,30 +433,34 @@ export class NodeTeamLaunchSettings implements MemberLaunchSettingsPort {
     });
   }
 
-  /**
-   * Spec tools are mounted only through the agent's `omp-spec-kit` MCP server,
-   * which reads the registry endpoint and token from its environment. A team
-   * without bindings gets no registry credentials at all, and a missing
-   * credential must not block the launch: the agent simply starts without spec
-   * tools and the app reports the registry error on its own paths.
-   */
-  private async resolveSpecMcpServerEnv(
+  private async resolveSpecIntegration(
     meta: TeamMetaFile
-  ): Promise<Readonly<Record<string, string>> | undefined> {
-    if (!meta.specBindings?.length) return undefined;
+  ): Promise<ConfiguredMemberLaunch['specIntegration']> {
+    const scope = resolveTeamSpecScope(meta);
+    Object.freeze(scope.projects);
+    scope.bindings.forEach(Object.freeze);
+    Object.freeze(scope.bindings);
     const resolve = this.ports.specRegistryEnvironment;
-    if (!resolve) {
-      throw new Error('The team has bound specifications but no registry credential resolver');
-    }
-    // No fallback: a bound team must launch with working spec tools or not at all.
+    if (!resolve) throw new Error('Specification registry credential resolver is required');
     const environment = await resolve();
-    const entries = Object.entries(environment ?? {}).filter(
-      ([key, value]) => key.length > 0 && typeof value === 'string' && value.length > 0
-    );
-    if (entries.length === 0) {
-      throw new Error('The team has bound specifications but no registry credential is configured');
-    }
-    return Object.freeze(Object.fromEntries(entries));
+    const url = environment?.OMP_SPEC_REGISTRY_URL?.trim();
+    const token = environment?.OMP_SPEC_REGISTRY_TOKEN?.trim();
+    if (!url || !token)
+      throw new Error('Specification registry endpoint and credential are required');
+    const parsed = new URL(url);
+    if (!['http:', 'https:'].includes(parsed.protocol))
+      throw new Error('Invalid specification registry endpoint');
+    return Object.freeze({
+      scope: Object.freeze({
+        projects: scope.projects,
+        bindings: scope.bindings,
+      }),
+      environment: Object.freeze({
+        ...environment,
+        OMP_SPEC_REGISTRY_URL: url,
+        OMP_SPEC_REGISTRY_TOKEN: token,
+      }),
+    });
   }
 
   release(run: TeamRunIdentity): void {
@@ -519,6 +511,7 @@ export class NodeTeamLaunchSettings implements MemberLaunchSettingsPort {
     if (!roster) throw new Error('Canonical member metadata is unavailable');
     if (!normalizeOptionalTeamProviderId(meta.providerId))
       throw new Error('A team provider must be explicitly configured');
+    resolveTeamSpecScope(meta, teamName);
     return { meta, members: roster.members };
   }
 }

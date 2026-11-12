@@ -192,7 +192,11 @@ it.each(['zero length', 'throwing metadata'])(
       const task = writeOwnedBytes(
         path,
         data,
-        { flags: fs.constants.O_WRONLY | fs.constants.O_TRUNC, maxBytes: 2, sync: false },
+        {
+          flags: fs.constants.O_WRONLY | fs.constants.O_TRUNC | fs.constants.O_CREAT,
+          maxBytes: 2,
+          sync: false,
+        },
         owner
       );
       data.fill(90);
@@ -215,7 +219,11 @@ it('rejects an intrinsically oversized view despite understated byteLength befor
       writeOwnedBytes(
         path,
         data,
-        { flags: fs.constants.O_WRONLY | fs.constants.O_TRUNC, maxBytes: 2, sync: false },
+        {
+          flags: fs.constants.O_WRONLY | fs.constants.O_TRUNC | fs.constants.O_CREAT,
+          maxBytes: 2,
+          sync: false,
+        },
         owner
       )
     ).toThrow('byte limit');

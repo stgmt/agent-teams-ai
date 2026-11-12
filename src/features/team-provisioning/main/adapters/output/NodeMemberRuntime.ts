@@ -1,6 +1,9 @@
-import { spawn } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
-import { StringDecoder } from 'node:string_decoder';
+import { type ChildProcess, spawn } from 'node:child_process';
+import { createHash, randomUUID } from 'node:crypto';
+import { closeSync, openSync } from 'node:fs';
+import { open } from 'node:fs/promises';
+
+import { inspectProcessByPid } from '@main/utils/processInspection';
 
 import { ownedCleanup } from '../../infrastructure/ownedCleanup';
 import { rejectAfterOwnedCleanup } from '../../infrastructure/rejectAfterOwnedCleanup';
@@ -12,22 +15,36 @@ import type {
   MemberRuntimePort,
   OwnedMemberProcess,
 } from '../../../core/application/ports/MemberRuntimePorts';
+import type { NativeClaudeSdkHost, NativeClaudeSdkOutputEvidence } from './NativeClaudeSdkHost';
 
-export interface NodeMemberLaunchPlan {
-  executable: string;
-  args: readonly string[];
-  cwd: string;
-  env: NodeJS.ProcessEnv;
+export interface NodeMemberConnectionPlan {
+  sdk: {
+    host: NativeClaudeSdkHost;
+    token: Readonly<MemberProcessToken>;
+    stdoutPath: string;
+    stderrPath: string;
+  };
   connectionTimeoutMs?: number;
-  observeOutput?(line: string, stream: 'stdout' | 'stderr'): 'connected' | 'connection-lost' | null;
+  observeOutput?(
+    line: string,
+    stream: 'stdout' | 'stderr',
+    evidence?: NativeClaudeSdkOutputEvidence
+  ): 'connected' | 'connection-lost' | null;
   connection?: {
     subscribe(
       identity: Readonly<OwnedProcessIdentity>,
       events: { connected(): void; failed(error: Error): void }
     ): () => void;
   };
-  afterSpawn?(identity: Readonly<OwnedProcessIdentity>, signal: AbortSignal): Promise<void>;
   dispose?(): Promise<void>;
+}
+
+export interface NodeMemberLaunchPlan extends NodeMemberConnectionPlan {
+  executable: string;
+  args: readonly string[];
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  afterSpawn?(identity: Readonly<OwnedProcessIdentity>, signal: AbortSignal): Promise<void>;
 }
 
 export interface NodeMemberLaunchPlanner {
@@ -36,34 +53,40 @@ export interface NodeMemberLaunchPlanner {
     token: Readonly<MemberProcessToken>,
     signal: AbortSignal
   ): Promise<NodeMemberLaunchPlan>;
+  recover(
+    settings: Readonly<ConfiguredMemberLaunch>,
+    token: Readonly<MemberProcessToken>,
+    signal: AbortSignal,
+    identity: Readonly<OwnedProcessIdentity>
+  ): Promise<NodeMemberConnectionPlan>;
   observeOutput?(line: string, stream: 'stdout' | 'stderr'): 'connected' | 'connection-lost' | null;
 }
-
-type Observation =
-  | { kind: 'connected' }
-  | { kind: 'connection-lost' }
-  | { kind: 'failed'; error: string }
-  | { kind: 'release-failed'; error: string }
-  | { kind: 'released' }
-  | { kind: 'exit'; code: number | null; signal: string | null };
 
 export type NodeMemberProcessAdmission = <T>(
   token: MemberProcessToken,
   operation: () => Promise<T>
 ) => Promise<T>;
-
 export interface NodeMemberTerminationPolicy {
   gracePeriodMs: number;
   forceExitTimeoutMs: number;
 }
 
-export class NodeMemberRuntime implements MemberRuntimePort {
-  private readonly terminationPolicy: Readonly<NodeMemberTerminationPolicy>;
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((done, fail) => {
+    resolve = done;
+    reject = fail;
+  });
+  return { promise, resolve, reject };
+}
 
+/** Claude processes outlive the app: SDK owns I/O, while OS files own diagnostic streams. */
+export class NodeMemberRuntime implements MemberRuntimePort {
   constructor(
     private readonly planner: NodeMemberLaunchPlanner,
     private readonly admit: NodeMemberProcessAdmission,
-    terminationPolicy: Readonly<NodeMemberTerminationPolicy> = {
+    private readonly terminationPolicy: Readonly<NodeMemberTerminationPolicy> = {
       gracePeriodMs: 2000,
       forceExitTimeoutMs: 5000,
     }
@@ -74,7 +97,43 @@ export class NodeMemberRuntime implements MemberRuntimePort {
       )
     )
       throw new Error('Runtime termination deadlines must be positive integers');
-    this.terminationPolicy = Object.freeze({ ...terminationPolicy });
+  }
+
+  observeExisting(
+    identity: Readonly<OwnedProcessIdentity>,
+    startedAt: number,
+    exited: () => void
+  ): () => void {
+    let checking = false;
+    let disposed = false;
+    const inspect = async (): Promise<void> => {
+      if (checking || disposed) return;
+      checking = true;
+      try {
+        const result = await inspectProcessByPid(identity.pid);
+        if (
+          !disposed &&
+          (result.status === 'not_found' ||
+            (result.status === 'found' &&
+              result.startedAt !== undefined &&
+              result.startedAt !== startedAt))
+        ) {
+          disposed = true;
+          clearInterval(timer);
+          exited();
+        }
+      } finally {
+        checking = false;
+      }
+    };
+    const timer = setInterval(() => {
+      void inspect().catch(() => undefined);
+    }, 2_000);
+    timer.unref();
+    return () => {
+      disposed = true;
+      clearInterval(timer);
+    };
   }
 
   async spawn(
@@ -83,323 +142,361 @@ export class NodeMemberRuntime implements MemberRuntimePort {
     signal: AbortSignal
   ): Promise<OwnedMemberProcess> {
     const plan = await this.planner.prepare(settings, token, signal);
+    let terminateFailedSpawn: (() => Promise<void>) | undefined;
     const dispose = ownedCleanup(async () => {
+      await terminateFailedSpawn?.();
       await plan.dispose?.();
     });
     try {
-      return await this.admit(token, () => this.spawnPrepared(plan, signal, dispose));
+      return await this.admit(token, async () => {
+        signal.throwIfAborted();
+        const descriptors: number[] = [];
+        let child: ChildProcess;
+        try {
+          descriptors.push(openSync(plan.sdk.stdoutPath, 'a', 0o600));
+          descriptors.push(openSync(plan.sdk.stderrPath, 'a', 0o600));
+          child = spawn(plan.executable, [...plan.args], {
+            cwd: plan.cwd,
+            env: { ...plan.env },
+            shell: false,
+            windowsHide: true,
+            detached: true,
+            stdio: ['ignore', descriptors[0], descriptors[1]],
+          });
+        } finally {
+          for (const descriptor of descriptors) closeSync(descriptor);
+        }
+        const terminated = deferred<void>();
+        child.once('exit', () => terminated.resolve());
+        terminateFailedSpawn = async () => {
+          if (!child.pid || child.exitCode !== null || child.signalCode !== null) return;
+          child.kill('SIGTERM');
+          const graceful = deferred<void>();
+          const timer = setTimeout(graceful.resolve, this.terminationPolicy.gracePeriodMs);
+          try {
+            await Promise.race([terminated.promise, graceful.promise]);
+          } finally {
+            clearTimeout(timer);
+          }
+          if (child.exitCode !== null || child.signalCode !== null) return;
+          child.kill('SIGKILL');
+          const forced = deferred<never>();
+          const forceTimer = setTimeout(
+            () =>
+              forced.reject(new Error('Failed native launch exceeded its termination deadline')),
+            this.terminationPolicy.forceExitTimeoutMs
+          );
+          try {
+            await Promise.race([terminated.promise, forced.promise]);
+          } finally {
+            clearTimeout(forceTimer);
+          }
+        };
+        const spawned = deferred<void>();
+        child.once('spawn', spawned.resolve);
+        child.once('error', spawned.reject);
+        await spawned.promise;
+        child.unref();
+        if (!child.pid) throw new Error('Member process started without an owned PID');
+        const identity = Object.freeze({ pid: child.pid, birthId: randomUUID() });
+        const inspection = await inspectProcessByPid(identity.pid);
+        if (inspection.status !== 'found' || inspection.startedAt === undefined) {
+          throw new Error('Native SDK requires verified OS process birth');
+        }
+        signal.throwIfAborted();
+        // Persist the existing native config/proof first; raw upgrade admission waits for registration.
+        await plan.afterSpawn?.(identity, signal);
+        signal.throwIfAborted();
+        await plan.sdk.host.registerProcess(token, identity, inspection.startedAt);
+        if (child.exitCode !== null || child.signalCode !== null)
+          throw new Error('Native SDK process exited during registration');
+        const handle = this.connect(
+          plan,
+          identity,
+          inspection.startedAt,
+          signal,
+          dispose,
+          (exited) => {
+            const onExit = (code: number | null, exitSignal: NodeJS.Signals | null): void => {
+              void exited(code, exitSignal);
+            };
+            child.once('exit', onExit);
+            return () => {
+              child.removeListener('exit', onExit);
+            };
+          },
+          (exitSignal) => {
+            child.kill(exitSignal);
+          }
+        );
+        terminateFailedSpawn = undefined;
+        return handle;
+      });
     } catch (error) {
       return rejectAfterOwnedCleanup(error, dispose);
     }
   }
 
-  private async spawnPrepared(
-    plan: NodeMemberLaunchPlan,
-    signal: AbortSignal,
-    dispose: () => Promise<void>
+  async reconnect(
+    settings: Readonly<ConfiguredMemberLaunch>,
+    token: Readonly<MemberProcessToken>,
+    identity: Readonly<OwnedProcessIdentity>,
+    startedAt: number,
+    signal: AbortSignal
   ): Promise<OwnedMemberProcess> {
-    let child: ReturnType<typeof spawn>;
-    try {
-      if (
-        plan.connectionTimeoutMs !== undefined &&
-        (!Number.isSafeInteger(plan.connectionTimeoutMs) || plan.connectionTimeoutMs < 1)
-      )
-        throw new Error('Runtime connection deadline must be a positive integer');
-      signal.throwIfAborted();
-      child = spawn(plan.executable, [...plan.args], {
-        cwd: plan.cwd,
-        env: { ...plan.env },
-        shell: false,
-        windowsHide: true,
-        stdio: ['pipe', 'pipe', 'pipe'],
+    return this.admit(token, async () => {
+      const inspection = await inspectProcessByPid(identity.pid);
+      if (inspection.status !== 'found' || inspection.startedAt !== startedAt)
+        throw new Error('Surviving native process birth is not current');
+      const plan = await this.planner.recover(settings, token, signal, identity);
+      const dispose = ownedCleanup(async () => {
+        await plan.dispose?.();
       });
-    } catch (error) {
-      return rejectAfterOwnedCleanup(error, dispose);
-    }
-    let bufferedConnection: Observation | null = null;
-    let bufferedExit: Observation | null = null;
-    let bufferedFailure: Observation | null = null;
-    let bufferedReleaseFailure: Observation | null = null;
-    let bufferedReleased = false;
-    let listener: MemberRuntimeEvents | null = null;
-    let terminal = false;
-    let stopping: Promise<void> | null = null;
-    let termination: Promise<void> | null = null;
-    let disconnect: (() => void) | null = null;
-    let observationError: Error | null = null;
-    let cleanupError: Error | null = null;
-    let resourcesReleased = false;
-    let registration = Promise.resolve();
-    let connectionDeadline: ReturnType<typeof setTimeout> | null = null;
-    const clearConnectionDeadline = (): void => {
-      if (connectionDeadline) clearTimeout(connectionDeadline);
-      connectionDeadline = null;
-    };
-    const processLifetime = new AbortController();
-    const forwardAbort = (): void => {
-      clearConnectionDeadline();
-      processLifetime.abort();
-    };
-    signal.addEventListener('abort', forwardAbort, { once: true });
-    if (signal.aborted) forwardAbort();
-    const reportFailure = (error: unknown): void => {
-      clearConnectionDeadline();
-      const failure =
-        error instanceof Error ? error : new Error('Owned runtime observation failed');
-      observationError ??= failure;
-      deliver({ kind: 'failed', error: failure.message });
-    };
-    const waitForProcessExit = (timeoutMs: number): Promise<boolean> => {
-      if (terminal) return Promise.resolve(true);
-      return new Promise<boolean>((resolve) => {
-        const onExit = (): void => finish(true);
-        const finish = (didExit: boolean): void => {
-          clearTimeout(timer);
-          child.removeListener('exit', onExit);
-          resolve(didExit);
-        };
-        const timer = setTimeout(() => finish(false), timeoutMs);
-        child.once('exit', onExit);
-      });
-    };
-    const terminate = (): Promise<void> => {
-      termination ??= Promise.resolve()
-        .then(async () => {
-          clearConnectionDeadline();
-          processLifetime.abort();
-          if (terminal) return;
-          // Keep the live handle: never rediscover a target by team name or PID.
-          // Windows terminates abruptly for both signals; POSIX may require escalation.
-          child.kill('SIGTERM');
-          if (await waitForProcessExit(this.terminationPolicy.gracePeriodMs)) return;
-          if (!terminal) child.kill('SIGKILL');
-          if (!(await waitForProcessExit(this.terminationPolicy.forceExitTimeoutMs)))
-            throw new Error('Owned member process exceeded its termination deadline');
-        })
-        .catch((error: unknown) => {
-          termination = null;
-          reportFailure(error);
-          throw error;
-        });
-      return termination;
-    };
-    const failObservation = (error: unknown): void => {
-      reportFailure(error);
-      if (!terminal) void terminate().catch(() => undefined);
-    };
-    let completeStop!: () => void;
-    const exited = new Promise<void>((resolve) => {
-      completeStop = resolve;
-    });
-    function deliver(observation: Observation): void {
-      if (observation.kind === 'connected' || observation.kind === 'exit')
-        clearConnectionDeadline();
-      if (!listener) {
-        if (observation.kind === 'exit') bufferedExit = observation;
-        else if (observation.kind === 'failed') bufferedFailure = observation;
-        else if (observation.kind === 'release-failed') bufferedReleaseFailure = observation;
-        else if (observation.kind === 'released') bufferedReleased = true;
-        else bufferedConnection = observation;
-      } else if (observation.kind === 'exit') {
-        listener.exited(observation);
-      } else if (observation.kind === 'failed') {
-        listener.failed(observation.error);
-      } else if (observation.kind === 'release-failed') {
-        listener.releaseFailed(observation.error);
-      } else if (observation.kind === 'released') {
-        listener.released();
-      } else if (observation.kind === 'connected') {
-        listener.connected();
-      } else {
-        listener.connectionLost();
+      try {
+        signal.throwIfAborted();
+        await plan.sdk.host.registerProcess(token, identity, startedAt);
+        signal.throwIfAborted();
+        return this.connect(
+          plan,
+          identity,
+          startedAt,
+          signal,
+          dispose,
+          (exited) =>
+            this.observeExisting(identity, startedAt, () => {
+              void exited(null, null);
+            }),
+          (exitSignal) => {
+            process.kill(identity.pid, exitSignal);
+          }
+        );
+      } catch (error) {
+        return rejectAfterOwnedCleanup(error, dispose);
       }
-    }
-    const releaseResources = async (): Promise<void> => {
+    });
+  }
+
+  private connect(
+    plan: NodeMemberConnectionPlan,
+    identity: Readonly<OwnedProcessIdentity>,
+    startedAt: number,
+    signal: AbortSignal,
+    dispose: () => Promise<void>,
+    watchExit: (
+      exited: (code: number | null, exitSignal: string | null) => Promise<void>
+    ) => () => void,
+    kill: (signal: NodeJS.Signals) => void
+  ): OwnedMemberProcess {
+    let listener: MemberRuntimeEvents | null = null;
+    let connection: 'connected' | 'connectionLost' | null = null;
+    let failure: string | null = null;
+    let exit: {
+      code: number | null;
+      signal: string | null;
+      stderrTail?: readonly string[];
+    } | null = null;
+    let observingExit = false;
+    let released = false;
+    let releaseError: string | null = null;
+    let stopping: Promise<void> | null = null;
+    let transportOpen = false;
+    let bootstrapConfirmed = false;
+    const exitCompletion = deferred<void>();
+    const notifyConnection = (): void => {
+      const next = transportOpen && bootstrapConfirmed ? 'connected' : 'connectionLost';
+      if (next === connection || (connection === null && next === 'connectionLost')) return;
+      connection = next;
+      if (next === 'connected') clearTimeout(deadline);
+      listener?.[next]();
+    };
+    const reportFailure = (error: Error): void => {
+      failure = error.message;
+      listener?.failed(failure);
+    };
+    const fail = (error: Error): void => {
+      reportFailure(error);
+      clearTimeout(deadline);
+      queueMicrotask(() => {
+        void stop().catch(() => undefined);
+      });
+    };
+    const deadline = setTimeout(() => {
+      if (!bootstrapConfirmed || !transportOpen)
+        fail(new Error('Owned runtime did not confirm bootstrap before the launch deadline'));
+    }, plan.connectionTimeoutMs ?? 120_000);
+    deadline.unref();
+    const unsubscribe = plan.sdk.host.subscribe(plan.sdk.token, {
+      opened: () => {
+        transportOpen = true;
+        notifyConnection();
+      },
+      output: (line, evidence) => {
+        try {
+          const observation = plan.observeOutput?.(line, 'stdout', evidence);
+          if (observation === 'connected') bootstrapConfirmed = true;
+          else if (observation === 'connection-lost') bootstrapConfirmed = false;
+          notifyConnection();
+        } catch (error) {
+          fail(error instanceof Error ? error : new Error('Native SDK output observation failed'));
+        }
+      },
+      disconnected: () => {
+        transportOpen = false;
+        notifyConnection();
+      },
+      failed: fail,
+    });
+    const disconnectProof = plan.connection?.subscribe(identity, {
+      connected: () => {
+        bootstrapConfirmed = true;
+        notifyConnection();
+      },
+      failed: fail,
+    });
+    const release = async (): Promise<void> => {
+      if (released) return;
       try {
         await dispose();
-        cleanupError = null;
-        if (!resourcesReleased) {
-          resourcesReleased = true;
-          deliver({ kind: 'released' });
-        }
+        released = true;
+        releaseError = null;
+        listener?.released();
       } catch (error) {
-        cleanupError = error instanceof Error ? error : new Error('Owned runtime cleanup failed');
-        deliver({ kind: 'release-failed', error: cleanupError.message });
-        throw cleanupError;
+        releaseError = error instanceof Error ? error.message : 'Native process cleanup failed';
+        listener?.releaseFailed(releaseError);
       }
     };
-    let lastConnection: Observation['kind'] | null = null;
-    // A member that dies on its own explains itself on stderr and nowhere else; without
-    // this tail the failure reaches the user as "no error" and the reason is lost.
-    const stderrTail: string[] = [];
-    const rememberStderr = (line: string): void => {
-      const text = line.trim();
-      if (!text) return;
-      stderrTail.push(text.length > 500 ? `${text.slice(0, 500)}…` : text);
-      if (stderrTail.length > 20) stderrTail.shift();
-    };
-    const attachOutput = (stream: 'stdout' | 'stderr'): void => {
-      const decoder = new StringDecoder('utf8');
-      let carry = '';
-      let discardLine = false;
-      const observeLine = (line: string): void => {
-        // A terminal process observation cannot be undone by output still draining from a pipe,
-        // but a member that has already exited still owes the user its last words.
-        if (line.length > 1024 * 1024) return;
-        if (stream === 'stderr') rememberStderr(line);
-        if (terminal) return;
-        try {
-          const observation = plan.observeOutput
-            ? plan.observeOutput(line.replace(/\r$/, ''), stream)
-            : this.planner.observeOutput?.(line.replace(/\r$/, ''), stream);
-          if (observation && observation !== lastConnection) {
-            lastConnection = observation;
-            deliver({ kind: observation });
-          }
-        } catch (error) {
-          failObservation(error);
-        }
-      };
-      child[stream]!.on('data', (data: Buffer) => {
-        let decoded = decoder.write(data);
-        if (discardLine) {
-          const boundary = decoded.indexOf('\n');
-          if (boundary < 0) return;
-          decoded = decoded.slice(boundary + 1);
-          discardLine = false;
-        }
-        carry += decoded;
-        const lines = carry.split('\n');
-        carry = lines.pop() ?? '';
-        // Discard the whole oversized line, never reinterpret its tail as a new event.
-        if (carry.length > 1024 * 1024) {
-          carry = '';
-          discardLine = true;
-        }
-        for (const line of lines) observeLine(line);
-      });
-      child[stream]!.once('end', () => {
-        carry += decoder.end();
-        if (carry && !discardLine) observeLine(carry);
-        carry = '';
-      });
-    };
-    attachOutput('stdout');
-    attachOutput('stderr');
-    child.once('exit', (code, exitSignal) => {
-      terminal = true;
-      processLifetime.abort();
-      signal.removeEventListener('abort', forwardAbort);
-      disconnect?.();
-      // The member's last words travel with the exit; the owner decides whether they
-      // explain a failed run, so an intentional stop stays quiet.
-      deliver({
-        kind: 'exit',
-        code,
-        signal: exitSignal,
-        ...(stderrTail.length ? { stderrTail: [...stderrTail] } : {}),
-      });
-      void registration
-        .then(releaseResources)
-        .catch(() => undefined)
-        .finally(completeStop);
-    });
-    child.stdin?.on('error', failObservation);
-    try {
-      await new Promise<void>((resolve, reject) => {
-        child.once('spawn', resolve);
-        child.once('error', reject);
-      });
-    } catch (error) {
-      terminal = true;
-      processLifetime.abort();
-      signal.removeEventListener('abort', forwardAbort);
-      return rejectAfterOwnedCleanup(error, dispose);
-    }
-    child.on('error', failObservation);
-    if (!child.pid) {
-      await dispose();
-      throw new Error('Member process started without an owned PID');
-    }
-    const identity = Object.freeze({ pid: child.pid, birthId: randomUUID() });
-    if (!terminal && !signal.aborted && plan.connectionTimeoutMs !== undefined) {
-      connectionDeadline = setTimeout(() => {
-        failObservation(new Error('Owned runtime did not connect before the launch deadline'));
-      }, plan.connectionTimeoutMs);
-      connectionDeadline.unref();
-    }
-    if (!terminal && plan.connection) {
+    const unwatch = watchExit(async (code, exitSignal) => {
+      if (exit || observingExit) return;
+      observingExit = true;
+      const terminal: Parameters<MemberRuntimeEvents['exited']>[0] = { code, signal: exitSignal };
       try {
-        disconnect = plan.connection.subscribe(identity, {
-          connected: () => {
-            if (!terminal) deliver({ kind: 'connected' });
-          },
-          failed: failObservation,
-        });
+        const diagnostics = await open(plan.sdk.stderrPath, 'r');
+        try {
+          const { size } = await diagnostics.stat();
+          const length = Math.min(size, 8192);
+          const buffer = Buffer.alloc(length);
+          const { bytesRead } = await diagnostics.read(buffer, 0, length, size - length);
+          const stderrTail = buffer
+            .toString('utf8', 0, bytesRead)
+            .split(/\r?\n/)
+            .filter(Boolean)
+            .slice(-20);
+          if (stderrTail.length) terminal.stderrTail = stderrTail;
+        } finally {
+          await diagnostics.close();
+        }
       } catch (error) {
-        failObservation(error);
+        reportFailure(
+          error instanceof Error ? error : new Error('Native process diagnostics could not be read')
+        );
       }
-    }
-    if (!terminal && plan.afterSpawn) {
-      registration = Promise.resolve()
-        .then(() => {
-          processLifetime.signal.throwIfAborted();
-          return plan.afterSpawn!(identity, processLifetime.signal);
-        })
-        .catch((error: unknown) => {
-          if (!processLifetime.signal.aborted) failObservation(error);
-        });
-    }
+      exit = terminal;
+      clearTimeout(deadline);
+      unsubscribe();
+      disconnectProof?.();
+      unwatch();
+      listener?.exited(exit);
+      await release();
+      exitCompletion.resolve();
+    });
+    const abort = (): void => {
+      clearTimeout(deadline);
+    };
+    signal.addEventListener('abort', abort, { once: true });
+    const stop = (): Promise<void> => {
+      stopping ??= (async () => {
+        if (!exit && !observingExit) {
+          const inspection = await inspectProcessByPid(identity.pid);
+          if (inspection.status === 'not_found') await exitCompletion.promise;
+          else if (!exit && !observingExit) {
+            if (inspection.status !== 'found' || inspection.startedAt !== startedAt)
+              throw new Error('Native SDK stop refused stale OS process birth');
+            kill('SIGTERM');
+            const delay = deferred<void>();
+            const timer = setTimeout(delay.resolve, this.terminationPolicy.gracePeriodMs);
+            await Promise.race([exitCompletion.promise, delay.promise]);
+            clearTimeout(timer);
+            if (!exit && !observingExit) {
+              const current = await inspectProcessByPid(identity.pid);
+              if (current.status === 'not_found') await exitCompletion.promise;
+              else if (!exit && !observingExit) {
+                if (current.status !== 'found' || current.startedAt !== startedAt)
+                  throw new Error('Native SDK escalation refused stale OS process birth');
+                kill('SIGKILL');
+                const timeout = deferred<never>();
+                const forceTimer = setTimeout(
+                  () =>
+                    timeout.reject(
+                      new Error('Owned member process exceeded its termination deadline')
+                    ),
+                  this.terminationPolicy.forceExitTimeoutMs
+                );
+                try {
+                  await Promise.race([exitCompletion.promise, timeout.promise]);
+                } finally {
+                  clearTimeout(forceTimer);
+                }
+              }
+            }
+          }
+        }
+        await exitCompletion.promise;
+        signal.removeEventListener('abort', abort);
+        if (releaseError) {
+          await release();
+          if (!released) throw new Error(releaseError);
+        }
+        if (failure) throw new Error(failure);
+      })().catch((error: unknown) => {
+        stopping = null;
+        if (error instanceof Error && error.message !== failure && error.message !== releaseError)
+          reportFailure(error);
+        throw error;
+      });
+      return stopping;
+    };
     return {
       identity,
       subscribe(events) {
         if (listener) throw new Error('The member process already has a lifecycle subscriber');
         listener = events;
-        if (bufferedConnection) deliver(bufferedConnection);
-        if (bufferedFailure) deliver(bufferedFailure);
-        if (bufferedExit) deliver(bufferedExit);
-        if (bufferedReleaseFailure) deliver(bufferedReleaseFailure);
-        if (bufferedReleased) deliver({ kind: 'released' });
-        bufferedConnection = null;
-        bufferedFailure = null;
-        bufferedReleaseFailure = null;
-        bufferedExit = null;
-        bufferedReleased = false;
+        if (connection) events[connection]();
+        if (failure) events.failed(failure);
+        if (exit) events.exited(exit);
+        if (releaseError) events.releaseFailed(releaseError);
+        if (released) events.released();
         return () => {
           if (listener === events) listener = null;
         };
       },
-      async writeInput(line) {
-        if (!line || /[\r\n]/.test(line) || Buffer.byteLength(line) > 16 * 1024 * 1024)
-          throw new Error('Runtime input must be one bounded line');
-        if (terminal || stopping || processLifetime.signal.aborted || !child.stdin?.writable)
-          throw new Error('Owned runtime input is not writable');
-        const stdin = child.stdin;
-        await new Promise<void>((resolve, reject) => {
-          const onExit = (): void =>
-            reject(new Error('Owned runtime input closed before delivery'));
-          child.once('exit', onExit);
-          stdin.write(line + '\n', (error) => {
-            child.removeListener('exit', onExit);
-            if (error) reject(error);
-            else resolve();
-          });
-        });
+      async writeInput(line, operationId) {
+        if (exit || observingExit || stopping || signal.aborted)
+          throw new Error('Owned runtime input is no longer current');
+        const message: unknown = JSON.parse(line);
+        if (!message || typeof message !== 'object' || Array.isArray(message))
+          throw new Error('Native SDK requires JSON input');
+        const event = message as Record<string, unknown>;
+        if (event.type === 'user' && (!bootstrapConfirmed || !transportOpen))
+          throw new Error('Native SDK member bootstrap is not ready');
+        let uuid = operationId ?? event.uuid;
+        if (typeof uuid !== 'string' || !uuid) {
+          const response = event.response;
+          const requestId =
+            event.type === 'control_request'
+              ? event.request_id
+              : event.type === 'control_response' && response && typeof response === 'object'
+                ? (response as Record<string, unknown>).request_id
+                : null;
+          if (typeof requestId !== 'string' || !requestId)
+            throw new Error('Native SDK input requires its durable command UUID');
+          const hash = createHash('sha256')
+            .update(`${plan.sdk.token.operationId}:${event.type}:${requestId}`)
+            .digest('hex');
+          uuid = `${hash.slice(0, 8)}-${hash.slice(8, 12)}-4${hash.slice(13, 16)}-a${hash.slice(17, 20)}-${hash.slice(20, 32)}`;
+        }
+        await plan.sdk.host.deliver(plan.sdk.token, String(uuid), line);
       },
-      stop() {
-        const retryCleanup = terminal && cleanupError !== null;
-        stopping ??= (async () => {
-          await terminate();
-          await exited;
-          if (retryCleanup && cleanupError) await releaseResources();
-          if (cleanupError) throw cleanupError;
-          if (observationError) throw observationError;
-        })().catch((error: unknown) => {
-          stopping = null;
-          throw error;
-        });
-        return stopping;
-      },
+      stop,
     };
   }
 }

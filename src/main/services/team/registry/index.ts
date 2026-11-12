@@ -5,15 +5,18 @@
  * client only reads through `spec_tasks` and writes through the structured
  * `spec_patch` task operations. Everything is fail-closed and typed.
  */
+export {
+  CreatedSpecBindingObserver,
+  type CreatedSpecBindingObserverDependencies,
+  type CreatedSpecBindingSubject,
+} from './CreatedSpecBindingObserver';
 export { RegistryTaskClient, type RegistryTaskClientOptions } from './RegistryTaskClient';
 export type { ResolvedRegistryTaskClientConfig } from './RegistryTaskClientConfig';
 export {
   DEFAULT_SPEC_REGISTRY_REQUEST_TIMEOUT_MS,
   DEFAULT_SPEC_REGISTRY_URL,
-  getRegistryTokenFilePath,
   resolveRegistryTaskClientConfig,
   SPEC_REGISTRY_TOKEN_ENV,
-  SPEC_REGISTRY_TOKEN_FILE_SEGMENTS,
   SPEC_REGISTRY_URL_ENV,
 } from './RegistryTaskClientConfig';
 export type {
@@ -49,6 +52,10 @@ export {
   type ReplaceRegistryTaskStatusInput,
   type UpsertRegistryTaskInput,
 } from './RegistryTaskClientTypes';
+export type {
+  RegistryBoardSnapshotReadOptions,
+  RegistryBoardSnapshotReadPort,
+} from './RegistryTaskProvider';
 export {
   type RegistryTeamTaskClientPort,
   type RegistryTeamTaskCreateInput,

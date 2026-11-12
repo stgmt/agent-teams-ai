@@ -61,6 +61,13 @@ function setup(
           team,
           memberName,
           configurationRevision: 'TEST-revision',
+          specIntegration: {
+            scope: { projects: ['TEST/project'], bindings: [] },
+            environment: {
+              OMP_SPEC_REGISTRY_URL: 'http://127.0.0.1:8090',
+              OMP_SPEC_REGISTRY_TOKEN: 'TEST-registry-credential',
+            },
+          },
           providerId: 'TEST',
           model: null,
           workingDirectory: 'TEST',
@@ -316,6 +323,13 @@ describe('authoritative team run commands', () => {
       team: run,
       memberName: 'builder',
       configurationRevision: 'TEST-revision',
+      specIntegration: {
+        scope: { projects: ['TEST/project'], bindings: [] },
+        environment: {
+          OMP_SPEC_REGISTRY_URL: 'http://127.0.0.1:8090',
+          OMP_SPEC_REGISTRY_TOKEN: 'TEST-registry-credential',
+        },
+      },
       providerId: 'TEST',
       model: null,
       workingDirectory: 'TEST',
@@ -339,6 +353,13 @@ describe('authoritative team run commands', () => {
             team,
             memberName,
             configurationRevision: 'TEST-revision',
+            specIntegration: {
+              scope: { projects: ['TEST/project'], bindings: [] },
+              environment: {
+                OMP_SPEC_REGISTRY_URL: 'http://127.0.0.1:8090',
+                OMP_SPEC_REGISTRY_TOKEN: 'TEST-registry-credential',
+              },
+            },
             providerId: 'TEST',
             model: null,
             workingDirectory: 'TEST',

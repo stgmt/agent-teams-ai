@@ -1,36 +1,23 @@
 import { getReviewStateFromTask } from '@shared/utils/reviewState';
-import { registryTaskId } from './RegistryTaskIdentity';
+
 import { ExecutionTaskStore } from '../execution/ExecutionTaskStore';
 
-import {
-  resolveTeamSpecBinding,
-  resolveTeamSpecBindings,
-  TeamSpecBindingError,
-  type TeamSpecBindingConfig,
-} from './TeamSpecBinding';
 import { RegistryTaskClient } from './RegistryTaskClient';
 import { RegistryTaskClientError } from './RegistryTaskClientErrors';
 import { REGISTRY_TASK_STATUSES } from './RegistryTaskClientTypes';
+import { REGISTRY_TO_TEAM_STATUS, registryTaskId } from './RegistryTaskIdentity';
 import { taskCreationTimestamp } from './RegistryTeamTaskProjection';
+import {
+  resolveTeamSpecScope,
+  type TeamSpecBindingConfig,
+  TeamSpecBindingError,
+} from './TeamSpecBinding';
 
 import type { ExecutionTaskRecord } from '../execution/ExecutionTaskStore';
-import type { RegistryTask, RegistryTaskStatus } from './RegistryTaskClientTypes';
-import type { TeamSpecBinding, TeamTask, TeamTaskStatus } from '@shared/types';
+import type { RegistryTask } from './RegistryTaskClientTypes';
+import type { TeamSpecBinding, TeamTask } from '@shared/types';
 /** Short enough that a registry edit shows up promptly, long enough to absorb board re-renders. */
 export const REGISTRY_TASK_CACHE_TTL_MS = 5_000;
-
-/** Registry task vocabulary translated into the board's own statuses. */
-const REGISTRY_TO_TEAM_STATUS: Readonly<Record<RegistryTaskStatus, TeamTaskStatus>> = {
-  planned: 'pending',
-  todo: 'pending',
-  ready: 'pending',
-  'in-progress': 'in_progress',
-  blocked: 'pending',
-  done: 'completed',
-  deleted: 'deleted',
-  deferred: 'pending',
-  unknown: 'pending',
-};
 
 export type RegistryTaskProviderErrorCode =
   | 'REGISTRY_SCOPE_INCOMPLETE'
@@ -87,13 +74,33 @@ export interface RegistryTaskScope {
   spec: string;
 }
 
-export type RegistryTasksReadResult = { backed: true; tasks: TeamTask[] };
-export type RegistryTaskReadResult = { backed: true; task: TeamTask | null };
+export interface RegistryTasksReadResult {
+  backed: true;
+  tasks: TeamTask[];
+}
+export interface RegistryTaskReadResult {
+  backed: true;
+  task: TeamTask | null;
+}
 
 /** Optional scope filter; bindings are always checked against the registry owner. */
 export interface RegistryTaskReadOptions {
   binding?: RegistryTaskScope;
   forceRefresh?: boolean;
+}
+
+export interface RegistryBoardSnapshotReadOptions {
+  binding?: RegistryTaskScope;
+  includeDeleted?: boolean;
+  refresh?: boolean;
+}
+
+/** Read-only projection access; the authority and authenticated I/O stay in main. */
+export interface RegistryBoardSnapshotReadPort {
+  readBoardSnapshot(
+    teamName: string,
+    options?: RegistryBoardSnapshotReadOptions
+  ): Promise<TeamTask[]>;
 }
 
 export interface RegistryTaskProviderOptions {
@@ -104,6 +111,16 @@ export interface RegistryTaskProviderOptions {
   executionStore?: ExecutionTaskStore;
   cacheTtlMs?: number;
   now?: () => number;
+}
+
+interface PublishedRegistryBoard {
+  bindingsKey: string;
+  bindings: readonly TeamSpecBinding[];
+  tasks?: TeamTask[];
+  deleted?: TeamTask[];
+  refusal?: RegistryTaskProviderError;
+  pending?: Promise<void>;
+  readonly details: Map<string, Promise<void>>;
 }
 
 interface CachedRegistryTasks {
@@ -169,6 +186,7 @@ export class RegistryTaskProvider {
   private readonly bindingInFlight = new Map<string, Promise<TeamSpecBinding[]>>();
   private cacheGeneration = 0;
   private readonly inFlight = new Map<string, Promise<RegistryTask[]>>();
+  private readonly boards = new Map<string, PublishedRegistryBoard>();
 
   constructor(options: RegistryTaskProviderOptions) {
     this.readConfig = options.readConfig;
@@ -176,6 +194,140 @@ export class RegistryTaskProvider {
     this.executionStore = options.executionStore ?? new ExecutionTaskStore();
     this.cacheTtlMs = options.cacheTtlMs ?? REGISTRY_TASK_CACHE_TTL_MS;
     this.now = options.now ?? (() => Date.now());
+  }
+
+  private async boardState(teamName: string): Promise<PublishedRegistryBoard> {
+    const bindings = await this.getBindings(teamName);
+    const bindingsKey = JSON.stringify(bindings);
+    let state = this.boards.get(teamName);
+    if (!state || state.bindingsKey !== bindingsKey) {
+      state = {
+        bindingsKey,
+        bindings,
+        details: new Map(),
+        // A valid scope with no selected specs has no task sources. This is
+        // known empty state, unlike a cold board whose sources have not replied.
+        ...(bindings.length === 0 ? { tasks: [], deleted: [] } : {}),
+      };
+      this.boards.set(teamName, state);
+    }
+    return state;
+  }
+
+  /**
+   * Registry-side publication boundary. Only adapter refreshes wait for remote
+   * I/O; Teams consumers read the published result or an explicit cold state.
+   */
+  async refreshBoardSnapshot(teamName: string): Promise<void> {
+    const state = await this.boardState(teamName);
+    if (state.pending) return state.pending;
+    const request: Promise<void> = (async () => {
+      try {
+        const [active, deleted] = await Promise.all([
+          this.getTasks(teamName),
+          this.getDeletedTasks(teamName),
+        ]);
+        if (this.boards.get(teamName) !== state) return;
+        state.tasks = active.tasks;
+        state.deleted = deleted.tasks;
+        state.refusal = undefined;
+      } catch (error) {
+        // A transport interruption does not revoke published authority. An
+        // explicit registry refusal does, and must never become stale success.
+        if (
+          this.boards.get(teamName) === state &&
+          error instanceof RegistryTaskProviderError &&
+          error.code !== 'REGISTRY_UNAVAILABLE'
+        ) {
+          state.refusal = error;
+          state.tasks = undefined;
+          state.deleted = undefined;
+        }
+        throw error;
+      } finally {
+        state.pending = undefined;
+      }
+    })();
+    state.pending = request;
+    return request;
+  }
+
+  async readBoardSnapshot(
+    teamName: string,
+    options: RegistryBoardSnapshotReadOptions = {}
+  ): Promise<TeamTask[]> {
+    const bindings = await this.getBindings(teamName);
+    this.selectBindings(teamName, bindings, options.binding);
+    const state = await this.boardState(teamName);
+    if (options.refresh !== false) {
+      void this.refreshBoardSnapshot(teamName).catch(() => {
+        // The publication boundary above retains transport-only stale data and
+        // exposes confirmed refusals. No Teams-owned retries or failure cache.
+      });
+    }
+    if (state.refusal) throw state.refusal;
+    if (state.tasks === undefined) {
+      throw new RegistryTaskProviderError({
+        code: 'REGISTRY_UNAVAILABLE',
+        teamName,
+        ...(bindings.length === 1 ? { project: bindings[0].project, spec: bindings[0].spec } : {}),
+        message: `Registry task snapshot for team "${teamName}" is not available yet.`,
+      });
+    }
+    const tasks = options.includeDeleted ? [...state.tasks, ...(state.deleted ?? [])] : state.tasks;
+    const binding = options.binding;
+    return binding
+      ? tasks.filter(
+          (task) => task.specProject === binding.project && task.specSlug === binding.spec
+        )
+      : tasks;
+  }
+
+  async readTaskSnapshot(
+    teamName: string,
+    taskId: string,
+    binding?: RegistryTaskScope
+  ): Promise<TeamTask | null> {
+    const tasks = await this.readBoardSnapshot(teamName, { binding, includeDeleted: true });
+    const wanted = taskId.trim();
+    const matches = tasks.filter(
+      (task) =>
+        task.id === wanted ||
+        task.displayId === wanted ||
+        task.registryTask?.canonicalId === wanted ||
+        task.registryTask?.localId === wanted
+    );
+    if (matches.length > 1)
+      throw new RegistryTaskProviderError({
+        code: 'REGISTRY_TASK_ID_AMBIGUOUS',
+        teamName,
+        message: `Task identity "${taskId}" matched more than one linked registry task.`,
+      });
+    const task = matches[0];
+    if (!task) return null;
+    const state = this.boards.get(teamName)!;
+    if (!task.registryEntity && !state.details.has(task.id)) {
+      const request = this.getTask(teamName, task.id, binding ? { binding } : {})
+        .then(({ task: detailed }) => {
+          if (!detailed || this.boards.get(teamName) !== state) return;
+          const rows = detailed.status === 'deleted' ? state.deleted : state.tasks;
+          const index = rows?.findIndex((row) => row.id === detailed.id) ?? -1;
+          if (rows && index >= 0) rows[index] = detailed;
+        })
+        .catch((error: unknown) => {
+          if (
+            this.boards.get(teamName) === state &&
+            error instanceof RegistryTaskProviderError &&
+            error.code !== 'REGISTRY_UNAVAILABLE'
+          )
+            state.refusal = error;
+        })
+        .finally(() => {
+          state.details.delete(task.id);
+        });
+      state.details.set(task.id, request);
+    }
+    return task;
   }
 
   /**
@@ -187,13 +339,15 @@ export class RegistryTaskProvider {
     const config = await this.readConfig(teamName);
     if (!config) {
       this.bindingCache.delete(teamName);
-      return [];
+      throw new RegistryTaskProviderError({
+        code: 'REGISTRY_SCOPE_INCOMPLETE',
+        teamName,
+        message: `Team "${teamName}" has no configured registry task scope.`,
+      });
     }
     let configured: TeamSpecBinding[];
     try {
-      configured = resolveTeamSpecBindings(config, teamName);
-      // A half-configured team must say so instead of looking unbound.
-      if (configured.length === 0) resolveTeamSpecBinding(config, teamName);
+      configured = resolveTeamSpecScope(config, teamName).bindings;
     } catch (error) {
       if (error instanceof TeamSpecBindingError) throw incompleteBindingError(error);
       throw error;
@@ -204,139 +358,19 @@ export class RegistryTaskProvider {
       this.bindingInFlight.delete(teamName);
     }
     const cached = this.bindingCache.get(teamName);
-    if (cached && cached.teamId === teamId && cached.expiresAt > this.now()) return cached.bindings;
+    if (
+      cached &&
+      cached.teamId === teamId &&
+      cached.expiresAt > this.now() &&
+      JSON.stringify(cached.bindings) === JSON.stringify(configured)
+    )
+      return cached.bindings;
     this.bindingCache.set(teamName, {
       teamId,
       expiresAt: this.now() + this.cacheTtlMs,
       bindings: configured,
     });
     return configured;
-  }
-
-
-  /**
-   * The registry scopes tasks by project and spec; it declares no team identity,
-   * so a missing id is the normal state, not an error.
-   */
-  /**
-   * Creates a canonical registry task and returns the stored projection.
-   * The next free `TASK-<n>` is derived from the spec's own task list.
-   */
-  async createTask(
-    teamName: string,
-    input: {
-      project: string;
-      spec: string;
-      subject: string;
-      requirements: readonly string[];
-      owner?: string | null;
-      description?: string;
-    }
-  ): Promise<RegistryTask> {
-    const client = await this.clientFactory();
-    const existing = await client.listTasks({
-      project: input.project,
-      spec: input.spec,
-      statuses: [...REGISTRY_TASK_STATUSES],
-    });
-    const used = new Set(
-      existing
-        .map((task) => task.localId ?? task.id)
-        .filter((value): value is string => typeof value === 'string')
-        .map((value) => Number.parseInt(value.replace(/^TASK-/u, ''), 10))
-        .filter((value) => Number.isFinite(value))
-    );
-    // Allocate above the highest id ever used: reusing a retired number would
-    // collide with the board's execution records for that id.
-    let next = used.size === 0 ? 1 : Math.max(...used) + 1;
-    while (used.has(next)) next += 1;
-    const entity = `TASK-${next}`;
-    const created = await client.createTaskFields({
-      project: input.project,
-      spec: input.spec,
-      entity,
-      subject: input.subject,
-      requirements: input.requirements,
-      owner: input.owner ?? null,
-      description: input.description,
-    });
-    if (created && created.ok === false) {
-      throw new RegistryTaskProviderError({
-        code: 'REGISTRY_REFUSED',
-        teamName,
-        message: `The spec registry refused the task: ${String((created.error as { message?: unknown })?.message ?? 'no reason given')}`,
-      });
-    }
-    const { task } = await this.getTask(teamName, `${input.spec}:${entity}`, { forceRefresh: true });
-    if (!task) {
-      throw new RegistryTaskProviderError({
-        code: 'REGISTRY_TASK_NOT_FOUND',
-        teamName,
-        message: `Task "${entity}" was created but could not be read back.`,
-      });
-    }
-    return task.registryTask as RegistryTask;
-  }
-
-  /** Appends one comment straight into the registry task block. */
-  async addTaskComment(
-    teamName: string,
-    taskId: string,
-    text: string,
-    actor: string
-  ): Promise<void> {
-    const { task } = await this.getTask(teamName, taskId, { forceRefresh: true });
-    const project = task?.specProject;
-    const spec = task?.specSlug;
-    const localId = task?.registryTask?.localId;
-    if (!task || !project || !spec || !localId) {
-      throw new RegistryTaskProviderError({
-        code: 'REGISTRY_TASK_NOT_FOUND',
-        teamName,
-        message: `Task "${taskId}" was not found in the linked registry scopes.`,
-      });
-    }
-    const client = await this.clientFactory();
-    await client.addTaskComment({ project, spec, entity: localId, text, actor });
-  }
-
-  /**
-   * Owner/status writes go straight to the registry contract: resolve the task
-   * once, then one `spec_patch` intent. This bypasses the legacy writer, which
-   * required a registry team identity the registry does not have.
-   */
-  async writeTaskFields(
-    teamName: string,
-    taskId: string,
-    fields: { status?: RegistryTaskStatus; owner?: string | null; expectedStatus?: RegistryTaskStatus }
-  ): Promise<void> {
-    const { task } = await this.getTask(teamName, taskId, { forceRefresh: true });
-    if (!task) {
-      throw new RegistryTaskProviderError({
-        code: 'REGISTRY_TASK_NOT_FOUND',
-        teamName,
-        message: `Task "${taskId}" was not found in the linked registry scopes.`,
-      });
-    }
-    const project = task.specProject;
-    const spec = task.specSlug;
-    const localId = task.registryTask?.localId;
-    if (!project || !spec || !localId) {
-      throw new RegistryTaskProviderError({
-        code: 'REGISTRY_SCOPE_INCOMPLETE',
-        teamName,
-        message: `Task "${taskId}" is missing registry identity metadata.`,
-      });
-    }
-    const client = await this.clientFactory();
-    await client.updateTaskFields({
-      project,
-      spec,
-      entity: localId,
-      ...(fields.status === undefined ? {} : { status: fields.status }),
-      ...(fields.owner === undefined ? {} : { owner: fields.owner }),
-      ...(fields.expectedStatus === undefined ? {} : { expectedStatus: fields.expectedStatus }),
-    });
   }
 
   private async readTeamId(teamName: string): Promise<string> {
@@ -522,7 +556,15 @@ export class RegistryTaskProvider {
           : 'UNKNOWN';
     const location = scope ? ` (project "${scope.project}", spec "${scope.spec}")` : '';
     return new RegistryTaskProviderError({
-      code: 'REGISTRY_UNAVAILABLE',
+      code:
+        error instanceof RegistryTaskProviderError
+          ? error.code
+          : error instanceof RegistryTaskClientError &&
+              (error.code === 'REGISTRY_REQUEST_FAILED' ||
+                error.code === 'REGISTRY_REFUSED' ||
+                error.code === 'UNAUTHORIZED')
+            ? 'REGISTRY_REFUSED'
+            : 'REGISTRY_UNAVAILABLE',
       teamName,
       message:
         `Spec registry ${operation} is unavailable for team "${teamName}"${location}: ` +
@@ -532,9 +574,41 @@ export class RegistryTaskProvider {
     });
   }
 
+  invalidateTeamBoard(teamName: string): void {
+    const state = this.boards.get(teamName);
+    if (state) {
+      for (const binding of state.bindings) this.invalidate(binding);
+    } else {
+      // No publication exists to refresh. Drop wire preimages from write reads;
+      // the first consumer starts the adapter's normal cold publication.
+      this.cacheGeneration += 1;
+      this.cache.clear();
+    }
+  }
+
   /** Drops cached registry reads; call after a registry write or link change. */
   invalidate(scope?: RegistryTaskScope): void {
     this.cacheGeneration += 1;
+    // Invalidate wire data, not the last published board: concurrent reads stay
+    // responsive while the registry commits a write. Its next publication wins.
+    for (const [teamName, state] of this.boards) {
+      if (
+        !scope ||
+        state.bindings.some(
+          (binding) => binding.project === scope.project && binding.spec === scope.spec
+        )
+      ) {
+        this.boards.set(teamName, {
+          bindingsKey: state.bindingsKey,
+          bindings: state.bindings,
+          tasks: state.tasks,
+          deleted: state.deleted,
+          refusal: state.refusal,
+          details: new Map(),
+        });
+        void this.refreshBoardSnapshot(teamName).catch(() => {});
+      }
+    }
     if (!scope) {
       this.cache.clear();
       this.inFlight.clear();
@@ -562,11 +636,7 @@ export class RegistryTaskProvider {
   ): Promise<RegistryTask[]> {
     const teamId = await this.readTeamId(teamName);
     const key = RegistryTaskProvider.cacheKey(scope, teamId);
-    if (forceRefresh) {
-      this.cacheGeneration += 1;
-      this.cache.delete(key);
-      this.inFlight.delete(key);
-    }
+    if (forceRefresh) this.cache.delete(key);
     const cached = this.cache.get(key);
     if (cached && cached.expiresAt > this.now()) {
       return cached.tasks;
@@ -577,7 +647,7 @@ export class RegistryTaskProvider {
     }
 
     const generation = this.cacheGeneration;
-    const request = this.loadRegistryTasks(teamName, scope, teamId);
+    const request = this.loadRegistryTasks(teamName, scope);
     this.inFlight.set(key, request);
     try {
       const tasks = await request;
@@ -594,8 +664,7 @@ export class RegistryTaskProvider {
 
   private async loadRegistryTasks(
     teamName: string,
-    scope: RegistryTaskScope,
-    teamId: string
+    scope: RegistryTaskScope
   ): Promise<RegistryTask[]> {
     try {
       const client = await this.clientFactory();

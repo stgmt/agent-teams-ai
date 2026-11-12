@@ -35,6 +35,13 @@ const readyRuntime: OpenCodeRuntimeStatus = {
   version: '2.2.0',
   v2Support: 'ready',
 };
+// `runtime.lock.json` pins a V1-only release: only OpenCode V1 is served.
+const servedRuntime: OpenCodeRuntimeStatus = {
+  installed: true,
+  source: 'app-managed',
+  state: 'ready',
+  version: '1.18.3',
+};
 function provider(marker = 'verified-project'): CliProviderStatus {
   const base = createLoadingMultimodelCliStatus().providers.find(
     (value) => value.providerId === 'opencode'
@@ -208,7 +215,7 @@ describe('OpenCode project status boundaries', () => {
     expect(test.verifyProviderModels).not.toHaveBeenCalled();
   });
 
-  it('keeps real bootstrap and install progress pending, then resumes reads when support becomes ready', async () => {
+  it('keeps real bootstrap and install progress pending, then resumes reads when a served runtime becomes available', async () => {
     const pending = createLoadingMultimodelCliStatus().providers.find(
       (value) => value.providerId === 'opencode'
     )!;
@@ -234,7 +241,7 @@ describe('OpenCode project status boundaries', () => {
     );
     expect(test.host.textContent).toBe('Support is not installed.');
     expect(test.observed().providerStatus?.statusCheckOutcome).toBe('transient_error');
-    await act(async () => test.store.setState({ openCodeRuntimeStatus: readyRuntime }));
+    await act(async () => test.store.setState({ openCodeRuntimeStatus: servedRuntime }));
     expect(test.selectedReads()).toBe(1);
     expect(test.host.textContent).toBe('verified-project');
     expect(test.verifyProviderModels).not.toHaveBeenCalled();

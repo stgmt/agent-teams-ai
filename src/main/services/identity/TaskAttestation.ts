@@ -1,4 +1,5 @@
 import { createHash, createPublicKey, verify } from 'crypto';
+
 import type { DesktopSigningKeyStore } from './DesktopSigningKeyStore';
 
 // Internal protocol primitive. Callers must independently verify the local
@@ -363,7 +364,7 @@ export function signTaskAttestation(
     !digest(a[13]) ||
     !digest(a[14]) ||
     !integer(a[15], 0) ||
-    (a[15] as number) > 20 * 1024 * 1024 ||
+    a[15] > 20 * 1024 * 1024 ||
     !digest(a[16]) ||
     !integer(a[17], 1) ||
     !digest(a[18]) ||
@@ -395,7 +396,7 @@ export function signTaskPolicyChange(
     !integer(a[10], 0) ||
     (a[10] === 0 ? a[11] !== null : !digest(a[11])) ||
     !integer(a[12], 1) ||
-    a[12] !== (a[10] as number) + 1 ||
+    a[12] !== a[10] + 1 ||
     !digest(a[13]) ||
     !digest(a[14]) ||
     !integer(a[15], 1) ||
@@ -456,7 +457,7 @@ export function validateTaskGenesisAttestationChallenge(
     !digest(a[22]) ||
     !digest(a[23]) ||
     !integer(a[24], 1) ||
-    (a[24] as number) <= now ||
+    a[24] <= now ||
     !Number.isSafeInteger(now) ||
     now < 0
   ) {

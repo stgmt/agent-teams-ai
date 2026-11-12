@@ -3,25 +3,27 @@ import { promises as fs } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
+import { type TaskPolicy, taskPolicyDigest } from '@main/services/identity/TaskAttestation';
 import { setAppDataBasePath, setClaudeBasePathOverride } from '@main/utils/pathDecoder';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { TeamDataService } from '../../TeamDataService';
+import { knownEmptyTeamRuntimeSnapshot } from '../../../../../../test/helpers/teamRuntimeSnapshot';
 import { ExecutionTaskStore } from '../../execution/ExecutionTaskStore';
 import {
   TaskAttestationJournal,
   type TaskAttestationJournalEntry,
 } from '../../execution/TaskAttestationJournal';
-import { taskPolicyDigest, type TaskPolicy } from '@main/services/identity/TaskAttestation';
-import type { DesktopSigningKeyStore } from '@main/services/identity/DesktopSigningKeyStore';
+import { TeamDataService } from '../../TeamDataService';
+import { TeamTaskAttachmentStore } from '../../TeamTaskAttachmentStore';
+import { RegistryTaskProvider } from '../RegistryTaskProvider';
+import { resolveTeamSpecScope, TeamSpecBindingError } from '../TeamSpecBinding';
+
+import type { TeamMetaFile } from '../../TeamMetaStore';
 import type { RegistryTaskClient } from '../RegistryTaskClient';
 import type { RegistryTaskPolicyChangeReplayRecord } from '../RegistryTaskClientTypes';
-import { TeamTaskAttachmentStore } from '../../TeamTaskAttachmentStore';
-import type { TeamMetaFile } from '../../TeamMetaStore';
-import { resolveTeamSpecBindings, TeamSpecBindingError } from '../TeamSpecBinding';
-
 import type { RegistryTeamTaskWriter } from '../RegistryTeamTaskWriter';
-import type { CreateTaskRequest, TeamConfig, TeamTask } from '@shared/types';
+import type { DesktopSigningKeyStore } from '@main/services/identity/DesktopSigningKeyStore';
+import type { CreateTaskRequest, TeamConfig, TeamSpecScope, TeamTask } from '@shared/types';
 import type { AgentTeamsController } from 'agent-teams-controller';
 import type { Mock } from 'vitest';
 
@@ -79,17 +81,6 @@ function makeService(
   taskAttachmentStore: TeamTaskAttachmentStore = new TeamTaskAttachmentStore(),
   options: {
     taskSigningKeyStoreFactory?: () => Promise<DesktopSigningKeyStore>;
-    registryTaskCompletionClientFactory?: () => Promise<
-      Pick<
-        RegistryTaskClient,
-        | 'requestTaskCompletionChallenge'
-        | 'completeTask'
-        | 'replayTaskCompletionRequest'
-        | 'requestTaskPolicyChangeChallenge'
-        | 'changeTaskPolicy'
-        | 'replayTaskPolicyChangeRequest'
-      >
-    >;
     taskAttestationJournal?: TaskAttestationJournal;
     initialMetadata?: TeamMetaFile | null;
   } = {}
@@ -101,11 +92,11 @@ function makeService(
   const task = { id: '9', subject: 'Local task', status: 'pending' } as TeamTask;
   const registryBinding = { project: PROJECT, spec: SPEC };
   let currentConfig = config;
-  const linkedBindings =
-    currentConfig?.specProject === PROJECT && currentConfig.specSlug === SPEC
-      ? [registryBinding]
-      : [];
-  const registeredBindings = [...linkedBindings];
+  const linkedBindings = currentConfig?.specScope?.bindings.some(
+    (binding) => binding.project === PROJECT && binding.spec === SPEC
+  )
+    ? [registryBinding]
+    : [];
   const registryTask = {
     id: '1',
     displayId: '#TASK-1',
@@ -153,14 +144,11 @@ function makeService(
     getConfigSnapshot: async () => currentConfig,
     getConfig: async () => currentConfig,
     updateConfig: async () => undefined,
-    updateSpecBindings: async (
-      teamName: string,
-      specBindings: readonly NonNullable<TeamConfig['specBindings']>[number][]
-    ) => {
+    updateSpecScope: async (teamName: string, scope: TeamSpecScope) => {
       if (!currentConfig) return null;
       currentConfig = {
         ...currentConfig,
-        specBindings: resolveTeamSpecBindings({ specBindings }, teamName),
+        specScope: resolveTeamSpecScope({ specScope: scope }, teamName),
       };
       return currentConfig;
     },
@@ -184,7 +172,7 @@ function makeService(
               userId: 'test-user',
             },
             registryRegistrationCompleted: true,
-            specBindings: linkedBindings,
+            specScope: currentConfig?.specScope,
           }
         : null;
   const teamMetaStore = {
@@ -200,26 +188,19 @@ function makeService(
       }
     ),
   };
-  const registryTaskProvider = {
-    getBindings: vi.fn(async () => [...registeredBindings]),
-    getTask: vi.fn(async () => ({ backed: true as const, task: registryTask })),
-    getTaskScope: vi.fn(async () => registeredBindings[0] ?? null),
-    linkTeamSpec: vi.fn(async (_teamId: string, binding: { project: string; spec: string }) => {
-      if (
-        !registeredBindings.some(
-          (candidate) => candidate.project === binding.project && candidate.spec === binding.spec
-        )
-      ) {
-        registeredBindings.push(binding);
-      }
-      return [...registeredBindings];
-    }),
-  };
+  const registryTaskProvider = new RegistryTaskProvider({
+    readConfig: async () => currentConfig,
+  });
+  vi.spyOn(registryTaskProvider, 'getTask').mockImplementation(async () => ({
+    backed: true as const,
+    task: registryTask,
+  }));
+  vi.spyOn(registryTaskProvider, 'getTaskScope').mockImplementation(
+    async () => currentConfig?.specScope?.bindings[0] ?? null
+  );
   const service = new TeamDataService(
+    knownEmptyTeamRuntimeSnapshot,
     configReader as never,
-    undefined,
-    undefined,
-    undefined,
     undefined,
     undefined,
     undefined,
@@ -234,11 +215,10 @@ function makeService(
     undefined,
     undefined,
     provider,
-    registryTaskProvider as never,
+    registryTaskProvider,
     executionTaskStore,
     taskAttachmentStore,
     options.taskSigningKeyStoreFactory,
-    options.registryTaskCompletionClientFactory,
     options.taskAttestationJournal
   );
   return {
@@ -347,17 +327,77 @@ describe('TeamDataService task status routing', () => {
     testRoot = null;
   });
 
-  it('updates local task status when the team has no spec binding', async () => {
-    const { service, setTaskStatus, provider } = makeService({ name: TEAM });
-    await service.updateTaskStatus(TEAM, '1', 'completed');
-    expect(provider).not.toHaveBeenCalled();
-    expect(setTaskStatus).toHaveBeenCalledWith('1', 'completed', undefined);
-  });
+  it.each([
+    'create',
+    'status',
+    'status-receipt',
+    'owner',
+    'fields',
+    'review',
+    'start',
+    'user-start',
+    'delete',
+    'restore',
+    'link',
+    'unlink',
+    'comment',
+  ] as const)(
+    'refuses %s without registry scope and leaves local canonical files unchanged',
+    async (operation) => {
+      const teamDir = path.join(testRoot!, 'teams', TEAM);
+      const tasksDir = path.join(testRoot!, 'tasks', TEAM);
+      await fs.mkdir(teamDir, { recursive: true });
+      await fs.mkdir(tasksDir, { recursive: true });
+      await fs.writeFile(
+        path.join(teamDir, 'config.json'),
+        JSON.stringify({
+          name: TEAM,
+          members: [],
+        })
+      );
+      const original = JSON.stringify({
+        id: '9',
+        subject: 'Local canonical task',
+        status: 'pending',
+        owner: 'alice',
+        description: 'Must not be rewritten',
+        blockedBy: [],
+        related: [],
+        comments: [],
+        reviewState: 'none',
+      });
+      const taskFile = path.join(tasksDir, '9.json');
+      await fs.writeFile(taskFile, original, 'utf8');
+      const service = new TeamDataService(knownEmptyTeamRuntimeSnapshot);
+      const writes = {
+        create: () => service.createTask(TEAM, { subject: 'Unauthorized create' }),
+        status: () => service.updateTaskStatus(TEAM, '9', 'completed', 'alice'),
+        'status-receipt': () =>
+          service.updateTaskStatusWithReceipt(TEAM, '9', 'in_progress', 'alice', 'pending'),
+        owner: () => service.updateTaskOwner(TEAM, '9', 'bob'),
+        fields: () => service.updateTaskFields(TEAM, '9', { subject: 'Unauthorized update' }),
+        review: () => service.updateKanban(TEAM, '9', { op: 'set_column', column: 'review' }),
+        start: () => service.startTask(TEAM, '9'),
+        'user-start': () => service.startTaskByUser(TEAM, '9'),
+        delete: () => service.softDeleteTask(TEAM, '9'),
+        restore: () => service.restoreTask(TEAM, '9'),
+        link: () => service.addTaskRelationship(TEAM, '9', '10', 'related'),
+        unlink: () => service.removeTaskRelationship(TEAM, '9', '10', 'related'),
+        comment: () => service.addTaskComment(TEAM, '9', 'Unauthorized comment'),
+      };
 
-  it('does not consult the attestation journal for local status or field writes', async () => {
+      await expect(writes[operation]()).rejects.toMatchObject({
+        code: 'REGISTRY_SCOPE_INCOMPLETE',
+      });
+      expect(await fs.readFile(taskFile, 'utf8')).toBe(original);
+      expect(await fs.readdir(tasksDir)).toEqual(['9.json']);
+    }
+  );
+
+  it('refuses missing scope before consulting the attestation journal', async () => {
     const journal = new TaskAttestationJournal(path.join(testRoot!, 'teams'));
     const run = vi.spyOn(journal, 'run').mockRejectedValue(new Error('journal unavailable'));
-    const { service, setTaskStatus, updateTaskFields } = makeService(
+    const { service } = makeService(
       { name: TEAM },
       makeFakeWriter(),
       undefined,
@@ -365,21 +405,31 @@ describe('TeamDataService task status routing', () => {
       undefined,
       { taskAttestationJournal: journal }
     );
-    await service.updateTaskStatus(TEAM, '9', 'in_progress', 'alice');
-    await service.updateTaskStatus(TEAM, '9', 'completed', 'alice');
+    await expect(service.updateTaskStatus(TEAM, '9', 'in_progress', 'alice')).rejects.toMatchObject(
+      {
+        code: 'REGISTRY_SCOPE_INCOMPLETE',
+      }
+    );
+    await expect(service.updateTaskStatus(TEAM, '9', 'completed', 'alice')).rejects.toMatchObject({
+      code: 'REGISTRY_SCOPE_INCOMPLETE',
+    });
     await expect(
       service.updateTaskStatusWithReceipt(TEAM, '9', 'completed', 'alice', 'pending')
-    ).resolves.toEqual([]);
-    await service.updateTaskFields(TEAM, '9', { subject: 'Local change' });
-    expect(setTaskStatus).toHaveBeenCalledWith('9', 'in_progress', 'alice');
-    expect(setTaskStatus).toHaveBeenCalledWith('9', 'completed', 'alice');
-    expect(updateTaskFields).toHaveBeenCalledWith('9', { subject: 'Local change' });
+    ).rejects.toMatchObject({ code: 'REGISTRY_SCOPE_INCOMPLETE' });
+    await expect(
+      service.updateTaskFields(TEAM, '9', { subject: 'Local change' })
+    ).rejects.toMatchObject({
+      code: 'REGISTRY_SCOPE_INCOMPLETE',
+    });
     expect(run).not.toHaveBeenCalled();
   });
 
   it('rejects direct desktop completion when the required proof is missing', async () => {
     const { service, writer } = makeService(
-      { name: TEAM, specProject: PROJECT, specSlug: SPEC },
+      {
+        name: TEAM,
+        specScope: { projects: [PROJECT], bindings: [{ project: PROJECT, spec: SPEC }] },
+      },
       makeFakeWriter(),
       undefined,
       { required: true, expectedFilename: 'proof.pdf' }
@@ -390,75 +440,10 @@ describe('TeamDataService task status routing', () => {
     expect(writer.replaceStatus).not.toHaveBeenCalled();
   });
 
-  it.each(['valid', 'missing', 'changed', 'unavailable'] as const)(
-    'checks the actual local file for desktop completion: %s',
-    async (scenario) => {
-      setAppDataBasePath(testRoot);
-      try {
-        const client = {
-          requestTaskCompletionChallenge: vi.fn(),
-          completeTask: vi.fn(),
-          replayTaskCompletionRequest: vi.fn(),
-          requestTaskPolicyChangeChallenge: vi.fn(),
-          changeTaskPolicy: vi.fn(),
-          replayTaskPolicyChangeRequest: vi.fn(),
-        };
-        const { service, writer, registryTask } = makeService(
-          { name: TEAM, specProject: PROJECT, specSlug: SPEC },
-          makeFakeWriter(),
-          undefined,
-          undefined,
-          undefined,
-          { registryTaskCompletionClientFactory: async () => client }
-        );
-        const data = Buffer.from('local proof bytes');
-        await service.updateTaskFields(TEAM, '1', {
-          artifactRequired: true,
-          artifactExpectedFilename: 'proof.pdf',
-          artifactFile: { filename: 'proof.pdf', base64Data: data.toString('base64') },
-        });
-        const patch = writer.applyExecutionPatch.mock.calls.at(-1)?.[1];
-        if (!patch) throw new Error('Missing artifact patch');
-        Object.assign(registryTask, patch);
-        const attachment = registryTask.attachments?.[0];
-        if (!attachment?.filePath) throw new Error('Missing stored artifact path');
-        if (scenario === 'missing')
-          await fs.rename(attachment.filePath, `${attachment.filePath}.moved`);
-        if (scenario === 'changed')
-          await fs.writeFile(attachment.filePath, Buffer.from('changed bytes'));
-        if (scenario === 'unavailable') {
-          await fs.rename(
-            path.dirname(attachment.filePath),
-            `${path.dirname(attachment.filePath)}.moved`
-          );
-        }
-
-        const completion = service.updateTaskStatus(TEAM, '1', 'completed', 'alice');
-        if (scenario === 'valid') {
-          await expect(completion).resolves.toBeUndefined();
-          expect(writer.replaceStatus).toHaveBeenCalledWith({
-            taskId: '1',
-            to: 'completed',
-            actor: 'alice',
-            expectedStatus: 'pending',
-          });
-        } else {
-          await expect(completion).rejects.toMatchObject({ code: 'REGISTRY_REFUSED' });
-          expect(writer.replaceStatus).not.toHaveBeenCalled();
-        }
-        expect(client.requestTaskCompletionChallenge).not.toHaveBeenCalled();
-        expect(client.requestTaskPolicyChangeChallenge).not.toHaveBeenCalled();
-      } finally {
-        setAppDataBasePath(null);
-      }
-    }
-  );
-
   it('keeps ordinary bound status changes on the registry status writer', async () => {
     const { service, setTaskStatus, writer } = makeService({
       name: TEAM,
-      specProject: PROJECT,
-      specSlug: SPEC,
+      specScope: { projects: [PROJECT], bindings: [{ project: PROJECT, spec: SPEC }] },
     });
     const completeWithReceipt = vi.spyOn(service, 'updateTaskStatusWithReceipt');
 
@@ -476,8 +461,7 @@ describe('TeamDataService task status routing', () => {
   it('keeps ordinary bound completion on the registry status writer', async () => {
     const { service, writer } = makeService({
       name: TEAM,
-      specProject: PROJECT,
-      specSlug: SPEC,
+      specScope: { projects: [PROJECT], bindings: [{ project: PROJECT, spec: SPEC }] },
     });
     await service.updateTaskStatus(TEAM, '1', 'completed', 'alice');
 
@@ -492,8 +476,7 @@ describe('TeamDataService task status routing', () => {
   it('allows ordinary bound completion through the registry status writer', async () => {
     const { service, writer } = makeService({
       name: TEAM,
-      specProject: PROJECT,
-      specSlug: SPEC,
+      specScope: { projects: [PROJECT], bindings: [{ project: PROJECT, spec: SPEC }] },
     });
 
     await expect(
@@ -508,10 +491,10 @@ describe('TeamDataService task status routing', () => {
     });
   });
 
-  it('fails closed when specProject is set without specSlug', async () => {
+  it('fails closed when a team scope contains an incomplete binding', async () => {
     const { service, setTaskStatus } = makeService({
       name: TEAM,
-      specProject: PROJECT,
+      specScope: { projects: [PROJECT], bindings: [{ project: PROJECT, spec: '' }] },
     });
 
     await expect(service.updateTaskStatus(TEAM, '1', 'completed')).rejects.toBeInstanceOf(
@@ -523,8 +506,7 @@ describe('TeamDataService task status routing', () => {
   it('creates tasks through the registry writer when bound', async () => {
     const { service, createTask, writer } = makeService({
       name: TEAM,
-      specProject: PROJECT,
-      specSlug: SPEC,
+      specScope: { projects: [PROJECT], bindings: [{ project: PROJECT, spec: SPEC }] },
     });
 
     const task = await service.createTask(TEAM, {
@@ -545,99 +527,6 @@ describe('TeamDataService task status routing', () => {
     expect(createTask).not.toHaveBeenCalled();
   });
 
-  it('stores artifact bytes locally under the verifier basename and keeps only metadata on the task', async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'registry-task-artifact-'));
-    setAppDataBasePath(root);
-    setClaudeBasePathOverride(root);
-    try {
-      const client = {
-        requestTaskCompletionChallenge: vi.fn(),
-        completeTask: vi.fn(),
-        replayTaskCompletionRequest: vi.fn(),
-        requestTaskPolicyChangeChallenge: vi.fn(),
-        changeTaskPolicy: vi.fn(),
-        replayTaskPolicyChangeRequest: vi.fn(),
-      };
-      const { service, writer } = makeService(
-        {
-          name: TEAM,
-          specProject: PROJECT,
-          specSlug: SPEC,
-        },
-        makeFakeWriter(),
-        undefined,
-        undefined,
-        undefined,
-        {
-          registryTaskCompletionClientFactory: async () => client,
-        }
-      );
-      const data = Buffer.from('local proof bytes');
-      await service.updateTaskFields(TEAM, '1', {
-        artifactRequired: true,
-        artifactExpectedFilename: 'proof.pdf',
-        artifactFile: { filename: 'proof.pdf', base64Data: data.toString('base64') },
-      });
-
-      const lastPatchCall = writer.applyExecutionPatch.mock.calls.at(-1);
-      const executionPatch = lastPatchCall?.[1];
-      if (!executionPatch) throw new Error('Expected execution patch');
-      const rawAttachments: unknown = executionPatch.attachments;
-      if (!Array.isArray(rawAttachments)) throw new Error('Expected attachment metadata');
-      const rawAttachment: unknown = rawAttachments[0];
-      if (
-        !rawAttachment ||
-        typeof rawAttachment !== 'object' ||
-        Array.isArray(rawAttachment) ||
-        !('id' in rawAttachment) ||
-        typeof rawAttachment.id !== 'string' ||
-        !('filename' in rawAttachment) ||
-        typeof rawAttachment.filename !== 'string' ||
-        !('filePath' in rawAttachment) ||
-        typeof rawAttachment.filePath !== 'string' ||
-        !('size' in rawAttachment) ||
-        typeof rawAttachment.size !== 'number'
-      ) {
-        throw new Error('Invalid attachment metadata');
-      }
-      const attachment = {
-        id: rawAttachment.id,
-        filename: rawAttachment.filename,
-        filePath: rawAttachment.filePath,
-        size: rawAttachment.size,
-      };
-      expect(attachment).toMatchObject({ filename: 'proof.pdf', size: data.length });
-      expect(attachment.filePath).toBe(
-        path.join(root, 'data', 'task-attachments', TEAM, '1', `${attachment.id}--artifact.bin`)
-      );
-      expect(await fs.readFile(attachment.filePath)).toEqual(data);
-      expect(executionPatch.artifactRequirement).toMatchObject({
-        required: true,
-        expectedFilename: 'proof.pdf',
-        proof: {
-          attachmentId: attachment.id,
-          sha256: createHash('sha256').update(data).digest('hex'),
-          size: data.length,
-        },
-      });
-      expect(writer.updateCanonicalFields.mock.calls[0]?.[0]).not.toHaveProperty('artifactFile');
-      expect(writer.updateCanonicalFields.mock.calls[0]?.[0]).not.toHaveProperty(
-        'artifactRequired'
-      );
-      expect(writer.updateCanonicalFields.mock.calls[0]?.[0]).not.toHaveProperty(
-        'artifactExpectedFilename'
-      );
-      expect(writer.updateCanonicalFields.mock.calls[0]?.[0]).not.toHaveProperty('attachments');
-      expect(client.requestTaskPolicyChangeChallenge).not.toHaveBeenCalled();
-      expect(client.changeTaskPolicy).not.toHaveBeenCalled();
-      expect(writer.updateCanonicalFields.mock.calls[0]?.[0]).not.toHaveProperty('filePath');
-    } finally {
-      setAppDataBasePath(null);
-      setClaudeBasePathOverride(null);
-      await fs.rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
-    }
-  });
-
   it('uses a draft binding before launch but not when a config file exists and is unreadable', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'registry-draft-binding-'));
     const teamDir = path.join(root, 'teams', TEAM);
@@ -649,8 +538,10 @@ describe('TeamDataService task status routing', () => {
         cwd: root,
         createdAt: 1,
         registryTeamId: 'registry-team-alpha',
-        specProject: PROJECT,
-        specSlug: SPEC,
+        specScope: {
+          projects: [PROJECT],
+          bindings: [{ project: PROJECT, spec: SPEC }],
+        },
       };
       await fs.writeFile(path.join(teamDir, 'team.meta.json'), JSON.stringify(draftMetadata));
       const { service, writer, provider } = makeService(
@@ -690,7 +581,10 @@ describe('TeamDataService task status routing', () => {
   });
 
   it('exposes the creation outcome and forwards initial status and execution metadata', async () => {
-    const { service, writer } = makeService({ name: TEAM, specProject: PROJECT, specSlug: SPEC });
+    const { service, writer } = makeService({
+      name: TEAM,
+      specScope: { projects: [PROJECT], bindings: [{ project: PROJECT, spec: SPEC }] },
+    });
     writer.createTask.mockResolvedValueOnce({
       task: { id: '1', subject: 'Registry task', status: 'completed' },
       createdInAttempt: false,
@@ -716,14 +610,6 @@ describe('TeamDataService task status routing', () => {
     );
   });
 
-  it('creates locally when an unbound team receives no registry scope', async () => {
-    const { service, createTask, provider } = makeService({ name: TEAM });
-    await expect(service.createTask(TEAM, { subject: 'Local task' })).resolves.toMatchObject({
-      subject: 'Local task',
-    });
-    expect(createTask).toHaveBeenCalledWith(expect.objectContaining({ subject: 'Local task' }));
-    expect(provider).not.toHaveBeenCalled();
-  });
   it('rejects local fallback when an unreadable config leaves task authority unknown', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'registry-unknown-authority-'));
     setClaudeBasePathOverride(root);
@@ -774,25 +660,13 @@ describe('TeamDataService task status routing', () => {
   it('requires registry scope for task creation on a bound team', async () => {
     const { service, createTask, provider } = makeService({
       name: TEAM,
-      specProject: PROJECT,
-      specSlug: SPEC,
+      specScope: { projects: [PROJECT], bindings: [{ project: PROJECT, spec: SPEC }] },
     });
     await expect(service.createTask(TEAM, { subject: 'Missing scope' })).rejects.toMatchObject({
       code: 'REGISTRY_SCOPE_INCOMPLETE',
     });
     expect(provider).not.toHaveBeenCalled();
     expect(createTask).not.toHaveBeenCalled();
-  });
-
-  it('uses the local task board only when status preconditions match', async () => {
-    const { service, getTask, setTaskStatus, provider } = makeService({ name: TEAM });
-
-    await expect(
-      service.updateTaskStatusWithReceipt(TEAM, '9', 'in_progress', 'alice', 'pending')
-    ).resolves.toEqual([]);
-    expect(getTask).toHaveBeenCalledWith('9');
-    expect(setTaskStatus).toHaveBeenCalledWith('9', 'in_progress', 'alice');
-    expect(provider).not.toHaveBeenCalled();
   });
 
   it('writes local execution patches to the injected local store', async () => {
@@ -830,7 +704,10 @@ describe('TeamDataService task status routing', () => {
       await release;
     });
     const { service } = makeService(
-      { name: TEAM, specProject: PROJECT, specSlug: SPEC },
+      {
+        name: TEAM,
+        specScope: { projects: [PROJECT], bindings: [{ project: PROJECT, spec: SPEC }] },
+      },
       writer,
       undefined,
       undefined,
@@ -912,46 +789,6 @@ describe('TeamDataService task status routing', () => {
     expect(unlinkTask).not.toHaveBeenCalled();
     expect(provider).not.toHaveBeenCalled();
   });
-  it('preserves a pending journal entry and fails closed without replaying another operation', async () => {
-    const journal = new TaskAttestationJournal(path.join(testRoot!, 'teams'));
-    const pending = makePendingPolicyEntry();
-    await journal.run(TEAM, async (entries, save) => {
-      entries.push(pending);
-      save();
-    });
-    const client = {
-      requestTaskCompletionChallenge: vi.fn(),
-      completeTask: vi.fn(),
-      replayTaskCompletionRequest: vi.fn(),
-      requestTaskPolicyChangeChallenge: vi.fn(),
-      changeTaskPolicy: vi.fn(),
-      replayTaskPolicyChangeRequest: vi.fn(),
-    };
-    const { service, writer } = makeService(
-      { name: TEAM, specProject: PROJECT, specSlug: SPEC },
-      makeFakeWriter(),
-      undefined,
-      undefined,
-      undefined,
-      { registryTaskCompletionClientFactory: async () => client, taskAttestationJournal: journal }
-    );
-    await expect(service.updateTaskStatus(TEAM, '1', 'completed')).rejects.toMatchObject({
-      code: 'TASK_SECURITY_OUTCOME_UNKNOWN',
-    });
-    await expect(
-      service.updateTaskFields(TEAM, '1', { artifactRequired: false })
-    ).rejects.toMatchObject({
-      code: 'TASK_SECURITY_OUTCOME_UNKNOWN',
-    });
-    await expect(
-      service.applyTaskExecutionPatch(TEAM, '1', { artifactRequirement: { required: false } })
-    ).rejects.toMatchObject({ code: 'TASK_SECURITY_OUTCOME_UNKNOWN' });
-    expect(writer.applyExecutionPatch).not.toHaveBeenCalled();
-    expect(writer.replaceStatus).not.toHaveBeenCalled();
-    expect(client.replayTaskPolicyChangeRequest).not.toHaveBeenCalled();
-    await expect(journal.run(TEAM, async (entries) => entries)).resolves.toEqual([pending]);
-  });
-
   it('fails closed and preserves a corrupt attestation journal', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'registry-attestation-corrupt-'));
     try {

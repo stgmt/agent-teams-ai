@@ -38,13 +38,6 @@ import { Checkbox } from '@renderer/components/ui/checkbox';
 import { DialogFooter } from '@renderer/components/ui/dialog';
 import { Input } from '@renderer/components/ui/input';
 import { Label } from '@renderer/components/ui/label';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@renderer/components/ui/select';
 import { getTeamColorSet, getThemedBadge } from '@renderer/constants/teamColors';
 import { useChipDraftPersistence } from '@renderer/hooks/useChipDraftPersistence';
 import { useCreateTeamDraft } from '@renderer/hooks/useCreateTeamDraft';
@@ -84,7 +77,6 @@ import { normalizePath } from '@renderer/utils/pathNormalize';
 import { resolveUiOwnedProviderBackendId } from '@renderer/utils/providerBackendIdentity';
 import { getAvailableTeamEffortValue } from '@renderer/utils/teamEffortOptions';
 import { normalizeExplicitTeamModelForUi } from '@renderer/utils/teamModelAvailability';
-import { getTeamProviderLabel as getCatalogTeamProviderLabel } from '@renderer/utils/teamModelCatalog';
 import { isTeamProviderRuntimeStatusLoading } from '@renderer/utils/teamProviderRuntimeStatusLoading';
 import { isEphemeralProjectPath } from '@shared/utils/ephemeralProjectPath';
 import { getAnthropicRuntimeDefaultLaunchModel } from '@shared/utils/providerDefaultModel';
@@ -101,12 +93,17 @@ import { CodexReconnectPrompt, shouldShowCodexReconnectPrompt } from './CodexRec
 import { consumeTeamCopySeedOnce } from './createTeamCopySeed';
 import { buildInitialRosterMemberDrafts } from './createTeamInitialRoster';
 import {
-  getOrganizationPlacementUnitKindKey,
+  useCreateTeamIntegrationState,
+  useSpecRegistryRefusalPresentation,
+} from './createTeamIntegrationState';
+import {
   getOrganizationPlacementUnitOptions,
   getOrganizationUnitLabel,
 } from './createTeamOrganizationPlacement';
+import { CreateTeamOrganizationPlacementFields } from './CreateTeamOrganizationPlacementFields';
 import { CreateTeamPageActivityContext } from './createTeamPageActivityContext';
 import { CreateTeamPromptField } from './CreateTeamPromptField';
+import { CreateTeamSpecIntegrationFields } from './CreateTeamSpecIntegrationFields';
 import { sanitizeTeamName, validateRequest } from './createTeamSubmissionValidation';
 import { CreateTeamSurface } from './CreateTeamSurface';
 import {
@@ -120,6 +117,7 @@ import {
 } from './dialogIdleScheduling';
 import { ExperimentalLocalModelOverrideCheckbox } from './ExperimentalLocalModelOverride';
 import { resolveExperimentalLocalModelOverride } from './experimentalLocalModelOverrideState';
+import { getProviderLabel } from './launchTeamDialogHelpers';
 import {
   clearInheritedMemberModelsUnavailableForProvider,
   getDialogMemberModelIssues,
@@ -160,6 +158,7 @@ import {
   storeShortLivedProviderPrepareModelResults,
 } from './providerPrepareShortLivedCache';
 import { getProvisioningModelIssue } from './provisioningModelIssues';
+import { alignProvisioningChecks } from './provisioningProviderChecks';
 import { ProvisioningProviderRuntimeSettingsDialog } from './ProvisioningProviderRuntimeSettingsDialog';
 import {
   deriveEffectiveProvisioningPrepareState,
@@ -180,8 +179,6 @@ import {
   analyzeTeammateRuntimeCompatibility,
   useTmuxRuntimeReadiness,
 } from './teammateRuntimeCompatibility';
-import { SpecRegistryPicker } from './SpecRegistryPicker';
-import { isTeamSpecBindingSelectionValid } from './teamSpecBindingSelection';
 import { TeammateRuntimeCompatibilityNotice } from './TeammateRuntimeCompatibilityNotice';
 import { computeEffectiveTeamModel } from './TeamModelSelector';
 import { getNextSuggestedTeamName } from './teamNameSets';
@@ -228,28 +225,6 @@ const TEAM_COLOR_NAMES = [
 
 const APP_TEAM_RUNTIME_DISALLOWED_TOOLS = 'TeamDelete,TodoWrite,TaskCreate,TaskUpdate';
 const CREATE_LAUNCH_AUTHORITY_BLOCKER_ID = 'create-team-launch-authority-blocker';
-
-function getProviderLabel(providerId: TeamProviderId): string {
-  return getCatalogTeamProviderLabel(providerId) ?? 'Anthropic';
-}
-
-function alignProvisioningChecks(
-  existingChecks: ProvisioningProviderCheck[],
-  providerIds: TeamProviderId[]
-): ProvisioningProviderCheck[] {
-  const existingByProviderId = new Map(
-    existingChecks.map((check) => [check.providerId, check] as const)
-  );
-  return providerIds.map(
-    (providerId) =>
-      existingByProviderId.get(providerId) ?? {
-        providerId,
-        status: 'pending',
-        backendSummary: null,
-        details: [],
-      }
-  );
-}
 
 function validateTeamNameInline(
   name: string,
@@ -403,7 +378,14 @@ export const CreateTeamDialog = ({
     restoredFromStorage,
     clearDraft,
   } = useCreateTeamDraft();
-  const [validRegistrySelection, setValidRegistrySelection] = useState<string | null>(null);
+  const specIntegration = useCreateTeamIntegrationState({
+    open,
+    project: specProject,
+    slug: specSlug,
+    setProject: setSpecProject,
+    setSlug: setSpecSlug,
+    initialScope: initialData?.specScope,
+  });
   const runtimeSelectionUnresolved = runtimeSelectionVersion === 1 && !runtimeProviderId;
   const descriptionDraft = useDraftPersistence({ key: 'createTeam:description' });
   const promptDraft = useDraftPersistence({ key: 'createTeam:prompt' });
@@ -1469,8 +1451,7 @@ export const CreateTeamDialog = ({
       if (initialData.runtimeSelectionVersion === 1 && !initialData.providerId)
         setLaunchTeam(false);
       setTeamName(initialData.teamName);
-      setSpecProject(initialData.specProject ?? '');
-      setSpecSlug(initialData.specSlug ?? '');
+      specIntegration.restoreScope(initialData.specScope);
       descriptionDraft.setValue(initialData.description ?? '');
       promptDraft.setValue(initialData.prompt ?? '');
       setTeamColor(initialData.color ?? '');
@@ -1866,9 +1847,7 @@ export const CreateTeamDialog = ({
     () => ({
       runtimeSelectionVersion,
       teamName: sanitizedTeamName,
-      ...(specProject.trim() && specSlug.trim()
-        ? { specProject: specProject.trim(), specSlug: specSlug.trim() }
-        : {}),
+      ...specIntegration.requestFields,
       description: description.trim() || undefined,
       color: teamColor || undefined,
       members: soloTeam
@@ -1902,8 +1881,7 @@ export const CreateTeamDialog = ({
       runtimeSelectionVersion,
       runtimeSelectionUnresolved,
       sanitizedTeamName,
-      specProject,
-      specSlug,
+      specIntegration.requestFields,
       description,
       teamColor,
       soloTeam,
@@ -1983,7 +1961,7 @@ export const CreateTeamDialog = ({
     );
   const hasCreateFormErrors =
     gatewayBindings.pending ||
-    !isTeamSpecBindingSelectionValid(specProject, specSlug, validRegistrySelection) ||
+    !specIntegration.selectionReady ||
     !!teamNameInlineError ||
     isNameTakenByExistingTeam ||
     isNameProvisioning ||
@@ -1994,6 +1972,7 @@ export const CreateTeamDialog = ({
     teammateRuntimeCompatibility.blocksSubmission ||
     worktreeGitBlocksSubmission ||
     (launchTeam && customProjectFolder.blocksSubmit);
+
   const internalArgs = useMemo(() => {
     const args: string[] = [];
     args.push('--input-format', 'stream-json', '--output-format', 'stream-json');
@@ -2089,6 +2068,7 @@ export const CreateTeamDialog = ({
   );
   const activeError =
     localError ?? modelValidationError ?? provisioningErrorsByTeam[request.teamName] ?? null;
+  const presentedError = useSpecRegistryRefusalPresentation(activeError, specIntegration);
   const effectivePrepare = useMemo(
     () =>
       deriveEffectiveProvisioningPrepareState({
@@ -2188,7 +2168,7 @@ export const CreateTeamDialog = ({
     }
     if (launchTeam && !launchPreflightSelectionReady) return;
     if (submissionFence.busy || isSubmitting) return;
-    if (!isTeamSpecBindingSelectionValid(specProject, specSlug, validRegistrySelection)) {
+    if (!specIntegration.selectionReady) {
       setLocalError(t('create.validation.registryBindingIncomplete'));
       return;
     }
@@ -2262,6 +2242,7 @@ export const CreateTeamDialog = ({
               teamName: request.teamName,
               specProject: request.specProject,
               specSlug: request.specSlug,
+              specScope: request.specScope,
               displayName: request.displayName,
               description: request.description,
               color: request.color,
@@ -2532,39 +2513,12 @@ export const CreateTeamDialog = ({
                 </p>
               ) : null}
             </div>
-            {open && draftLoaded && (
-              <>
-                <SpecRegistryPicker
-                  project={specProject}
-                  slug={specSlug}
-                  onProjectChange={setSpecProject}
-                  onSlugChange={setSpecSlug}
-                  onValidSelectionChange={setValidRegistrySelection}
-                  disabled={isSubmitting}
-                  allowEmptySelection
-                />
-                <div className="flex flex-wrap items-center justify-between gap-2 md:col-span-2">
-                  <p className="text-xs text-[var(--color-text-muted)]">
-                    {t('create.registryPicker.optionalBinding')}
-                  </p>
-                  {specProject || specSlug ? (
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      disabled={isSubmitting}
-                      onClick={() => {
-                        setSpecProject('');
-                        setSpecSlug('');
-                        setValidRegistrySelection(null);
-                      }}
-                    >
-                      {t('create.registryPicker.clearBinding')}
-                    </Button>
-                  ) : null}
-                </div>
-              </>
-            )}
+            <CreateTeamSpecIntegrationFields
+              integration={specIntegration}
+              disabled={isSubmitting}
+              showFields={open && draftLoaded}
+              showSetup={open && active}
+            />
             <div className="space-y-4 md:col-span-2">
               <CreateTeamTemplatePicker
                 open={open}
@@ -2802,126 +2756,18 @@ export const CreateTeamDialog = ({
                 summary={[...teamDetailsSummary, ...organizationPlacementSummary]}
               >
                 <div className="space-y-4">
-                  <div className="space-y-3 border-b border-[var(--color-border)] pb-4">
-                    <div className="space-y-1">
-                      <p className="text-sm font-semibold">
-                        {t('create.organizationPlacement.title')}
-                      </p>
-                      <p className="text-xs text-[var(--color-text-muted)]">
-                        {t('create.organizationPlacement.description')}
-                      </p>
-                    </div>
-                    <div className="flex items-start gap-3">
-                      <Checkbox
-                        id="organization-placement-enabled"
-                        className="mt-1 shrink-0"
-                        checked={organizationPlacementEnabled}
-                        disabled={
-                          organizationStructureLoading ||
-                          (!organizationPlacementEnabled &&
-                            organizationPlacementOrganizations.length === 0)
-                        }
-                        onCheckedChange={(checked) =>
-                          setOrganizationPlacementEnabled(checked === true)
-                        }
-                      />
-                      <div className="min-w-0 space-y-1">
-                        <Label
-                          htmlFor="organization-placement-enabled"
-                          className="cursor-pointer text-sm font-semibold"
-                        >
-                          {t('create.organizationPlacement.addToOrganization')}
-                        </Label>
-                        {organizationPlacementError ? (
-                          <p className="text-[11px]" style={{ color: 'var(--field-error-text)' }}>
-                            {organizationPlacementError}
-                          </p>
-                        ) : null}
-                      </div>
-                    </div>
-                    <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-                      <div className="space-y-1.5">
-                        <div className="space-y-0.5">
-                          <Label className="text-xs">
-                            {t('create.organizationPlacement.organizationLabel')}
-                          </Label>
-                          <p className="text-[11px] text-[var(--color-text-muted)]">
-                            {t('create.organizationPlacement.organizationHelp')}
-                          </p>
-                        </div>
-                        <Select
-                          value={activePlacementOrganization?.id ?? ''}
-                          disabled={
-                            !organizationPlacementEnabled ||
-                            organizationPlacementOrganizations.length === 0
-                          }
-                          onValueChange={(value) => {
-                            setOrganizationPlacementOrganizationId(value);
-                            const organization = organizationPlacementOrganizations.find(
-                              (candidate) => candidate.id === value
-                            );
-                            setOrganizationPlacementParentId(organization?.rootNodeId ?? '');
-                          }}
-                        >
-                          <SelectTrigger className="h-8 text-xs">
-                            <SelectValue
-                              placeholder={t(
-                                'create.organizationPlacement.organizationPlaceholder'
-                              )}
-                            />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {organizationPlacementOrganizations.map((organization) => (
-                              <SelectItem key={organization.id} value={organization.id}>
-                                {organization.name}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      </div>
-                      <div className="space-y-1.5">
-                        <div className="space-y-0.5">
-                          <Label className="text-xs">
-                            {t('create.organizationPlacement.groupOrRootLabel')}
-                          </Label>
-                          <p className="text-[11px] text-[var(--color-text-muted)]">
-                            {t('create.organizationPlacement.groupOrRootHelp')}
-                          </p>
-                        </div>
-                        <Select
-                          value={activePlacementParent?.id ?? ''}
-                          disabled={
-                            !organizationPlacementEnabled ||
-                            organizationPlacementParentOptions.length === 0
-                          }
-                          onValueChange={setOrganizationPlacementParentId}
-                        >
-                          <SelectTrigger className="h-8 text-xs">
-                            <SelectValue
-                              placeholder={t('create.organizationPlacement.groupOrRootPlaceholder')}
-                            />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {organizationPlacementParentOptions.map((option) => (
-                              <SelectItem key={option.unit.id} value={option.unit.id}>
-                                <span
-                                  className="flex min-w-0 items-center gap-2"
-                                  style={{ paddingLeft: `${Math.min(option.depth, 6) * 12}px` }}
-                                >
-                                  <span className="truncate">
-                                    {getOrganizationUnitLabel(option.unit)}
-                                  </span>
-                                  <span className="shrink-0 text-[10px] uppercase tracking-wide text-[var(--color-text-muted)]">
-                                    {t(getOrganizationPlacementUnitKindKey(option.unit))}
-                                  </span>
-                                </span>
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      </div>
-                    </div>
-                  </div>
+                  <CreateTeamOrganizationPlacementFields
+                    organizationPlacementEnabled={organizationPlacementEnabled}
+                    organizationStructureLoading={organizationStructureLoading}
+                    organizationPlacementError={organizationPlacementError}
+                    organizationPlacementOrganizations={organizationPlacementOrganizations}
+                    activePlacementOrganization={activePlacementOrganization}
+                    organizationPlacementParentOptions={organizationPlacementParentOptions}
+                    activePlacementParent={activePlacementParent}
+                    setOrganizationPlacementEnabled={setOrganizationPlacementEnabled}
+                    setOrganizationPlacementOrganizationId={setOrganizationPlacementOrganizationId}
+                    setOrganizationPlacementParentId={setOrganizationPlacementParentId}
+                  />
                   <div className="space-y-1.5">
                     <Label htmlFor="team-description" className="label-optional">
                       {t('create.fields.description')}
@@ -2975,7 +2821,7 @@ export const CreateTeamDialog = ({
               </OptionalSettingsSection>
             </div>
           </div>
-          {activeError ? (
+          {presentedError ? (
             <p
               className="rounded border p-2 text-xs"
               style={{
@@ -2984,7 +2830,7 @@ export const CreateTeamDialog = ({
                 backgroundColor: 'var(--field-error-bg)',
               }}
             >
-              {activeError}
+              {presentedError}
             </p>
           ) : null}
           <DialogFooter className="-mx-6 -mb-6 -mt-4 border-t border-[var(--color-border)] bg-[var(--color-surface-sidebar)] px-6 pb-5 pt-4 sm:justify-between">

@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process';
+import type { TeamAgentRuntimeSnapshot } from '../../../../src/shared/types';
 import { promises as fs } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -187,6 +188,7 @@ liveDescribe('Member work sync recovery live Codex native teammate', () => {
     setCodexAccountFeature(feature: { getSnapshot(): Promise<unknown> } | null): void;
   } | null;
   let svc: {
+    getTeamAgentRuntimeSnapshot(teamName: string): Promise<TeamAgentRuntimeSnapshot>;
     stopTeam(teamName: string): Promise<unknown>;
     isTeamAlive(teamName: string): boolean;
     hasProvisioningRun(teamName: string): boolean;
@@ -265,7 +267,9 @@ liveDescribe('Member work sync recovery live Codex native teammate', () => {
 
     const configuredCli = process.env.CLAUDE_AGENT_TEAMS_ORCHESTRATOR_CLI_PATH?.trim();
     if (!configuredCli) {
-      throw new Error('CLAUDE_AGENT_TEAMS_ORCHESTRATOR_CLI_PATH is required for Codex live recovery');
+      throw new Error(
+        'CLAUDE_AGENT_TEAMS_ORCHESTRATOR_CLI_PATH is required for Codex live recovery'
+      );
     }
     process.env.CLAUDE_AGENT_TEAMS_ORCHESTRATOR_CLI_PATH = configuredCli;
     process.env.CLAUDE_TEAM_CLI_FLAVOR = 'agent_teams_orchestrator';
@@ -345,7 +349,9 @@ liveDescribe('Member work sync recovery live Codex native teammate', () => {
     setClaudeBasePathOverride(null);
     if (process.env.MEMBER_WORK_SYNC_RECOVERY_KEEP_TEMP === '1') {
       console.info(`[MemberWorkSyncRecoveryCodexTeammate.live] preserved temp dir: ${tempDir}`);
-      console.info(`[MemberWorkSyncRecoveryCodexTeammate.live] preserved CODEX_HOME: ${codexHomeDir}`);
+      console.info(
+        `[MemberWorkSyncRecoveryCodexTeammate.live] preserved CODEX_HOME: ${codexHomeDir}`
+      );
     } else {
       await fs.rm(tempDir, { recursive: true, force: true });
       if (ownsCodexHomeDir) {
@@ -403,7 +409,9 @@ liveDescribe('Member work sync recovery live Codex native teammate', () => {
       setClaudeBasePathOverride(tempClaudeRoot);
       activeService.setWorkspaceTrustCoordinator(createCodexOnlyWorkspaceTrustCoordinator());
       await trustProjectInTempClaudeGlobalConfig({ claudeRoot: tempClaudeRoot, projectPath });
-      const teamDataService = new TeamDataService();
+      const teamDataService = new TeamDataService((teamName) =>
+        activeService.getTeamAgentRuntimeSnapshot(teamName)
+      );
       const createFeature = (busy = false) =>
         createMemberWorkSyncFeature({
           isManagedByThisProfile: async () => true,
@@ -483,9 +491,7 @@ liveDescribe('Member work sync recovery live Codex native teammate', () => {
         },
         (progress) => {
           progressEvents.push(progress);
-          console.info(
-            formatCodexLiveProgress(progress)
-          );
+          console.info(formatCodexLiveProgress(progress));
         }
       );
 
@@ -729,7 +735,9 @@ liveDescribe('Member work sync recovery live Codex native teammate', () => {
       setClaudeBasePathOverride(tempClaudeRoot);
       activeService.setWorkspaceTrustCoordinator(createCodexOnlyWorkspaceTrustCoordinator());
       await trustProjectInTempClaudeGlobalConfig({ claudeRoot: tempClaudeRoot, projectPath });
-      const teamDataService = new TeamDataService();
+      const teamDataService = new TeamDataService((teamName) =>
+        activeService.getTeamAgentRuntimeSnapshot(teamName)
+      );
       const createFeature = () =>
         createMemberWorkSyncFeature({
           isManagedByThisProfile: async () => true,
@@ -802,9 +810,7 @@ liveDescribe('Member work sync recovery live Codex native teammate', () => {
         },
         (progress) => {
           progressEvents.push(progress);
-          console.info(
-            formatCodexLiveProgress(progress)
-          );
+          console.info(formatCodexLiveProgress(progress));
         }
       );
 
@@ -1120,7 +1126,9 @@ liveDescribe('Member work sync recovery live Codex native teammate', () => {
     setClaudeBasePathOverride(tempClaudeRoot);
     activeService.setWorkspaceTrustCoordinator(createCodexOnlyWorkspaceTrustCoordinator());
     await trustProjectInTempClaudeGlobalConfig({ claudeRoot: tempClaudeRoot, projectPath });
-    const teamDataService = new TeamDataService();
+    const teamDataService = new TeamDataService((teamName) =>
+      activeService.getTeamAgentRuntimeSnapshot(teamName)
+    );
     const createFeature = () =>
       createMemberWorkSyncFeature({
         isManagedByThisProfile: async () => true,
@@ -1191,9 +1199,7 @@ liveDescribe('Member work sync recovery live Codex native teammate', () => {
       },
       (progress) => {
         progressEvents.push(progress);
-        console.info(
-          formatCodexLiveProgress(progress)
-        );
+        console.info(formatCodexLiveProgress(progress));
       }
     );
     await waitForCodexTeamReady({
@@ -1391,9 +1397,7 @@ liveDescribe('Member work sync recovery live Codex native teammate', () => {
         },
         (progress) => {
           progressEvents.push(progress);
-          console.info(
-            formatCodexLiveProgress(progress)
-          );
+          console.info(formatCodexLiveProgress(progress));
         }
       );
       await waitForCodexTeamReady({
@@ -1497,9 +1501,7 @@ liveDescribe('Member work sync recovery live Codex native teammate', () => {
         agendaFingerprint: t2Status.agenda.fingerprint,
         reportToken: t2Token,
         source: 'test',
-        ...(t2HasWork
-          ? { taskIds: t2Status.agenda.items.map((item) => item.taskId) }
-          : {}),
+        ...(t2HasWork ? { taskIds: t2Status.agenda.items.map((item) => item.taskId) } : {}),
       })
     ).resolves.toMatchObject({
       accepted: true,
@@ -1762,12 +1764,14 @@ function findEarlyContinuationTicket(
     read?: boolean;
   }>
 ) {
-  return [...inbox].reverse().find(
-    (message) =>
-      typeof message.workSyncIntentKey === 'string' &&
-      message.workSyncIntentKey.startsWith('early-continuation:') &&
-      Boolean(message.workSyncRuntimeTicketId)
-  );
+  return [...inbox]
+    .reverse()
+    .find(
+      (message) =>
+        typeof message.workSyncIntentKey === 'string' &&
+        message.workSyncIntentKey.startsWith('early-continuation:') &&
+        Boolean(message.workSyncRuntimeTicketId)
+    );
 }
 
 async function listNudgeMessageIds(teamName: string, memberName: string): Promise<string[]> {

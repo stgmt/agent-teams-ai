@@ -19,5 +19,7 @@ export interface LeadRequestDeliveryPorts {
   readDelivered(run: Readonly<TeamRunIdentity>, requestMessageId: string): Promise<string | null>;
   input: LeadInputDelivery;
   accept(request: PersistedLeadRequest): Promise<string>;
-  send(run: Readonly<TeamRunIdentity>, text: string): Promise<void>;
+  /** Only the native SDK's verified surviving session can deduplicate the same UUID. */
+  canReplayUnconfirmed?(run: Readonly<TeamRunIdentity>): boolean;
+  send(run: Readonly<TeamRunIdentity>, text: string, operationId: string): Promise<void>;
 }

@@ -24,6 +24,8 @@ import {
 } from '../../../src/main/services/team/provisioning/TeamProvisioningLeadUserReplyTracker';
 import { TeamMembersMetaStore } from '../../../src/main/services/team/TeamMembersMetaStore';
 
+import type { TeamTask } from '../../../src/shared/types';
+
 const require = createRequire(import.meta.url);
 const controllerPath = require.resolve('../../../agent-teams-controller/src/controller.js');
 const bindingPath =
@@ -59,25 +61,25 @@ async function setup(text = 'как там дела?', changed = vi.fn()) {
   await writeFile(join(team, 'members.meta.json'), JSON.stringify({ version: 1, members }));
   await writeFile(join(team, 'config.json'), JSON.stringify({ name: teamName, members }));
   const taskId = '12345678-1234-4234-8234-123456789abc';
-  await writeFile(
-    join(tasks, `${taskId}.json`),
-    JSON.stringify({
-      id: taskId,
-      subject: 'Checkout is blocked on review',
-      owner: 'worker',
-      status: 'in_progress',
-      needsClarification: 'lead',
-      comments: [
-        {
-          id: 'test-comment',
-          author: 'worker',
-          text: 'I finished everything',
-          createdAt: '2026-10-29T00:00:00Z',
-          type: 'regular',
-        },
-      ],
-    })
-  );
+  // One canonical task: the app-side adapter receives it as a registry-owned snapshot,
+  // and the same task is persisted for the isolated controller's own reads.
+  const task: TeamTask = {
+    id: taskId,
+    subject: 'Checkout is blocked on review',
+    owner: 'worker',
+    status: 'in_progress',
+    needsClarification: 'lead',
+    comments: [
+      {
+        id: 'test-comment',
+        author: 'worker',
+        text: 'I finished everything',
+        createdAt: '2026-10-29T00:00:00Z',
+        type: 'regular',
+      },
+    ],
+  };
+  await writeFile(join(tasks, `${taskId}.json`), JSON.stringify(task));
   const context = new BoundControlContext('test-app', profile);
   const run = { ...context.snapshot(), teamName, runId: 'test-run' };
   const registry = new MemberLifecycleRegistry(run);
@@ -100,6 +102,7 @@ async function setup(text = 'как там дела?', changed = vi.fn()) {
       return run;
     },
     lifecycle: () => Promise.resolve(registry.snapshot(teamName)),
+    tasks: () => Promise.resolve([task]),
     taskChanges: () => Promise.resolve(null),
     leadName: () => Promise.resolve('team-lead'),
     changed,

@@ -24,11 +24,11 @@ import {
 } from '@renderer/utils/specificationTaskPresentation';
 
 import type { SpecificationBinding } from '@renderer/utils/specificationTaskPresentation';
-import type { SpecRegistryDiscovery } from '@shared/types';
+import type { SpecRegistryDiscovery, TeamSpecScope } from '@shared/types';
 
 interface TeamSpecBindingsManagerProps {
   teamName: string;
-  bindings: readonly SpecificationBinding[];
+  scope: Readonly<TeamSpecScope> | undefined;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onBindingsChange: (bindings: SpecificationBinding[] | null) => void;
@@ -38,15 +38,17 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-export function TeamSpecBindingsManager({
+export const TeamSpecBindingsManager = ({
   teamName,
-  bindings,
+  scope,
   open,
   onOpenChange,
   onBindingsChange,
-}: TeamSpecBindingsManagerProps): React.JSX.Element {
+}: TeamSpecBindingsManagerProps): React.JSX.Element => {
   const { t } = useAppTranslation('team');
-  const [linkedBindings, setLinkedBindings] = useState<SpecificationBinding[]>([...bindings]);
+  const [linkedBindings, setLinkedBindings] = useState<SpecificationBinding[]>([
+    ...(scope?.bindings ?? []),
+  ]);
   const [bindingsLoading, setBindingsLoading] = useState(false);
   const [bindingsError, setBindingsError] = useState<string | null>(null);
   const [discovery, setDiscovery] = useState<SpecRegistryDiscovery | null>(null);
@@ -57,8 +59,8 @@ export function TeamSpecBindingsManager({
   const [actionError, setActionError] = useState<string | null>(null);
 
   useEffect(() => {
-    setLinkedBindings([...bindings]);
-  }, [bindings]);
+    setLinkedBindings([...(scope?.bindings ?? [])]);
+  }, [scope]);
 
   useEffect(() => {
     if (!open) return;
@@ -163,7 +165,7 @@ export function TeamSpecBindingsManager({
         onClick={() => onOpenChange(true)}
         aria-label={t('specificationBindings.buttonAria', { team: teamName })}
       >
-        {t('specificationBindings.button', { count: bindings.length })}
+        {t('specificationBindings.button', { count: linkedBindings.length })}
       </Button>
 
       <Dialog open={open} onOpenChange={onOpenChange}>
@@ -340,4 +342,4 @@ export function TeamSpecBindingsManager({
       </Dialog>
     </>
   );
-}
+};

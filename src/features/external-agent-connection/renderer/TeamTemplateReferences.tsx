@@ -39,9 +39,9 @@ const TEMPLATE_ICONS = {
   learning: GraduationCap,
 } satisfies Record<TeamTemplateV1['id'], LucideIcon>;
 
-export function TeamTemplateReferences({
+export const TeamTemplateReferences = ({
   isLight,
-}: Readonly<{ isLight: boolean }>): React.JSX.Element {
+}: Readonly<{ isLight: boolean }>): React.JSX.Element => {
   const { t } = useAppTranslation('team');
   return (
     <section className="min-w-0 space-y-3" aria-label={t('externalPrompt.templatesTitle')}>
@@ -127,4 +127,4 @@ export function TeamTemplateReferences({
       })}
     </section>
   );
-}
+};

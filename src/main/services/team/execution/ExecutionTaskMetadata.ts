@@ -1,11 +1,11 @@
-import type { KanbanColumnId, KanbanState } from '@shared/types/team';
-import type { PendingKanbanTransition } from '@shared/types/kanbanRecovery';
 import type {
   SourceMessageSnapshot,
+  TaskCreationCommand,
   TaskRef,
   TeamReviewState,
-  TaskCreationCommand,
 } from '@shared/types';
+import type { PendingKanbanTransition } from '@shared/types/kanbanRecovery';
+import type { KanbanColumnId, KanbanState } from '@shared/types/team';
 
 /** Non-canonical context that must survive registry reads and process restarts. */
 export interface ExecutionTaskMetadata {

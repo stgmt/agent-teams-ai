@@ -8,6 +8,7 @@ import { TeamDataService } from '@main/services/team/TeamDataService';
 import { TeamProvisioningService } from '@main/services/team/TeamProvisioningService';
 import { describe, expect, it, vi } from 'vitest';
 
+import { knownEmptyTeamRuntimeSnapshot } from '../../../../test/helpers/teamRuntimeSnapshot';
 import { GatewayCredentialStore } from '../main/adapters/output/GatewayCredentialStore';
 import { GatewayProviderService } from '../main/application/GatewayProviderService';
 import { createGatewayProviderFeature } from '../main/composition/createGatewayProviderFeature';
@@ -211,7 +212,7 @@ describe('gateway draft recovery', () => {
 
   it('samples saved membership and binds after a queued roster mutation finishes', async () => {
     const { service, restart, bind, dir, drafts, store } = await fixture();
-    const configuration = new TeamDataService();
+    const configuration = new TeamDataService(knownEmptyTeamRuntimeSnapshot);
     const lifecycle = new TeamProvisioningService();
     configuration.setConfigurationGate((team, operation) =>
       lifecycle.runLiveRosterMutation(team, operation)

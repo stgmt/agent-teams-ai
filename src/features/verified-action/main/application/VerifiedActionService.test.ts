@@ -14,6 +14,9 @@ const proof: VerifiedActionProof = { attachmentId: 'report', sha256: 'a'.repeat(
 const scratchRoots: string[] = [];
 const requireFromTest = createRequire(import.meta.url);
 
+// A test process has no desktop app binding, which the canonical task backend requires. The
+// fixtures therefore select the real controller's local board for their scratch team.
+
 afterEach(async () => {
   const scratchParent = await fs.promises.realpath(os.tmpdir());
   for (const root of scratchRoots.splice(0)) {
@@ -59,7 +62,11 @@ describe('verified artifact action', () => {
     const controller = requireFromTest(
       path.resolve('agent-teams-controller/src/index.js')
     ) as typeof import('agent-teams-controller');
-    const board = controller.createController({ teamName: 'fixture', claudeDir: root }).taskBoard;
+    const board = controller.createController({
+      teamName: 'fixture',
+      claudeDir: root,
+      localTaskBoard: true,
+    }).taskBoard;
     const task = board.createTask({ subject: 'result', owner: 'worker' }) as { id: string };
     board.updateTaskFields(task.id, {
       artifactRequired: true,
@@ -106,7 +113,11 @@ describe('verified artifact action', () => {
     const controller = requireFromTest(
       path.resolve('agent-teams-controller/src/index.js')
     ) as typeof import('agent-teams-controller');
-    const board = controller.createController({ teamName: 'fixture', claudeDir: root }).taskBoard;
+    const board = controller.createController({
+      teamName: 'fixture',
+      claudeDir: root,
+      localTaskBoard: true,
+    }).taskBoard;
     const task = board.createTask({ subject: 'result', owner: 'worker' }) as { id: string };
     const artifactFile = {
       filename: 'result.txt',

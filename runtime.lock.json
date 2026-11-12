@@ -1,21 +1,21 @@
 {
   "schemaVersion": 1,
   "releaseKind": "windows-x64-claude-only",
-  "version": "0.0.158",
+  "version": "0.0.159",
   "cliVersion": "2.777.777",
-  "targetReleaseTag": "runtime-v0.0.158",
+  "targetReleaseTag": "runtime-v0.0.159",
   "sourceRepository": "stgmt/agent_teams_orchestrator",
-  "sourceRef": "refs/tags/v0.0.158",
-  "sourceCommit": "c2a8a774cf901b7c13f0a6c8254b05e9cbcc834a",
+  "sourceRef": "refs/tags/v0.0.159",
+  "sourceCommit": "423598826b3f8e76632648282dc9195e2819632a",
   "releaseRepository": "stgmt/agent_teams_orchestrator",
-  "releaseTag": "runtime-v0.0.158",
+  "releaseTag": "runtime-v0.0.159",
   "opencodeV2Delivery": "off",
   "assets": {
     "win32-x64": {
-      "file": "agent-teams-runtime-win32-x64-v0.0.158.zip",
+      "file": "agent-teams-runtime-win32-x64-v0.0.159.zip",
       "archiveKind": "zip",
       "binaryName": "claude-multimodel.exe",
-      "sha256": "1fb7fb95d57c366a8c8e8cf96961e599ba0b5ebc1a3c8dc2717c95768aadf739"
+      "sha256": "4fe0cb3456fb98e3d2b5c1e6abea092dbc7c7ba5706bd2b44032bec4242f42ae"
     }
   }
 }

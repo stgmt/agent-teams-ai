@@ -81,10 +81,10 @@ vi.mock('@renderer/api', () => ({
   isElectronMode: mockApi.isElectronMode,
 }));
 
-function Harness(): React.JSX.Element | null {
+const Harness = (): React.JSX.Element | null => {
   capturedHook = useTmuxInstallerBanner();
   return null;
-}
+};
 
 describe('useTmuxInstallerBanner', () => {
   beforeEach(() => {

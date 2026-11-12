@@ -1,7 +1,7 @@
 import { ConfigManager } from '@main/services/infrastructure/ConfigManager';
 import { getAppIconPath } from '@main/utils/appIcon';
 import { getTeamsBasePath } from '@main/utils/pathDecoder';
-import { DEFAULT_TOOL_APPROVAL_SETTINGS } from '@shared/types/team';
+import { DEFAULT_TOOL_APPROVAL_SETTINGS } from '@shared/types/toolApproval';
 
 import { openCodeRuntimeApprovalProvider } from '../approvals/OpenCodeRuntimeApprovalProvider';
 import {

@@ -16,7 +16,11 @@ vi.mock('../../../../src/main/utils/processInspection', () => ({
   inspectProcessesByPid: vi.fn(async (pids: readonly number[]) => {
     const { inspectProcessByPid } = await import('../../../../src/main/utils/processInspection');
     const map = new Map<number, unknown>();
-    for (const pid of pids) map.set(pid, await (inspectProcessByPid as unknown as (pid: number) => Promise<unknown>)(pid));
+    for (const pid of pids)
+      map.set(
+        pid,
+        await (inspectProcessByPid as unknown as (pid: number) => Promise<unknown>)(pid)
+      );
     return map;
   }),
 }));
@@ -54,6 +58,7 @@ async function setup() {
     effort: 'high',
     description: 'TEST description',
     createdAt: 10,
+    specScope: { projects: ['TEST/project'], bindings: [] },
   };
   const membersMeta = {
     version: 1 as const,
@@ -74,6 +79,10 @@ async function setup() {
         return membersMeta;
       },
     },
+    specRegistryEnvironment: async () => ({
+      OMP_SPEC_REGISTRY_URL: 'http://127.0.0.1:8090',
+      OMP_SPEC_REGISTRY_TOKEN: 'TEST-registry-credential',
+    }),
   });
   await settings.capture(run);
   const config = new NodeNativeTeamConfig({ teamsRoot: root, settings, invalidate() {} });
@@ -201,6 +210,7 @@ describe('app-owned native team runtime configuration', () => {
             model: 'TEST-gemini-model',
             cwd: root,
             createdAt: 1,
+            specScope: { projects: ['TEST/project'], bindings: [] },
           };
         },
       },
@@ -209,6 +219,10 @@ describe('app-owned native team runtime configuration', () => {
           return { version: 1, members: [{ name: 'builder' }] };
         },
       },
+      specRegistryEnvironment: async () => ({
+        OMP_SPEC_REGISTRY_URL: 'http://127.0.0.1:8090',
+        OMP_SPEC_REGISTRY_TOKEN: 'TEST-registry-credential',
+      }),
     });
     await settings.capture(run);
     const config = new NodeNativeTeamConfig({ teamsRoot: root, settings, invalidate() {} });
@@ -458,44 +472,45 @@ describe('app-owned native team runtime configuration', () => {
     expect(await readFile(configPath, 'utf8')).toBe(before);
   });
 
-  it.each([{ runtimeProcessBirthId: 'TEST-native-birth' }, { runtimeOperationId: 'TEST-native-operation' }])(
-    'releases a native row whose recorded process is gone %j',
-    async (identity) => {
-      const { config, configPath } = await setup();
-      vi.mocked(inspectProcessByPid).mockResolvedValue({ status: 'not_found' });
-      await writeFile(
-        configPath,
-        JSON.stringify({
-          name: run.teamName,
-          members: [{ name: 'builder', runtimePid: 4242, tmuxPaneId: 'process:4242', ...identity }],
-        })
-      );
+  it.each([
+    { runtimeProcessBirthId: 'TEST-native-birth' },
+    { runtimeOperationId: 'TEST-native-operation' },
+  ])('releases a native row whose recorded process is gone %j', async (identity) => {
+    const { config, configPath } = await setup();
+    vi.mocked(inspectProcessByPid).mockResolvedValue({ status: 'not_found' });
+    await writeFile(
+      configPath,
+      JSON.stringify({
+        name: run.teamName,
+        members: [{ name: 'builder', runtimePid: 4242, tmuxPaneId: 'process:4242', ...identity }],
+      })
+    );
 
-      await expect(config.prepare(run, new AbortController().signal)).resolves.toBeUndefined();
-      const saved = JSON.parse(await readFile(configPath, 'utf8')) as {
-        members: Record<string, unknown>[];
-      };
-      expect(saved.members[0]?.runtimePid).toBeUndefined();
-      expect(saved.members[0]?.runtimeProcessBirthId).toBeUndefined();
-      expect(saved.members[0]?.runtimeOperationId).toBeUndefined();
-    }
-  );
+    await expect(config.prepare(run, new AbortController().signal)).resolves.toBeUndefined();
+    const saved = JSON.parse(await readFile(configPath, 'utf8')) as {
+      members: Record<string, unknown>[];
+    };
+    expect(saved.members[0]?.runtimePid).toBeUndefined();
+    expect(saved.members[0]?.runtimeProcessBirthId).toBeUndefined();
+    expect(saved.members[0]?.runtimeOperationId).toBeUndefined();
+  });
 
   it.each([{ laneId: 'TEST-opencode-lane' }, { provider: 'opencode' }])(
     'does not recover non-legacy lane identity %j',
     async (identity) => {
-    const { config, configPath } = await setup();
-    vi.mocked(inspectProcessByPid).mockResolvedValue({ status: 'not_found' });
-    const before = JSON.stringify({
-      name: run.teamName,
-      members: [{ name: 'builder', runtimePid: 4242, tmuxPaneId: 'process:4242', ...identity }],
-    });
-    await writeFile(configPath, before);
+      const { config, configPath } = await setup();
+      vi.mocked(inspectProcessByPid).mockResolvedValue({ status: 'not_found' });
+      const before = JSON.stringify({
+        name: run.teamName,
+        members: [{ name: 'builder', runtimePid: 4242, tmuxPaneId: 'process:4242', ...identity }],
+      });
+      await writeFile(configPath, before);
 
-    await expect(config.prepare(run, new AbortController().signal)).rejects.toThrow('unreleased');
+      await expect(config.prepare(run, new AbortController().signal)).rejects.toThrow('unreleased');
 
-    expect(await readFile(configPath, 'utf8')).toBe(before);
-  });
+      expect(await readFile(configPath, 'utf8')).toBe(before);
+    }
+  );
 
   it('preserves the config when cancellation arrives during process inspection', async () => {
     const { config, configPath } = await setup();

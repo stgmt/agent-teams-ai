@@ -215,12 +215,15 @@ describe('TeamAttachmentStore immutable native bundles', () => {
       const open = nodeFs.promises.open.bind(nodeFs.promises);
       const readFile = nodeFs.promises.readFile.bind(nodeFs.promises);
       let swapped = false;
+      const swapAncestor = async () => {
+        await fs.rename(messageDir, path.join(root, 'original-message'));
+        await fs.symlink(outside, messageDir, 'dir');
+      };
       const swapAfterRead = async (bytes: Buffer | string) => {
         if (swapped) return;
         swapped = true;
         if (swap === 'ancestor symlink') {
-          await fs.rename(messageDir, path.join(root, 'original-message'));
-          await fs.symlink(outside, messageDir, 'dir');
+          await swapAncestor();
         } else {
           await fs.rename(artifact, `${artifact}.original`);
           if (swap === 'leaf symlink') await fs.symlink(outsideArtifact, artifact);
@@ -239,6 +242,17 @@ describe('TeamAttachmentStore immutable native bundles', () => {
       const intercepted = vi
         .spyOn(nodeFs.promises, 'open')
         .mockImplementation(async (file, flags, mode) => {
+          // Windows refuses to rename a directory while a file inside it is open,
+          // so the ancestor swap is applied just before the descriptor is taken
+          // instead of after its bytes are read. The guard under test is the same:
+          // what the descriptor answers must still be the artifact that was verified.
+          if (
+            isArtifact(file) &&
+            !swapped &&
+            swap === 'ancestor symlink' &&
+            process.platform === 'win32'
+          )
+            await swapAfterRead('');
           const handle = await open(file, flags, mode);
           if (isArtifact(file) && !swapped) {
             const read = handle.readFile.bind(handle);

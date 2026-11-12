@@ -194,7 +194,11 @@ describe('original callback descriptor ownership', () => {
         });
     };
     const owner = new OwnedReadDescriptors({ ...fs, write });
-    const acquisition = owner.open(path, fs.constants.O_RDWR | fs.constants.O_TRUNC);
+    // Windows refuses O_TRUNC without O_CREAT (EINVAL); the portable truncate idiom carries both.
+    const acquisition = owner.open(
+      path,
+      fs.constants.O_RDWR | fs.constants.O_TRUNC | fs.constants.O_CREAT
+    );
     const descriptor = await acquisition.result;
     const input = Buffer.from('bytes');
     const writing = descriptor.write(0, input);
@@ -619,7 +623,10 @@ describe('physical continuation barrier', () => {
 
 it('copies the complete raw intrinsic byte view without consulting shadowed metadata', async () => {
   const owner = new OwnedReadDescriptors();
-  const acquisition = owner.open(path, fs.constants.O_WRONLY | fs.constants.O_TRUNC);
+  const acquisition = owner.open(
+    path,
+    fs.constants.O_WRONLY | fs.constants.O_TRUNC | fs.constants.O_CREAT
+  );
   const descriptor = await acquisition.result;
   const data = Uint8Array.from([120, 65, 66, 121]).subarray(1, 3);
   for (const key of ['length', 'byteLength', 'buffer', 'byteOffset', 'valueOf']) {

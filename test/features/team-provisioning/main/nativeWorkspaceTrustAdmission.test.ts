@@ -1,4 +1,9 @@
 // @vitest-environment node
+import {
+  installNativeSdkHostFixture,
+  nativeSpecScope,
+  nativeSpecRegistryEnvironment,
+} from './nativeSdkTestHarness';
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -10,6 +15,7 @@ import { createNativeTeamLifecycle } from '../../../../src/features/team-provisi
 import { createNativeWorkspaceTrust } from '../../../../src/features/workspace-trust/main/composition/createNativeWorkspaceTrust';
 
 import type { NativeWorkspaceTrustPreparation } from '../../../../src/features/workspace-trust/main/composition/createNativeWorkspaceTrust';
+const sdkHost = installNativeSdkHostFixture();
 
 const directories: string[] = [];
 afterEach(async () => {
@@ -43,6 +49,7 @@ async function setup(prepareTrust?: NativeWorkspaceTrustPreparation['prepare']) 
     : createNativeWorkspaceTrust({ homeDirectory: home, env: {} });
   const lifecycle = createNativeTeamLifecycle({
     owner: context.snapshot(),
+    sdkHost: sdkHost(),
     readStartupTasks: async () => [],
     createController: () => ({
       taskBoard: { deliverStartupWorkAsync: async () => ({ delivered: [], skipped: [] }) },
@@ -59,8 +66,16 @@ async function setup(prepareTrust?: NativeWorkspaceTrustPreparation['prepare']) 
       runtimeArgs: () => Promise.reject(new Error('Unexpected runtime arguments')),
     },
     settings: {
+      specRegistryEnvironment: nativeSpecRegistryEnvironment,
       metadata: {
-        getMeta: () => Promise.resolve({ version: 1, providerId: 'anthropic', cwd, createdAt: 1 }),
+        getMeta: () =>
+          Promise.resolve({
+            version: 1,
+            providerId: 'anthropic',
+            cwd,
+            createdAt: 1,
+            specScope: nativeSpecScope,
+          }),
       },
       members: {
         getMeta: () => Promise.resolve({ version: 1, members: [] }),

@@ -25,8 +25,10 @@ describe('resolveOpenCodeQuickConnectGate', () => {
   });
 
   it.each([false, true])(
-    'distinguishes required V2 support while native refresh is %s',
+    'reports a required V2 support state for an unserved V2 native version while native refresh is %s',
     (loading) => {
+      // The pinned V1-only release recognizes no V2 version, so a required-support
+      // record cannot become the support-required gate; it stays an unserved runtime.
       expect(
         resolveOpenCodeQuickConnectGate({
           runtimeStatus: {
@@ -40,7 +42,7 @@ describe('resolveOpenCodeQuickConnectGate', () => {
           provider: null,
           cliStatusLoading: true,
         })
-      ).toBe(loading ? 'checking' : 'support-required');
+      ).toBe(loading ? 'checking' : 'missing');
     }
   );
 
@@ -120,7 +122,7 @@ describe('resolveOpenCodeQuickConnectGate', () => {
     ).toBe('ready');
   });
 
-  it.each(['2.0.0', '2.0.32', 'opencode v2.0.32', '2.0.21', 'opencode v2.0.21', '2.0.26', '2.1.4'])(
+  it.each(['1.16.0', '1.18.3', '1.17.18'])(
     'allows provider connection for the recognized installed native runtime %s',
     (version) => {
       expect(
@@ -131,6 +133,22 @@ describe('resolveOpenCodeQuickConnectGate', () => {
           cliStatusLoading: false,
         })
       ).toBe('ready');
+    }
+  );
+
+  // `runtime.lock.json` pins a V1-only release (`opencodeV2Delivery: "off"`, no
+  // `opencodeV2` contract), so an installed V2 native binary is not served.
+  it.each(['2.0.0', '2.0.32', 'opencode v2.0.32', '2.0.21', 'opencode v2.0.21', '2.0.26', '2.1.4'])(
+    'keeps provider connection blocked for the unserved V2 native runtime %s',
+    (version) => {
+      expect(
+        resolveOpenCodeQuickConnectGate({
+          runtimeStatus: { installed: true, source: 'path', state: 'ready', version },
+          runtimeStatusLoading: false,
+          provider: null,
+          cliStatusLoading: false,
+        })
+      ).toBe('missing');
     }
   );
 

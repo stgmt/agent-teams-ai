@@ -1,4 +1,5 @@
 import { LifecycleSnapshotFeed } from './LifecycleSnapshotFeed';
+import { sameIdentity, sameOwner, sameProcess } from './memberLifecycleIdentity';
 import { MemberRestartConflictError } from './MemberRestartConflictError';
 import { MemberSkipConflictError } from './MemberSkipConflictError';
 import { memberIsLive, teamLifecycleState } from './teamLifecycleState';
@@ -39,22 +40,6 @@ interface TeamState {
   members: Map<string, MemberState>;
 }
 
-function sameOwner(a: AppConnectionContext, b: AppConnectionContext): boolean {
-  return (
-    a.appInstanceId === b.appInstanceId &&
-    a.dataRootFingerprint === b.dataRootFingerprint &&
-    a.connectionGeneration === b.connectionGeneration
-  );
-}
-
-function sameIdentity(a: TeamRunIdentity, b: Readonly<TeamRunIdentity>): boolean {
-  return sameOwner(a, b) && a.teamName === b.teamName && a.runId === b.runId;
-}
-
-function sameProcess(a: Readonly<OwnedProcessIdentity> | null, b: OwnedProcessIdentity): boolean {
-  return a !== null && a.pid === b.pid && a.birthId === b.birthId;
-}
-
 function tokenFor(team: TeamState, member: MemberState): Readonly<MemberProcessToken> {
   if (!member.operationId) throw new Error('Member has no start operation');
   return Object.freeze({
@@ -63,6 +48,13 @@ function tokenFor(team: TeamState, member: MemberState): Readonly<MemberProcessT
     generation: member.generation,
     operationId: member.operationId,
   });
+}
+
+export interface RecoveredMemberIdentity extends ConfiguredMemberIdentity {
+  generation: number;
+  operationId: string | null;
+  process: Readonly<OwnedProcessIdentity> | null;
+  lane: Readonly<MemberLaneObservation> | null;
 }
 
 export class MemberLifecycleRegistry {
@@ -209,6 +201,40 @@ export class MemberLifecycleRegistry {
       members: configured,
     });
     this.publishChanged(identity.teamName);
+  }
+
+  /** A new app adopts the durable attempt; it does not admit a new start. */
+  adoptTeam(identity: TeamRunIdentity, members: readonly RecoveredMemberIdentity[]): void {
+    this.assertCanConfigure(identity);
+    for (const member of members) {
+      if (
+        (member.process || member.lane) &&
+        (!Number.isSafeInteger(member.generation) || member.generation < 1 || !member.operationId)
+      )
+        throw new Error('Recovered runtime attempt identity is invalid');
+      if (
+        member.process &&
+        (!Number.isSafeInteger(member.process.pid) ||
+          member.process.pid < 1 ||
+          !member.process.birthId)
+      )
+        throw new Error('Recovered process identity is invalid');
+    }
+    this.configureTeam(identity, members);
+    const team = this.requireRun(identity);
+    for (const recovered of members) {
+      const member = this.requireMember(team, recovered.memberName);
+      member.generation = recovered.generation;
+      member.operationId = recovered.operationId;
+      member.process = recovered.process;
+      member.lane = recovered.lane;
+      if (recovered.process || recovered.lane) {
+        member.desired = 'running';
+        member.phase = 'connecting';
+        member.resources = 'held';
+      }
+    }
+    this.changed(team);
   }
 
   beginStart(

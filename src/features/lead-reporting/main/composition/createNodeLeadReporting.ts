@@ -16,6 +16,8 @@ interface Dependencies {
   members: Pick<TeamMembersMetaStore, 'getMeta'>;
   resolveLead(credential: string): LeadReportRunIdentity;
   lifecycle(run: LeadReportRunIdentity): Promise<Readonly<TeamLifecycleSnapshot> | null>;
+  /** Canonical team tasks read by the app; the controller projects this snapshot. */
+  tasks(run: LeadReportRunIdentity): Promise<readonly TeamTask[]>;
   taskChanges(input: {
     run: LeadReportRunIdentity;
     task: TeamTask;
@@ -47,12 +49,14 @@ export function createNodeLeadReporting(deps: Dependencies): NodeLeadReporting {
     teamsRoot: deps.teamsRoot,
     members: deps.members,
     lifecycle: (run) => deps.lifecycle(run),
+    tasks: (run) => deps.tasks(run),
     taskChanges: (input) => deps.taskChanges(input),
     now,
   });
   const delivery = new NodeLeadReportDelivery({
     teamsRoot: deps.teamsRoot,
     leadName: (run) => deps.leadName(run),
+    tasks: (run) => deps.tasks(run),
     assertCurrentRun: async (run) => {
       const snapshot = await deps.lifecycle(run);
       if (!snapshot || !sameRun(snapshot.identity, run))

@@ -20,6 +20,7 @@ import { type OpenCodeVisibleReplyProofService } from '../opencode/delivery/Open
 import { boundLaunchDiagnostics } from '../progressPayload';
 import { readBootstrapLaunchSnapshot } from '../TeamBootstrapStateReader';
 import { readPersistedLaunchRuntimePidsSync, TeamLaunchStateStore } from '../TeamLaunchStateStore';
+import { TeamTaskReader } from '../TeamTaskReader';
 
 import { createAnthropicApiKeyHelperCleanupRetryOwner } from './TeamProvisioningAnthropicApiKeyHelperLease';
 import {
@@ -139,6 +140,9 @@ export abstract class TeamProvisioningServiceRuntimeStateFacade extends TeamProv
   protected readonly openCodeSecondaryBriefingBuilder =
     createTeamProvisioningOpenCodeSecondaryBriefingBuilder({
       createController: (input) => createController(input),
+      // App-side canonical read handed to the controller as a detached snapshot: the
+      // briefing must not resolve the app's own task API over HTTP.
+      readTasks: (teamName) => new TeamTaskReader().getTasks(teamName),
       getClaudeBasePath,
     });
   protected readonly claudePermissionSettingsDelegation =

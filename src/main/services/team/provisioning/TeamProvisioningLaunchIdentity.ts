@@ -25,6 +25,11 @@ import {
   shouldProbeCodexChatGptModelSupport,
 } from './TeamProvisioningCodexChatGptModelGate';
 import {
+  normalizeProviderModelListModels,
+  type ProviderModelListCommandResponse,
+  type RuntimeStatusCommandResponse,
+} from './TeamProvisioningModelListNormalization';
+import {
   appendPreflightDebugLog,
   PROVIDER_MODEL_LIST_TIMEOUT_MS,
   PROVIDER_RUNTIME_STATUS_TIMEOUT_MS,
@@ -33,11 +38,8 @@ import {
 import {
   addModelCatalogLaunchModels,
   extractJsonObjectFromCli,
-  normalizeProviderModelListModels,
-  type ProviderModelListCommandResponse,
   resolveCodexSelectionFromFacts,
   type RuntimeProviderLaunchFacts,
-  type RuntimeStatusCommandResponse,
 } from './TeamProvisioningRuntimeLaunchSelection';
 
 export type LaunchIdentityRequest = Pick<

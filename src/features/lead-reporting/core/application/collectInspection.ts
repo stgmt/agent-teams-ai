@@ -1,7 +1,7 @@
 import { evidenceFor, memberChanges, sameRun } from '../domain/reportFacts';
 
 import { LeadReportSourceFailure } from './ports';
-import { SourceDeadline, readSourceWithin } from './sourceDeadline';
+import { readSourceWithin, SourceDeadline } from './sourceDeadline';
 
 import type {
   LeadInspection,

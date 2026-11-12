@@ -254,6 +254,31 @@ export class NativeOpenCodeLaneRuntime implements MemberRuntimePort {
     throw new Error('OpenCode members run in adapter lanes, not member processes');
   }
 
+  async observeExisting(input: TeamRuntimeLaunchInput): Promise<OwnedMemberLaneGroup> {
+    const result = await this.deps.adapter.reconcile({
+      runId: input.runId,
+      teamName: input.teamName,
+      laneId: input.laneId,
+      providerId: 'opencode',
+      expectedMembers: input.expectedMembers,
+      previousLaunchState: input.previousLaunchState,
+      reason: 'startup_recovery',
+    });
+    if (
+      result.observationUnavailable ||
+      result.runId !== input.runId ||
+      result.teamName !== input.teamName
+    )
+      throw new Error('Surviving OpenCode lane observation is unavailable');
+    const observations: Record<string, MemberLaneObservation> = {};
+    for (const member of input.expectedMembers) {
+      const evidence = result.members[member.name];
+      if (!evidence) throw new Error(`Surviving lane evidence is missing for ${member.name}`);
+      observations[member.name] = toObservation(evidence, input.laneId ?? 'primary');
+    }
+    return new OpenCodeLaneGroup(this.deps, input, observations);
+  }
+
   async startLane(
     settings: Readonly<ConfiguredMemberLaunch>,
     token: Readonly<MemberProcessToken>,
@@ -277,7 +302,8 @@ export class NativeOpenCodeLaneRuntime implements MemberRuntimePort {
     signal.throwIfAborted();
     const [firstSetting] = settings;
     const [token] = tokens;
-    if (!firstSetting || !token) throw new Error('OpenCode lane launch requires a configured roster');
+    if (!firstSetting || !token)
+      throw new Error('OpenCode lane launch requires a configured roster');
     // A primary lane is launched by its lead; a secondary lane holds one member and
     // has no lead at all, so that member is its launch subject.
     const subject = settings.find((entry) => entry.role === 'lead') ?? firstSetting;

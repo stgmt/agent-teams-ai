@@ -3,9 +3,10 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import type { TeamTask } from '@shared/types';
 
 import { deliverStartupWorkAfterConfirmation } from '../TeamProvisioningStartupWorkDelivery';
+
+import type { TeamTask } from '@shared/types';
 
 const { createController } = agentTeamsControllerModule;
 
@@ -91,7 +92,10 @@ describe('startup work delivery after a confirmed launch', () => {
 
   afterEach(() => rmSync(claudeDir, { recursive: true, force: true }));
 
-  const board = () => createController({ teamName: 'fixture', claudeDir }).taskBoard;
+  // A test process has no desktop app binding, which the canonical task backend requires; the
+  // fixture therefore selects the real controller's local board for its scratch team.
+  const board = () =>
+    createController({ teamName: 'fixture', claudeDir, localTaskBoard: true }).taskBoard;
 
   it('S1.3, S1.5: a native member gets its tasks from the supplied snapshot', async () => {
     board().createTask({ subject: 'First job', owner: 'bob' });

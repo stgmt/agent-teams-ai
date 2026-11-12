@@ -37,6 +37,13 @@ function setup(
           team,
           memberName,
           configurationRevision: 'revision-1',
+          specIntegration: {
+            scope: { projects: ['TEST/project'], bindings: [] },
+            environment: {
+              OMP_SPEC_REGISTRY_URL: 'http://127.0.0.1:8090',
+              OMP_SPEC_REGISTRY_TOKEN: 'TEST-registry-credential',
+            },
+          },
           providerId,
           model: null,
           workingDirectory: 'TEST-workspace',
@@ -190,7 +197,6 @@ describe('configured member start command', () => {
     registry.snapshot(run.teamName);
     expect(notifications).toBe(1);
   });
-
 
   it('does not overlap a replacement attempt with the exited process resource release', async () => {
     let events!: MemberRuntimeEvents;

@@ -11,6 +11,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@renderer/components/ui/select';
+
 import { registrySelectionKey } from './teamSpecBindingSelection';
 
 import type { SpecRegistryDiscovery } from '@shared/types';
@@ -43,7 +44,7 @@ interface SpecRegistryPickerProps {
   onValidSelectionChange: (key: string | null) => void;
 }
 
-export function SpecRegistryPicker({
+export const SpecRegistryPicker = ({
   project,
   slug,
   onProjectChange,
@@ -51,7 +52,7 @@ export function SpecRegistryPicker({
   onValidSelectionChange,
   disabled = false,
   allowEmptySelection = false,
-}: SpecRegistryPickerProps): React.JSX.Element {
+}: SpecRegistryPickerProps): React.JSX.Element => {
   const { t } = useAppTranslation('team');
   const id = useId();
   const [refresh, setRefresh] = useState(0);
@@ -60,7 +61,9 @@ export function SpecRegistryPicker({
   const projects = state.status === 'ready' ? state.data.projects : EMPTY_PROJECTS;
   const selectedProject = projects.find((item) => item.id === project);
   const valid = Boolean(
-    !selectedProject?.unavailable && selectedProject?.specs.some((item) => item.slug === slug)
+    selectedProject &&
+    !selectedProject.unavailable &&
+    (!slug || selectedProject.specs.some((item) => item.slug === slug))
   );
 
   useEffect(() => {
@@ -173,13 +176,7 @@ export function SpecRegistryPicker({
       )}
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <div className="space-y-1.5">
-          <Label htmlFor={`${id}-project`}>
-            {t(
-              allowEmptySelection
-                ? 'create.fields.specProjectOptional'
-                : 'create.fields.specProject'
-            )}
-          </Label>
+          <Label htmlFor={`${id}-project`}>{t('create.fields.specProject')}</Label>
           <Select
             value={project}
             onValueChange={(value) => {
@@ -210,16 +207,19 @@ export function SpecRegistryPicker({
           </Select>
         </div>
         <div className="space-y-1.5">
-          <Label htmlFor={`${id}-spec`}>
-            {t(allowEmptySelection ? 'create.fields.specSlugOptional' : 'create.fields.specSlug')}
-          </Label>
+          <Label htmlFor={`${id}-spec`}>{t('create.fields.specSlugOptional')}</Label>
           <Select
             value={slug}
             onValueChange={(value) => {
               onValidSelectionChange(null);
               onSlugChange(value);
             }}
-            disabled={disabled || !selectedProject || selectedProject.specs.length === 0}
+            disabled={
+              disabled ||
+              !selectedProject ||
+              selectedProject.unavailable ||
+              selectedProject.specs.length === 0
+            }
           >
             <SelectTrigger id={`${id}-spec`} className="h-8 text-xs">
               <SelectValue placeholder={t('create.registryPicker.selectSpec')} />
@@ -241,4 +241,4 @@ export function SpecRegistryPicker({
       </div>
     </div>
   );
-}
+};

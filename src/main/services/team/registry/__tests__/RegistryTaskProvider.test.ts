@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { ExecutionTaskStore } from '../../execution/ExecutionTaskStore';
 import { RegistryTaskClientError } from '../RegistryTaskClientErrors';
+import { registryTaskId } from '../RegistryTaskIdentity';
 import {
   REGISTRY_TASK_CACHE_TTL_MS,
   RegistryTaskProvider,
@@ -18,7 +19,6 @@ import type { RegistryTaskClient } from '../RegistryTaskClient';
 import type { RegistryTask, RegistryTaskStatus } from '../RegistryTaskClientTypes';
 import type { ListRegistryTasksInput } from '../RegistryTaskClientTypes';
 import type { TeamSpecBinding, TeamSpecBindingConfig } from '../TeamSpecBinding';
-import { registryTaskId } from '../RegistryTaskIdentity';
 
 const PROJECT = 'stgmt/tokenplan';
 const SPEC = 'balancer-consistency-hardening';
@@ -175,8 +175,7 @@ function createProvider(
 
 const BOUND_CONFIG = {
   registryTeamId: TEAM_ID,
-  specProject: PROJECT,
-  specSlug: SPEC,
+  specScope: { projects: [PROJECT], bindings: [{ project: PROJECT, spec: SPEC }] },
 };
 
 describe('RegistryTaskProvider', () => {
@@ -195,12 +194,20 @@ describe('RegistryTaskProvider', () => {
     expect((await provider.getTask(TEAM, task2Id)).task?.related).toEqual([task1Id]);
   });
 
+  it('refuses missing team configuration rather than publishing an empty board', async () => {
+    const { provider, registry } = createProvider({});
+    await expect(provider.readBoardSnapshot(TEAM)).rejects.toMatchObject({
+      code: 'REGISTRY_SCOPE_INCOMPLETE',
+      teamName: TEAM,
+    });
+    expect(registry.calls).toHaveLength(0);
+  });
+
   it('reports an unbound team without touching the registry', async () => {
     const { provider, registry } = createProvider({ config: {} });
 
     await expect(provider.getTasks(TEAM)).rejects.toMatchObject({
       code: 'REGISTRY_SCOPE_INCOMPLETE',
-      causeCode: 'SPEC_PROJECT_MISSING',
     });
     await expect(provider.getTask(TEAM, '7')).rejects.toMatchObject({
       code: 'REGISTRY_SCOPE_INCOMPLETE',
@@ -393,7 +400,9 @@ describe('RegistryTaskProvider', () => {
   });
 
   it('refuses a half-configured binding instead of falling back to files', async () => {
-    const { provider } = createProvider({ config: { specProject: PROJECT } });
+    const { provider } = createProvider({
+      config: { specScope: { projects: [PROJECT], bindings: [{ project: PROJECT, spec: '' }] } },
+    });
 
     const error = await provider.getTasks(TEAM).catch((caught: unknown) => caught);
     expect(error).toBeInstanceOf(RegistryTaskProviderError);
@@ -427,5 +436,54 @@ describe('RegistryTaskProvider', () => {
     });
     expect(registry.calls[0]).not.toHaveProperty('teamId');
     expect(configReads).toBeGreaterThan(0);
+  });
+
+  it('keeps a cold publication explicit and single-flight across TTL windows', async () => {
+    let now = 0;
+    const registry = createFakeRegistry({ tasks: [registryTask('1')], deferred: true });
+    const { provider } = createProvider({ config: BOUND_CONFIG, registry, now: () => now });
+    await expect(provider.readBoardSnapshot(TEAM)).rejects.toMatchObject({
+      code: 'REGISTRY_UNAVAILABLE',
+    });
+    await registry.entered;
+    now += REGISTRY_TASK_CACHE_TTL_MS * 4;
+    await expect(provider.readBoardSnapshot(TEAM)).rejects.toMatchObject({
+      code: 'REGISTRY_UNAVAILABLE',
+    });
+    expect(registry.calls).toHaveLength(1);
+    registry.release();
+    await provider.refreshBoardSnapshot(TEAM);
+    expect(await provider.readBoardSnapshot(TEAM, { refresh: false })).toEqual([
+      expect.objectContaining({ id: taskKey('1'), subject: 'Task 1' }),
+    ]);
+  });
+
+  it('does not convert an authenticated registry refusal into a readable board', async () => {
+    const { provider } = createProvider({
+      config: BOUND_CONFIG,
+      registry: createFakeRegistry({
+        failWith: new RegistryTaskClientError({
+          code: 'UNAUTHORIZED',
+          operation: 'listTasks',
+          message: 'Project access refused',
+        }),
+      }),
+    });
+    await expect(provider.refreshBoardSnapshot(TEAM)).rejects.toMatchObject({
+      code: 'REGISTRY_REFUSED',
+    });
+    await expect(provider.readBoardSnapshot(TEAM, { refresh: false })).rejects.toMatchObject({
+      code: 'REGISTRY_REFUSED',
+    });
+  });
+});
+
+describe('RegistryTaskProvider initial permitted project', () => {
+  it('serves a valid empty binding set without inventing a remote task source', async () => {
+    const { provider, registry } = createProvider({
+      config: { specScope: { projects: [PROJECT], bindings: [] } },
+    });
+    expect(await provider.readBoardSnapshot(TEAM, { refresh: false })).toEqual([]);
+    expect(registry.calls).toEqual([]);
   });
 });

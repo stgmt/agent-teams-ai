@@ -6,11 +6,11 @@ import {
   hasAuthoritativeCodexLaunchCatalog,
   hasPathBasedSettingsArgs,
   isCodexEffortRuntimeSupported,
-  normalizeProviderModelListModels,
   normalizeProviderSelectedModelChecks,
   normalizeProvisioningModelCheckRequests,
   validateRuntimeLaunchSelection,
 } from '@main/services/team/provisioning/TeamProvisioningRuntimeLaunchSelection';
+import { normalizeProviderModelListModels } from '@main/services/team/provisioning/TeamProvisioningModelListNormalization';
 import { describe, expect, it } from 'vitest';
 
 import type { RuntimeProviderLaunchFacts } from '@main/services/team/provisioning/TeamProvisioningRuntimeLaunchSelection';

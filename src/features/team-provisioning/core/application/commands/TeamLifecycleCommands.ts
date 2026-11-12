@@ -175,8 +175,14 @@ export class TeamLifecycleCommands {
       this.pending.get(run.teamName)?.abort.abort();
       this.ports.authority.revokeRun(run);
     }
+    // Revoke member continuations in this call stack, before a resolved planner
+    // can enter its spawn admission ahead of the queued team stop operation.
+    const cancellation = this.ports.members.cancelPendingLaunches();
     const operation = Promise.resolve().then(async () => {
-      const results = await Promise.allSettled(runs.map((run) => this.stop(run)));
+      const results = await Promise.allSettled([
+        cancellation,
+        ...runs.map((run) => this.stop(run)),
+      ]);
       const failures = results.flatMap((result) =>
         result.status === 'rejected' ? [result.reason as unknown] : []
       );

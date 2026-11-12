@@ -1,3 +1,4 @@
+import { knownEmptyTeamRuntimeSnapshot } from '../../../helpers/teamRuntimeSnapshot';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -254,8 +255,9 @@ it.each([false, true])(
       memberName: legacyLead ? 'lead' : 'cleared',
       targetKind: legacyLead ? ('lead' as const) : ('member' as const),
       expectedFingerprint: createMemberSettingsFingerprint(snapshots[legacyLead ? 0 : 1]!),
-      expectedTeamSettingsFingerprint: (await new TeamDataService().getSavedRequest(teamName))!
-        .savedSettingsFingerprint!,
+      expectedTeamSettingsFingerprint: (await new TeamDataService(
+        knownEmptyTeamRuntimeSnapshot
+      ).getSavedRequest(teamName))!.savedSettingsFingerprint!,
       settings: {
         ...snapshots[legacyLead ? 0 : 1]!.settings,
         model: legacyLead ? 'lead-two' : null,
@@ -283,7 +285,9 @@ it.each([false, true])(
       syncModelsWithLead: true,
     };
     const launch = async () => {
-      expect((await new TeamDataService().getSavedRequest(teamName))?.model).toBe(request.model);
+      expect(
+        (await new TeamDataService(knownEmptyTeamRuntimeSnapshot).getSavedRequest(teamName))?.model
+      ).toBe(request.model);
       const setup = await prepareModelLaunchFixture(request, sandbox.root);
       expect(setup.configuredMemberSpecs.map((row) => row.name)).not.toContain('lead');
       // The actual setup's synthetic request is EFFECTIVE; only the separate configured
@@ -371,8 +375,9 @@ it.each([false, true])(
       memberName: lead.name,
       targetKind: 'lead' as const,
       expectedFingerprint: fingerprintResolvedMember(reopenedLead),
-      expectedTeamSettingsFingerprint: (await new TeamDataService().getSavedRequest(teamName))!
-        .savedSettingsFingerprint!,
+      expectedTeamSettingsFingerprint: (await new TeamDataService(
+        knownEmptyTeamRuntimeSnapshot
+      ).getSavedRequest(teamName))!.savedSettingsFingerprint!,
       settings: { ...memberToEditableSettings(reopenedLead), model: 'lead-three' },
     };
     const nextSubmitted = buildMembersFromDrafts(

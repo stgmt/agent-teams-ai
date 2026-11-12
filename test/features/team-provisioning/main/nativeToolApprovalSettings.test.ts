@@ -2,7 +2,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { NativeToolApprovalSettings } from '../../../../src/features/team-provisioning/main/adapters/output/NativeToolApprovalSettings';
-import { DEFAULT_TOOL_APPROVAL_SETTINGS } from '../../../../src/shared/types/team';
+import { DEFAULT_TOOL_APPROVAL_SETTINGS } from '@shared/types/toolApproval';
 
 describe('native tool approval settings', () => {
   it('defaults, initializes per launch and clears on release', () => {

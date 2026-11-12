@@ -63,10 +63,10 @@ function member(model: string, cwd?: string): ResolvedTeamMember {
   };
 }
 let latest: ReturnType<typeof useOpenCodeAttachmentDeclarations>;
-function Probe({ target }: { target: OpenCodeAttachmentTarget }) {
+const Probe = ({ target }: { target: OpenCodeAttachmentTarget }) => {
   latest = useOpenCodeAttachmentDeclarations([target]);
   return null;
-}
+};
 
 beforeEach(() => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);

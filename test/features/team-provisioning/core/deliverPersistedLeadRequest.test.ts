@@ -32,14 +32,24 @@ function setup() {
   const accept = vi.fn<ConstructorParameters<typeof DeliverPersistedLeadRequest>[0]['accept']>(() =>
     Promise.resolve('TEST exact-report instruction')
   );
-  const send = vi.fn(() => Promise.resolve());
+  const send = vi.fn<ConstructorParameters<typeof DeliverPersistedLeadRequest>[0]['send']>(() =>
+    Promise.resolve()
+  );
   const readDelivered = vi.fn<
     ConstructorParameters<typeof DeliverPersistedLeadRequest>[0]['readDelivered']
   >(() => Promise.resolve(null));
   const assertCurrent = vi.fn<(run: typeof persisted.run) => void>(() => undefined);
   const claim = vi.fn<
     ConstructorParameters<typeof DeliverPersistedLeadRequest>[0]['input']['claim']
-  >(() => Promise.resolve({ state: 'claimed', operationId: 'TEST-input-operation' }));
+  >((request) =>
+    Promise.resolve({
+      state: 'claimed',
+      operationId:
+        request.requestMessageId === persisted.requestMessageId
+          ? 'TEST-input-operation'
+          : `TEST-input-operation-${request.requestMessageId}`,
+    })
+  );
   const sent = vi.fn<ConstructorParameters<typeof DeliverPersistedLeadRequest>[0]['input']['sent']>(
     () => Promise.resolve()
   );
@@ -85,12 +95,12 @@ describe('persisted human request admission and exact durable reply closure', ()
     expect(results[0]).toEqual({ requestMessageId: persisted.requestMessageId, state: 'sent' });
     expect(results[1]).toEqual(results[0]);
     expect(send).toHaveBeenCalledOnce();
-    expect(send).toHaveBeenCalledWith(run, expect.stringContaining(persisted.text));
-    expect(send).toHaveBeenCalledWith(run, expect.stringContaining(persisted.requestMessageId));
-    expect(send).toHaveBeenCalledWith(
-      run,
-      expect.stringContaining('TEST exact-report instruction')
-    );
+    const [sentRun, payload, operationId] = send.mock.calls[0];
+    expect(sentRun).toEqual(run);
+    expect(payload).toContain(persisted.text);
+    expect(payload).toContain(persisted.requestMessageId);
+    expect(payload).toContain('TEST exact-report instruction');
+    expect(operationId).toBe('TEST-input-operation');
     await requests.execute(run, persisted.requestMessageId);
     expect(send).toHaveBeenCalledOnce();
     await expect(requests.execute(run, 'TEST-human-2')).resolves.toMatchObject({
@@ -112,7 +122,9 @@ describe('persisted human request admission and exact durable reply closure', ()
     );
     requests.confirmDelivered(run, 'TEST-human-1', 'TEST-reply-1');
     await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(2));
-    expect(send).toHaveBeenLastCalledWith(run, expect.stringContaining('second'));
+    expect(send.mock.calls[1][1]).toContain('second');
+    expect(send.mock.calls[1][2]).toBe('TEST-input-operation-TEST-human-2');
+    expect(send.mock.calls[1][2]).not.toBe(send.mock.calls[0][2]);
   });
 
   it('only closes the named run and original request after durable publication', async () => {
@@ -208,7 +220,9 @@ describe('persisted human request admission and exact durable reply closure', ()
     'never writes again when durable input intent is already %s',
     async (state) => {
       const { requests, claim, sent, send } = setup();
-      claim.mockResolvedValueOnce({ state });
+      claim.mockResolvedValueOnce(
+        state === 'sent' ? { state } : { state, operationId: 'TEST-existing-operation' }
+      );
       if (state === 'sent')
         await expect(requests.execute(run, persisted.requestMessageId)).resolves.toMatchObject({
           state: 'sent',
@@ -311,8 +325,10 @@ describe('persisted human request admission and exact durable reply closure', ()
       return Promise.resolve('TEST instruction');
     });
     await requests.execute(run, persisted.requestMessageId);
-    expect(send).toHaveBeenCalledWith(run, expect.stringContaining(persisted.text));
-    expect(send).not.toHaveBeenCalledWith(run, expect.stringContaining(saved.text));
+    expect(send.mock.calls[0][0]).toEqual(run);
+    expect(send.mock.calls[0][1]).toContain(persisted.text);
+    expect(send.mock.calls[0][1]).not.toContain(saved.text);
+    expect(send.mock.calls[0][2]).toBe('TEST-input-operation');
   });
 
   it('does not discard a confirmed reply when the in-flight pipe later reports failure', async () => {

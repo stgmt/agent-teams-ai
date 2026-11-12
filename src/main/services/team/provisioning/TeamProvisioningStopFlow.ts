@@ -230,14 +230,15 @@ export async function stopTeamFlow<TRun extends TeamProvisioningStopRun>(
   }
   // Only after every owned stop/cancellation and helper cleanup has settled
   // can the final persisted clock boundary be published without a late resume.
-  if (!clock.failed) {
-    try {
-      const result = ports.pauseActiveIntervalsForTeam(teamName);
-      clock.failed = result?.failed === true;
-      clock.pendingTransition = result?.pendingTransition === true;
-    } catch {
-      clock.failed = true;
-    }
+  // It is attempted even when the pre-teardown pause failed: the runtime that
+  // could have resumed an interval is retired by now, so a second attempt may
+  // settle the clock the first one could not.
+  try {
+    const result = ports.pauseActiveIntervalsForTeam(teamName);
+    clock.failed = result?.failed === true;
+    clock.pendingTransition = result?.pendingTransition === true;
+  } catch {
+    clock.failed = true;
   }
   if (clock.failed) {
     ports.logger.info('task_activity_interval_pause_failed_after_stop');

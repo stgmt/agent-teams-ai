@@ -1,8 +1,8 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest';
 
-import { RegistryTaskProtocolError } from '../RegistryTaskClientErrors';
 import { RegistryMcpTransport } from '../RegistryMcpTransport';
+import { RegistryTaskProtocolError } from '../RegistryTaskClientErrors';
 
 const requestId = '11111111-1111-4111-8111-111111111111';
 const batchId = '22222222-2222-4222-8222-222222222222';

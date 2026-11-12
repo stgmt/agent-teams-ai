@@ -35,7 +35,7 @@ const SourceLink = ({
   </button>
 );
 
-export function TmuxInstallerBannerView(): React.JSX.Element | null {
+export const TmuxInstallerBannerView = (): React.JSX.Element | null => {
   const { t } = useAppTranslation('common');
   const { viewModel, install, cancel, submitInput, refresh, toggleDetails, openExternal } =
     useTmuxInstallerBanner();
@@ -436,4 +436,4 @@ export function TmuxInstallerBannerView(): React.JSX.Element | null {
       )}
     </div>
   );
-}
+};

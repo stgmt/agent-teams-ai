@@ -31,16 +31,55 @@ function acceptedFields(descriptor) {
   return new Set(Object.keys(properties));
 }
 
-function matchesBinding(bindings, project, spec) {
-  return bindings.some((binding) => binding.project === project && binding.spec === spec);
+/** Canonical project authority; bindings may select a spec but never grant access. */
+function validateTeamSpecScope(value) {
+  const validString = (entry) => typeof entry === 'string' && entry.trim().length > 0;
+  if (
+    !value ||
+    typeof value !== 'object' ||
+    Array.isArray(value) ||
+    !Array.isArray(value.projects) ||
+    value.projects.length === 0 ||
+    !value.projects.every(validString) ||
+    !Array.isArray(value.bindings)
+  ) {
+    throw new SpecScopeError(
+      SPEC_SCOPE_ERROR_CODES.INVALID_SCOPE,
+      'Team spec scope requires projects and bindings'
+    );
+  }
+  const projects = [...new Set(value.projects.map((project) => project.trim()))];
+  const bindings = value.bindings.map((binding) => {
+    if (
+      !binding ||
+      !validString(binding.project) ||
+      !validString(binding.spec) ||
+      !projects.includes(binding.project.trim())
+    ) {
+      throw new SpecScopeError(
+        SPEC_SCOPE_ERROR_CODES.INVALID_SCOPE,
+        'Team spec binding is outside the allowed projects'
+      );
+    }
+    return { project: binding.project.trim(), spec: binding.spec.trim() };
+  });
+  return {
+    projects,
+    bindings,
+    ...(validString(value.teamId) ? { teamId: value.teamId.trim() } : {}),
+  };
 }
 
 function applyTeamSpecScope(name, args, scope, descriptor, newRequestId = randomUUID) {
+  scope = validateTeamSpecScope(scope);
   const accepts = acceptedFields(descriptor);
   const scoped = { ...args };
   delete scoped.declaredWorktree;
 
-  if (accepts.has('requestId') && (typeof scoped.requestId !== 'string' || !scoped.requestId.trim())) {
+  if (
+    accepts.has('requestId') &&
+    (typeof scoped.requestId !== 'string' || !scoped.requestId.trim())
+  ) {
     scoped.requestId = newRequestId();
   }
 
@@ -56,57 +95,53 @@ function applyTeamSpecScope(name, args, scope, descriptor, newRequestId = random
         `${name} does not accept the supplied scope fields`
       );
     }
-    // A bound project is the unit of trust: any specification inside it is
-    // reachable, including one the team just created (owner decision A).
-    if (rawProject && rawSpec) {
-      if (!scope.bindings.some((binding) => binding.project === rawProject)) {
+    if (rawProject) {
+      if (!scope.projects.includes(rawProject)) {
         throw new SpecScopeError(
           SPEC_SCOPE_ERROR_CODES.NOT_LINKED,
           `${rawProject} is not bound to this team`
         );
       }
-    } else if (rawProject) {
-      if (!scope.bindings.some((binding) => binding.project === rawProject)) {
-        throw new SpecScopeError(
-          SPEC_SCOPE_ERROR_CODES.NOT_LINKED,
-          `${rawProject} is not bound to this team`
-        );
-      }
+      scoped.project = rawProject;
     } else {
       const candidates = scope.bindings.filter((binding) => binding.spec === rawSpec);
-      if (candidates.length === 0) {
-        throw new SpecScopeError(
-          SPEC_SCOPE_ERROR_CODES.NOT_LINKED,
-          `${rawSpec} is not bound to this team`
-        );
-      }
-      if (candidates.length > 1 && acceptsProject) {
+      const projects = [...new Set(candidates.map((binding) => binding.project))];
+      const project =
+        projects.length === 1
+          ? projects[0]
+          : scope.projects.length === 1
+            ? scope.projects[0]
+            : null;
+      if (!project || projects.length > 1) {
         throw new SpecScopeError(
           SPEC_SCOPE_ERROR_CODES.INVALID_SCOPE,
-          `${name} needs an explicit project: ${rawSpec} is bound in more than one project`
+          `${name} needs an explicit project`
         );
       }
-      if (candidates.length === 1 && acceptsProject && !scoped.project) {
-        scoped.project = candidates[0].project;
-      }
+      if (acceptsProject) scoped.project = project;
     }
+    if (rawSpec) scoped.spec = rawSpec;
   } else if (scope.bindings.length === 1) {
     const [binding] = scope.bindings;
     if (acceptsProject) scoped.project = binding.project;
     if (acceptsSpec) scoped.spec = binding.spec;
   }
-
-  if (scope.teamId && accepts.has('teamId') && (scoped.teamId === undefined || scoped.teamId === null)) {
-    scoped.teamId = scope.teamId;
+  if (acceptsProject && !scoped.project) {
+    if (scope.projects.length !== 1) {
+      throw new SpecScopeError(
+        SPEC_SCOPE_ERROR_CODES.INVALID_SCOPE,
+        `${name} needs an explicit project`
+      );
+    }
+    scoped.project = scope.projects[0];
   }
 
-  if (Array.isArray(scoped.operations) && accepts.has('operations') && scope.teamId) {
-    scoped.operations = scoped.operations.map((operation) => {
-      if (!operation || typeof operation !== 'object') return operation;
-      return operation.teamId === undefined || operation.teamId === null
-        ? { ...operation, teamId: scope.teamId }
-        : operation;
-    });
+  if (
+    scope.teamId &&
+    accepts.has('teamId') &&
+    (scoped.teamId === undefined || scoped.teamId === null)
+  ) {
+    scoped.teamId = scope.teamId;
   }
 
   return scoped;
@@ -138,20 +173,38 @@ function refusalEnvelope(code, message) {
 }
 
 function readToolDescriptors(result) {
-  const tools = Array.isArray(result?.tools) ? result.tools : [];
-  const descriptors = [];
-  for (const entry of tools) {
-    if (!entry || typeof entry !== 'object') continue;
-    if (typeof entry.name !== 'string' || entry.name.trim().length === 0) continue;
-    descriptors.push({
+  if (!Array.isArray(result?.tools) || result.tools.length === 0) {
+    throw new SpecScopeError('REGISTRY_BAD_DISCOVERY', 'Spec registry published no tools');
+  }
+  const names = new Set();
+  const descriptors = result.tools.map((entry) => {
+    if (
+      !entry ||
+      typeof entry !== 'object' ||
+      typeof entry.name !== 'string' ||
+      !entry.name.trim() ||
+      names.has(entry.name) ||
+      !entry.inputSchema ||
+      typeof entry.inputSchema !== 'object' ||
+      Array.isArray(entry.inputSchema) ||
+      entry.inputSchema.type !== 'object' ||
+      (entry.inputSchema.properties !== undefined &&
+        (!entry.inputSchema.properties ||
+          typeof entry.inputSchema.properties !== 'object' ||
+          Array.isArray(entry.inputSchema.properties)))
+    ) {
+      throw new SpecScopeError(
+        'REGISTRY_BAD_DISCOVERY',
+        'Spec registry published an invalid or duplicate tool'
+      );
+    }
+    names.add(entry.name);
+    return {
       name: entry.name,
       description: typeof entry.description === 'string' ? entry.description : '',
-      inputSchema:
-        entry.inputSchema && typeof entry.inputSchema === 'object'
-          ? entry.inputSchema
-          : { type: 'object', properties: {} },
-    });
-  }
+      inputSchema: entry.inputSchema,
+    };
+  });
   return Object.freeze(descriptors);
 }
 
@@ -170,12 +223,21 @@ function createTeamSpecGateway({ transport, readScope, newRequestId = randomUUID
     async callTool(name, args, signal) {
       const tools = await loadDescriptors();
       const descriptor = tools.find((tool) => tool.name === name);
+      if (!descriptor) {
+        throw new SpecScopeError(
+          'REGISTRY_UNKNOWN_TOOL',
+          'Tool was not published by the spec registry'
+        );
+      }
       const scoped = applyTeamSpecScope(name, args, await readScope(), descriptor, newRequestId);
       try {
         return await transport.callTool(name, scoped, `specProxy:${name}`, signal);
       } catch (error) {
         if (!error || typeof error.code !== 'string') throw error;
-        return refusalEnvelope(error.code, typeof error.message === 'string' ? error.message : error.code);
+        return refusalEnvelope(
+          error.code,
+          typeof error.message === 'string' ? error.message : error.code
+        );
       }
     },
   };
@@ -185,6 +247,7 @@ module.exports = {
   SPEC_SCOPE_ERROR_CODES,
   SpecScopeError,
   applyTeamSpecScope,
+  validateTeamSpecScope,
   createTeamSpecGateway,
   readToolDescriptors,
   refusalEnvelope,

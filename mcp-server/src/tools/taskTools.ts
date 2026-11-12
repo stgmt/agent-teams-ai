@@ -13,55 +13,26 @@ import {
 import { jsonTextContent, taskWriteResult, slimTask } from '../utils/format';
 import { taskRefSchema } from '../utils/schemas';
 import {
-  CANONICAL_TASK_UUID_PATTERN,
   createTaskWithOptionalIdempotency,
   resolveMessageTaskCommandId,
   resolveOptionalTaskCreateCommandId,
 } from '../utils/taskCreationIdempotency';
 import { buildCommentCompletionInstruction } from './taskCommentInstruction';
+import { normalizeTaskListLimit, resolveTaskScope } from './taskToolArguments';
+import {
+  relationshipTypeSchema,
+  taskMutationActorSchema,
+  taskScopeSelectorFields,
+  taskToolSchemas,
+  toolContextSchema,
+} from './taskToolSchemas';
 
 /** stripAgentBlocks from canonical agentBlocks module — single source of truth for the tag format. */
 const stripAgentBlocksFn = (text: string): string => agentBlocks.stripAgentBlocks(text);
 
-const toolContextSchema = {
-  teamName: z.string().min(1),
-  claudeDir: z.string().min(1).optional(),
-};
-
-const taskScopeSelectorFields = {
-  project: z.string().trim().min(1).optional().describe('Registry project scope, if selecting one of several team specs.'),
-  spec: z.string().trim().min(1).optional().describe('Registry specification slug paired with project.'),
-};
-
-function resolveTaskScope(project?: string, spec?: string) {
-  if (project === undefined && spec === undefined) return undefined;
-  if (project === undefined || spec === undefined) {
-    throw new Error('Task scope requires both project and spec');
-  }
-  return { project, spec };
-}
-
 const ALWAYS_LOAD_META = {
   'anthropic/alwaysLoad': true,
 } as const;
-
-const relationshipTypeSchema = z.enum(['blocked-by', 'blocks', 'related']);
-const inventoryTaskStatusSchema = z.enum(['pending', 'in_progress', 'completed']);
-const reviewStateSchema = z.enum(['none', 'review', 'needsFix', 'approved']);
-const inventoryKanbanColumnSchema = z.enum(['review', 'approved']);
-const taskMutationActorSchema = z
-  .string()
-  .min(1)
-  .describe('Your configured teammate name. Required for ownership and lifecycle enforcement.');
-const DEFAULT_TASK_LIST_LIMIT = 50;
-const MAX_TASK_LIST_LIMIT = 200;
-
-function normalizeTaskListLimit(limit: number | undefined): number {
-  if (limit == null) {
-    return DEFAULT_TASK_LIST_LIMIT;
-  }
-  return Math.min(Math.max(1, Math.floor(limit)), MAX_TASK_LIST_LIMIT);
-}
 
 /** Allowed message source types for task_create_from_message provenance. Fail closed — only explicit user-originated sources. */
 const USER_ORIGINATED_SOURCES = new Set(['user_sent']);
@@ -71,61 +42,7 @@ export function registerTaskTools(server: Pick<FastMCP, 'addTool'>) {
     name: 'task_create',
     description:
       "Create a team task. For task intents from a group user message, prefer task_create_from_message with the original messageId; otherwise pass the known groupChatId explicitly when applicable. Raw/headless calls do not inject a user actor or auto-start: owner without createdBy/from/startImmediately creates a pending task with no recorded actor, and assigning it to the lead suppresses the lead's self-notification. Tasks you create yourself (including as lead) pass createdBy with your own configured name. Use createdBy: 'user' only when acting for the user; for an immediate user-origin assignment add startImmediately: true. Always provide a stable idempotencyKey (or commandId UUID) and reuse it only when retrying the exact same request after timeout or response loss. Use a new key for every distinct task intent.",
-    parameters: z.object({
-      ...toolContextSchema,
-      ...taskScopeSelectorFields,
-      subject: z.string().min(1),
-      groupChatId: z
-        .uuid()
-        .optional()
-        .describe(
-          'Optional same-team active group context. For a new associated task provide your configured non-user createdBy/from actor; association does not grant membership.'
-        ),
-      description: z.string().optional(),
-      owner: z
-        .string()
-        .optional()
-        .describe('Configured teammate to assign. An owner alone does not auto-start the task.'),
-      createdBy: z
-        .string()
-        .optional()
-        .describe(
-          "Explicit creation actor and assignment-notification sender: your configured name. Use 'user' only when acting for the user."
-        ),
-      from: z
-        .string()
-        .optional()
-        .describe('Legacy actor/sender alternative, used only when createdBy is omitted.'),
-      blockedBy: z.array(z.string().min(1)).optional(),
-      related: z.array(z.string().min(1)).optional(),
-      requirements: z
-        .array(z.string().trim().min(1))
-        .min(1)
-        .describe(
-          'Existing requirement ids this task implements, for example ["FR-1", "AC-2"]. Required for every task.'
-        ),
-      prompt: z.string().optional(),
-      descriptionTaskRefs: z.array(taskRefSchema).optional(),
-      promptTaskRefs: z.array(taskRefSchema).optional(),
-      startImmediately: z
-        .boolean()
-        .optional()
-        .describe(
-          'Opt in to in_progress when an owner is present. Omitted/false stays pending; blocked tasks stay pending.'
-        ),
-      commandId: z
-        .string()
-        .regex(CANONICAL_TASK_UUID_PATTERN, 'Must be a canonical task UUID (version 1-5)')
-        .optional()
-        .describe('Stable UUID for retrying the same task creation request.'),
-      idempotencyKey: z
-        .string()
-        .trim()
-        .min(1)
-        .max(256)
-        .optional()
-        .describe('Stable retry key. Opaque keys are deterministically mapped to a command UUID.'),
-    }),
+    parameters: taskToolSchemas.create,
     execute: async ({
       teamName,
       claudeDir,
@@ -212,42 +129,7 @@ export function registerTaskTools(server: Pick<FastMCP, 'addTool'>) {
     name: 'task_create_from_message',
     description:
       'Create a task from a persisted user message. Always provide a stable requestKey for this exact task intent and reuse the same messageId + requestKey only on retry. Use a different requestKey to create another legitimate task from the same message. Original canonical user group messages infer groupChatId; new associated tasks require your configured non-user createdBy actor.',
-    parameters: z.object({
-      ...toolContextSchema,
-      ...taskScopeSelectorFields,
-      messageId: z.string().min(1),
-      subject: z.string().min(1),
-      groupChatId: z
-        .uuid()
-        .optional()
-        .describe(
-          'Optional same-team active group context. For a new associated task provide your configured non-user createdBy actor; association does not grant membership.'
-        ),
-      description: z.string().optional(),
-      owner: z.string().optional(),
-      createdBy: z.string().optional(),
-      blockedBy: z.array(z.string().min(1)).optional(),
-      related: z.array(z.string().min(1)).optional(),
-      requirements: z
-        .array(z.string().trim().min(1))
-        .min(1)
-        .describe(
-          'Existing requirement ids this task implements, for example ["FR-1", "AC-2"]. Required for every task.'
-        ),
-      prompt: z.string().optional(),
-      descriptionTaskRefs: z.array(taskRefSchema).optional(),
-      promptTaskRefs: z.array(taskRefSchema).optional(),
-      startImmediately: z.boolean().optional(),
-      requestKey: z
-        .string()
-        .trim()
-        .min(1)
-        .max(256)
-        .optional()
-        .describe(
-          'Stable discriminator for this task intent within the exact messageId. Reuse it only when retrying the same task creation request.'
-        ),
-    }),
+    parameters: taskToolSchemas.createFromMessage,
     execute: async ({
       teamName,
       claudeDir,
@@ -409,17 +291,7 @@ export function registerTaskTools(server: Pick<FastMCP, 'addTool'>) {
     name: 'task_list',
     description:
       'List compact active task inventory/search rows for a team. Deleted tasks are excluded. Use it to browse, filter, and drill into inventory, not as a primary working queue. Defaults to 50 rows and caps at 200 rows; use filters or a smaller limit to narrow results. Supports stable conjunctive filters for owner, active status, reviewState, review overlay column, and task relationships.',
-    parameters: z.object({
-      ...toolContextSchema,
-      ...taskScopeSelectorFields,
-      owner: z.string().min(1).optional(),
-      status: inventoryTaskStatusSchema.optional(),
-      reviewState: reviewStateSchema.optional(),
-      kanbanColumn: inventoryKanbanColumnSchema.optional(),
-      relatedTo: z.string().min(1).optional(),
-      blockedBy: z.string().min(1).optional(),
-      limit: z.number().int().positive().optional(),
-    }),
+    parameters: taskToolSchemas.list,
     execute: async ({
       teamName,
       claudeDir,
@@ -456,20 +328,7 @@ export function registerTaskTools(server: Pick<FastMCP, 'addTool'>) {
     name: 'task_update',
     description:
       'Update a canonical task title, description, or requirement references. Requirement references must exist in the selected spec; the registry prevents removing the last requirement. Use the opaque taskId returned by task_get/task_list.',
-    parameters: z
-      .object({
-        ...toolContextSchema,
-        ...taskScopeSelectorFields,
-        taskId: z.string().min(1),
-        subject: z.string().min(1).optional(),
-        description: z.string().optional(),
-        requirements: z.array(z.string().trim().min(1)).min(1).optional(),
-      })
-      .refine(
-        ({ subject, description, requirements }) =>
-          subject !== undefined || description !== undefined || requirements !== undefined,
-        { message: 'Provide at least one task field to update' }
-      ),
+    parameters: taskToolSchemas.update,
     execute: async ({ teamName, claudeDir, project, spec, taskId, subject, description, requirements }) => {
       assertConfiguredTeam(teamName, claudeDir);
       const scope = resolveTaskScope(project, spec);

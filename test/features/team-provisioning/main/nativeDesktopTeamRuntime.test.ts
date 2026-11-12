@@ -1,20 +1,28 @@
 // @vitest-environment node
+import {
+  installNativeSdkHostFixture,
+  nativeSpecRegistryEnvironment,
+  nativeSpecScope,
+} from './nativeSdkTestHarness';
 import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { TeamLifecycleCommands } from '../../../../src/features/team-provisioning/core/application/commands/TeamLifecycleCommands';
 import { NativeLeadInboxRelay } from '../../../../src/features/team-provisioning/main/adapters/output/NativeLeadInboxRelay';
 import { NativeMemberInboxRelay } from '../../../../src/features/team-provisioning/main/adapters/output/NativeMemberInboxRelay';
 import { createNativeDesktopTeamRuntime } from '../../../../src/features/team-provisioning/main/composition/createNativeDesktopTeamRuntime';
 import { createNativeTeamProvisioningApis } from '../../../../src/features/team-provisioning/main/composition/createNativeTeamProvisioningApis';
 import { NativeTeamConfigStore } from '../../../../src/features/team-provisioning/main/infrastructure/NativeTeamConfigStore';
-import { claimTeamForThisProfile, createTeamProfileOwnership } from '../../../../src/main/services/team/provisioning/TeamProvisioningProfileOwnership';
+import {
+  claimTeamForThisProfile,
+  createTeamProfileOwnership,
+} from '../../../../src/main/services/team/provisioning/TeamProvisioningProfileOwnership';
 
 import type { NativeDesktopTeamRuntimeDependencies } from '../../../../src/features/team-provisioning/main/composition/createNativeDesktopTeamRuntime';
 import type { TeamLaunchRuntimeAdapter } from '../../../../src/main/services/team/runtime';
+const sdkHost = installNativeSdkHostFixture();
 
 const owner = {
   appInstanceId: 'TEST-app',
@@ -35,6 +43,7 @@ function setup(
   registry?: { has: (id: string) => boolean; get: (id: string) => unknown },
   options: {
     teamsRoot?: string;
+    settings?: NativeDesktopTeamRuntimeDependencies['settings'];
     listTeamNames?: () => Promise<readonly string[]>;
     relayIntervalMs?: number;
     profileOwnership?: NativeDesktopTeamRuntimeDependencies['profileOwnership'];
@@ -42,15 +51,22 @@ function setup(
 ) {
   const deps: NativeDesktopTeamRuntimeDependencies = {
     owner,
+    sdkHost: sdkHost(),
     currentContext: () => owner,
     teamsRoot: options.teamsRoot ?? 'C:/TEST/teams',
-    settings: {
-      metadata: { getMeta: async () => null },
-      members: { getMeta: async () => null },
-    } as never,
+    settings:
+      options.settings ??
+      ({
+        metadata: { getMeta: async () => null },
+        members: { getMeta: async () => null },
+      } as never),
     provider: {} as never,
-    runtimeRoot: 'C:/TEST/runtime',
-    workspaceRoot: 'C:/TEST/workspace',
+    runtimeRoot: options.teamsRoot
+      ? join(dirname(options.teamsRoot), 'runtime')
+      : 'C:/TEST/runtime',
+    workspaceRoot: options.teamsRoot
+      ? join(dirname(options.teamsRoot), 'workspace')
+      : 'C:/TEST/workspace',
     mcp: {} as never,
     inbox: {} as never,
     controlUrl: async () => 'http://127.0.0.1:1',
@@ -82,7 +98,10 @@ function setup(
 
 describe('native desktop team runtime composition', () => {
   it('starts and stops both relay pollers through the composition', () => {
-    const { lifecycle } = setup();
+    const { lifecycle, registry } = setup();
+    registry.configureTeam({ ...owner, teamName: 'TEST-team', runId: 'TEST-run' }, [
+      { memberName: 'team-lead', role: 'lead' },
+    ]);
     const leadStart = vi.spyOn(NativeLeadInboxRelay.prototype, 'startPolling');
     const memberStart = vi.spyOn(NativeMemberInboxRelay.prototype, 'startPolling');
     const leadStop = vi.spyOn(NativeLeadInboxRelay.prototype, 'stopPolling');
@@ -97,17 +116,35 @@ describe('native desktop team runtime composition', () => {
   });
 
   it('starts relays after a successful configured launch', async () => {
-    const { lifecycle } = setup(undefined, { relayIntervalMs: 250 });
-    const run = { ...owner, teamName: 'TEST-team', runId: 'TEST-run' };
-    const launch = vi
-      .spyOn(TeamLifecycleCommands.prototype, 'launchConfigured')
-      .mockResolvedValue({ run, leadCredential: 'TEST-credential' });
+    const root = await mkdtemp(join(tmpdir(), 'TEST-native-relays-'));
+    directories.push(root);
+    const teamsRoot = join(root, 'teams');
+    const run = { ...owner, teamName: 'test-team', runId: 'TEST-run' };
+    await mkdir(join(teamsRoot, run.teamName), { recursive: true });
+    const { lifecycle } = setup(undefined, {
+      teamsRoot,
+      relayIntervalMs: 250,
+      settings: {
+        metadata: {
+          getMeta: async () => ({
+            version: 1,
+            providerId: 'anthropic',
+            cwd: root,
+            createdAt: 1,
+            specScope: nativeSpecScope,
+          }),
+        },
+        members: { getMeta: async () => ({ version: 1, members: [] }) },
+        specRegistryEnvironment: nativeSpecRegistryEnvironment,
+      },
+    });
     const leadStart = vi.spyOn(NativeLeadInboxRelay.prototype, 'startPolling');
     const memberStart = vi.spyOn(NativeMemberInboxRelay.prototype, 'startPolling');
     await lifecycle.launchConfigured(run);
     expect(leadStart).toHaveBeenCalledWith(run.teamName, 250);
     expect(memberStart).toHaveBeenCalledWith(run.teamName, 250);
-    launch.mockRestore();
+    expect(lifecycle.snapshot(run.teamName).identity).toEqual(run);
+    await lifecycle.stopConfigured(run);
     vi.restoreAllMocks();
   });
 
@@ -208,8 +245,18 @@ describe('native desktop team runtime composition', () => {
         configurationRevision: 'TEST-revision',
       },
     }));
-    await claimTeamForThisProfile({ teamsBasePath: teamsRoot, teamName: 'test-team', reason: 'create', profileScope: 'TEST-own' });
-    await claimTeamForThisProfile({ teamsBasePath: teamsRoot, teamName: 'foreign-team', reason: 'create', profileScope: 'TEST-foreign' });
+    await claimTeamForThisProfile({
+      teamsBasePath: teamsRoot,
+      teamName: 'test-team',
+      reason: 'create',
+      profileScope: 'TEST-own',
+    });
+    await claimTeamForThisProfile({
+      teamsBasePath: teamsRoot,
+      teamName: 'foreign-team',
+      reason: 'create',
+      profileScope: 'TEST-foreign',
+    });
     const { recoverStartup } = setup(undefined, {
       teamsRoot,
       listTeamNames: async () => ['test-team', 'foreign-team'],

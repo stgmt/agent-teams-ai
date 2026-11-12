@@ -23,9 +23,11 @@ describe('OpenCode installation policy', () => {
     expect(getLatestQualifiedOpenCodeV2Version('unsupported', 'x64')).toBeNull();
   });
 
-  it('keeps V1 as default on qualified ARM64 while allowing an explicit V2 choice', () => {
+  // The pinned Claude-only runtime publishes no V2 engine on any platform, so an
+  // explicit V2 request can never be satisfied by a qualified version.
+  it('publishes no qualified V2 engine on ARM64 while honoring an explicit choice', () => {
     const qualified = getLatestQualifiedOpenCodeV2Version('win32', 'arm64');
-    expect(qualified).toBe('2.1.4');
+    expect(qualified).toBeNull();
     expect(chooseOpenCodeInstallGeneration(undefined, undefined, qualified)).toBe('v1');
     expect(chooseOpenCodeInstallGeneration('v2', undefined, qualified)).toBe('v2');
   });
@@ -49,10 +51,15 @@ describe('OpenCode installation policy', () => {
       version: name === 'opencode-ai' ? '1.19.4' : version,
       optionalDependencies: { 'opencode-linux-x64': DEFAULT_OPENCODE_V1_INSTALL_VERSION },
     }));
-    await expect(selectOpenCodeInstallPackage(
-      'v1', '2.1.4', [{ packageName: 'opencode-linux-x64' }],
-      fetchMetadata, DEFAULT_OPENCODE_V1_INSTALL_VERSION
-    )).rejects.toThrow('selected generation');
+    await expect(
+      selectOpenCodeInstallPackage(
+        'v1',
+        '2.1.4',
+        [{ packageName: 'opencode-linux-x64' }],
+        fetchMetadata,
+        DEFAULT_OPENCODE_V1_INSTALL_VERSION
+      )
+    ).rejects.toThrow('selected generation');
     expect(fetchMetadata).toHaveBeenCalledTimes(1);
     expect(fetchMetadata).toHaveBeenCalledWith('opencode-ai', DEFAULT_OPENCODE_V1_INSTALL_VERSION);
   });
@@ -65,15 +72,14 @@ describe('OpenCode installation policy', () => {
     expect(fetchMetadata).not.toHaveBeenCalled();
   });
 
-  it('fetches the exact tested V2 and refuses redirected native metadata', async () => {
-    const fetchMetadata = vi
-      .fn()
-      .mockResolvedValueOnce({
-        name: '@opencode/cli',
-        version: '2.0.32',
-        optionalDependencies: { '@opencode/cli-linux-x64': '2.0.32' },
-      })
-      .mockResolvedValueOnce({ name: '@opencode/cli-linux-arm64', version: '2.0.32' });
+  // A caller cannot smuggle in a V2 package: the pinned runtime recognizes no
+  // V2 version, so the fetched root package fails generation classification.
+  it('refuses a V2 package version the pinned runtime does not recognize', async () => {
+    const fetchMetadata = vi.fn().mockResolvedValue({
+      name: '@opencode/cli',
+      version: '2.0.32',
+      optionalDependencies: { '@opencode/cli-linux-x64': '2.0.32' },
+    });
     await expect(
       selectOpenCodeInstallPackage(
         'v2',
@@ -81,11 +87,8 @@ describe('OpenCode installation policy', () => {
         [{ packageName: 'opencode-linux-x64' }],
         fetchMetadata
       )
-    ).rejects.toThrow('identity mismatch');
-    expect(fetchMetadata.mock.calls).toEqual([
-      ['@opencode/cli', '2.0.32'],
-      ['@opencode/cli-linux-x64', '2.0.32'],
-    ]);
+    ).rejects.toThrow('does not match the selected generation');
+    expect(fetchMetadata.mock.calls).toEqual([['@opencode/cli', '2.0.32']]);
   });
 
   it('does not upgrade a V1 installation to a different generation via npm latest', async () => {

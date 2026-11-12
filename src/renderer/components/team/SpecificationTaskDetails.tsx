@@ -7,9 +7,9 @@ interface SpecificationTaskDetailsProps {
   task: SpecificationTaskIdentity;
 }
 
-export function SpecificationTaskDetails({
+export const SpecificationTaskDetails = ({
   task,
-}: SpecificationTaskDetailsProps): React.JSX.Element | null {
+}: SpecificationTaskDetailsProps): React.JSX.Element | null => {
   const { t } = useAppTranslation('team');
   const scope = getSpecificationTaskScope(task);
   const registryLocalId = task.registryLocalId;
@@ -72,4 +72,4 @@ export function SpecificationTaskDetails({
       ) : null}
     </section>
   );
-}
+};

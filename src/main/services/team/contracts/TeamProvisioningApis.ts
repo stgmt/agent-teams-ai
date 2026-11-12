@@ -6,6 +6,9 @@ import {
   whenOpenCodeStartupRuntimeSweepSettled,
 } from '../opencode/bridge/OpenCodeStartupSweepGate';
 
+import type { ExecutionTaskPatch } from '../execution/ExecutionTaskStore';
+import type { RegistryTaskTransition } from '../registry/RegistryTaskClientTypes';
+import type { TeamSpecBinding } from '../registry/TeamSpecBinding';
 import type { OpenCodeRuntimeControlAck, OpenCodeRuntimeControlApi } from '../runtime-control';
 import type { TeamProvisioningStatusApi as FeatureTeamProvisioningStatusApi } from '@features/team-provisioning/contracts';
 import type {
@@ -40,10 +43,7 @@ import type {
   TeamTaskStatus,
   TeamViewSnapshot,
   ToolApprovalSettings,
-} from '@shared/types/team';
-import type { ExecutionTaskPatch } from '../execution/ExecutionTaskStore';
-import type { RegistryTaskTransition } from '../registry/RegistryTaskClientTypes';
-import type { TeamSpecBinding } from '../registry/TeamSpecBinding';
+} from '@shared/types';
 
 const logger = createLogger('Service:TeamProvisioningApis');
 
@@ -154,12 +154,12 @@ export interface TeamHttpDataApi {
   linkTeamSpec(teamName: string, binding: TeamSpecBinding): Promise<TeamSpecBinding[]>;
   getTasks(teamName: string, binding?: TeamHttpTaskScope): Promise<TeamTask[]>;
   getDeletedTasks(teamName: string, binding?: TeamHttpTaskScope): Promise<TeamTask[]>;
-  getTask(
+  getTask(teamName: string, taskId: string, binding?: TeamHttpTaskScope): Promise<TeamTask | null>;
+  readTaskArtifactData(
     teamName: string,
     taskId: string,
-    binding?: TeamHttpTaskScope
-  ): Promise<TeamTask | null>;
-  readTaskArtifactData(teamName: string, taskId: string, attachmentId: string): Promise<string | null>;
+    attachmentId: string
+  ): Promise<string | null>;
   createTask(teamName: string, request: CreateTaskRequest): Promise<TeamTask>;
   createTaskWithOutcome(
     teamName: string,

@@ -1,9 +1,11 @@
 import {
   buildAllowControlResponsePayload,
   buildDenyControlResponsePayload,
+  buildTeammatePermissionUpdatedInput,
 } from '@main/services/team/provisioning/TeamProvisioningToolApprovalFlow';
 
 import type { MemberProcessToken, TeamRunIdentity } from '../../../contracts';
+import type { NativeClaudeSdkOutputEvidence } from './NativeClaudeSdkHost';
 
 export interface NativeClaudeApproval {
   run: Readonly<TeamRunIdentity>;
@@ -17,6 +19,7 @@ export interface NativeClaudeApproval {
 export type NativeToolApprovalEvent =
   | { type: 'requested'; approval: NativeClaudeApproval }
   | { type: 'resolved'; runId: string; requestId: string; allow: boolean }
+  | { type: 'dismissed'; runId: string; teamName: string }
   | { type: 'error'; runId: string; message: string };
 
 export type ParsedClaudeControlRequest =
@@ -92,6 +95,27 @@ export class NativeClaudeApprovalStore {
     return approval;
   }
 
+  resolveConsumed(
+    token: Readonly<MemberProcessToken>,
+    requestId: string
+  ): NativeClaudeApproval | null {
+    const key = `${token.runId}:${requestId}`;
+    const approval = this.pending.get(key);
+    if (
+      !approval ||
+      approval.token.memberName !== token.memberName ||
+      approval.token.teamName !== token.teamName ||
+      approval.token.generation !== token.generation ||
+      approval.token.operationId !== token.operationId ||
+      approval.token.appInstanceId !== token.appInstanceId ||
+      approval.token.dataRootFingerprint !== token.dataRootFingerprint ||
+      approval.token.connectionGeneration !== token.connectionGeneration
+    )
+      return null;
+    this.pending.delete(key);
+    return approval;
+  }
+
   clearRun(runId: string): void {
     for (const [key, approval] of this.pending) {
       if (approval.run.runId === runId) this.pending.delete(key);
@@ -115,7 +139,38 @@ export class NativeClaudeToolApprovals {
     return () => this.listeners.delete(listener);
   }
 
-  observeLine(token: Readonly<MemberProcessToken>, line: string): void {
+  observeLine(
+    token: Readonly<MemberProcessToken>,
+    line: string,
+    evidence?: NativeClaudeSdkOutputEvidence
+  ): void {
+    if (evidence?.permissionResponseConsumed) {
+      const event = JSON.parse(line) as {
+        type?: string;
+        response?: {
+          subtype?: string;
+          request_id?: string;
+          response?: { behavior?: string };
+        };
+      };
+      const response = event.response;
+      if (
+        event.type === 'control_response' &&
+        response?.subtype === 'success' &&
+        typeof response.request_id === 'string' &&
+        (response.response?.behavior === 'allow' || response.response?.behavior === 'deny')
+      ) {
+        const approval = this.deps.store.resolveConsumed(token, response.request_id);
+        if (approval)
+          this.emit({
+            type: 'resolved',
+            runId: token.runId,
+            requestId: response.request_id,
+            allow: response.response.behavior === 'allow',
+          });
+      }
+      return;
+    }
     const request = parseClaudeControlRequest(line);
     if (!request) return;
     if (request.kind === 'tool') {
@@ -148,12 +203,17 @@ export class NativeClaudeToolApprovals {
     const approval = this.deps.store.take(runId, requestId);
     if (!approval) return false;
     const payload = allow
-      ? buildAllowControlResponsePayload(requestId)
+      ? buildAllowControlResponsePayload(requestId, {
+          behavior: 'allow',
+          updatedInput:
+            buildTeammatePermissionUpdatedInput(approval.toolName, approval.toolInput, message) ??
+            {},
+        })
       : buildDenyControlResponsePayload(requestId, message ?? 'User denied');
     try {
       await this.deps.write(approval.token, JSON.stringify(payload));
     } catch (error) {
-      // A failed stdin write must not erase the pending request.
+      // An unknown SDK outcome must not erase the pending request.
       this.deps.store.register(approval.token, {
         kind: 'tool',
         requestId: approval.requestId,
@@ -167,7 +227,11 @@ export class NativeClaudeToolApprovals {
   }
 
   clearRun(runId: string): void {
+    const pending = this.deps.store.list(runId);
     this.deps.store.clearRun(runId);
+    if (pending.length) {
+      this.emit({ type: 'dismissed', runId, teamName: pending[0].run.teamName });
+    }
   }
 
   private emit(event: NativeToolApprovalEvent): void {

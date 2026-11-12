@@ -45,6 +45,8 @@ export interface NativeLeadInboxRelayDependencies {
   inbox: { getMessagesFor(teamName: string, member: string): Promise<InboxMessage[]> };
   send(run: Readonly<TeamRunIdentity>, text: string): Promise<void>;
   teamsRoot: string;
+  /** The authenticated transport manifest assigns native mailbox consumption to its runtime. */
+  ownsMailbox?(run: Readonly<TeamRunIdentity>, memberName: string): boolean;
   /** Marks the given inbox rows read; defaults to the shared inbox persistence helper. */
   markRead?(teamName: string, leadName: string, messageIds: readonly string[]): Promise<void>;
   controlUrl(): Promise<string | null>;
@@ -191,6 +193,7 @@ export class NativeLeadInboxRelay {
     );
     if (!lead?.process || lead.desired !== 'running' || lead.phase !== 'ready') return 0;
     const leadName = lead.memberName;
+    if (this.deps.ownsMailbox?.(snapshot.identity, leadName)) return 0;
     const isStale = (): boolean => {
       const current = this.deps.runs.find(teamName);
       return (

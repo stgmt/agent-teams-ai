@@ -166,11 +166,16 @@ describe('TeamProvisioningClearStoppedTeamRuntimeHandles', () => {
   });
 
   it('invalidates main and worker-backed team config caches through the node adapter', () => {
+    const boardSnapshots = {
+      async readBoardSnapshot(): Promise<never> {
+        throw new Error('Cache invalidation must not read the registry board');
+      },
+    };
     const mainInvalidation = vi.spyOn(TeamConfigReader, 'invalidateTeam').mockImplementation(() => {
       return undefined;
     });
     const workerInvalidation = vi
-      .spyOn(getTeamDataWorkerClient(), 'invalidateTeamConfig')
+      .spyOn(getTeamDataWorkerClient(boardSnapshots), 'invalidateTeamConfig')
       .mockImplementation(() => {
         return undefined;
       });

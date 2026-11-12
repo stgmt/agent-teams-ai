@@ -22,8 +22,8 @@ import {
 import { inferOpenCodeTaskRefsFromInboxMessage } from '../opencode/delivery/OpenCodeRuntimeDeliveryTaskRefInference';
 
 import { buildLeadInboxTaskContextBlock } from './TeamProvisioningLeadRelayMessageFormatting';
+import { buildLeadRosterContextBlock } from './TeamProvisioningLeadRosterContext';
 import {
-  buildLeadRosterContextBlock,
   getCanonicalSendMessageFieldRule,
   getCanonicalSendMessageToolRule,
 } from './TeamProvisioningPromptBuilders';

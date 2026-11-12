@@ -13,7 +13,7 @@ interface Props {
   readonly size: number;
 }
 
-export function DocumentPreview(props: Props): React.ReactElement {
+export const DocumentPreview = (props: Props): React.ReactElement => {
   const { t } = useAppTranslation('team');
   if (props.size > DOCUMENT_PREVIEW_MAX_BYTES)
     return (
@@ -25,9 +25,9 @@ export function DocumentPreview(props: Props): React.ReactElement {
       </div>
     );
   return <LoadedDocumentPreview {...props} />;
-}
+};
 
-function LoadedDocumentPreview({ filePath, fallback }: Props): React.ReactElement {
+const LoadedDocumentPreview = ({ filePath, fallback }: Props): React.ReactElement => {
   const { t } = useAppTranslation('team');
   const { resolvedTheme } = useTheme();
   const result = useDocumentPreview(filePath);
@@ -112,4 +112,4 @@ function LoadedDocumentPreview({ filePath, fallback }: Props): React.ReactElemen
       />
     </div>
   );
-}
+};

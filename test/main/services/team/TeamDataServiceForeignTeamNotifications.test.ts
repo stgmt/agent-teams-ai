@@ -1,3 +1,4 @@
+import { registryTaskFixtureService } from '../../../helpers/teamRuntimeSnapshot';
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -10,9 +11,8 @@ import {
   getCommentNotificationJournalPath,
   JsonTaskCommentNotificationJournalStore,
 } from '../../../../src/main/services/team/JsonTaskCommentNotificationJournalStore';
-import { TeamDataService } from '../../../../src/main/services/team/TeamDataService';
+import type { TeamDataService } from '../../../../src/main/services/team/TeamDataService';
 import {
-  getTasksBasePath,
   getTeamsBasePath,
   setClaudeBasePathOverride,
 } from '../../../../src/main/utils/pathDecoder';
@@ -21,15 +21,18 @@ import type {
   TaskCommentNotificationJournalEntry,
   TaskCommentNotificationJournalStore,
 } from '../../../../src/main/services/team/TaskCommentNotificationJournalStore';
+import type { TeamTask } from '../../../../src/shared/types';
 
 const TASK_COMMENT_FORWARDING_ENV = 'CLAUDE_TEAM_TASK_COMMENT_FORWARDING';
 
 let root: string;
+const canonicalTasks = new Map<string, TeamTask[]>();
 let previousForwarding: string | undefined;
 
 beforeEach(async () => {
   root = await mkdtemp(path.join(os.tmpdir(), 'TEST-foreign-team-notifications-'));
   setClaudeBasePathOverride(root);
+  canonicalTasks.clear();
   previousForwarding = process.env[TASK_COMMENT_FORWARDING_ENV];
   process.env[TASK_COMMENT_FORWARDING_ENV] = 'on';
   vi.spyOn(console, 'warn').mockImplementation(() => undefined);
@@ -62,7 +65,13 @@ function createInMemoryJournalStore(): TaskCommentNotificationJournalStore {
 }
 
 function createService(ownedTeams: ReadonlySet<string>): TeamDataService {
-  const service = new TeamDataService();
+  const service = registryTaskFixtureService({
+    readBoardSnapshot: async (teamName) => {
+      const tasks = canonicalTasks.get(teamName);
+      if (!tasks) throw new Error(`Missing registry fixture dataset: ${teamName}`);
+      return structuredClone(tasks);
+    },
+  });
   service.setTaskCommentNotificationJournalStore(
     new BackendSelectingTaskCommentNotificationJournalStore(
       new InternalStorageBackendSelector(() =>
@@ -87,15 +96,12 @@ const comment = (id: string, text: string, createdAt: string) => ({
   author: 'alice',
   text,
   createdAt,
-  type: 'regular',
+  type: 'regular' as const,
 });
 
 async function writeTask(teamName: string, comments: ReturnType<typeof comment>[]): Promise<void> {
-  const taskDir = path.join(getTasksBasePath(), teamName);
-  await mkdir(taskDir, { recursive: true });
-  await writeFile(
-    path.join(taskDir, 'task-1.json'),
-    JSON.stringify({
+  canonicalTasks.set(teamName, [
+    {
       id: 'task-1',
       displayId: 'abcd1234',
       subject: 'Investigate',
@@ -112,8 +118,8 @@ async function writeTask(teamName: string, comments: ReturnType<typeof comment>[
           timestamp: '2026-10-30T10:00:00.000Z',
         },
       ],
-    })
-  );
+    },
+  ]);
 }
 
 /** A running team whose teammate has started a task and commented on it. */
@@ -152,7 +158,7 @@ async function snapshotTeamDir(teamName: string): Promise<Record<string, string>
 const replicaPath = (teamName: string): string =>
   `${getCommentNotificationJournalPath(teamName)}.sqlite-fallback-replica`;
 
-/** Startup initialization, then a new comment and a task start seen by the file watcher. */
+/** Initialize notifications, then change the canonical unit dataset and invoke the watcher entrypoints. */
 async function runNotificationPasses(service: TeamDataService, teamName: string): Promise<void> {
   await service.initializeTaskCommentNotificationState();
   await writeTask(teamName, [

@@ -1,4 +1,5 @@
 import { promises as fs } from 'node:fs';
+import type { TeamAgentRuntimeSnapshot } from '../../../../src/shared/types';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
@@ -78,6 +79,7 @@ liveDescribe('Member work sync recovery Claude live canary', () => {
   let usingConnectedClaudeAccount = false;
   let claudeJsonConfigRoot: string;
   let svc: {
+    getTeamAgentRuntimeSnapshot(teamName: string): Promise<TeamAgentRuntimeSnapshot>;
     stopTeam(teamName: string): Promise<unknown>;
     isTeamAlive(teamName: string): boolean;
     hasProvisioningRun(teamName: string): boolean;
@@ -231,10 +233,7 @@ liveDescribe('Member work sync recovery Claude live canary', () => {
       '# Member work sync recovery Claude live canary\n\nDisposable sandbox only.\n',
       'utf8'
     );
-    claudeJsonTrustEdit = await upsertTrustedClaudeProjectConfig(
-      claudeJsonConfigRoot,
-      projectPath
-    );
+    claudeJsonTrustEdit = await upsertTrustedClaudeProjectConfig(claudeJsonConfigRoot, projectPath);
 
     const [
       { TeamProvisioningService },
@@ -254,7 +253,9 @@ liveDescribe('Member work sync recovery Claude live canary', () => {
 
     svc = new TeamProvisioningService();
     const activeService = svc;
-    const teamDataService = new TeamDataService();
+    const teamDataService = new TeamDataService((teamName) =>
+      activeService.getTeamAgentRuntimeSnapshot(teamName)
+    );
     const lifecycleIdentity = owned!.identity;
     const createFeature = () =>
       createMemberWorkSyncFeature({
@@ -335,9 +336,9 @@ liveDescribe('Member work sync recovery Claude live canary', () => {
     const restarted = await feature.getStatus({ teamName, memberName });
     expect(restarted.recoveryHealth?.autoResumeStopLatch?.reason).toBe('user_stop');
     expect(
-      Object.values(await readMemberWorkSyncOutboxItems(teamName, memberName, workSyncTeamsBasePath)).filter(
-        (item) => item.payload?.workSyncIntentKey
-      )
+      Object.values(
+        await readMemberWorkSyncOutboxItems(teamName, memberName, workSyncTeamsBasePath)
+      ).filter((item) => item.payload?.workSyncIntentKey)
     ).toEqual([]);
     await expect(
       feature.continueManually({ teamName, memberName, idempotencyKey: 'live-canary' })
@@ -361,10 +362,7 @@ liveDescribe('Member work sync recovery Claude live canary', () => {
       '# Member work sync recovery Claude live crash canary\n\nDisposable sandbox only.\n',
       'utf8'
     );
-    claudeJsonTrustEdit = await upsertTrustedClaudeProjectConfig(
-      claudeJsonConfigRoot,
-      projectPath
-    );
+    claudeJsonTrustEdit = await upsertTrustedClaudeProjectConfig(claudeJsonConfigRoot, projectPath);
 
     const [
       { TeamProvisioningService },
@@ -448,7 +446,9 @@ liveDescribe('Member work sync recovery Claude live canary', () => {
       memberName,
       teamsBasePath: workSyncTeamsBasePath,
     });
-    const task = await new TeamDataService().createTask(teamName, {
+    const task = await new TeamDataService((teamName) =>
+      activeService.getTeamAgentRuntimeSnapshot(teamName)
+    ).createTask(teamName, {
       subject: `Recovery Claude live crash canary ${Date.now()}`,
       owner: memberName,
       startImmediately: false,
@@ -505,7 +505,9 @@ liveDescribe('Member work sync recovery Claude live canary', () => {
         .sort()
     ).toEqual(messageIdsBeforeCrash);
     expect(
-      Object.values(await readMemberWorkSyncOutboxItems(teamName, memberName, workSyncTeamsBasePath))
+      Object.values(
+        await readMemberWorkSyncOutboxItems(teamName, memberName, workSyncTeamsBasePath)
+      )
         .map((item) => item.payload?.workSyncIntentKey)
         .filter((value): value is string => Boolean(value))
         .sort()
@@ -533,10 +535,7 @@ liveDescribe('Member work sync recovery Claude live canary', () => {
       '# Member work sync recovery Claude live progress canary\n\nDisposable sandbox only.\n',
       'utf8'
     );
-    claudeJsonTrustEdit = await upsertTrustedClaudeProjectConfig(
-      claudeJsonConfigRoot,
-      projectPath
-    );
+    claudeJsonTrustEdit = await upsertTrustedClaudeProjectConfig(claudeJsonConfigRoot, projectPath);
 
     const [
       { TeamProvisioningService },
@@ -556,7 +555,9 @@ liveDescribe('Member work sync recovery Claude live canary', () => {
 
     svc = new TeamProvisioningService();
     const activeService = svc;
-    const teamDataService = new TeamDataService();
+    const teamDataService = new TeamDataService((teamName) =>
+      activeService.getTeamAgentRuntimeSnapshot(teamName)
+    );
     const configReader = new TeamConfigReader();
     const createFeature = (busy = false) =>
       createMemberWorkSyncFeature({
@@ -820,7 +821,9 @@ liveDescribe('Member work sync recovery Claude live canary', () => {
     expect(attention.recoveryHealth?.episodes[0]?.phase).toBe('attention');
     expect(attention.recoveryHealth?.attentionAt).toBeTruthy();
     expect(
-      Object.values(await readMemberWorkSyncOutboxItems(teamName, memberName, workSyncTeamsBasePath))
+      Object.values(
+        await readMemberWorkSyncOutboxItems(teamName, memberName, workSyncTeamsBasePath)
+      )
         .map((item) => item.payload?.workSyncIntentKey)
         .filter((value): value is string => Boolean(value))
         .sort()
