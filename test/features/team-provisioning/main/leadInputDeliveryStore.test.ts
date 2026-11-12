@@ -50,8 +50,12 @@ describe('durable exact human input intent', () => {
     const { request, create } = await setup();
     const first = await create().claim(request);
     expect(first.state).toBe('claimed');
-    await expect(create().claim(request)).resolves.toEqual({ state: 'unconfirmed' });
     if (first.state !== 'claimed') throw new Error('TEST missing claim');
+    // A new store instance recovers the same durable claim instead of minting a second one.
+    await expect(create().claim(request)).resolves.toEqual({
+      state: 'unconfirmed',
+      operationId: first.operationId,
+    });
     await create().sent(request, first.operationId);
     await expect(create().claim(request)).resolves.toEqual({ state: 'sent' });
   });

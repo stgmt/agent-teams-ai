@@ -111,6 +111,9 @@ describe('native startup work delivery', () => {
     const first = h.delivery.confirmed(launch, token);
     const repeated = h.delivery.confirmed(launch, token);
     expect(repeated).toBe(first);
+    // Admission is entered on a microtask so a synchronous admission throw reaches the retry
+    // path; the shared in-flight attempt still performs exactly one registry read.
+    await Promise.resolve();
     expect(h.readTasks).toHaveBeenCalledTimes(1);
     finishRead([task]);
     await first;

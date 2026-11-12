@@ -5,20 +5,6 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { describe, expect, it } from 'vitest';
 
-// A test process has no desktop app binding, which the canonical task backend requires. The
-// fixture pins the local board selection for the real controller, so both this test's own
-// briefing read and the briefing builder's controller stay on the real board implementation.
-vi.mock('agent-teams-controller', async () => {
-  // vi.mock factories are hoisted above the imports, so createRequire is resolved inside.
-  const { createRequire } = await import('node:module');
-  const actual = createRequire(import.meta.url)('../../../../agent-teams-controller/src/index.js');
-  return {
-    ...actual,
-    createController: (options: Record<string, unknown>) =>
-      actual.createController({ ...options, localTaskBoard: true }),
-  };
-});
-
 const { createController, protocols } = agentTeamsControllerModule;
 
 describe('bounded OpenCode startup visualization briefing', () => {
@@ -44,7 +30,15 @@ describe('bounded OpenCode startup visualization briefing', () => {
           ],
         })
       );
-      const controller = createController({ teamName, claudeDir, allowUserMessageSender: false });
+      // A test process has no desktop app binding, which the canonical task backend requires;
+      // this test's own briefing read therefore pins the local board. The builder below supplies
+      // its own read-only registry snapshot, so it must not also select a local board.
+      const controller = createController({
+        teamName,
+        claudeDir,
+        allowUserMessageSender: false,
+        localTaskBoard: true,
+      });
       const rawBriefing = await controller.taskBoard.memberBriefing('Builder', {
         runtimeProvider: 'opencode',
         includeActiveProcesses: false,
