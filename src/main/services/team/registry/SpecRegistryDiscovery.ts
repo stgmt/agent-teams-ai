@@ -20,11 +20,9 @@ export async function discoverSpecRegistry(
       ...config,
       ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
     });
-    const result = await transport.callTool(
-      'spec_registry',
-      { allProjects: true },
-      'discoverSpecRegistry'
-    );
+    // The published `spec_registry` tool takes no `allProjects` flag and rejects
+    // unknown arguments; an empty call lists every mounted project.
+    const result = await transport.callTool('spec_registry', {}, 'discoverSpecRegistry');
     if (!isRecord(result.data) || !Array.isArray(result.data.projects)) {
       throw new RegistryTaskProtocolError('discoverSpecRegistry', 'Invalid project list');
     }
