@@ -52,7 +52,7 @@ first pre-release counter (`-tokenplan.0`) of that line. `package.json` carries
 application and registry release checks pass.
 
 Build facts: `Agent.Teams.AI.Setup.2.19.0-tokenplan.0.exe`,
-sha256 `48ded220c4bb00195172f1bb73cadaeb9635a4f26535d19e7f6f074a10aadd80`, 353602760 bytes,
+sha256 `28d911c99354306f508a5cb2033a97144cc3549706ebb3697bbf71d586716204`, 353608839 bytes,
 unsigned (no signing certificate configured), with
 `Agent.Teams.AI.Setup.2.19.0-tokenplan.0.exe.blockmap` and `latest.yml` (sha512 and size match the
 installer). Staged runtime: `resources/runtime/VERSION`=`0.0.159`,
@@ -80,6 +80,7 @@ specifications, requirements, tasks, and roadmaps that survive a crash or restar
 - A recycled process ID no longer shows a stopped member as running or blocks the next launch.
 - A refused task creation now names the missing fields and where requirement IDs come from.
 - Your registry token reaches the Spec Kit connection only; the agent never receives it.
+- The registry connection dialog keeps its text readable instead of squeezing it into a narrow column.
 
 <!-- RELEASE_BODY_END v2.19.0-tokenplan.0 -->
 
