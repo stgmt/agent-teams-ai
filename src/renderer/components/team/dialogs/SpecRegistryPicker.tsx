@@ -123,7 +123,7 @@ export const SpecRegistryPicker = ({
   };
 
   return (
-    <div className="space-y-2 md:col-span-2">
+    <div className="space-y-2">
       <div className="flex items-center justify-between gap-2">
         <p role="status" className="text-xs text-[var(--color-text-muted)]">
           {state.status === 'loading'

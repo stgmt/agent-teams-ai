@@ -31,16 +31,19 @@ export const CreateTeamSpecIntegrationFields = ({
       )}
       {showFields && (
         <>
-          <SpecRegistryPicker
-            key={integration.revision}
-            project={integration.project}
-            slug={integration.slug}
-            onProjectChange={integration.onProjectChange}
-            onSlugChange={integration.onSlugChange}
-            onValidSelectionChange={integration.onValidSelectionChange}
-            disabled={disabled}
-            allowEmptySelection
-          />
+          {/* The dialog reuses this picker in a single-column grid, so the span lives here. */}
+          <div className="md:col-span-2">
+            <SpecRegistryPicker
+              key={integration.revision}
+              project={integration.project}
+              slug={integration.slug}
+              onProjectChange={integration.onProjectChange}
+              onSlugChange={integration.onSlugChange}
+              onValidSelectionChange={integration.onValidSelectionChange}
+              disabled={disabled}
+              allowEmptySelection
+            />
+          </div>
           <div className="flex flex-wrap items-center justify-between gap-2 md:col-span-2">
             <p className="text-xs text-[var(--color-text-muted)]">
               {t('create.registryPicker.optionalBinding')}
