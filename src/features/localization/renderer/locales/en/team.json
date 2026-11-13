@@ -321,7 +321,13 @@
       "credentialCheckOk": "Connected, {{count}} tools available.",
       "credentialCheckFailed": "Connection failed: {{code}}",
       "credentialRequired": "Enter the registry address and token.",
-      "credentialCleared": "Credential removed."
+      "credentialCleared": "Credential removed.",
+      "credentialGetToken": "Get token",
+      "credentialGetTokenHint": "This registry runs on this machine. The app can request a token for you instead of you pasting one.",
+      "localTokenNotLoopback": "Get token works only for a registry on this machine. Enter the registry address as localhost or 127.0.0.1, or paste a token.",
+      "localTokenForbidden": "The registry refused the request because it did not arrive from this machine. Open the registry through localhost and try again.",
+      "localTokenDisabled": "The registry has local token issuance switched off. Ask whoever runs it to set SPEC_REGISTRY_LOCAL_BOOTSTRAP_LOGIN, or paste a token.",
+      "localTokenFailed": "Could not get a token: {{code}}"
     },
     "registryBindingDescription": "Choose the registry project for this team. You may select an existing specification or let the team create its first one. The working directory is not a registry project.",
     "actions": {

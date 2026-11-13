@@ -86,6 +86,15 @@ export interface SpecRegistryProbeResult {
   errorCode: string | null;
 }
 
+/**
+ * Outcome of the loopback "Get token" bootstrap. A refusal carries a code the
+ * dialog can explain (a remote endpoint, an operator who has not opted in, an
+ * unreachable registry); the token never round-trips through a stored field.
+ */
+export type SpecRegistryLocalTokenResult =
+  | { ok: true; token: string }
+  | { ok: false; code: string };
+
 export interface SpecRegistryDiscovery {
   url: string;
   projects: { id: string; specs: { slug: string }[]; unavailable?: true }[];

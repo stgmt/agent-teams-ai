@@ -34,6 +34,7 @@ import { stripMarkdown } from '@main/utils/textFormatting';
 import {
   SPEC_REGISTRY_CLEAR,
   SPEC_REGISTRY_GET_STATUS,
+  SPEC_REGISTRY_LOCAL_TOKEN,
   SPEC_REGISTRY_SAVE,
   SPEC_REGISTRY_TEST,
   TEAM_ADD_MEMBER,
@@ -626,6 +627,7 @@ export function registerTeamHandlers(ipcMain: IpcMain): void {
   ipcMain.handle(SPEC_REGISTRY_SAVE, handleSpecRegistrySave);
   ipcMain.handle(SPEC_REGISTRY_CLEAR, handleSpecRegistryClear);
   ipcMain.handle(SPEC_REGISTRY_TEST, handleSpecRegistryTest);
+  ipcMain.handle(SPEC_REGISTRY_LOCAL_TOKEN, handleSpecRegistryLocalToken);
   ipcMain.handle(TEAM_LIST_SPEC_BINDINGS, handleListTeamSpecBindings);
   ipcMain.handle(TEAM_LINK_SPEC, handleLinkTeamSpec);
   ipcMain.handle(TEAM_UNLINK_SPEC, handleUnlinkTeamSpec);
@@ -726,6 +728,7 @@ export function removeTeamHandlers(ipcMain: IpcMain): void {
   ipcMain.removeHandler(SPEC_REGISTRY_SAVE);
   ipcMain.removeHandler(SPEC_REGISTRY_CLEAR);
   ipcMain.removeHandler(SPEC_REGISTRY_TEST);
+  ipcMain.removeHandler(SPEC_REGISTRY_LOCAL_TOKEN);
   ipcMain.removeHandler(TEAM_LIST_SPEC_BINDINGS);
   ipcMain.removeHandler(TEAM_LINK_SPEC);
   ipcMain.removeHandler(TEAM_UNLINK_SPEC);
@@ -992,6 +995,7 @@ const {
   handleSpecRegistrySave,
   handleSpecRegistryClear,
   handleSpecRegistryTest,
+  handleSpecRegistryLocalToken,
   handleListTeamSpecBindings,
   handleLinkTeamSpec,
   handleUnlinkTeamSpec,

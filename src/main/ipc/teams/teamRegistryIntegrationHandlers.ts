@@ -4,13 +4,18 @@ import {
   saveSpecRegistryCredential,
   testSpecRegistryCredential,
 } from '@main/services/team/registry/SpecRegistryCredentialOnboarding';
+import { requestLocalSpecRegistryToken } from '@main/services/team/registry/SpecRegistryLocalToken';
 import { SPEC_REGISTRY_NOT_CONFIGURED_CODE } from '@shared/constants/specRegistry';
 import { type IpcMainInvokeEvent } from 'electron';
 
 import { validateTeamName } from '../guards';
 
 import type { TeamDataService } from '@main/services';
-import type { SpecRegistryCredentialStatus, SpecRegistryProbeResult } from '@shared/types';
+import type {
+  SpecRegistryCredentialStatus,
+  SpecRegistryLocalTokenResult,
+  SpecRegistryProbeResult,
+} from '@shared/types';
 import type {
   IpcResult,
   SpecRegistryDiscovery,
@@ -75,6 +80,21 @@ export function createTeamRegistryIntegrationHandlers(deps: TeamRegistryIntegrat
       ...(typeof token === 'string' && token.trim() ? { token } : {}),
     };
     return wrapTeamHandler('specRegistryTest', () => testSpecRegistryCredential(candidate));
+  }
+
+  /**
+   * Loopback "Get token": mint this machine's registry credential so the user
+   * does not have to paste one. The loopback guard rides the service call — a
+   * remote endpoint is refused before any request leaves the app.
+   */
+  async function handleSpecRegistryLocalToken(
+    _event: IpcMainInvokeEvent,
+    url: unknown
+  ): Promise<IpcResult<SpecRegistryLocalTokenResult>> {
+    if (typeof url !== 'string' || !url.trim()) {
+      return { success: false, error: 'Registry endpoint is required' };
+    }
+    return wrapTeamHandler('specRegistryLocalToken', () => requestLocalSpecRegistryToken({ url }));
   }
 
   async function handleListTeamSpecBindings(
@@ -149,6 +169,7 @@ export function createTeamRegistryIntegrationHandlers(deps: TeamRegistryIntegrat
     handleSpecRegistrySave,
     handleSpecRegistryClear,
     handleSpecRegistryTest,
+    handleSpecRegistryLocalToken,
     handleListTeamSpecBindings,
     handleLinkTeamSpec,
     handleUnlinkTeamSpec,

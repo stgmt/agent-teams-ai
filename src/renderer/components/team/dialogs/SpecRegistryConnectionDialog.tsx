@@ -12,10 +12,26 @@ import {
   DialogTitle,
 } from '@renderer/components/ui/dialog';
 import { Input } from '@renderer/components/ui/input';
+import { isLoopbackSpecRegistryEndpoint } from '@shared/utils/specRegistryEndpoint';
 
 import { registrySelectionKey, SpecRegistryPicker } from './SpecRegistryPicker';
 
-import type { SpecRegistryCredentialStatus } from '@shared/types';
+import type { AppTranslationApi } from '@features/localization/renderer';
+import type { SpecRegistryCredentialStatus, SpecRegistryLocalTokenResult } from '@shared/types';
+
+/** Refusals the user can act on; anything else falls back to the generic message. */
+function localTokenRefusalMessage(t: AppTranslationApi['t'], code: string): string {
+  switch (code) {
+    case 'LOCAL_BOOTSTRAP_NOT_LOOPBACK':
+      return t('create.registryPicker.localTokenNotLoopback');
+    case 'LOCAL_BOOTSTRAP_FORBIDDEN':
+      return t('create.registryPicker.localTokenForbidden');
+    case 'LOCAL_BOOTSTRAP_DISABLED':
+      return t('create.registryPicker.localTokenDisabled');
+    default:
+      return t('create.registryPicker.localTokenFailed', { code });
+  }
+}
 
 interface SpecRegistryConnectionDialogProps {
   teamName?: string;
@@ -48,6 +64,9 @@ export const SpecRegistryConnectionDialog = ({
   const [credentialError, setCredentialError] = useState<string | null>(null);
   const [credentialBusy, setCredentialBusy] = useState(false);
   const [discoveryRevision, setDiscoveryRevision] = useState(0);
+  // The bootstrap only exists for a registry on this machine, so the action is
+  // offered for exactly that endpoint shape and nowhere else.
+  const localTokenAvailable = isLoopbackSpecRegistryEndpoint(credentialUrl);
 
   useEffect(() => {
     let cancelled = false;
@@ -66,14 +85,14 @@ export const SpecRegistryConnectionDialog = ({
     };
   }, []);
 
-  const checkCredential = async (): Promise<void> => {
+  const checkCredential = async (override?: { url?: string; token?: string }): Promise<void> => {
     setCredentialBusy(true);
     setCredentialError(null);
     setCredentialNotice(null);
     try {
       const result = await api.teams.testSpecRegistryCredential(
-        credentialUrl.trim() || undefined,
-        credentialToken.trim() || undefined
+        override?.url ?? (credentialUrl.trim() || undefined),
+        override?.token ?? (credentialToken.trim() || undefined)
       );
       if (result.ok) {
         setCredentialNotice(
@@ -91,6 +110,31 @@ export const SpecRegistryConnectionDialog = ({
     } finally {
       setCredentialBusy(false);
     }
+  };
+
+  /**
+   * A registry running on this machine can mint the token itself, so the user
+   * does not have to paste one. The obtained token goes into the field and the
+   * ordinary check runs on it, so success means exactly what a pasted token's
+   * success means.
+   */
+  const getLocalToken = async (): Promise<void> => {
+    setCredentialBusy(true);
+    setCredentialError(null);
+    setCredentialNotice(null);
+    let result: SpecRegistryLocalTokenResult;
+    try {
+      result = await api.teams.requestSpecRegistryLocalToken(credentialUrl.trim());
+    } catch {
+      result = { ok: false, code: 'LOCAL_BOOTSTRAP_FAILED' };
+    }
+    if (!result.ok) {
+      setCredentialBusy(false);
+      setCredentialError(localTokenRefusalMessage(t, result.code));
+      return;
+    }
+    setCredentialToken(result.token);
+    await checkCredential({ url: credentialUrl.trim(), token: result.token });
   };
 
   const saveCredential = async (): Promise<void> => {
@@ -227,6 +271,11 @@ export const SpecRegistryConnectionDialog = ({
           <p className="text-xs text-[var(--color-text-muted)]">
             {t('create.registryPicker.credentialHint')}
           </p>
+          {localTokenAvailable ? (
+            <p className="text-xs text-[var(--color-text-muted)]">
+              {t('create.registryPicker.credentialGetTokenHint')}
+            </p>
+          ) : null}
           {credentialError ? (
             <p role="alert" className="text-xs text-[var(--field-error-text)]">
               {credentialError}
@@ -238,6 +287,15 @@ export const SpecRegistryConnectionDialog = ({
             </p>
           ) : null}
           <div className="flex gap-2">
+            {localTokenAvailable ? (
+              <Button
+                variant="outline"
+                onClick={() => void getLocalToken()}
+                disabled={credentialBusy}
+              >
+                {t('create.registryPicker.credentialGetToken')}
+              </Button>
+            ) : null}
             <Button
               variant="outline"
               onClick={() => void checkCredential()}

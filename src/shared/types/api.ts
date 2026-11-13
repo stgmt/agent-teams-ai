@@ -19,7 +19,11 @@ import type {
   TriggerTestResult,
 } from './notifications';
 import type { OpenCodeStartupCleanupRecoveryAPI } from './openCodeStartupCleanup';
-import type { SpecRegistryCredentialStatus, SpecRegistryProbeResult } from './registryTask';
+import type {
+  SpecRegistryCredentialStatus,
+  SpecRegistryLocalTokenResult,
+  SpecRegistryProbeResult,
+} from './registryTask';
 import type { SpecRegistryDiscovery, TeamSpecBinding } from './registryTask';
 import type {
   AgentChangeSet,
@@ -461,6 +465,8 @@ export interface TeamsAPI extends TeamMemberSettingsApi, TeamReadLegacyApi {
   saveSpecRegistryCredential(url: string, token: string): Promise<SpecRegistryProbeResult>;
   clearSpecRegistryCredential(): Promise<void>;
   testSpecRegistryCredential(url?: string, token?: string): Promise<SpecRegistryProbeResult>;
+  /** Loopback bootstrap: obtain this machine's registry token instead of pasting one. */
+  requestSpecRegistryLocalToken(url: string): Promise<SpecRegistryLocalTokenResult>;
   readRecovery?: TeamReadRecoveryApi;
   discoverSpecRegistry: () => Promise<SpecRegistryDiscovery>;
   listTeamSpecBindings: (teamName: string) => Promise<TeamSpecBinding[]>;
