@@ -52,7 +52,7 @@ first pre-release counter (`-tokenplan.0`) of that line. `package.json` carries
 application and registry release checks pass.
 
 Build facts: `Agent.Teams.AI.Setup.2.19.0-tokenplan.0.exe`,
-sha256 `28d911c99354306f508a5cb2033a97144cc3549706ebb3697bbf71d586716204`, 353608839 bytes,
+sha256 `838b0681e2a744cd6d7253ebab1db0027528bfe1d42bba8e60233e592a2e6473`, 353605421 bytes,
 unsigned (no signing certificate configured), with
 `Agent.Teams.AI.Setup.2.19.0-tokenplan.0.exe.blockmap` and `latest.yml` (sha512 and size match the
 installer). Staged runtime: `resources/runtime/VERSION`=`0.0.159`,
@@ -66,6 +66,7 @@ specifications, requirements, tasks, and roadmaps that survive a crash or restar
 ### What's New
 
 - Connect your Spec Kit registry in the team dialog; the app stores the address and token encrypted.
+- Get a registry token from a registry running on this machine with one click, instead of pasting it.
 - Link a team to one or more registry specifications; each task keeps the numbering of its own specification.
 - Leads and members get the full Spec Kit tool set from the first message, including roadmap creation and assembly.
 - A team will not start without a working Spec Kit connection; the app offers the connection dialog instead.
