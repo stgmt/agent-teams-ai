@@ -59,10 +59,8 @@ export function readSourceWithin<T>(
       clearTimeout(timer);
       resolve(value);
     };
-    try {
-      read().then(succeed, fail);
-    } catch (error) {
-      fail(error);
-    }
+    // Calling the reader inside a continuation routes a synchronous throw through
+    // the same rejection handler as a late failure.
+    void Promise.resolve().then(read).then(succeed, fail);
   });
 }

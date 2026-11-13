@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { createSdkRuntimePlan, rejectUnexpectedRecovery } from './nodeMemberRuntimeFixture';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -32,6 +33,13 @@ it('drains only its real owned Node processes and their cleanup while another ow
             team,
             memberName,
             configurationRevision: 'TEST-revision',
+            specIntegration: {
+              scope: { projects: ['TEST/project'], bindings: [] },
+              environment: {
+                OMP_SPEC_REGISTRY_URL: 'http://127.0.0.1:8090',
+                OMP_SPEC_REGISTRY_TOKEN: 'TEST-registry-credential',
+              },
+            },
             providerId: 'TEST-node',
             model: null,
             workingDirectory: root,
@@ -40,17 +48,9 @@ it('drains only its real owned Node processes and their cleanup while another ow
       },
       runtime: new NodeMemberRuntime(
         {
-          prepare: () =>
-            Promise.resolve({
-              executable: process.execPath,
-              args: [
-                '-e',
-                "console.log('TEST-ready');process.stdin.on('data',()=>console.log('TEST-input'));setInterval(()=>{},1000)",
-              ],
+          prepare: async (_settings, token) =>
+            createSdkRuntimePlan('await ready();setInterval(()=>{},1000)', token, {
               cwd: root,
-              env: process.env,
-              observeOutput: (line: string) =>
-                line === 'TEST-ready' ? ('connected' as const) : null,
               dispose: held
                 ? async () => {
                     disposed();
@@ -58,6 +58,7 @@ it('drains only its real owned Node processes and their cleanup while another ow
                   }
                 : undefined,
             }),
+          recover: rejectUnexpectedRecovery,
         },
         async (expected, operation) => {
           const release = binding.admit(expected);
@@ -104,7 +105,8 @@ it('drains only its real owned Node processes and their cleanup while another ow
         generation: lead.generation,
         operationId: lead.operationId!,
       },
-      'TEST still owned'
+      JSON.stringify({ type: 'user', message: { role: 'user', content: 'TEST still owned' } }),
+      'TEST-still-owned-operation'
     );
     finishCleanup();
     await drained;
@@ -137,14 +139,20 @@ it('revokes an in-flight native plan before its queued continuation can create a
   const preparing = vi.fn(() => plan);
   const spawned = vi.fn(() => Promise.resolve());
   const disposed = vi.fn(() => Promise.resolve());
-  const prepared: NodeMemberLaunchPlan = {
-    executable: process.execPath,
-    args: ['-e', 'setInterval(()=>{},1000)'],
-    cwd: root,
-    env: process.env,
-    afterSpawn: spawned,
-    dispose: disposed,
-  };
+  const prepared = await createSdkRuntimePlan(
+    'setInterval(()=>{},1000)',
+    {
+      ...run,
+      memberName: 'team-lead',
+      generation: 1,
+      operationId: 'TEST-unused-plan',
+    },
+    {
+      cwd: root,
+      afterSpawn: spawned,
+      dispose: disposed,
+    }
+  );
   const lifecycle = createMemberLifecycle({
     owner: context.snapshot(),
     settings: {
@@ -153,20 +161,30 @@ it('revokes an in-flight native plan before its queued continuation can create a
           team,
           memberName,
           configurationRevision: 'TEST-revision',
+          specIntegration: {
+            scope: { projects: ['TEST/project'], bindings: [] },
+            environment: {
+              OMP_SPEC_REGISTRY_URL: 'http://127.0.0.1:8090',
+              OMP_SPEC_REGISTRY_TOKEN: 'TEST-registry-credential',
+            },
+          },
           providerId: 'TEST',
           model: null,
           workingDirectory: root,
           instructions: 'TEST',
         }),
     },
-    runtime: new NodeMemberRuntime({ prepare: preparing }, async (expected, operation) => {
-      const release = context.admit(expected);
-      try {
-        return await operation();
-      } finally {
-        release();
+    runtime: new NodeMemberRuntime(
+      { prepare: preparing, recover: rejectUnexpectedRecovery },
+      async (expected, operation) => {
+        const release = context.admit(expected);
+        try {
+          return await operation();
+        } finally {
+          release();
+        }
       }
-    }),
+    ),
   });
   try {
     await lifecycle.teams.launch(run, [{ memberName: 'team-lead', role: 'lead' }]);

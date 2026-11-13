@@ -72,13 +72,15 @@ export class NodeLeadInputDeliveryStore implements LeadInputDelivery {
 
   claim(input: PersistedLeadRequest): Promise<LeadInputClaim> {
     return this.withRecord(input, async (path, request, current) => {
-      if (current && current.state !== 'reserved') return Object.freeze({ state: current.state });
+      if (current?.state === 'sent') return Object.freeze({ state: 'sent' });
+      if (current?.state === 'unconfirmed')
+        return Object.freeze({ state: 'unconfirmed', operationId: current.operationId });
       const value: RecordValue = {
         schemaVersion: 1,
         run: request.run,
         requestMessageId: request.requestMessageId,
         textDigest: digest(request.text),
-        operationId: randomUUID(),
+        operationId: current?.operationId ?? randomUUID(),
         state: 'unconfirmed',
       };
       await this.write(path, request, value);

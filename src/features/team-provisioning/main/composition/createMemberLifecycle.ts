@@ -5,6 +5,7 @@ import { StartBoundMember } from '../../core/application/commands/StartBoundMemb
 import { TeamLifecycleCommands } from '../../core/application/commands/TeamLifecycleCommands';
 import { LeadMemberStartAuthority } from '../../core/application/LeadMemberStartAuthority';
 import { MemberLifecycleRegistry } from '../../core/domain/MemberLifecycleRegistry';
+
 import {
   NativeTeamOperationActivity,
   ObservedTeamOperationQueue,

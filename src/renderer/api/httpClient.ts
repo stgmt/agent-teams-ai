@@ -57,6 +57,7 @@ import {
 import { SENTRY_ENVIRONMENT, SENTRY_RELEASE } from '@shared/utils/sentryConfig';
 
 import { createBrowserReviewApi } from './browserReviewApi';
+import { createDesktopOnlySpecRegistryApi } from './desktopOnlySpecRegistry';
 
 import type { AnnouncementsApi, AnnouncementsSnapshot } from '@features/announcements/contracts';
 import type {
@@ -1041,30 +1042,7 @@ export class HttpAPIClient implements ElectronAPI {
   };
 
   teams: TeamsAPI = {
-    discoverSpecRegistry: async () => {
-      throw new Error('Specification registry discovery is only available in the desktop app');
-    },
-    getSpecRegistryCredentialStatus: async () => {
-      throw new Error('Specification registry onboarding is only available in the desktop app');
-    },
-    saveSpecRegistryCredential: async () => {
-      throw new Error('Specification registry onboarding is only available in the desktop app');
-    },
-    clearSpecRegistryCredential: async () => {
-      throw new Error('Specification registry onboarding is only available in the desktop app');
-    },
-    testSpecRegistryCredential: async () => {
-      throw new Error('Specification registry onboarding is only available in the desktop app');
-    },
-    listTeamSpecBindings: async () => {
-      throw new Error('Specification bindings are only available in the desktop app');
-    },
-    linkTeamSpec: async () => {
-      throw new Error('Specification bindings are only available in the desktop app');
-    },
-    unlinkTeamSpec: async () => {
-      throw new Error('Specification bindings are only available in the desktop app');
-    },
+    ...createDesktopOnlySpecRegistryApi(),
     list: async (): Promise<TeamSummary[]> => {
       console.warn('[HttpAPIClient] teams API is not available in browser mode');
       return [];

@@ -22,7 +22,7 @@ import {
   findPaneByTabId,
   getAllTabs,
   removePane as removePaneHelper,
-  syncFocusedPaneState,
+  syncFromLayout,
   updatePane,
 } from '../utils/paneHelpers';
 import {
@@ -100,23 +100,6 @@ export interface TabSlice {
     fromSearch?: boolean,
     searchContext?: SearchNavigationContext
   ) => void;
-}
-
-// =============================================================================
-// Helpers
-// =============================================================================
-
-/**
- * Sync root-level state from the focused pane.
- */
-function syncFromLayout(layout: PaneLayout): Record<string, unknown> {
-  const synced = syncFocusedPaneState(layout);
-  return {
-    paneLayout: layout,
-    openTabs: synced.openTabs,
-    activeTabId: synced.activeTabId,
-    selectedTabIds: synced.selectedTabIds,
-  };
 }
 
 // =============================================================================

@@ -1,8 +1,8 @@
 import React, { act } from 'react';
-import { createRoot } from 'react-dom/client';
-import { createI18nextInstance } from '@features/localization/renderer/composition/createI18nextInstance';
 import { I18nextProvider } from 'react-i18next';
+import { createRoot } from 'react-dom/client';
 
+import { createI18nextInstance } from '@features/localization/renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const apiMock = vi.hoisted(() => ({
@@ -56,8 +56,8 @@ import { TeamSpecBindingsManager } from './TeamSpecBindingsManager';
 import type { SpecificationBinding } from '@renderer/utils/specificationTaskPresentation';
 
 const teamName = 'canvas-team';
-const existingBinding: SpecificationBinding = { project: 'studio', spec: 'canvas' };
-const newBinding: SpecificationBinding = { project: 'studio', spec: 'registry-api' };
+const existingBinding: SpecificationBinding = { project: 'test/studio', spec: 'canvas' };
+const newBinding: SpecificationBinding = { project: 'test/studio', spec: 'registry-api' };
 
 const mountedRoots: ReturnType<typeof createRoot>[] = [];
 
@@ -73,7 +73,7 @@ beforeEach(() => {
   apiMock.teams.listTeamSpecBindings.mockResolvedValue([existingBinding]);
   apiMock.teams.discoverSpecRegistry.mockResolvedValue({
     url: 'http://127.0.0.1:8090',
-    projects: [{ id: 'studio', specs: [{ slug: 'canvas' }, { slug: 'registry-api' }] }],
+    projects: [{ id: 'test/studio', specs: [{ slug: 'canvas' }, { slug: 'registry-api' }] }],
   });
   apiMock.teams.linkTeamSpec.mockResolvedValue([existingBinding, newBinding]);
   apiMock.teams.unlinkTeamSpec.mockResolvedValue([]);
@@ -93,7 +93,7 @@ async function renderManager(
       <I18nextProvider i18n={createI18nextInstance('en')}>
         <TeamSpecBindingsManager
           teamName={teamName}
-          bindings={bindings}
+          scope={{ projects: ['test/studio'], bindings }}
           open
           onOpenChange={() => undefined}
           onBindingsChange={onBindingsChange}
@@ -127,7 +127,7 @@ describe('TeamSpecBindingsManager', () => {
   it('links a newly discovered specification to the team', async () => {
     const onBindingsChange = vi.fn();
     const host = await renderManager(onBindingsChange);
-    await selectRegistrySpec(host, 'studio/registry-api');
+    await selectRegistrySpec(host, 'test/studio/registry-api');
     const linkButton = Array.from(host.querySelectorAll('button')).find(
       (button) => button.textContent === 'Link specification'
     );
@@ -148,7 +148,7 @@ describe('TeamSpecBindingsManager', () => {
     apiMock.teams.linkTeamSpec.mockResolvedValue([newBinding]);
     const onBindingsChange = vi.fn();
     const host = await renderManager(onBindingsChange, []);
-    await selectRegistrySpec(host, 'studio/registry-api');
+    await selectRegistrySpec(host, 'test/studio/registry-api');
     const linkButton = Array.from(host.querySelectorAll('button')).find(
       (button) => button.textContent === 'Link specification'
     );

@@ -45,8 +45,10 @@ describe('board lock reentrancy', () => {
     const alias = path.join(root, 'root-alias');
     fs.mkdirSync(teamDir, { recursive: true });
     fs.symlinkSync(root, alias, process.platform === 'win32' ? 'junction' : 'dir');
-    const a = createController({ teamName: 'fixture', claudeDir: root }).taskBoard;
-    const b = createController({ teamName: 'fixture', claudeDir: alias }).taskBoard;
+    const a = createController({ teamName: 'fixture', claudeDir: root, localTaskBoard: true })
+      .taskBoard;
+    const b = createController({ teamName: 'fixture', claudeDir: alias, localTaskBoard: true })
+      .taskBoard;
     withTeamBoardLock({ teamDir, claudeDir: root }, () => {
       a.createTask({ subject: 'first', notifyOwner: false });
       expect(a.listTasks()).toHaveLength(1);

@@ -16,6 +16,7 @@ export function fingerprintSavedLaunchSettings(value: object | null): string {
     'extraCliArgs',
     'limitContext',
     'launchIdentity',
+    'specScope',
   ];
   const stable = (value: unknown): unknown => {
     if (value == null) return null;

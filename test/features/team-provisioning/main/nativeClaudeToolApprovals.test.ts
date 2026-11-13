@@ -66,7 +66,8 @@ describe('native Claude tool approvals', () => {
         response: {
           subtype: 'success',
           request_id: 'r1',
-          response: { behavior: 'allow', updatedInput: {} },
+          // The approval echoes the request input so the CLI keeps the reviewed tool call.
+          response: { behavior: 'allow', updatedInput: { command: 'ls' } },
         },
       })
     );

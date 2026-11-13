@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { createSdkRuntimePlan, rejectUnexpectedRecovery } from './nodeMemberRuntimeFixture';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { BoundControlContext } from '../../../../src/features/external-agent-connection/main/BoundControlContext';
@@ -30,6 +31,13 @@ describe('team lifecycle with owned operating-system processes', () => {
               team,
               memberName,
               configurationRevision: 'TEST-revision',
+              specIntegration: {
+                scope: { projects: ['TEST/project'], bindings: [] },
+                environment: {
+                  OMP_SPEC_REGISTRY_URL: 'http://127.0.0.1:8090',
+                  OMP_SPEC_REGISTRY_TOKEN: 'TEST-registry-credential',
+                },
+              },
               providerId: 'TEST-node',
               model: null,
               workingDirectory: process.cwd(),
@@ -39,28 +47,24 @@ describe('team lifecycle with owned operating-system processes', () => {
         },
         runtime: new NodeMemberRuntime(
           {
-            prepare(launch) {
+            async prepare(launch, token) {
               const member = launch.memberName === 'builder';
-              return Promise.resolve({
-                executable: process.execPath,
-                args: [
-                  '-e',
-                  member && stage === 'resource-release'
-                    ? 'process.exit(0)'
-                    : 'setInterval(()=>{},1000)',
-                ],
-                cwd: process.cwd(),
-                env: process.env,
-                afterSpawn: () =>
-                  member && stage === 'registration'
-                    ? Promise.reject(new Error('TEST-registration'))
-                    : Promise.resolve(),
-                dispose: () =>
-                  member && stage === 'resource-release'
-                    ? Promise.reject(new Error('TEST-resource-release'))
-                    : Promise.resolve(),
-              });
+              return createSdkRuntimePlan(
+                member && stage === 'resource-release' ? 'await finish(0)' : 'await ready()',
+                token,
+                {
+                  afterSpawn: () =>
+                    member && stage === 'registration'
+                      ? Promise.reject(new Error('TEST-registration'))
+                      : Promise.resolve(),
+                  dispose: () =>
+                    member && stage === 'resource-release'
+                      ? Promise.reject(new Error('TEST-resource-release'))
+                      : Promise.resolve(),
+                }
+              );
             },
+            recover: rejectUnexpectedRecovery,
           },
           async (expected, operation) => {
             const release = context.admit(expected);
@@ -91,7 +95,11 @@ describe('team lifecycle with owned operating-system processes', () => {
         expect(lifecycle.snapshot(run.teamName).state).toBe('release-failed');
         expect(lifecycle.registry.recoveryCandidates(run.teamName)).not.toContain('builder');
       }
-      expect(lifecycle.snapshot(run.teamName).members['team-lead'].process).not.toBeNull();
+      await expect
+        .poll(() => lifecycle.snapshot(run.teamName).members['team-lead'].process, {
+          timeout: 20_000,
+        })
+        .not.toBeNull();
       if (stage === 'resource-release') {
         expect((await lifecycle.commands.start(run, 'builder')).kind).toBe('stopping');
         await expect(lifecycle.teams.stop(run)).rejects.toThrow('termination');
@@ -120,6 +128,13 @@ describe('team lifecycle with owned operating-system processes', () => {
             team,
             memberName,
             configurationRevision: 'TEST-revision',
+            specIntegration: {
+              scope: { projects: ['TEST/project'], bindings: [] },
+              environment: {
+                OMP_SPEC_REGISTRY_URL: 'http://127.0.0.1:8090',
+                OMP_SPEC_REGISTRY_TOKEN: 'TEST-registry-credential',
+              },
+            },
             providerId: 'TEST-node',
             model: null,
             workingDirectory: process.cwd(),
@@ -129,12 +144,8 @@ describe('team lifecycle with owned operating-system processes', () => {
       },
       runtime: new NodeMemberRuntime(
         {
-          prepare(launch) {
-            return Promise.resolve({
-              executable: process.execPath,
-              args: ['-e', 'setInterval(()=>{},1000)'],
-              cwd: process.cwd(),
-              env: process.env,
+          async prepare(launch, token) {
+            return createSdkRuntimePlan('await ready()', token, {
               afterSpawn:
                 launch.memberName === 'builder'
                   ? async () => {
@@ -144,6 +155,7 @@ describe('team lifecycle with owned operating-system processes', () => {
                   : undefined,
             });
           },
+          recover: rejectUnexpectedRecovery,
         },
         async (expected, operation) => {
           const release = context.admit(expected);
@@ -182,6 +194,13 @@ describe('team lifecycle with owned operating-system processes', () => {
             team,
             memberName,
             configurationRevision: 'TEST-revision',
+            specIntegration: {
+              scope: { projects: ['TEST/project'], bindings: [] },
+              environment: {
+                OMP_SPEC_REGISTRY_URL: 'http://127.0.0.1:8090',
+                OMP_SPEC_REGISTRY_TOKEN: 'TEST-registry-credential',
+              },
+            },
             providerId: 'TEST-node',
             model: null,
             workingDirectory: process.cwd(),
@@ -191,22 +210,17 @@ describe('team lifecycle with owned operating-system processes', () => {
       },
       runtime: new NodeMemberRuntime(
         {
-          prepare(settings) {
+          async prepare(settings, token) {
             const generation = (spawns.get(settings.memberName) ?? 0) + 1;
             spawns.set(settings.memberName, generation);
-            // РИСК: обычный Node-процесс проверяет владение и события ОС, но не авторизацию или подключение поставщика модели.
-            const end =
+            return createSdkRuntimePlan(
               settings.memberName === 'builder' && generation === 1
-                ? 'setTimeout(()=>process.exit(7),100)'
-                : 'setInterval(()=>{},1000)';
-            return Promise.resolve({
-              executable: process.execPath,
-              args: ['-e', `console.log('TEST-ready');${end}`],
-              cwd: process.cwd(),
-              env: process.env,
-            });
+                ? 'await ready();await finish(7)'
+                : 'await ready()',
+              token
+            );
           },
-          observeOutput: (line) => (line === 'TEST-ready' ? 'connected' : null),
+          recover: rejectUnexpectedRecovery,
         },
         async (expected, operation) => {
           const release = context.admit(expected);

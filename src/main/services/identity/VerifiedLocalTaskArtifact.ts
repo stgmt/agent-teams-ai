@@ -1,19 +1,19 @@
+import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
-import type { FileHandle } from 'node:fs/promises';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
-import { createHash } from 'node:crypto';
 
-import type { TaskArtifactProof, TaskAttachmentMeta } from '@shared/types';
-import type { DesktopSigningKeyStore } from './DesktopSigningKeyStore';
 import { signTaskAttestation } from './TaskAttestation';
 
+import type { DesktopSigningKeyStore } from './DesktopSigningKeyStore';
 import type {
   SignedTaskPayload,
   TaskIdentity,
   TaskPolicy,
   VerifiedTaskProof,
 } from './TaskAttestation';
+import type { TaskArtifactProof, TaskAttachmentMeta } from '@shared/types';
+import type { FileHandle } from 'node:fs/promises';
 
 const MAX_ARTIFACT_SIZE = 20 * 1024 * 1024;
 const HASH_PATTERN = /^[0-9a-f]{64}$/u;

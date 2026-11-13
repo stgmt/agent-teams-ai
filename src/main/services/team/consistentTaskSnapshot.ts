@@ -1,6 +1,9 @@
 import { getTasksBasePath } from '@main/utils/pathDecoder';
 import * as fs from 'fs';
 
+import { RegistryTaskProviderError } from './registry/RegistryTaskProvider';
+import { TeamSpecBindingError } from './registry/TeamSpecBinding';
+
 import type { TeamKanbanManager } from './TeamKanbanManager';
 import type { KanbanState } from '@shared/types';
 
@@ -49,6 +52,8 @@ export async function readConsistentTaskSnapshot<T>(
   try {
     tasks = await readFreshTasks();
   } catch (error) {
+    if (error instanceof RegistryTaskProviderError || error instanceof TeamSpecBindingError)
+      throw error;
     if (isKanbanError(error)) throw error;
     throw Object.assign(
       new Error('KANBAN_SNAPSHOT_CHANGED: Cannot verify task data; open the team again.'),

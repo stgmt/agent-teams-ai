@@ -96,10 +96,14 @@ function createHost(publish = writeTeamControlApiState) {
     ].join('\n'),
     { compilerOptions: { target: ts.ScriptTarget.ES2022 } }
   ).outputText;
+  // startHttpServer refuses to listen without the native SDK host, so the double stands in
+  // for the initialized Host and lets the test assert it reaches the server options.
+  const nativeClaudeSdkHost = { close: vi.fn(async () => undefined) };
   // Only named functions from this repository are executed, with offline dependencies.
   // eslint-disable-next-line sonarjs/code-eval -- trusted local source, no user input
   const host = runInNewContext(`${code}\n({ startHttpServer, provisioning, memberWorkSync })`, {
     httpServer: server,
+    nativeClaudeSdkHost,
     externalAgentConnection: null,
     isShutdownStarted,
     assertStartupActive,
@@ -131,6 +135,7 @@ function createHost(publish = writeTeamControlApiState) {
   };
   return {
     server,
+    nativeClaudeSdkHost,
     start: () => host.startHttpServer(() => Promise.resolve()),
     resolve: (kind: ResolverKind) => host[kind](),
     shutdown: () => {
@@ -166,7 +171,11 @@ describe('existing app Host endpoint wiring', () => {
   it('publishes the listening fallback port on cold start and already-running start', async () => {
     const host = createHost();
     await host.start();
-    expect(host.server.start).toHaveBeenCalledWith(expect.any(Object), expect.any(Function), 3456);
+    expect(host.server.start).toHaveBeenCalledWith(
+      expect.objectContaining({ nativeClaudeSdkHost: host.nativeClaudeSdkHost }),
+      expect.any(Function),
+      3456
+    );
     expect(process.env.CLAUDE_TEAM_CONTROL_URL).toBe('http://127.0.0.1:4591');
     expect(
       JSON.parse(await readFile(path.join(root, 'team-control-api.json'), 'utf8')).baseUrl

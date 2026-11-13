@@ -4,7 +4,10 @@ import { MemberLifecycleRegistry } from '../../../../src/features/team-provision
 import { NativeStartupWorkDelivery } from '../../../../src/features/team-provisioning/main/adapters/output/NativeStartupWorkDelivery';
 
 import type { AppConnectionContext } from '../../../../src/features/external-agent-connection/contracts';
-import type { MemberProcessToken, TeamRunIdentity } from '../../../../src/features/team-provisioning/contracts';
+import type {
+  MemberProcessToken,
+  TeamRunIdentity,
+} from '../../../../src/features/team-provisioning/contracts';
 import type { ConfiguredMemberLaunch } from '../../../../src/features/team-provisioning/core/application/ports/MemberRuntimePorts';
 import type { TeamTask } from '../../../../src/shared/types';
 
@@ -16,7 +19,6 @@ const owner: AppConnectionContext = {
 const run: TeamRunIdentity = { ...owner, teamName: 'TEST-team', runId: 'TEST-run' };
 const memberName = 'builder';
 const task: TeamTask = { id: '1', subject: 'TEST task', status: 'pending', owner: memberName };
-
 
 function deferredTasks(): { promise: Promise<TeamTask[]>; resolve: (tasks: TeamTask[]) => void } {
   let resolve!: (tasks: TeamTask[]) => void;
@@ -35,6 +37,13 @@ function launchFor(identity: TeamRunIdentity): ConfiguredMemberLaunch {
     role: 'member',
     workingDirectory: 'C:/TEST/workspace',
     instructions: 'TEST',
+    specIntegration: {
+      scope: { projects: ['TEST/project'], bindings: [] },
+      environment: {
+        OMP_SPEC_REGISTRY_URL: 'http://127.0.0.1:8090',
+        OMP_SPEC_REGISTRY_TOKEN: 'TEST-registry-credential',
+      },
+    },
   };
 }
 
@@ -51,27 +60,27 @@ function startMember(
   return { token: admission.token, process };
 }
 
-function setup(options: {
-  contextInvalidationSignal?: () => AbortSignal;
-  readTasks?: (teamName: string) => Promise<TeamTask[]>;
-  withExpectedContext?: <T>(
-    expected: AppConnectionContext,
-    operation: () => Promise<T>
-  ) => Promise<T>;
-  deliver?: (
-    member: string,
-    settings: { launchId: string; isCurrent: () => boolean }
-  ) => Promise<{
-    delivered: readonly unknown[];
-    skipped: readonly unknown[];
-  }>;
-} = {}) {
+function setup(
+  options: {
+    contextInvalidationSignal?: () => AbortSignal;
+    readTasks?: (teamName: string) => Promise<TeamTask[]>;
+    withExpectedContext?: <T>(
+      expected: AppConnectionContext,
+      operation: () => Promise<T>
+    ) => Promise<T>;
+    deliver?: (
+      member: string,
+      settings: { launchId: string; isCurrent: () => boolean }
+    ) => Promise<{
+      delivered: readonly unknown[];
+      skipped: readonly unknown[];
+    }>;
+  } = {}
+) {
   const registry = new MemberLifecycleRegistry(owner);
   registry.configureTeam(run, [{ memberName, role: 'member' }]);
   const readTasks = vi.fn(options.readTasks ?? (async () => [task]));
-  const deliver = vi.fn(
-    options.deliver ?? (async () => ({ delivered: [task], skipped: [] }))
-  );
+  const deliver = vi.fn(options.deliver ?? (async () => ({ delivered: [task], skipped: [] })));
   const createController = vi.fn((_input: { readOnlyTaskSnapshot: TeamTask[] }) => ({
     taskBoard: { deliverStartupWorkAsync: deliver },
   }));
@@ -102,6 +111,9 @@ describe('native startup work delivery', () => {
     const first = h.delivery.confirmed(launch, token);
     const repeated = h.delivery.confirmed(launch, token);
     expect(repeated).toBe(first);
+    // Admission is entered on a microtask so a synchronous admission throw reaches the retry
+    // path; the shared in-flight attempt still performs exactly one registry read.
+    await Promise.resolve();
     expect(h.readTasks).toHaveBeenCalledTimes(1);
     finishRead([task]);
     await first;
@@ -216,7 +228,9 @@ describe('native startup work delivery', () => {
 
       expect(h.readTasks).toHaveBeenCalledTimes(1);
       expect(h.deliver).toHaveBeenCalledTimes(1);
-      expect(h.diagnostics.some((entry) => entry.includes('0 task message(s) delivered'))).toBe(true);
+      expect(h.diagnostics.some((entry) => entry.includes('0 task message(s) delivered'))).toBe(
+        true
+      );
     } finally {
       vi.useRealTimers();
     }

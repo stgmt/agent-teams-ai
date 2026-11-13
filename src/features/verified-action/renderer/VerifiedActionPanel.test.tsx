@@ -8,6 +8,7 @@ import { VerifiedActionPanel } from './VerifiedActionPanel';
 
 import type { VerifiedAction } from '../contracts';
 import type { TaskWriteDecision } from '@features/team-task-detail/contracts';
+import type { Root } from 'react-dom/client';
 
 const mocks = vi.hoisted(() => ({
   list: vi.fn(),
@@ -112,6 +113,22 @@ function button(host: HTMLElement, label: string): HTMLButtonElement {
   return found;
 }
 
+type PanelGuard = React.ComponentProps<typeof VerifiedActionPanel>['guard'];
+
+function renderPanel(root: Root, guardValue: PanelGuard): void {
+  const element = (
+    <VerifiedActionPanel
+      contextId="local"
+      teamName="team"
+      taskId="task"
+      enabled
+      canMutate={() => true}
+      guard={guardValue}
+    />
+  );
+  root.render(element);
+}
+
 describe('VerifiedActionPanel', () => {
   it('shows preparation again after a replacement makes an unapproved action stale', async () => {
     vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
@@ -188,18 +205,7 @@ describe('VerifiedActionPanel', () => {
     const host = document.createElement('div');
     document.body.append(host);
     const root = createRoot(host);
-    const render = (value: typeof pending) =>
-      root.render(
-        <VerifiedActionPanel
-          contextId="local"
-          teamName="team"
-          taskId="task"
-          enabled
-          canMutate={() => true}
-          guard={value}
-        />
-      );
-    await act(async () => render(pending));
+    await act(async () => renderPanel(root, pending));
     await bound.closeAdmission();
     bound.rebind('same-root');
     const newContext = bound.snapshot();
@@ -219,7 +225,7 @@ describe('VerifiedActionPanel', () => {
     await act(async () => button(host, 'verifiedAction.guardCheck').click());
     expect(mocks.list).not.toHaveBeenCalled();
     await act(async () =>
-      render({
+      renderPanel(root, {
         ...pending,
         taskWriteGuard: { ...pending.taskWriteGuard, expectedContext: newContext },
       })
@@ -615,21 +621,10 @@ describe('VerifiedActionPanel', () => {
     const host = document.createElement('div');
     document.body.append(host);
     const root = createRoot(host);
-    const render = (value: typeof pending) =>
-      root.render(
-        <VerifiedActionPanel
-          contextId="local"
-          teamName="team"
-          taskId="task"
-          enabled
-          canMutate={() => true}
-          guard={value}
-        />
-      );
-    await act(async () => render(pending));
+    await act(async () => renderPanel(root, pending));
     await act(async () => button(host, 'verifiedAction.guardCheck').click());
     await act(async () =>
-      render({
+      renderPanel(root, {
         ...pending,
         taskWriteGuard: { ...pending.taskWriteGuard, expectedRootFingerprint: 'd'.repeat(64) },
       })
@@ -781,18 +776,7 @@ describe('VerifiedActionPanel', () => {
     const host = document.createElement('div');
     document.body.append(host);
     const root = createRoot(host);
-    const render = (value: typeof pending | typeof restored) =>
-      root.render(
-        <VerifiedActionPanel
-          contextId="local"
-          teamName="team"
-          taskId="task"
-          enabled
-          canMutate={() => true}
-          guard={value}
-        />
-      );
-    await act(async () => render(pending));
+    await act(async () => renderPanel(root, pending));
     vi.useFakeTimers();
     await act(async () => button(host, 'verifiedAction.guardCheck').click());
     expect(mocks.fenceDecision).toHaveBeenCalledOnce();
@@ -801,7 +785,7 @@ describe('VerifiedActionPanel', () => {
     });
     expect(host.textContent).toContain('verifiedAction.refreshFailed');
     expect(guard.releaseUnadmittedDecisionFence).not.toHaveBeenCalled();
-    await act(async () => render(restored));
+    await act(async () => renderPanel(root, restored));
     guard.checkGuardedTaskWriteOutcome.mockResolvedValueOnce({
       expectedContext: expected,
       expectedRootFingerprint,
@@ -846,18 +830,7 @@ describe('VerifiedActionPanel', () => {
     const host = document.createElement('div');
     document.body.append(host);
     const root = createRoot(host);
-    const render = (value: typeof pending | typeof restored) =>
-      root.render(
-        <VerifiedActionPanel
-          contextId="local"
-          teamName="team"
-          taskId="task"
-          enabled
-          canMutate={() => true}
-          guard={value}
-        />
-      );
-    await act(async () => render(pending));
+    await act(async () => renderPanel(root, pending));
     expect(host.textContent).not.toContain('verifiedAction.question');
     await act(async () => button(host, 'verifiedAction.guardCheck').click());
     expect(mocks.fenceDecision).toHaveBeenCalledTimes(1);
@@ -1249,19 +1222,8 @@ describe('VerifiedActionPanel', () => {
     const host = document.createElement('div');
     document.body.append(host);
     const root = createRoot(host);
-    const render = (value: typeof pending) =>
-      root.render(
-        <VerifiedActionPanel
-          contextId="local"
-          teamName="team"
-          taskId="task"
-          enabled
-          canMutate={() => true}
-          guard={value}
-        />
-      );
     await act(async () => {
-      render(pending);
+      renderPanel(root, pending);
     });
     expect(button(host, 'verifiedAction.retry').disabled).toBe(true);
     expect(mocks.decide).not.toHaveBeenCalled();
@@ -1276,7 +1238,7 @@ describe('VerifiedActionPanel', () => {
     expect(guard.checkGuardedTaskWriteOutcome).toHaveBeenCalledWith('manifest');
     expect(mocks.decide).not.toHaveBeenCalled();
     await act(async () => {
-      render(checked);
+      renderPanel(root, checked);
     });
     await act(async () => {
       button(host, 'verifiedAction.retry').click();

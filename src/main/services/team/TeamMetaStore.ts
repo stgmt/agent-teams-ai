@@ -7,7 +7,8 @@ import { randomUUID } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { resolveTeamSpecBindings } from './registry/TeamSpecBinding';
+import { resolveTeamSpecScope } from './registry/TeamSpecBinding';
+import { migrateTeamSpecScope } from './registry/TeamSpecBindingMigration';
 import { atomicWriteAsync } from './atomicWrite';
 import { withFileLock } from './fileLock';
 import { hasCompleteKnownMetadata } from './TeamMetadataReadFidelity';
@@ -18,7 +19,7 @@ import type {
   RegistryRegistrationIdentity,
   TeamFastMode,
   TeamProviderId,
-  TeamSpecBinding,
+  TeamSpecScope,
 } from '@shared/types';
 
 /**
@@ -37,9 +38,7 @@ export interface TeamMetaFile {
   registryRegistrationProtocol?: 1;
   registryRegistrationIdentity?: RegistryRegistrationIdentity;
   registryRegistrationCompleted?: boolean;
-  specProject?: string;
-  specSlug?: string;
-  specBindings?: TeamSpecBinding[];
+  specScope?: TeamSpecScope;
   displayName?: string;
   description?: string;
   color?: string;
@@ -194,7 +193,7 @@ export class TeamMetaStore {
   async getMeta(
     teamName: string,
     teamsBasePath = getTeamsBasePath(),
-    options?: { requireCompleteFields?: boolean }
+    options?: { requireCompleteFields?: boolean; skipScopeMigration?: boolean }
   ): Promise<TeamMetaFile | null> {
     const metaPath = this.getMetaPath(teamName, teamsBasePath);
     try {
@@ -243,6 +242,37 @@ export class TeamMetaStore {
     const providerId = normalizeProviderId(file.providerId);
 
     try {
+      if (
+        options?.skipScopeMigration &&
+        ('specProject' in file || 'specSlug' in file || 'specBindings' in file)
+      )
+        throw new Error('Team specification scope requires migration before mutation');
+      if (
+        !options?.skipScopeMigration &&
+        ('specProject' in file || 'specSlug' in file || 'specBindings' in file)
+      ) {
+        await withMetaMutationLock(
+          metaPath,
+          async () => {
+            const current: unknown = JSON.parse(await readFileUtf8WithTimeout(metaPath, 5_000));
+            if (
+              !current ||
+              typeof current !== 'object' ||
+              Array.isArray(current) ||
+              !('version' in current) ||
+              current.version !== 1 ||
+              !('cwd' in current) ||
+              typeof current.cwd !== 'string'
+            ) {
+              throw new Error('Cannot migrate unreadable team metadata');
+            }
+            const migrated = migrateTeamSpecScope(current, teamName);
+            await atomicWriteAsync(metaPath, serializeTeamMetadata(migrated));
+          },
+          false
+        );
+        return this.getMeta(teamName, teamsBasePath, options);
+      }
       const normalized: TeamMetaFile = {
         version: 1,
         deletedAt: typeof file.deletedAt === 'string' ? file.deletedAt : undefined,
@@ -260,10 +290,8 @@ export class TeamMetaStore {
           typeof file.registryRegistrationCompleted === 'boolean'
             ? file.registryRegistrationCompleted
             : undefined,
-        specProject: normalizeOptionalString(file.specProject) ?? undefined,
-        specSlug: normalizeOptionalString(file.specSlug) ?? undefined,
-        ...(file.specBindings !== undefined
-          ? { specBindings: resolveTeamSpecBindings({ specBindings: file.specBindings }, teamName) }
+        ...(file.specScope !== undefined
+          ? { specScope: resolveTeamSpecScope(file, teamName) }
           : {}),
         displayName:
           typeof file.displayName === 'string' ? file.displayName.trim() || undefined : undefined,
@@ -306,8 +334,12 @@ export class TeamMetaStore {
     teamsBasePath = getTeamsBasePath()
   ): Promise<void> {
     const metaPath = this.getMetaPath(teamName, teamsBasePath);
+    await this.getMeta(teamName, teamsBasePath, { requireCompleteFields: true });
     await withMetaMutationLock(metaPath, async () => {
-      const current = await this.getMeta(teamName, teamsBasePath, { requireCompleteFields: true });
+      const current = await this.getMeta(teamName, teamsBasePath, {
+        requireCompleteFields: true,
+        skipScopeMigration: true,
+      });
       if (!current) {
         try {
           await fs.promises.lstat(metaPath);
@@ -318,6 +350,7 @@ export class TeamMetaStore {
       }
       await this.writeMetaUnlocked(metaPath, {
         ...data,
+        specScope: data.specScope ?? current?.specScope,
         registryTeamId: current?.registryTeamId ?? data.registryTeamId,
         registryRegistrationRequestId:
           current?.registryRegistrationRequestId ?? data.registryRegistrationRequestId,
@@ -335,6 +368,25 @@ export class TeamMetaStore {
       });
     });
   }
+  /** Mutate canonical scope against the latest metadata under the existing writer lock. */
+  async updateSpecScope(
+    teamName: string,
+    update: (current: TeamSpecScope) => TeamSpecScope,
+    teamsBasePath = getTeamsBasePath()
+  ): Promise<void> {
+    await this.updateMeta(
+      teamName,
+      (current) => {
+        if (!current || current.deletedAt) throw new Error('Team metadata is missing or deleted');
+        const scope = resolveTeamSpecScope(current, teamName);
+        return {
+          ...current,
+          specScope: resolveTeamSpecScope({ specScope: update(scope) }, teamName),
+        };
+      },
+      teamsBasePath
+    );
+  }
 
   async updateMeta(
     teamName: string,
@@ -344,8 +396,12 @@ export class TeamMetaStore {
     teamsBasePath = getTeamsBasePath()
   ): Promise<void> {
     const metaPath = this.getMetaPath(teamName, teamsBasePath);
+    await this.getMeta(teamName, teamsBasePath, { requireCompleteFields: true });
     await withMetaMutationLock(metaPath, async () => {
-      const current = await this.getMeta(teamName, teamsBasePath, { requireCompleteFields: true });
+      const current = await this.getMeta(teamName, teamsBasePath, {
+        requireCompleteFields: true,
+        skipScopeMigration: true,
+      });
       if (!current) {
         try {
           await fs.promises.lstat(metaPath);
@@ -411,11 +467,13 @@ export class TeamMetaStore {
       throw new Error('Registry registration requires an exact project');
     }
     const metaPath = this.getMetaPath(teamName, teamsBasePath);
+    await this.getMeta(teamName, teamsBasePath, { requireCompleteFields: true });
     return withMetaMutationLock(
       metaPath,
       async () => {
         const current = await this.getMeta(teamName, teamsBasePath, {
           requireCompleteFields: true,
+          skipScopeMigration: true,
         });
         if (!current) throw new Error('Team metadata is missing or unreadable');
         const requestId = current.registryRegistrationRequestId;
@@ -522,7 +580,8 @@ export class TeamMetaStore {
     await atomicWriteAsync(metaPath, this.serializeMeta(data));
   }
 
-  serializeMeta(data: Omit<TeamMetaFile, 'version'>): string {
+  serializeMeta(input: Omit<TeamMetaFile, 'version'>): string {
+    const data = migrateTeamSpecScope(input);
     return serializeTeamMetadata({
       version: 1,
       deletedAt: data.deletedAt,
@@ -537,11 +596,7 @@ export class TeamMetaStore {
         data.registryRegistrationIdentity
       ),
       registryRegistrationCompleted: data.registryRegistrationCompleted,
-      specProject: normalizeOptionalString(data.specProject) ?? undefined,
-      specSlug: normalizeOptionalString(data.specSlug) ?? undefined,
-      ...(data.specBindings !== undefined
-        ? { specBindings: resolveTeamSpecBindings({ specBindings: data.specBindings }) }
-        : {}),
+      ...(data.specScope !== undefined ? { specScope: resolveTeamSpecScope(data) } : {}),
       displayName: data.displayName?.trim() || undefined,
       description: data.description?.trim() || undefined,
       color: data.color?.trim() || undefined,

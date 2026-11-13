@@ -1,7 +1,11 @@
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const atomicWriteAsync = vi.hoisted(() =>
-  vi.fn(async (_path: string, _content: string) => undefined)
+  vi.fn(async (_path: string, _content: string): Promise<void> => undefined)
 );
 
 vi.mock('../atomicWrite', () => ({ atomicWriteAsync }));
@@ -9,8 +13,8 @@ vi.mock('../fileLock', () => ({
   withFileLock: (_path: string, run: () => Promise<unknown>) => run(),
 }));
 
-import { TeamMetaStore } from '../TeamMetaStore';
 import { hasCompleteKnownMetadata } from '../TeamMetadataReadFidelity';
+import { TeamMetaStore } from '../TeamMetaStore';
 
 import type { TeamMetaFile } from '../TeamMetaStore';
 
@@ -98,7 +102,7 @@ describe('TeamMetaStore', () => {
       return meta!;
     });
     expect(atomicWriteAsync).toHaveBeenCalledTimes(1);
-    expect(JSON.parse(atomicWriteAsync.mock.calls[0]![1])).toMatchObject({
+    expect(JSON.parse(atomicWriteAsync.mock.calls[0][1])).toMatchObject({
       model: 'new-model',
       registryTeamId: 'registry-id',
     });
@@ -123,11 +127,96 @@ describe('TeamMetaStore', () => {
       registryTeamId: 'team-id',
       registryRegistrationRequestId: 'request-id',
       registryRegistrationCompleted: false,
-      specBindings: [{ project: 'owner/project', spec: 'example' }],
+      specScope: {
+        projects: ['owner/project'],
+        bindings: [{ project: 'owner/project', spec: 'example' }],
+      },
     };
     const normalized = JSON.parse(new TeamMetaStore().serializeMeta(value));
     expect(normalized).toMatchObject(value);
     expect(hasCompleteKnownMetadata(value, normalized)).toBe(true);
-    expect(hasCompleteKnownMetadata(value, { ...normalized, specBindings: [] })).toBe(false);
+    expect(
+      hasCompleteKnownMetadata(value, {
+        ...normalized,
+        specScope: { projects: ['owner/project'], bindings: [] },
+      })
+    ).toBe(false);
+  });
+
+  it('migrates a UI binding on a real metadata update once and preserves it after reopening', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'TEST-scope-migration-'));
+    const teamPath = join(root, 'alpha');
+    const metaPath = join(teamPath, 'team.meta.json');
+    await mkdir(teamPath);
+    await writeFile(
+      metaPath,
+      JSON.stringify({
+        ...initialMeta,
+        specProject: 'owner/project',
+        specSlug: 'first-spec',
+        registryTeamId: 'existing-team',
+      })
+    );
+    atomicWriteAsync.mockImplementation(async (path, content) => writeFile(path, content));
+    try {
+      await new TeamMetaStore().updateMeta(
+        'alpha',
+        (meta) => ({ ...meta!, prompt: 'Updated team instructions' }),
+        root
+      );
+      const migratedBytes = await readFile(metaPath, 'utf8');
+      const persisted = JSON.parse(migratedBytes);
+      expect(persisted).toMatchObject({
+        specScope: {
+          projects: ['owner/project'],
+          bindings: [{ project: 'owner/project', spec: 'first-spec' }],
+        },
+        registryTeamId: 'existing-team',
+        prompt: 'Updated team instructions',
+      });
+      for (const field of ['specProject', 'specSlug', 'specBindings']) {
+        expect(persisted).not.toHaveProperty(field);
+      }
+      const writesAfterMigration = atomicWriteAsync.mock.calls.length;
+      const reopened = new TeamMetaStore();
+      await reopened.updateMeta('alpha', (meta) => ({ ...meta! }), root);
+      expect(await reopened.getMeta('alpha', root)).toMatchObject({
+        specScope: persisted.specScope,
+      });
+      expect(atomicWriteAsync).toHaveBeenCalledTimes(writesAfterMigration);
+      expect(await readFile(metaPath, 'utf8')).toBe(migratedBytes);
+    } finally {
+      atomicWriteAsync.mockImplementation(async () => undefined);
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a malformed legacy migration without overwriting the original operator data', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'TEST-scope-invalid-'));
+    const teamPath = join(root, 'alpha');
+    const metaPath = join(teamPath, 'team.meta.json');
+    const original = JSON.stringify({
+      ...initialMeta,
+      specProject: 'owner/project',
+      specSlug: 'INVALID_SLUG',
+      registryTeamId: 'existing-team',
+    });
+    await mkdir(teamPath);
+    await writeFile(metaPath, original);
+    atomicWriteAsync.mockImplementation(async (path, content) => writeFile(path, content));
+    try {
+      await expect(
+        new TeamMetaStore().updateMeta(
+          'alpha',
+          (meta) => ({ ...meta!, prompt: 'must not replace malformed scope' }),
+          root
+        )
+      ).rejects.toThrow();
+      expect(await readFile(metaPath, 'utf8')).toBe(original);
+      expect(atomicWriteAsync).not.toHaveBeenCalled();
+    } finally {
+      atomicWriteAsync.mockImplementation(async () => undefined);
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });

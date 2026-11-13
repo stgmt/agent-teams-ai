@@ -1,5 +1,5 @@
 import { type InboxMessage } from '@shared/types';
-import { DEFAULT_TOOL_APPROVAL_SETTINGS } from '@shared/types/team';
+import { DEFAULT_TOOL_APPROVAL_SETTINGS } from '@shared/types/toolApproval';
 import { describe, expect, it, vi } from 'vitest';
 
 import {

@@ -5,7 +5,7 @@ import * as path from 'path';
 
 import { withFileLockSync } from '../fileLock';
 import { TeamConfigReader } from '../TeamConfigReader';
-import { getTeamDataWorkerClient } from '../TeamDataWorkerClient';
+import { getTeamDataWorkerCache } from '../TeamDataWorkerClient';
 
 const TEAM_CONFIG_MAX_BYTES = 10 * 1024 * 1024;
 const LIVE_RUNTIME_HANDLE_FIELDS = ['runtimePid', 'runtimeSessionId'] as const;
@@ -138,7 +138,7 @@ export function createNodeClearStoppedTeamLiveRuntimeHandlesPorts(): ClearStoppe
     },
     invalidateTeamConfig(teamName) {
       TeamConfigReader.invalidateTeam(teamName);
-      getTeamDataWorkerClient().invalidateTeamConfig(teamName);
+      getTeamDataWorkerCache()?.invalidateTeamConfig(teamName);
     },
   };
 }

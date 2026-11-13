@@ -1,4 +1,4 @@
-import type { ToolApprovalSettings } from '@shared/types/team';
+import type { ToolApprovalSettings } from '@shared/types';
 
 // ---------------------------------------------------------------------------
 // Safe bash command prefixes — commands that never need manual approval

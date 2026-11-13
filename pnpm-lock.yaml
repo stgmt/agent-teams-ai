@@ -565,6 +565,9 @@ importers:
       '@types/ssh2':
         specifier: ^1.15.5
         version: 1.15.5
+      '@types/ws':
+        specifier: 8.18.1
+        version: 8.18.1
       '@typescript/native':
         specifier: npm:typescript@7.0.2
         version: typescript@7.0.2

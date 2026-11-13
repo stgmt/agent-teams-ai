@@ -42,6 +42,7 @@ it('reports storage outage when the real stall monitor cannot persist its journa
     stop: vi.fn(),
     noteTeamChange: vi.fn(),
     listActiveTeams: vi.fn(async () => ['demo']),
+    isTeamOfThisProfile: vi.fn(async () => true),
   };
   const task = { id: 'task-a', displayId: 'abcd1234', subject: 'Task A' };
   const snapshot = {

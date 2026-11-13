@@ -1,4 +1,5 @@
 import { promises as fs } from 'node:fs';
+import type { TeamAgentRuntimeSnapshot } from '../../../../src/shared/types';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
@@ -117,6 +118,7 @@ liveDescribe('Member work sync recovery live canary', () => {
     setCodexAccountFeature(feature: { getSnapshot(): Promise<unknown> } | null): void;
   } | null;
   let svc: {
+    getTeamAgentRuntimeSnapshot(teamName: string): Promise<TeamAgentRuntimeSnapshot>;
     stopTeam(teamName: string): Promise<unknown>;
     isTeamAlive(teamName: string): boolean;
     hasProvisioningRun(teamName: string): boolean;
@@ -342,7 +344,9 @@ liveDescribe('Member work sync recovery live canary', () => {
 
     svc = new TeamProvisioningService();
     const activeService = svc;
-    const teamDataService = new TeamDataService();
+    const teamDataService = new TeamDataService((teamName) =>
+      activeService.getTeamAgentRuntimeSnapshot(teamName)
+    );
     const lifecycleIdentity = owned!.identity;
     const createFeature = () =>
       createMemberWorkSyncFeature({
@@ -532,7 +536,9 @@ liveDescribe('Member work sync recovery live canary', () => {
 
     svc = new TeamProvisioningService();
     const activeService = svc;
-    const teamDataService = new TeamDataService();
+    const teamDataService = new TeamDataService((teamName) =>
+      activeService.getTeamAgentRuntimeSnapshot(teamName)
+    );
     const lifecycleIdentity = owned!.identity;
     const createFeature = (options: { busy?: boolean } = {}) =>
       createMemberWorkSyncFeature({
@@ -762,7 +768,9 @@ liveDescribe('Member work sync recovery live canary', () => {
 
     svc = new TeamProvisioningService();
     const activeService = svc;
-    const teamDataService = new TeamDataService();
+    const teamDataService = new TeamDataService((teamName) =>
+      activeService.getTeamAgentRuntimeSnapshot(teamName)
+    );
     const lifecycleIdentity = owned!.identity;
     const createFeature = () =>
       createMemberWorkSyncFeature({
@@ -1175,7 +1183,9 @@ liveDescribe('Member work sync recovery live canary', () => {
 
       svc = new TeamProvisioningService();
       const activeService = svc;
-      const teamDataService = new TeamDataService();
+      const teamDataService = new TeamDataService((teamName) =>
+        activeService.getTeamAgentRuntimeSnapshot(teamName)
+      );
       const createFeature = (busy = false) =>
         createMemberWorkSyncFeature({
           isManagedByThisProfile: async () => true,
@@ -1457,12 +1467,16 @@ liveDescribe('Member work sync recovery live canary', () => {
       await feature.refreshStatus({ teamName, memberName });
       const recoveryIdsBeforeAttention = await readRecoveryIntentKeys(teamName, memberName);
       await backdateRecoveryEpisode({ teamName, memberName });
-      await waitUntil(async () => {
-        await backdateRecoveryEpisode({ teamName: teamName!, memberName });
-        const status = await feature!.refreshStatus({ teamName: teamName!, memberName });
-        const phase = status.recoveryHealth?.episodes[0]?.phase;
-        return phase === 'attention' || phase === 'expected_wait';
-      }, 60_000, 3_000);
+      await waitUntil(
+        async () => {
+          await backdateRecoveryEpisode({ teamName: teamName!, memberName });
+          const status = await feature!.refreshStatus({ teamName: teamName!, memberName });
+          const phase = status.recoveryHealth?.episodes[0]?.phase;
+          return phase === 'attention' || phase === 'expected_wait';
+        },
+        60_000,
+        3_000
+      );
       const attention = await feature.refreshStatus({ teamName, memberName });
       const attentionPhase = attention.recoveryHealth?.episodes[0]?.phase;
       expect(['attention', 'expected_wait']).toContain(attentionPhase);

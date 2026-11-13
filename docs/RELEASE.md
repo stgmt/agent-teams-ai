@@ -42,6 +42,49 @@ until the application and registry release checks and sandbox acceptance pass.
 - Read task comments and attachments through the application.
 - Keep task result files on the local computer; verification for direct server completion remains in the backlog.
 
+## v2.19.0-tokenplan.0 (Draft; not published)
+
+Target repository: `stgmt/agent-teams-ai`. This release makes the Spec Kit registry the single
+source for a team's specifications and tasks, so it takes the next minor on the fork line and the
+first pre-release counter (`-tokenplan.0`) of that line. `package.json` carries
+`2.19.0-tokenplan.0`, the Windows installer is built, and installing it over
+`2.18.6-tokenplan.0` preserved user data. Do not publish or install this draft publicly until the
+application and registry release checks pass.
+
+Build facts: `Agent.Teams.AI.Setup.2.19.0-tokenplan.0.exe`,
+sha256 `838b0681e2a744cd6d7253ebab1db0027528bfe1d42bba8e60233e592a2e6473`, 353605421 bytes,
+unsigned (no signing certificate configured), with
+`Agent.Teams.AI.Setup.2.19.0-tokenplan.0.exe.blockmap` and `latest.yml` (sha512 and size match the
+installer). Staged runtime: `resources/runtime/VERSION`=`0.0.159`,
+`COMMIT_SHA`=`423598826b3f8e76632648282dc9195e2819632a` — the published `runtime-v0.0.159` release.
+
+<!-- RELEASE_BODY_START v2.19.0-tokenplan.0 -->
+
+Teams now work through Spec Kit: connect your registry once in the app, and leads and members create
+specifications, requirements, tasks, and roadmaps that survive a crash or restart.
+
+### What's New
+
+- Connect your Spec Kit registry in the team dialog; the app stores the address and token encrypted.
+- Get a registry token from a registry running on this machine with one click, instead of pasting it.
+- Link a team to one or more registry specifications; each task keeps the numbering of its own specification.
+- Leads and members get the full Spec Kit tool set from the first message, including roadmap creation and assembly.
+- A team will not start without a working Spec Kit connection; the app offers the connection dialog instead.
+- Tasks created, commented on, or reassigned in the app are written into the connected specification for agents.
+- After the app is killed, it recovers the team without recreating specs or tasks, and running agents stay visible.
+
+### Fixes
+
+- Creating or moving a task no longer fails with a timeout while agents are reading the board.
+- Launching a ten-member team no longer fails while waiting for the team configuration lock.
+- Team startup no longer spends 23 seconds checking each member process separately; the same check now takes 3 seconds.
+- A recycled process ID no longer shows a stopped member as running or blocks the next launch.
+- A refused task creation now names the missing fields and where requirement IDs come from.
+- Your registry token reaches the Spec Kit connection only; the agent never receives it.
+- The registry connection dialog keeps its text readable instead of squeezing it into a narrow column.
+
+<!-- RELEASE_BODY_END v2.19.0-tokenplan.0 -->
+
 ## v2.18.6 (Preparing draft)
 
 Target branch: `main`. Build a fresh `v2.18.6` draft after runtime `0.0.157` is verified and publicly available, then pin its exact manifest in `runtime.lock.json`. The earlier `v2.18.5` draft is superseded; preserve its immutable tag. Notes cover the shipped changes since public `v2.18.4`. Sign and qualify all platform artifacts before any publication. The original 2.18.4 user's CPU source remains unconfirmed (issue #1098).

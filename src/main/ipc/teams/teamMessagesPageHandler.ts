@@ -1,4 +1,5 @@
 import { classifyTeamReadWorkerFailure } from '@features/team-read-recovery/main';
+import { RegistryTaskProviderError } from '@main/services/team/registry/RegistryTaskProvider';
 import {
   getTeamDataWorkerClient,
   isTeamDataWorkerFatalError,
@@ -9,6 +10,7 @@ import { validateTeamName } from '../guards';
 
 import { teamMessageNotificationScanner } from './teamMessageNotificationScanner';
 
+import type { RegistryBoardSnapshotReadPort } from '@main/services/team/registry/RegistryTaskProvider';
 import type { TeamDataService } from '@main/services/team/TeamDataService';
 import type { InboxMessage, MessagesPage } from '@shared/types';
 import type { IpcResult } from '@shared/types/ipc';
@@ -17,6 +19,7 @@ import type { IpcMainInvokeEvent } from 'electron';
 const logger = createLogger('IPC:teams');
 
 interface MessagesPageHandlerPorts {
+  boardSnapshots: RegistryBoardSnapshotReadPort;
   getService(): Pick<TeamDataService, 'getMessagesPage' | 'getTeamNotificationContext'>;
   getLiveMessages(teamName: string): InboxMessage[];
   withLiveOverlay(input: {
@@ -98,7 +101,7 @@ export function createMessagesPageHandler(ports: MessagesPageHandlerPorts) {
         return page;
       }
 
-      const worker = getTeamDataWorkerClient();
+      const worker = getTeamDataWorkerClient(ports.boardSnapshots);
       if (worker.isAvailable()) {
         try {
           page = await worker.getMessagesPage(teamName, {
@@ -109,6 +112,7 @@ export function createMessagesPageHandler(ports: MessagesPageHandlerPorts) {
           scanNotifications(page);
           return page;
         } catch (workerErr) {
+          if (workerErr instanceof RegistryTaskProviderError) throw workerErr;
           const failure = classifyTeamReadWorkerFailure(
             workerErr,
             isTeamDataWorkerFatalError(workerErr)

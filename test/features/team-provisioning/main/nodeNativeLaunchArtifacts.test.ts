@@ -1,8 +1,14 @@
+import { nativeSdkDeferred } from './nativeSdkTestHarness';
 // @vitest-environment node
 import * as fs from 'node:fs/promises';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createServer } from 'node:http';
+
+import { TeamMcpConfigBuilder } from '../../../../src/main/services/team/TeamMcpConfigBuilder';
+import { NodeTeamLaunchSettings } from '../../../../src/features/team-provisioning/main/adapters/output/NodeTeamLaunchSettings';
+import { TeamMetaStore } from '../../../../src/main/services/team/TeamMetaStore';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -12,17 +18,35 @@ import {
 } from '../../../../src/features/lead-reporting/main';
 import { NodeNativeLaunchArtifacts } from '../../../../src/features/team-provisioning/main/adapters/output/NodeNativeLaunchArtifacts';
 
+import type * as PathDecoder from '../../../../src/main/utils/pathDecoder';
+
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
   return { ...actual, chmod: vi.fn(actual.chmod) };
 });
+
+const mcpPaths = vi.hoisted(() => ({ root: '' }));
+vi.mock('@main/utils/pathDecoder', async (importOriginal) => {
+  const actual = await importOriginal<typeof PathDecoder>();
+  return {
+    ...actual,
+    getMcpConfigsBasePath: () => join(mcpPaths.root, 'mcp-configs'),
+    getClaudeBasePath: () => join(mcpPaths.root, 'claude'),
+  };
+});
+// Keep this a configuration-consumer test: compilation and the live MCP/model
+// acceptance belong to the integration owner, not this focused fixture.
+vi.mock('@main/services/team/WorkspaceMcpBundle', () => ({
+  resolveWorkspaceMcpBundle: (root: string) =>
+    Promise.resolve(join(root, 'mcp-server', 'src', 'index.ts')),
+}));
 
 const directories: string[] = [];
 const run = {
   appInstanceId: 'TEST-app',
   dataRootFingerprint: 'TEST-root',
   connectionGeneration: 1,
-  teamName: 'TEST-team',
+  teamName: 'test-team',
   runId: 'TEST-run',
 };
 const token = { ...run, memberName: 'team-lead', generation: 1, operationId: 'TEST-start' };
@@ -35,6 +59,13 @@ const settings = {
   model: 'TEST-model',
   workingDirectory: process.cwd(),
   instructions: 'TEST lead instructions',
+  specIntegration: {
+    scope: { projects: ['owner/project'], bindings: [] },
+    environment: {
+      OMP_SPEC_REGISTRY_URL: 'http://127.0.0.1:8650/mcp',
+      OMP_SPEC_REGISTRY_TOKEN: 'TEST-artifact-token',
+    },
+  },
 };
 
 afterEach(async () => {
@@ -218,4 +249,117 @@ describe('owned native launch files and scoped MCP capability', () => {
     await expect(artifacts.prepare(settings, token, abort.signal)).rejects.toThrow();
     expect(removeConfigFile).toHaveBeenCalledWith('TEST-owned-mcp.json');
   });
+
+  it.each([
+    ['UI binding', { specProject: 'owner/project', specSlug: 'first-spec' }],
+    ['first-project UI selection', { specProject: 'owner/project' }],
+    [
+      'canonical project-only scope',
+      {
+        specScope: { projects: ['owner/project'], bindings: [] },
+      },
+    ],
+  ])(
+    'gives the first lead and executor usable registry access for %s without leaking credentials',
+    async (_label, binding) => {
+      const root = await mkdtemp(join(tmpdir(), 'TEST-first-launch-spec-'));
+      directories.push(root);
+      mcpPaths.root = root;
+      // A loopback registry boundary fixture, not a provider or live-acceptance
+      // substitute. A missing/wrong credential cannot receive its tool catalog.
+      const registry = createServer((request, response) => {
+        if (request.headers.authorization !== 'Bearer TEST-first-launch-token') {
+          response.writeHead(401).end();
+          return;
+        }
+        response.setHeader('Content-Type', 'application/json');
+        response.end(JSON.stringify({ tools: [{ name: 'spec_patch' }] }));
+      });
+      const listening = nativeSdkDeferred<void>();
+      registry.once('error', listening.reject);
+      registry.listen(0, '127.0.0.1', listening.resolve);
+      await listening.promise;
+      const address = registry.address();
+      if (!address || typeof address === 'string') throw new Error('TEST registry did not listen');
+      const registryUrl = `http://127.0.0.1:${address.port}/mcp`;
+      const metadata = new TeamMetaStore();
+      await metadata.writeMeta(
+        run.teamName,
+        {
+          runtimeSelectionVersion: 1,
+          cwd: root,
+          providerId: 'anthropic',
+          model: 'TEST-model',
+          createdAt: 1,
+          ...binding,
+        },
+        root
+      );
+      const launches = new NodeTeamLaunchSettings({
+        teamsRoot: root,
+        metadata,
+        members: {
+          getMeta: async () => ({
+            version: 1 as const,
+            members: [{ name: 'builder', role: 'Builder' }],
+          }),
+        },
+        specRegistryEnvironment: async () => ({
+          OMP_SPEC_REGISTRY_URL: registryUrl,
+          OMP_SPEC_REGISTRY_TOKEN: 'TEST-first-launch-token',
+        }),
+      });
+      const artifacts = new NodeNativeLaunchArtifacts({
+        runtimeRoot: root,
+        mcp: new TeamMcpConfigBuilder(),
+        controlUrl: async () => 'http://127.0.0.1:9999',
+        leadCredential: () => 'TEST-bound-lead-credential',
+        briefing: async () => 'TEST member briefing',
+        registration: {
+          register: async () => undefined,
+          registerLead: async () => undefined,
+          release: async () => undefined,
+        },
+      });
+      try {
+        await launches.capture(run);
+        for (const memberName of ['team-lead', 'builder']) {
+          const launch = await launches.findConfiguredMember(run, memberName);
+          expect(launch).not.toBeNull();
+          const files = await artifacts.prepare(
+            launch!,
+            { ...token, memberName },
+            new AbortController().signal
+          );
+          try {
+            const config = JSON.parse(await readFile(files.mcpConfigPath, 'utf8'));
+            const server = config.mcpServers['agent-teams'];
+            expect(server.env.OMP_SPEC_REGISTRY_URL).toBe(registryUrl);
+            const catalog = await fetch(server.env.OMP_SPEC_REGISTRY_URL, {
+              headers: { Authorization: `Bearer ${server.env.OMP_SPEC_REGISTRY_TOKEN}` },
+            });
+            expect(catalog.status).toBe(200);
+            expect(await catalog.json()).toEqual({ tools: [{ name: 'spec_patch' }] });
+            const scope = JSON.parse(server.env.AGENT_TEAMS_SPEC_SCOPE);
+            expect(scope.projects).toContain('owner/project');
+            expect(scope.bindings).toHaveLength('specSlug' in binding ? 1 : 0);
+            expect(JSON.stringify(files.env)).not.toContain('TEST-first-launch-token');
+            const publicContext = files.userPromptPath
+              ? await readFile(files.userPromptPath, 'utf8')
+              : await readFile(
+                  files.env.CLAUDE_CODE_NATIVE_APP_MANAGED_BOOTSTRAP_CONTEXT_PATH!,
+                  'utf8'
+                );
+            expect(publicContext).not.toContain('TEST-first-launch-token');
+          } finally {
+            await files.dispose();
+          }
+        }
+      } finally {
+        const closed = nativeSdkDeferred<void>();
+        registry.close((error) => (error ? closed.reject(error) : closed.resolve()));
+        await closed.promise;
+      }
+    }
+  );
 });

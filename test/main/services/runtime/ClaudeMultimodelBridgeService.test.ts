@@ -673,7 +673,9 @@ describe('ClaudeMultimodelBridgeService', () => {
         statusCheckOutcome: 'model_only',
         capabilities: { teamLaunch: false },
         modelCatalog: null,
-        modelCatalogRefreshState: 'loading',
+        // Summary status has not attempted the catalog yet; the full project
+        // status has, so a missing dynamic catalog is a real failure there.
+        modelCatalogRefreshState: entrypoint === 'project' ? 'error' : 'loading',
       });
       if (entrypoint !== 'aggregate') {
         expect(onUpdate).not.toHaveBeenCalled();

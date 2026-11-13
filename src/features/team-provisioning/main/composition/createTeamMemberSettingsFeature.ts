@@ -62,7 +62,8 @@ export interface NodeTeamMemberSettingsFeatureDependencies {
   memberLifecycle: LegacyLiveRosterMutationSource &
     Pick<LegacyMemberSettingsLifecycleSource, 'attachLiveRosterMember'>;
   runtime: NodeMemberSettingsRuntimeSource;
-  getWorkerCache(): NodeMemberSettingsCacheSource;
+  /** Null when no worker exists yet: invalidation must never create one. */
+  getWorkerCache(): NodeMemberSettingsCacheSource | null;
 }
 
 interface InProcessCommandEntry {
@@ -318,8 +319,8 @@ export function createNodeTeamMemberSettingsFeature(
         await dependencies.runtime.restartLeadRuntime(input);
         try {
           const cache = dependencies.getWorkerCache();
-          cache.invalidateTeamConfig(input.teamName);
-          cache.invalidateMemberRuntimeAdvisory(input.teamName);
+          cache?.invalidateTeamConfig(input.teamName);
+          cache?.invalidateMemberRuntimeAdvisory(input.teamName);
         } catch {
           // Metadata is committed; the filesystem watcher remains the fallback refresh path.
         }
@@ -331,8 +332,8 @@ export function createNodeTeamMemberSettingsFeature(
       isTeamAlive,
       invalidateWorkerCache: (teamName) => {
         const cache = dependencies.getWorkerCache();
-        cache.invalidateTeamConfig(teamName);
-        cache.invalidateMemberRuntimeAdvisory(teamName);
+        cache?.invalidateTeamConfig(teamName);
+        cache?.invalidateMemberRuntimeAdvisory(teamName);
       },
     }),
   });

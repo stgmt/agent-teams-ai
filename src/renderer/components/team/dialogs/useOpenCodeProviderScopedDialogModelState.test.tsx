@@ -68,12 +68,20 @@ afterEach(() => {
 });
 
 describe('useOpenCodeProviderScopedDialogModelState', () => {
-  it('passes the installed OpenCode generation to the launch evidence', async () => {
+  it('passes the served OpenCode generation to the launch evidence', async () => {
+    expect(await renderEvidence('1.17.18')).toMatchObject({
+      selectedModels: ['kimi-for-coding/kimi-for-coding'],
+      generation: 'v1',
+    });
+    expect((await renderEvidence(undefined))?.generation).toBe('v1');
+  });
+
+  // The pinned V1-only release recognizes no V2 version, so it reports the V1
+  // dialect rather than fabricating V2 launch evidence for an unserved binary.
+  it('reports no V2 evidence for a native V2 version the pinned release does not qualify', async () => {
     expect(await renderEvidence('2.1.4')).toMatchObject({
       selectedModels: ['kimi-for-coding/kimi-for-coding'],
-      generation: 'v2',
+      generation: 'v1',
     });
-    expect((await renderEvidence('1.17.18'))?.generation).toBe('v1');
-    expect((await renderEvidence(undefined))?.generation).toBe('v1');
   });
 });

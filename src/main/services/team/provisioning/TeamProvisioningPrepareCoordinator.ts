@@ -27,6 +27,11 @@ import {
   buildEffectiveTeamMemberSpec,
   normalizeTeamMemberProviderId,
 } from './TeamProvisioningMemberSpecs';
+import {
+  normalizeProviderModelListModels,
+  type ProviderModelListCommandResponse,
+  type RuntimeStatusCommandResponse,
+} from './TeamProvisioningModelListNormalization';
 import { prepareSelectedOpenCodeModelsForProvisioning } from './TeamProvisioningOpenCodeModelPreparation';
 import { isAuthFailureWarning, isQuotaRetryMessage } from './TeamProvisioningOutputErrorPolicy';
 import { createPrepareForProvisioningInFlightKey as buildPrepareForProvisioningInFlightKey } from './TeamProvisioningPrepareCachePolicy';
@@ -51,11 +56,8 @@ import { getTeamProviderLabel } from './TeamProvisioningRuntimeDiagnostics';
 import { buildMissingCliError } from './TeamProvisioningRuntimeFailureLabels';
 import {
   extractJsonObjectFromCli,
-  normalizeProviderModelListModels,
   normalizeProvisioningModelCheckRequests,
-  type ProviderModelListCommandResponse,
   type RuntimeProviderLaunchFacts,
-  type RuntimeStatusCommandResponse,
 } from './TeamProvisioningRuntimeLaunchSelection';
 
 import type { TeamLaunchRuntimeAdapter } from '../runtime';

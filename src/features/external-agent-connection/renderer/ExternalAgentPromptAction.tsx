@@ -16,7 +16,7 @@ import { useConnectionInfo } from './useConnectionInfo';
 
 import type { ExternalAgentConnectionApi } from '../contracts';
 
-export function ExternalAgentPromptAction({
+export const ExternalAgentPromptAction = ({
   api,
   local,
   isLight,
@@ -26,7 +26,7 @@ export function ExternalAgentPromptAction({
   local: boolean;
   isLight: boolean;
   onSettings(): void;
-}>): React.JSX.Element {
+}>): React.JSX.Element => {
   const { t } = useAppTranslation('team');
   const [open, setOpen] = useState(false);
   const { info, error, retrying, retry } = useConnectionInfo(api, open && local);
@@ -80,4 +80,4 @@ export function ExternalAgentPromptAction({
       </DialogContent>
     </Dialog>
   );
-}
+};

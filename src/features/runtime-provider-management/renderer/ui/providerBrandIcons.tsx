@@ -692,13 +692,13 @@ function shellStyle(descriptor: BrandIconDescriptor): CSSProperties {
   return style;
 }
 
-export function ProviderBrandIcon({
+export const ProviderBrandIcon = ({
   provider,
   size = 'default',
 }: {
   readonly provider: ProviderBrand;
   readonly size?: 'small' | 'default' | 'large';
-}): JSX.Element {
+}): JSX.Element => {
   const descriptor = descriptorFor(provider);
   const isLarge = size === 'large';
   const isSmall = size === 'small';
@@ -760,4 +760,4 @@ export function ProviderBrandIcon({
       ) : null}
     </span>
   );
-}
+};

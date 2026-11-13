@@ -521,7 +521,14 @@ describe('shutdown MCP transport authority', () => {
       openCodePromptDeliveryContinuityScan: { stop: stopContinuityScan },
       stopPeriodicOpenCodeHostStartupLockPurge: null,
       teamRuntimeRecoveryFeature: null,
-      teamProvisioningService: { setRuntimeRecoveryFailureObserver: noOp, stopAllTeams: stop },
+      provisioningLateBindings: { acknowledgedInbound: null, observeLeadFailure: noOp },
+      teamProvisioningService: {
+        setRuntimeRecoveryFailureObserver: noOp,
+        stopAllTeams: async () => {
+          await stop();
+          return [];
+        },
+      },
       cleanupOpenCodeHostsForLifecycle: stop,
       agentTeamsMcpHttpServer: server,
       killTrackedCliProcesses: () => {
@@ -734,6 +741,7 @@ describe('shutdown MCP transport authority', () => {
         runShutdownStep: (label: string, step: () => unknown, timeoutMs?: number) =>
           label === 'stop all teams' ? realRunShutdownStep(label, step, timeoutMs) : step(),
         teamRuntimeRecoveryFeature: null,
+        provisioningLateBindings: { acknowledgedInbound: null, observeLeadFailure: vi.fn() },
         teamProvisioningService: {
           setRuntimeRecoveryFailureObserver: vi.fn(),
           stopAllTeams: () => (stopAllTeamsRun = stopAllTeams()),

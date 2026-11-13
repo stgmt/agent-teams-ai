@@ -9,7 +9,7 @@ import type {
   ToolApprovalDismiss,
   ToolApprovalRequest,
   ToolApprovalSettings,
-} from '@shared/types/team';
+} from '@shared/types';
 
 export type RuntimeApprovalProviderId = TeamRuntimeApprovalProviderId;
 

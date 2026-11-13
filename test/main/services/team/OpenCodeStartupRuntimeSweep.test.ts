@@ -217,6 +217,21 @@ describe('reapOrphanedOpenCodeHostsBeforeRuntimeRegistry', () => {
   });
 });
 
+/**
+ * The gate's wait path is Unix-only: on Windows it refuses the launch instead
+ * (covered below). These cases pin the platform so each contract is exercised
+ * on any host rather than depending on where the suite runs.
+ */
+async function onUnixPlatform(run: () => Promise<void>): Promise<void> {
+  const originalPlatform = process.platform;
+  Object.defineProperty(process, 'platform', { value: 'linux' });
+  try {
+    await run();
+  } finally {
+    Object.defineProperty(process, 'platform', { value: originalPlatform });
+  }
+}
+
 describe('OpenCodeStartupSweepGate', () => {
   it('resolves at once when no sweep is pending', async () => {
     const onWaitStart = vi.fn();
@@ -227,64 +242,91 @@ describe('OpenCodeStartupSweepGate', () => {
   });
 
   it('parks a caller until the pending sweep settles, and reports the wait', async () => {
-    const settle = beginOpenCodeStartupRuntimeSweep();
-    const onWaitStart = vi.fn();
-    const logWaited = vi.fn();
-    let now = 0;
+    await onUnixPlatform(async () => {
+      const settle = beginOpenCodeStartupRuntimeSweep();
+      const onWaitStart = vi.fn();
+      const logWaited = vi.fn();
+      let now = 0;
 
-    const waiting = whenOpenCodeStartupRuntimeSweepSettled({
-      onWaitStart,
-      logWaited,
-      nowMs: () => now,
+      const waiting = whenOpenCodeStartupRuntimeSweepSettled({
+        onWaitStart,
+        logWaited,
+        nowMs: () => now,
+      });
+      expect(onWaitStart).toHaveBeenCalledTimes(1);
+      now = 2_500;
+      settle();
+      await waiting;
+
+      expect(logWaited).toHaveBeenCalledWith(
+        'opencode_startup_sweep_wait waitedMs=2500 settled=true'
+      );
+      // The gate is clear again: the next caller must not pay the wait twice.
+      await whenOpenCodeStartupRuntimeSweepSettled({ onWaitStart });
+      expect(onWaitStart).toHaveBeenCalledTimes(1);
     });
-    expect(onWaitStart).toHaveBeenCalledTimes(1);
-    now = 2_500;
-    settle();
-    await waiting;
-
-    expect(logWaited).toHaveBeenCalledWith(
-      'opencode_startup_sweep_wait waitedMs=2500 settled=true'
-    );
-    // The gate is clear again: the next caller must not pay the wait twice.
-    await whenOpenCodeStartupRuntimeSweepSettled({ onWaitStart });
-    expect(onWaitStart).toHaveBeenCalledTimes(1);
   });
 
   // A sweep that throws still has to release everything waiting on it, which is
   // why the settle callback is invoked from a `finally` at the call site.
   it('releases waiters when the sweep it fronts fails', async () => {
-    const settle = beginOpenCodeStartupRuntimeSweep();
-    const waiting = whenOpenCodeStartupRuntimeSweepSettled({});
+    await onUnixPlatform(async () => {
+      const settle = beginOpenCodeStartupRuntimeSweep();
+      const waiting = whenOpenCodeStartupRuntimeSweepSettled({});
 
-    await Promise.reject(new Error('sweep exploded'))
-      .catch(() => undefined)
-      .finally(settle);
+      await Promise.reject(new Error('sweep exploded'))
+        .catch(() => undefined)
+        .finally(settle);
 
-    await expect(waiting).resolves.toBeUndefined();
+      await expect(waiting).resolves.toBeUndefined();
+    });
   });
 
   it('gives up after the bound rather than parking a launch forever', async () => {
-    beginOpenCodeStartupRuntimeSweep();
-    const logWaited = vi.fn();
-    const onWaitStart = vi.fn();
-    let now = 0;
+    await onUnixPlatform(async () => {
+      const settle = beginOpenCodeStartupRuntimeSweep();
+      const logWaited = vi.fn();
+      const onWaitStart = vi.fn();
+      let now = 0;
 
-    await whenOpenCodeStartupRuntimeSweepSettled({
-      logWaited,
-      nowMs: () => now,
-      setTimeoutImpl: ((resolve: () => void) => {
-        now = OPEN_CODE_STARTUP_SWEEP_WAIT_TIMEOUT_MS;
-        resolve();
-        return 0 as unknown as ReturnType<typeof setTimeout>;
-      }) as unknown as typeof setTimeout,
+      try {
+        await whenOpenCodeStartupRuntimeSweepSettled({
+          logWaited,
+          nowMs: () => now,
+          setTimeoutImpl: ((resolve: () => void) => {
+            now = OPEN_CODE_STARTUP_SWEEP_WAIT_TIMEOUT_MS;
+            resolve();
+            return 0 as unknown as ReturnType<typeof setTimeout>;
+          }) as unknown as typeof setTimeout,
+        });
+
+        expect(logWaited).toHaveBeenCalledWith(
+          `opencode_startup_sweep_wait waitedMs=${OPEN_CODE_STARTUP_SWEEP_WAIT_TIMEOUT_MS} settled=false`
+        );
+        // Giving up once is enough: the abandoned sweep must not charge the next
+        // launch the same bound all over again.
+        await whenOpenCodeStartupRuntimeSweepSettled({ onWaitStart });
+        expect(onWaitStart).not.toHaveBeenCalled();
+      } finally {
+        settle();
+      }
     });
+  });
 
-    expect(logWaited).toHaveBeenCalledWith(
-      `opencode_startup_sweep_wait waitedMs=${OPEN_CODE_STARTUP_SWEEP_WAIT_TIMEOUT_MS} settled=false`
-    );
-    // Giving up once is enough: the abandoned sweep must not charge the next
-    // launch the same bound all over again.
-    await whenOpenCodeStartupRuntimeSweepSettled({ onWaitStart });
-    expect(onWaitStart).not.toHaveBeenCalled();
+  it('refuses a Windows launch while the owning startup cleanup still holds the gate', async () => {
+    const originalPlatform = process.platform;
+    Object.defineProperty(process, 'platform', { value: 'win32' });
+    const settle = beginOpenCodeStartupRuntimeSweep();
+    const onWaitStart = vi.fn();
+    try {
+      await expect(whenOpenCodeStartupRuntimeSweepSettled({ onWaitStart })).rejects.toThrow(
+        /OpenCode startup cleanup is still running/
+      );
+      // Only the startup completion owner releases it: no waiter parks.
+      expect(onWaitStart).not.toHaveBeenCalled();
+    } finally {
+      settle();
+      Object.defineProperty(process, 'platform', { value: originalPlatform });
+    }
   });
 });

@@ -20,19 +20,19 @@ import type { JSX, ReactNode } from 'react';
 const OpenCodeGenerationContext = createContext<OpenCodeGeneration | null | undefined>(undefined);
 
 /** The chosen generation is the selected native runtime, never guessed from a missing status. */
-export function OpenCodeProviderCompatibilityScope({
+export const OpenCodeProviderCompatibilityScope = ({
   children,
   generation,
 }: {
   readonly children: ReactNode;
   readonly generation: OpenCodeGeneration | null;
-}): JSX.Element {
+}): JSX.Element => {
   return (
     <OpenCodeGenerationContext.Provider value={generation}>
       <TooltipProvider>{children}</TooltipProvider>
     </OpenCodeGenerationContext.Provider>
   );
-}
+};
 
 /** Only the unsupported managed routes block setup actions. Users can still view or forget them. */
 export function useOpenCodeProviderConnectionBlocked(
@@ -105,13 +105,13 @@ export function getOpenCodeUnverifiedCardCopy(
 }
 
 /** Neither a saved credential nor a provider listing proves model execution. */
-export function OpenCodeProviderCompatibilityStatus({
+export const OpenCodeProviderCompatibilityStatus = ({
   providerId,
   authMethod,
 }: {
   readonly providerId: string;
   readonly authMethod?: string | null;
-}): JSX.Element | null {
+}): JSX.Element | null => {
   const generation = useContext(OpenCodeGenerationContext);
   const { t } = useAppTranslation('dashboard');
   if (generation === undefined || generation === 'v1') return null;
@@ -153,4 +153,4 @@ export function OpenCodeProviderCompatibilityStatus({
       </TooltipContent>
     </Tooltip>
   );
-}
+};

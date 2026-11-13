@@ -6,7 +6,6 @@ import {
 } from './ExecutionTaskMetadata';
 
 import type {
-  AttachmentMediaType,
   TaskArtifactRequirement,
   TaskAttachmentMeta,
   TaskComment,
@@ -212,7 +211,7 @@ export function sanitizeAttachmentMeta(value: unknown, label: string): TaskAttac
   const meta: TaskAttachmentMeta = {
     id: requireString(source, 'id', label),
     filename: requireString(source, 'filename', label),
-    mimeType: requireString(source, 'mimeType', label) as AttachmentMediaType,
+    mimeType: requireString(source, 'mimeType', label),
     size,
     addedAt: requireTimestamp(source, 'addedAt', label),
   };

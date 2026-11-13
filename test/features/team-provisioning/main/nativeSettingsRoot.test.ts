@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { nativeSpecRegistryEnvironment, nativeSpecScope } from './nativeSdkTestHarness';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const roots = vi.hoisted(() => ({ defaultTeams: '' }));
@@ -50,7 +51,7 @@ async function setup() {
     await mkdir(join(teamsRoot, run.teamName), { recursive: true });
     await metadata.writeMeta(
       run.teamName,
-      { providerId: 'anthropic', model, cwd: root, createdAt: 1 },
+      { providerId: 'anthropic', model, cwd: root, createdAt: 1, specScope: nativeSpecScope },
       teamsRoot
     );
     await members.writeMembers(run.teamName, [{ name: memberName }], { teamsBasePath: teamsRoot });
@@ -61,7 +62,12 @@ async function setup() {
 describe('native canonical settings root', () => {
   it('reads both canonical documents only from the selected teams root', async () => {
     const { selectedTeams, metadata, members } = await setup();
-    const settings = new NodeTeamLaunchSettings({ teamsRoot: selectedTeams, metadata, members });
+    const settings = new NodeTeamLaunchSettings({
+      teamsRoot: selectedTeams,
+      metadata,
+      members,
+      specRegistryEnvironment: nativeSpecRegistryEnvironment,
+    });
     const captured = await settings.capture(run);
     expect(captured.members).toEqual([
       { memberName: 'team-lead', role: 'lead' },
@@ -110,6 +116,13 @@ describe('native canonical settings root', () => {
         providerId: 'anthropic',
         model: 'TEST-model',
         configurationRevision: 'TEST-revision',
+        specIntegration: {
+          scope: { projects: ['TEST/project'], bindings: [] },
+          environment: {
+            OMP_SPEC_REGISTRY_URL: 'http://127.0.0.1:8090',
+            OMP_SPEC_REGISTRY_TOKEN: 'TEST-registry-credential',
+          },
+        },
         workingDirectory: root,
         instructions: 'TEST',
       },

@@ -1,5 +1,6 @@
-import Fastify from 'fastify';
 import { createHash } from 'node:crypto';
+
+import Fastify from 'fastify';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { registerTeamTaskRoutes } from '../teamTaskRoutes';

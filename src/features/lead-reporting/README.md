@@ -9,7 +9,7 @@ Main-process slice following [the feature standard](../../../docs/FEATURE_ARCHIT
 - `main/composition/createNodeLeadReporting.ts`: receives the existing lifecycle authority, snapshot and task-ledger ports. Returns `reports`, `acceptHumanRequest` and credential-bound `reply`.
 - `core/application/LeadReporting.ts`: operation/receipt ownership, exact roster coverage, source revalidation, delivery idempotency and last-successful-report baseline.
 - `main/application/LeadRequestReporting.ts`: reserves a genuine human request before asynchronous reads; separates its ordinary answer from an evidence-required report. A successor request is queued by its caller, not silently substituted.
-- `main/adapters/output/NodeLeadReportSources.ts`: explicit selected profile, controller board reader and the lifecycle's task-change reader. Task rows have individual revisions, so unrelated board changes do not invalidate a narrow report.
+- `main/adapters/output/NodeLeadReportSources.ts`: explicit selected profile, a controller board projection over the canonical team tasks the app supplies and the lifecycle's task-change reader. The app owns the registry read; the controller never calls the app's own control API from inside it, which would park the thread that serves that request. Task rows have individual revisions, so unrelated board changes do not invalidate a narrow report.
 - `main/adapters/output/NodeLeadReportDelivery.ts`: the sole app-owned inbox append for these replies; exact request closure happens only after confirmed append.
 
 `lead_briefing` returns `{kind: 'report', inspection}` for an admitted human report request, or `{kind: 'management', inspection}` for read-only management facts. Management facts reuse the same collector and carry the exact run, but no report operation or publication receipt; they do not create a human request or authorize unsolicited delivery. A report admitted during a management read invalidates that read. `message_send` submits either a structured report draft or an ordinary answer with the exact `requestMessageId`. An ordinary answer is rejected for an admitted report request. Agent-facing controller errors never continue to a filesystem append. Trusted app writes are a distinct boundary, not an error-recovery path.
@@ -18,7 +18,7 @@ Main-process slice following [the feature standard](../../../docs/FEATURE_ARCHIT
 
 The production composition must:
 
-1. Supply the existing lifecycle credential resolver, context-fenced queries and exact task-ledger reader.
+1. Supply the existing lifecycle credential resolver, context-fenced queries, the canonical team-task read and the exact task-ledger reader.
 2. Call `acceptHumanRequest` only for the actual persisted human turn, preserving its ID and action mode. Coordinate turn queue ownership before sending the instructions through stdin.
 3. Register reporting HTTP behind existing bound Host/Origin/context admission.
 4. Register the persisted request/tracker before `acceptHumanRequest`: a failed initial roster read can deliver its source limitation during admission. Close the exact pending human request in `delivered`; never turn an acknowledgement into the final report.

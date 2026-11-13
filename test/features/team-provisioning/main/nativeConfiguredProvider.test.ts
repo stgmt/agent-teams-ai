@@ -21,6 +21,13 @@ const settings = {
   memberName: 'builder',
   role: 'member' as const,
   configurationRevision: 'TEST-revision',
+  specIntegration: {
+    scope: { projects: ['TEST/project'], bindings: [] },
+    environment: {
+      OMP_SPEC_REGISTRY_URL: 'http://127.0.0.1:8090',
+      OMP_SPEC_REGISTRY_TOKEN: 'TEST-registry-credential',
+    },
+  },
   providerId: 'anthropic',
   model: 'TEST-model',
   effort: 'high',

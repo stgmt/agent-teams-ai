@@ -35,7 +35,7 @@ import {
 } from '@renderer/utils/taskChangeRequest';
 import { IpcError, unwrapIpc } from '@renderer/utils/unwrapIpc';
 import { DEFAULT_TEAM_GRAPH_LAYOUT_MODE } from '@shared/constants/teamGraphLayoutMode';
-import { DEFAULT_TOOL_APPROVAL_SETTINGS } from '@shared/types/team';
+import { DEFAULT_TOOL_APPROVAL_SETTINGS } from '@shared/types/toolApproval';
 import { isLeadMember } from '@shared/utils/leadDetection';
 import { createLogger } from '@shared/utils/logger';
 import { calculateTaskImplementationDuration } from '@shared/utils/taskWorkDuration';
@@ -213,6 +213,7 @@ import {
 } from '../team/teamToolApprovalSettingsSync';
 import { getVisibleTeamNamesInAnyPane } from '../team/teamViewVisibility';
 import { noteTeamRefreshFanout } from '../teamRefreshFanoutDiagnostics';
+import { getAttachmentMimeTypes, getAttachmentTotalSizeBytes } from '../utils/attachmentMetrics';
 import {
   captureContextScopedRequestEpoch,
   isContextScopedRequestEpochCurrent,
@@ -1183,40 +1184,6 @@ function recordTeamLaunchStepTransition(
   if (!isTerminalLaunchState(progress.state)) {
     teamLaunchStepStartedAtByKey.set(stepKey, endedAtMs);
   }
-}
-
-function estimateBase64Bytes(base64: string | null | undefined): number | null {
-  if (typeof base64 !== 'string' || !base64) return null;
-  const normalized = base64.includes(',') ? (base64.split(',').pop() ?? '') : base64;
-  const padding = normalized.endsWith('==') ? 2 : normalized.endsWith('=') ? 1 : 0;
-  return Math.max(0, Math.floor((normalized.length * 3) / 4) - padding);
-}
-
-function getAttachmentTotalSizeBytes(
-  attachments:
-    | readonly { size?: number; data?: string; base64Data?: string; base64?: string }[]
-    | undefined
-): number | null {
-  if (!attachments?.length) return null;
-  let total = 0;
-  let hasKnownSize = false;
-  for (const attachment of attachments) {
-    const size =
-      typeof attachment.size === 'number'
-        ? attachment.size
-        : estimateBase64Bytes(attachment.data ?? attachment.base64Data ?? attachment.base64);
-    if (typeof size === 'number' && Number.isFinite(size) && size >= 0) {
-      total += size;
-      hasKnownSize = true;
-    }
-  }
-  return hasKnownSize ? total : null;
-}
-
-function getAttachmentMimeTypes(
-  attachments: readonly { mimeType?: string; type?: string }[] | undefined
-): (string | null)[] {
-  return attachments?.map((attachment) => attachment.mimeType ?? attachment.type ?? null) ?? [];
 }
 
 function getTeamLifecycleAnalyticsContext(data: TeamViewSnapshot | null): {
@@ -3280,7 +3247,11 @@ export const createTeamSlice: StateCreator<AppState, [], [], TeamSlice> = (set, 
       const projectedTeamData = previousData
         ? {
             ...reliableData,
-            tasks: preserveKnownTaskChangePresence(teamName, previousData.tasks, reliableData.tasks),
+            tasks: preserveKnownTaskChangePresence(
+              teamName,
+              previousData.tasks,
+              reliableData.tasks
+            ),
           }
         : reliableData;
       const nextTeamData = structurallyShareTeamSnapshot(previousData, projectedTeamData);
@@ -3566,7 +3537,9 @@ export const createTeamSlice: StateCreator<AppState, [], [], TeamSlice> = (set, 
   updateKanban: async (teamName: string, taskId: string, patch: UpdateKanbanPatch) => {
     const requestScope = captureTeamRequestScope(get, teamName);
     await runScopedReviewAction(
-      () => get().selectedTeamName === teamName && isTeamRequestScopeCurrent(get, teamName, requestScope),
+      () =>
+        get().selectedTeamName === teamName &&
+        isTeamRequestScopeCurrent(get, teamName, requestScope),
       (message) => set({ reviewActionError: message }),
       () => unwrapIpc('team:updateKanban', () => api.teams.updateKanban(teamName, taskId, patch))
     );
@@ -3764,7 +3737,9 @@ export const createTeamSlice: StateCreator<AppState, [], [], TeamSlice> = (set, 
   requestReview: async (teamName: string, taskId: string) => {
     const requestScope = captureTeamRequestScope(get, teamName);
     await runScopedReviewAction(
-      () => get().selectedTeamName === teamName && isTeamRequestScopeCurrent(get, teamName, requestScope),
+      () =>
+        get().selectedTeamName === teamName &&
+        isTeamRequestScopeCurrent(get, teamName, requestScope),
       (message) => set({ reviewActionError: message }),
       () => unwrapIpc('team:requestReview', () => api.teams.requestReview(teamName, taskId))
     );

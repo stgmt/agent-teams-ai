@@ -59,6 +59,12 @@ export interface TeamSpecBinding {
   spec: string;
 }
 
+/** Allowed projects remain usable before the team creates its first specification. */
+export interface TeamSpecScope {
+  projects: string[];
+  bindings: TeamSpecBinding[];
+}
+
 export interface RegistryRegistrationIdentity {
   securityStoreId: string;
   idp: string;
@@ -69,7 +75,7 @@ export interface RegistryRegistrationIdentity {
 export interface SpecRegistryCredentialStatus {
   configured: boolean;
   url: string | null;
-  source: 'store' | 'environment' | 'file' | 'none';
+  source: 'store' | 'none';
 }
 
 /** Result of probing a registry endpoint and token without writing. */
@@ -79,6 +85,15 @@ export interface SpecRegistryProbeResult {
   toolCount: number | null;
   errorCode: string | null;
 }
+
+/**
+ * Outcome of the loopback "Get token" bootstrap. A refusal carries a code the
+ * dialog can explain (a remote endpoint, an operator who has not opted in, an
+ * unreachable registry); the token never round-trips through a stored field.
+ */
+export type SpecRegistryLocalTokenResult =
+  | { ok: true; token: string }
+  | { ok: false; code: string };
 
 export interface SpecRegistryDiscovery {
   url: string;

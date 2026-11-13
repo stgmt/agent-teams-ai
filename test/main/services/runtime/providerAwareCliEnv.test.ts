@@ -108,6 +108,14 @@ vi.mock('@main/services/team/TeamMcpConfigBuilder', () => ({
   resolvePackagedAgentTeamsMcpEntry: () => resolvePackagedAgentTeamsMcpEntryMock(),
 }));
 
+/** Returns the interesting PATH entries in the order they appear. */
+function resolveOrderedEntries(value: string | undefined): string[] {
+  const entries = (value ?? '').split(path.delimiter);
+  return ['/usr/bin', '/bin', '/mock/runtime/bin', '/usr/local/bin'].filter((entry) =>
+    entries.includes(entry)
+  );
+}
+
 describe('buildProviderAwareCliEnv', () => {
   afterEach(() => vi.unstubAllEnvs());
 
@@ -143,12 +151,14 @@ describe('buildProviderAwareCliEnv', () => {
           mode === 'active'
             ? await buildProviderAwareCliEnv(options)
             : buildPassiveProviderStatusCliEnv(options);
-        expect(result.env.AGENT_TEAMS_MCP_CLAUDE_DIR).toBe('/sandbox/private-claude');
+        // normalizeOverridePath resolves the override with the host path rules.
+        const claudeRoot = path.resolve('/sandbox/private-claude');
+        expect(result.env.AGENT_TEAMS_MCP_CLAUDE_DIR).toBe(claudeRoot);
         expect(result.env.CLAUDE_TEAM_CONTROL_URL).toBe('http://127.0.0.1:4569');
         expect(JSON.parse(result.env.CLAUDE_MULTIMODEL_AGENT_TEAMS_MCP_ENV_JSON!)).toEqual({
           ELECTRON_RUN_AS_NODE: '1',
           OWNER_FIXTURE: 'unchanged',
-          AGENT_TEAMS_MCP_CLAUDE_DIR: '/sandbox/private-claude',
+          AGENT_TEAMS_MCP_CLAUDE_DIR: claudeRoot,
           CLAUDE_TEAM_CONTROL_URL: 'http://127.0.0.1:4569',
         });
         const { getAppDataPath } = await import('@main/utils/pathDecoder');
@@ -768,14 +778,16 @@ describe('buildProviderAwareCliEnv', () => {
       },
     });
 
-    expect(result.env.PATH?.split(path.delimiter).slice(0, 4)).toEqual([
+    // The app prepends its bundled managed Git entries, so pin the order of the
+    // provider and runtime entries without depending on that prefix.
+    expect(resolveOrderedEntries(result.env.PATH)).toEqual([
       '/usr/bin',
       '/bin',
       '/mock/runtime/bin',
       '/usr/local/bin',
     ]);
     const appliedEnv = applyConfiguredConnectionEnvMock.mock.calls[0]?.[0] as NodeJS.ProcessEnv;
-    expect(appliedEnv.PATH?.split(path.delimiter).slice(0, 4)).toEqual([
+    expect(resolveOrderedEntries(appliedEnv.PATH)).toEqual([
       '/usr/bin',
       '/bin',
       '/mock/runtime/bin',

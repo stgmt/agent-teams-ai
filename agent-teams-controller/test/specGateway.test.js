@@ -10,6 +10,7 @@ const {
 
 const scope = {
   teamId: 'team-1',
+  projects: ['stgm/tokenplan'],
   bindings: [
     { project: 'stgm/tokenplan', spec: 'registry-check' },
     { project: 'stgm/tokenplan', spec: 'balancer' },
@@ -71,6 +72,7 @@ describe('team specification scope policy', () => {
   it('fills the bound scope when the team has exactly one specification', () => {
     const single = {
       teamId: 'team-1',
+      projects: ['stgm/tokenplan'],
       bindings: [{ project: 'stgm/tokenplan', spec: 'registry-check' }],
     };
     const args = applyTeamSpecScope(
@@ -88,14 +90,23 @@ describe('team specification scope policy', () => {
     expect(args).not.toHaveProperty('teamId');
   });
 
-  it('leaves the scope absent when several specifications are bound', () => {
-    const args = applyTeamSpecScope('spec_documents', { action: 'list' }, scope, DESCRIPTORS.documents, () => 'rid');
-    expect(args).not.toHaveProperty('project');
+  it('selects the only allowed project without choosing among several specifications', () => {
+    const args = applyTeamSpecScope(
+      'spec_documents',
+      { action: 'list' },
+      scope,
+      DESCRIPTORS.documents,
+      () => 'rid'
+    );
+    expect(args.project).toBe('stgm/tokenplan');
     expect(args).not.toHaveProperty('spec');
   });
 
   it('accepts any specification inside a bound project and refuses another project', () => {
-    const scope = { teamId: 'team-1', bindings: [{ project: 'stgmt/tokenplan', spec: 'registry-check' }] };
+    const scope = {
+      projects: ['stgmt/tokenplan'],
+      bindings: [{ project: 'stgmt/tokenplan', spec: 'registry-check' }],
+    };
     const accepted = applyTeamSpecScope(
       'spec_documents',
       { action: 'list', project: 'stgmt/tokenplan', spec: 'not-bound-yet' },
@@ -117,7 +128,13 @@ describe('team specification scope policy', () => {
 
   it('reports a typed refusal code for an unbound pair', () => {
     try {
-      applyTeamSpecScope('spec_patch', { project: 'stgm/other', spec: 'landing' }, scope, DESCRIPTORS.patch, () => 'rid');
+      applyTeamSpecScope(
+        'spec_patch',
+        { project: 'stgm/other', spec: 'landing' },
+        scope,
+        DESCRIPTORS.patch,
+        () => 'rid'
+      );
       throw new Error('expected refusal');
     } catch (error) {
       expect(error).toBeInstanceOf(SpecScopeError);
@@ -144,11 +161,17 @@ describe('team specification scope policy', () => {
   });
 
   it('invents no scope fields when the tool descriptor is unknown', () => {
-    const args = applyTeamSpecScope('unknown_tool', { view: 'specs' }, scope, undefined, () => 'rid');
+    const args = applyTeamSpecScope(
+      'unknown_tool',
+      { view: 'specs' },
+      scope,
+      undefined,
+      () => 'rid'
+    );
     expect(args).toEqual({ view: 'specs' });
   });
 
-  it('drops the local worktree selector and stamps the team id on task operations', () => {
+  it('drops the local worktree selector without inventing identity fields inside operations', () => {
     const args = applyTeamSpecScope(
       'spec_patch',
       {
@@ -164,7 +187,7 @@ describe('team specification scope policy', () => {
     );
     expect(args).not.toHaveProperty('declaredWorktree');
     expect(args.operations).toEqual([
-      { kind: 'upsert_task', localId: 'TASK-9', teamId: 'team-1' },
+      { kind: 'upsert_task', localId: 'TASK-9' },
       { kind: 'replace_task_status', teamId: 'other' },
     ]);
   });
@@ -181,7 +204,13 @@ describe('team specification scope policy', () => {
   });
 
   it('keeps a caller requestId so an idempotent retry stays idempotent', () => {
-    const args = applyTeamSpecScope('spec_patch', { requestId: 'mine' }, scope, DESCRIPTORS.patch, () => 'rid');
+    const args = applyTeamSpecScope(
+      'spec_patch',
+      { requestId: 'mine' },
+      scope,
+      DESCRIPTORS.patch,
+      () => 'rid'
+    );
     expect(args.requestId).toBe('mine');
   });
 });
@@ -213,7 +242,7 @@ describe('registry gateway adapter', () => {
   it('turns a registry refusal into a refusal envelope instead of throwing', async () => {
     const refusal = Object.assign(new Error('spec is claimed'), { code: 'CLAIM_HELD' });
     const transport = {
-      listTools: vi.fn(async () => ({ tools: [] })),
+      listTools: vi.fn(async () => ({ tools: [DESCRIPTORS.patch] })),
       callTool: vi.fn(async () => {
         throw refusal;
       }),
@@ -246,7 +275,7 @@ describe('registry gateway adapter', () => {
         spec: 'balancer',
         requestId: 'rid',
         teamId: 'team-1',
-        operations: [{ kind: 'upsert_task', localId: 'TASK-1', teamId: 'team-1' }],
+        operations: [{ kind: 'upsert_task', localId: 'TASK-1' }],
       },
       'specProxy:spec_patch',
       undefined
@@ -268,7 +297,10 @@ describe('registry gateway adapter', () => {
 
 describe('spec creation inside a bound project', () => {
   it('allows createSpec for a specification the team has not bound yet', () => {
-    const scope = { teamId: 'team-1', bindings: [{ project: 'stgmt/tokenplan', spec: 'registry-check' }] };
+    const scope = {
+      projects: ['stgmt/tokenplan'],
+      bindings: [{ project: 'stgmt/tokenplan', spec: 'registry-check' }],
+    };
     const descriptor = {
       name: 'spec_patch',
       inputSchema: {
@@ -291,7 +323,10 @@ describe('spec creation inside a bound project', () => {
   });
 
   it('still refuses createSpec in a project the team is not bound to', () => {
-    const scope = { teamId: 'team-1', bindings: [{ project: 'stgmt/tokenplan', spec: 'registry-check' }] };
+    const scope = {
+      projects: ['stgmt/tokenplan'],
+      bindings: [{ project: 'stgmt/tokenplan', spec: 'registry-check' }],
+    };
     const descriptor = {
       name: 'spec_patch',
       inputSchema: {
@@ -312,5 +347,109 @@ describe('spec creation inside a bound project', () => {
         descriptor
       )
     ).toThrow(/not bound to this team/);
+  });
+});
+
+describe('canonical project authority at the registry gateway', () => {
+  it('creates and reads the first specification with no existing binding', async () => {
+    const specs = new Map();
+    const descriptor = {
+      name: 'spec_patch',
+      inputSchema: {
+        type: 'object',
+        properties: { intent: {}, project: {}, spec: {}, title: {}, requestId: {} },
+      },
+    };
+    const gateway = createTeamSpecGateway({
+      readScope: async () => ({ projects: ['allowed/project'], bindings: [] }),
+      transport: {
+        listTools: async () => ({ tools: [descriptor, DESCRIPTORS.documents] }),
+        async callTool(name, args) {
+          if (args.project !== 'allowed/project' || 'teamId' in args) {
+            throw Object.assign(new Error('invalid registry scope'), { code: 'INVALID_SCOPE' });
+          }
+          if (name === 'spec_patch' && args.intent === 'createSpec') {
+            specs.set(args.spec, `# ${args.title}`);
+            return { ok: true, data: { created: args.spec }, error: null };
+          }
+          return { ok: true, data: { content: specs.get(args.spec) }, error: null };
+        },
+      },
+    });
+    const created = await gateway.callTool('spec_patch', {
+      intent: 'createSpec',
+      project: 'allowed/project',
+      spec: 'first',
+      title: 'First spec',
+    });
+    expect(created).toMatchObject({ ok: true, data: { created: 'first' } });
+    const read = await gateway.callTool('spec_documents', {
+      action: 'read',
+      project: 'allowed/project',
+      spec: 'first',
+      doc: 'SPEC.md',
+    });
+    expect(read).toMatchObject({ ok: true, data: { content: '# First spec' } });
+  });
+
+  it.each(['spec_documents', 'spec_patch'])(
+    'never grants %s access from a binding outside the allowed projects',
+    async (name) => {
+      // Defense in depth: even inconsistent persisted bindings cannot widen projects.
+      let calls = 0;
+      const gateway = createTeamSpecGateway({
+        readScope: async () => ({
+          projects: ['allowed/project'],
+          bindings: [{ project: 'foreign/project', spec: 'secret' }],
+        }),
+        transport: {
+          listTools: async () => ({ tools: [DESCRIPTORS.documents, DESCRIPTORS.patch] }),
+          async callTool() {
+            calls += 1;
+            return { ok: true, data: { leaked: true }, error: null };
+          },
+        },
+      });
+      await expect(
+        gateway.callTool(name, {
+          action: 'read',
+          intent: 'createSpec',
+          project: 'foreign/project',
+          spec: 'secret',
+        })
+      ).rejects.toMatchObject({ code: expect.any(String) });
+      expect(calls).toBe(0);
+    }
+  );
+
+  it.each([
+    ['empty discovery', { tools: [] }],
+    ['missing discovery', {}],
+    ['invalid descriptor', { tools: [{ name: 'spec_patch', inputSchema: null }] }],
+    [
+      'non-object input schema',
+      { tools: [{ name: 'spec_patch', inputSchema: { type: 'string' } }] },
+    ],
+    ['untyped input schema', { tools: [{ name: 'spec_patch', inputSchema: {} }] }],
+    [
+      'malformed schema properties',
+      { tools: [{ name: 'spec_patch', inputSchema: { type: 'object', properties: [] } }] },
+    ],
+    ['partial discovery', { tools: [DESCRIPTORS.documents, { inputSchema: {} }] }],
+  ])('refuses readiness and tool execution after %s', async (_label, discovery) => {
+    let calls = 0;
+    const gateway = createTeamSpecGateway({
+      readScope: async () => ({ projects: ['stgm/tokenplan'], bindings: [] }),
+      transport: {
+        listTools: async () => discovery,
+        async callTool() {
+          calls += 1;
+          return okEnvelope;
+        },
+      },
+    });
+    await expect(gateway.listTools()).rejects.toThrow();
+    await expect(gateway.callTool('spec_patch', { intent: 'createSpec' })).rejects.toThrow();
+    expect(calls).toBe(0);
   });
 });

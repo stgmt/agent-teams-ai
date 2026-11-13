@@ -9,13 +9,6 @@
  * fail-closed transport.
  */
 import type {
-  RegistryRegistrationIdentity,
-  RegistryTaskEntity as SharedRegistryTaskEntity,
-  RegistryTaskSnapshot,
-  RegistryTaskSource,
-  RegistryTaskStatus as SharedRegistryTaskStatus,
-} from '@shared/types';
-import type {
   PolicyChangeProof,
   SignedTaskPayload,
   TaskGenesisAttestationExpected,
@@ -23,6 +16,13 @@ import type {
   TaskPolicy,
   VerifiedTaskProof,
 } from '@main/services/identity/TaskAttestation';
+import type {
+  RegistryRegistrationIdentity,
+  RegistryTaskEntity as SharedRegistryTaskEntity,
+  RegistryTaskSnapshot,
+  RegistryTaskSource,
+  RegistryTaskStatus as SharedRegistryTaskStatus,
+} from '@shared/types';
 
 /** Statuses the kernel accepts, in the registry's own spelling. */
 export const REGISTRY_TASK_STATUSES = [
@@ -39,6 +39,9 @@ export const REGISTRY_TASK_STATUSES = [
 
 export type RegistryTaskStatus = SharedRegistryTaskStatus;
 
+/** Review state as the registry stores it on the canonical task. */
+export type RegistryTaskReview = 'none' | 'requested' | 'approved' | 'changes-requested';
+
 export type RegistryTaskEntity = SharedRegistryTaskEntity;
 export type RegistryTaskSourceSnapshot = RegistryTaskSource;
 
@@ -49,6 +52,8 @@ export type RegistryTaskSourceSnapshot = RegistryTaskSource;
  */
 export interface RegistryTask extends RegistryTaskSnapshot {
   refs: string[];
+  /** Review verdict stored on the canonical task; the app overlays its own execution record. */
+  review?: RegistryTaskReview;
 }
 
 /** How a structured task write landed, as the registry reports it. */
@@ -317,7 +322,8 @@ export interface ListRegistryTasksInput extends RegistryTaskScope {
   includeBodies?: boolean;
 }
 export interface UpsertRegistryTaskInput extends RegistryTaskScope {
-  teamId: string;
+  /** Omitted for the registry-contract path: the registry scopes tasks by project and spec. */
+  teamId?: string;
   /** `TASK-7` or a bare `7`; the registry owns the canonical spelling. */
   localId: string;
   title: string;

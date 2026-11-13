@@ -11,6 +11,6 @@ export function isTeamSpecBindingSelectionValid(
   const normalizedSlug = slug.trim();
 
   if (!normalizedProject && !normalizedSlug) return true;
-  if (!normalizedProject || !normalizedSlug || selectedKey === null) return false;
+  if (!normalizedProject || selectedKey === null) return false;
   return selectedKey === registrySelectionKey(normalizedProject, normalizedSlug);
 }

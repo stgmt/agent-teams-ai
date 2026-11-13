@@ -2,10 +2,23 @@ import * as agentTeamsControllerModule from 'agent-teams-controller';
 import { mkdir, mkdtemp, rm, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { buildNativeAppManagedBootstrapSpecs } from '../../../../src/main/services/team/bootstrap/NativeAppManagedBootstrapContextBuilder';
 import { setClaudeBasePathOverride } from '../../../../src/main/utils/pathDecoder';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+// A test process has no desktop app binding, which the canonical task backend requires. The
+// fixture therefore pins the local board selection for the real controller: seeding and
+// reading the scratch team's tasks stays on the real board implementation.
+vi.mock('agent-teams-controller', async () => {
+  const { createRequire } = await import('node:module');
+  const actual = createRequire(import.meta.url)('../../../../agent-teams-controller/src/index.js');
+  return {
+    ...actual,
+    createController: (options: Record<string, unknown>) =>
+      actual.createController({ ...options, localTaskBoard: true }),
+  };
+});
 
 const { createController } = agentTeamsControllerModule;
 

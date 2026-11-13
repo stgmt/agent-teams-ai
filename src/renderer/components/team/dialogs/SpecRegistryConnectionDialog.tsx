@@ -3,7 +3,6 @@ import { useEffect, useState } from 'react';
 import { useAppTranslation } from '@features/localization/renderer';
 import { api } from '@renderer/api';
 import { Button } from '@renderer/components/ui/button';
-import { Input } from '@renderer/components/ui/input';
 import {
   Dialog,
   DialogContent,
@@ -12,27 +11,44 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@renderer/components/ui/dialog';
+import { Input } from '@renderer/components/ui/input';
+import { isLoopbackSpecRegistryEndpoint } from '@shared/utils/specRegistryEndpoint';
 
 import { registrySelectionKey, SpecRegistryPicker } from './SpecRegistryPicker';
 
-import type { SpecRegistryCredentialStatus } from '@shared/types';
+import type { AppTranslationApi } from '@features/localization/renderer';
+import type { SpecRegistryCredentialStatus, SpecRegistryLocalTokenResult } from '@shared/types';
+
+/** Refusals the user can act on; anything else falls back to the generic message. */
+function localTokenRefusalMessage(t: AppTranslationApi['t'], code: string): string {
+  switch (code) {
+    case 'LOCAL_BOOTSTRAP_NOT_LOOPBACK':
+      return t('create.registryPicker.localTokenNotLoopback');
+    case 'LOCAL_BOOTSTRAP_FORBIDDEN':
+      return t('create.registryPicker.localTokenForbidden');
+    case 'LOCAL_BOOTSTRAP_DISABLED':
+      return t('create.registryPicker.localTokenDisabled');
+    default:
+      return t('create.registryPicker.localTokenFailed', { code });
+  }
+}
 
 interface SpecRegistryConnectionDialogProps {
-  teamName: string;
+  teamName?: string;
   initialProject?: string;
   initialSpec?: string;
   onClose(): void;
   onSaved(): void;
 }
 
-/** Connect an existing team even when its task board cannot be loaded yet. */
-export function SpecRegistryConnectionDialog({
+/** Store the app connection before team creation, or connect an existing team. */
+export const SpecRegistryConnectionDialog = ({
   teamName,
   initialProject = '',
   initialSpec = '',
   onClose,
   onSaved,
-}: SpecRegistryConnectionDialogProps): React.JSX.Element {
+}: SpecRegistryConnectionDialogProps): React.JSX.Element => {
   const { t } = useAppTranslation('team');
   const [project, setProject] = useState(initialProject);
   const [spec, setSpec] = useState(initialSpec);
@@ -47,6 +63,10 @@ export function SpecRegistryConnectionDialog({
   const [credentialNotice, setCredentialNotice] = useState<string | null>(null);
   const [credentialError, setCredentialError] = useState<string | null>(null);
   const [credentialBusy, setCredentialBusy] = useState(false);
+  const [discoveryRevision, setDiscoveryRevision] = useState(0);
+  // The bootstrap only exists for a registry on this machine, so the action is
+  // offered for exactly that endpoint shape and nowhere else.
+  const localTokenAvailable = isLoopbackSpecRegistryEndpoint(credentialUrl);
 
   useEffect(() => {
     let cancelled = false;
@@ -65,14 +85,14 @@ export function SpecRegistryConnectionDialog({
     };
   }, []);
 
-  const checkCredential = async (): Promise<void> => {
+  const checkCredential = async (override?: { url?: string; token?: string }): Promise<void> => {
     setCredentialBusy(true);
     setCredentialError(null);
     setCredentialNotice(null);
     try {
       const result = await api.teams.testSpecRegistryCredential(
-        credentialUrl.trim() || undefined,
-        credentialToken.trim() || undefined
+        override?.url ?? (credentialUrl.trim() || undefined),
+        override?.token ?? (credentialToken.trim() || undefined)
       );
       if (result.ok) {
         setCredentialNotice(
@@ -90,6 +110,31 @@ export function SpecRegistryConnectionDialog({
     } finally {
       setCredentialBusy(false);
     }
+  };
+
+  /**
+   * A registry running on this machine can mint the token itself, so the user
+   * does not have to paste one. The obtained token goes into the field and the
+   * ordinary check runs on it, so success means exactly what a pasted token's
+   * success means.
+   */
+  const getLocalToken = async (): Promise<void> => {
+    setCredentialBusy(true);
+    setCredentialError(null);
+    setCredentialNotice(null);
+    let result: SpecRegistryLocalTokenResult;
+    try {
+      result = await api.teams.requestSpecRegistryLocalToken(credentialUrl.trim());
+    } catch {
+      result = { ok: false, code: 'LOCAL_BOOTSTRAP_FAILED' };
+    }
+    if (!result.ok) {
+      setCredentialBusy(false);
+      setCredentialError(localTokenRefusalMessage(t, result.code));
+      return;
+    }
+    setCredentialToken(result.token);
+    await checkCredential({ url: credentialUrl.trim(), token: result.token });
   };
 
   const saveCredential = async (): Promise<void> => {
@@ -116,6 +161,9 @@ export function SpecRegistryConnectionDialog({
       setCredentialToken('');
       setCredentialStatus(await api.teams.getSpecRegistryCredentialStatus());
       setCredentialNotice(t('create.registryPicker.credentialSaved'));
+      setValidSelection(null);
+      setDiscoveryRevision((revision) => revision + 1);
+      if (!teamName) onSaved();
     } catch {
       setCredentialError(t('create.registryPicker.credentialCheckFailed', { code: 'SAVE_FAILED' }));
     } finally {
@@ -130,6 +178,9 @@ export function SpecRegistryConnectionDialog({
       await api.teams.clearSpecRegistryCredential();
       setCredentialStatus(await api.teams.getSpecRegistryCredentialStatus());
       setCredentialNotice(t('create.registryPicker.credentialCleared'));
+      setValidSelection(null);
+      setDiscoveryRevision((revision) => revision + 1);
+      if (!teamName) onSaved();
     } catch {
       setCredentialError(
         t('create.registryPicker.credentialCheckFailed', { code: 'CLEAR_FAILED' })
@@ -140,7 +191,15 @@ export function SpecRegistryConnectionDialog({
   };
 
   const save = async (): Promise<void> => {
-    if (saving || validSelection !== registrySelectionKey(project, spec)) return;
+    if (
+      !teamName ||
+      saving ||
+      credentialBusy ||
+      !credentialStatus?.configured ||
+      !project.trim() ||
+      validSelection !== registrySelectionKey(project, spec)
+    )
+      return;
     setSaving(true);
     setError(null);
     try {
@@ -160,13 +219,25 @@ export function SpecRegistryConnectionDialog({
     <Dialog
       open
       onOpenChange={(next) => {
-        if (!next && !saving) onClose();
+        if (!next && !saving && !credentialBusy) onClose();
       }}
     >
-      <DialogContent closeDisabled={saving}>
+      <DialogContent closeDisabled={saving || credentialBusy}>
         <DialogHeader>
-          <DialogTitle>{t('create.registryPicker.connectTitle')}</DialogTitle>
-          <DialogDescription>{t('create.registryPicker.connectDescription')}</DialogDescription>
+          <DialogTitle>
+            {t(
+              teamName
+                ? 'create.registryPicker.connectTitle'
+                : 'create.registryPicker.credentialTitle'
+            )}
+          </DialogTitle>
+          <DialogDescription>
+            {t(
+              teamName
+                ? 'create.registryPicker.connectDescription'
+                : 'create.registryPicker.credentialDescription'
+            )}
+          </DialogDescription>
         </DialogHeader>
         <section className="flex flex-col gap-2 rounded-md border border-[var(--border)] p-3">
           <h3 className="text-sm font-medium">{t('create.registryPicker.credentialTitle')}</h3>
@@ -200,6 +271,11 @@ export function SpecRegistryConnectionDialog({
           <p className="text-xs text-[var(--color-text-muted)]">
             {t('create.registryPicker.credentialHint')}
           </p>
+          {localTokenAvailable ? (
+            <p className="text-xs text-[var(--color-text-muted)]">
+              {t('create.registryPicker.credentialGetTokenHint')}
+            </p>
+          ) : null}
           {credentialError ? (
             <p role="alert" className="text-xs text-[var(--field-error-text)]">
               {credentialError}
@@ -211,6 +287,15 @@ export function SpecRegistryConnectionDialog({
             </p>
           ) : null}
           <div className="flex gap-2">
+            {localTokenAvailable ? (
+              <Button
+                variant="outline"
+                onClick={() => void getLocalToken()}
+                disabled={credentialBusy}
+              >
+                {t('create.registryPicker.credentialGetToken')}
+              </Button>
+            ) : null}
             <Button
               variant="outline"
               onClick={() => void checkCredential()}
@@ -230,34 +315,47 @@ export function SpecRegistryConnectionDialog({
             </Button>
           </div>
         </section>
-        <SpecRegistryPicker
-          project={project}
-          slug={spec}
-          onProjectChange={setProject}
-          onSlugChange={setSpec}
-          onValidSelectionChange={setValidSelection}
-          disabled={saving}
-        />
-        <p className="text-xs text-[var(--color-text-muted)]">
-          {t('create.registryPicker.legacyNotice')}
-        </p>
+        {teamName && (
+          <SpecRegistryPicker
+            key={discoveryRevision}
+            project={project}
+            slug={spec}
+            onProjectChange={setProject}
+            onSlugChange={setSpec}
+            onValidSelectionChange={setValidSelection}
+            disabled={saving}
+          />
+        )}
+        {teamName && (
+          <p className="text-xs text-[var(--color-text-muted)]">
+            {t('create.registryPicker.legacyNotice')}
+          </p>
+        )}
         {error ? (
           <p role="alert" className="text-xs text-[var(--field-error-text)]">
             {t(`create.registryPicker.${error}`)}
           </p>
         ) : null}
         <DialogFooter>
-          <Button variant="outline" onClick={onClose} disabled={saving}>
+          <Button variant="outline" onClick={onClose} disabled={saving || credentialBusy}>
             {t('detail.actions.cancel')}
           </Button>
-          <Button
-            onClick={() => void save()}
-            disabled={saving || validSelection !== registrySelectionKey(project, spec)}
-          >
-            {t('create.registryPicker.connectAction')}
-          </Button>
+          {teamName && (
+            <Button
+              onClick={() => void save()}
+              disabled={
+                saving ||
+                credentialBusy ||
+                !credentialStatus?.configured ||
+                !project.trim() ||
+                validSelection !== registrySelectionKey(project, spec)
+              }
+            >
+              {t('create.registryPicker.connectAction')}
+            </Button>
+          )}
         </DialogFooter>
       </DialogContent>
     </Dialog>
   );
-}
+};

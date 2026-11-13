@@ -10,7 +10,10 @@ import { OpenCodePromptDeliveryWatchdogScheduler } from '@main/services/team/ope
 import type { TeamRunRegistryRead } from '../../../contracts';
 import type { NativeOpenCodeMemberDeliveryPort } from '../input/NativeTeamMessagingApi';
 
-type LaneFact = { readonly laneId: string; readonly runtimeAlive: boolean };
+interface LaneFact {
+  readonly laneId: string;
+  readonly runtimeAlive: boolean;
+}
 
 /**
  * One team's prompt ledger, opened at the same durable path the app already

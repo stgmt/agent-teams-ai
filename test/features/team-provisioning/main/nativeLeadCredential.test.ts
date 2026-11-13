@@ -1,4 +1,10 @@
 // @vitest-environment node
+import {
+  installNativeSdkHostFixture,
+  installNativeTaskControlFixture,
+  nativeSpecScope,
+  nativeSpecRegistryEnvironment,
+} from './nativeSdkTestHarness';
 import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -8,6 +14,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { BoundControlContext } from '../../../../src/features/external-agent-connection/main/BoundControlContext';
 import { createNodeLeadReporting } from '../../../../src/features/lead-reporting/main';
 import { createNativeTeamLifecycle } from '../../../../src/features/team-provisioning/main/composition/createNativeTeamLifecycle';
+const sdkHost = installNativeSdkHostFixture();
+const bindTaskControl = installNativeTaskControlFixture();
 
 const directories: string[] = [];
 afterEach(async () => {
@@ -25,11 +33,13 @@ async function setup() {
   const teamName = 'test-lead-credential';
   await mkdir(join(teamsRoot, teamName), { recursive: true });
   const context = new BoundControlContext('TEST-app', root);
+  await bindTaskControl(root, context.snapshot());
   const request = { expectedContext: context.snapshot(), teamName };
   const credentials: string[] = [];
   // РИСК: real composition/config/MCP admission is covered; the MCP port rejects before OS/model launch.
   const lifecycle = createNativeTeamLifecycle({
     owner: context.snapshot(),
+    sdkHost: sdkHost(),
     readStartupTasks: async () => [],
     createController: () => ({
       taskBoard: { deliverStartupWorkAsync: async () => ({ delivered: [], skipped: [] }) },
@@ -38,9 +48,16 @@ async function setup() {
     workspaceRoot: join(root, 'workspaces'),
     teamsRoot,
     settings: {
+      specRegistryEnvironment: nativeSpecRegistryEnvironment,
       metadata: {
         getMeta: () =>
-          Promise.resolve({ version: 1, providerId: 'anthropic', cwd: root, createdAt: 1 }),
+          Promise.resolve({
+            version: 1,
+            providerId: 'anthropic',
+            cwd: root,
+            createdAt: 1,
+            specScope: nativeSpecScope,
+          }),
       },
       members: { getMeta: () => Promise.resolve({ version: 1, members: [] }) },
     },
@@ -139,6 +156,9 @@ describe('public native lead authority query', () => {
         const snapshot = await lifecycle.queries.snapshot(request);
         return snapshot?.identity.runId === expected.runId ? snapshot : null;
       },
+      // The delivery path verifies completion against the canonical board, so the
+      // ordinary-reply case reads an empty board rather than refusing the read.
+      tasks: () => Promise.resolve([]),
       taskChanges: () => Promise.reject(new Error('TEST ordinary reply needs no task changes')),
       leadName: () => Promise.resolve('team-lead'),
       delivered: (_identity, report) => deliveries.push(report.requestMessageId),

@@ -1,7 +1,7 @@
 import { TeamProvisioningService } from '@main/services/team/TeamProvisioningService';
 import { ToolApprovalSettingsSynchronizer } from '@renderer/store/team/teamToolApprovalSettingsSync';
 import { type ToolApprovalEvent, type ToolApprovalRequest } from '@shared/types';
-import { DEFAULT_TOOL_APPROVAL_SETTINGS } from '@shared/types/team';
+import { DEFAULT_TOOL_APPROVAL_SETTINGS } from '@shared/types/toolApproval';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 describe('tool approval policy synchronization safe e2e', () => {

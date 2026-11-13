@@ -281,7 +281,9 @@ liveDescribe('Member work sync recovery OpenCode live lifecycle', () => {
     expect(adopted.status).toBe('identified');
 
     await seedOpenCodeShadowReadyMetrics({ teamName, memberName });
-    const task = await new TeamDataService().createTask(teamName, {
+    const task = await new TeamDataService((teamName) =>
+      harness!.svc.getTeamAgentRuntimeSnapshot(teamName)
+    ).createTask(teamName, {
       subject: `Recovery OpenCode live unknown-delivery canary ${Date.now()}`,
       owner: memberName,
       startImmediately: false,

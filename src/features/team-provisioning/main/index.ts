@@ -17,6 +17,13 @@ export {
   type NodeLegacyMemberSettingsRepositoryOptions,
 } from './adapters/output/LegacyMemberSettingsRepositoryAdapter';
 export {
+  type NativeClaudeSdkEvent,
+  NativeClaudeSdkHost,
+  type NativeClaudeSdkHostPorts,
+  type NativeClaudeSdkOutputEvidence,
+  type NativeClaudeSdkRecovery,
+} from './adapters/output/NativeClaudeSdkHost';
+export {
   NativeClaudeApprovalStore,
   NativeClaudeToolApprovals,
 } from './adapters/output/NativeClaudeToolApprovals';
@@ -59,9 +66,19 @@ export {
   type NativeLeadReporting,
 } from './composition/createNativeLeadReporting';
 export {
+  createNativeOpenCodeDeliveryStack,
+  type NativeOpenCodeDeliveryStack,
+  type NativeOpenCodeDeliveryStackSources,
+} from './composition/createNativeOpenCodeDeliveryStack';
+export {
   createNativeProviderPorts,
   type NativeProviderProfile,
 } from './composition/createNativeProviderPorts';
+export {
+  createNativeRuntimeToolApproval,
+  type NativeRuntimeToolApproval,
+  type NativeRuntimeToolApprovalSources,
+} from './composition/createNativeRuntimeToolApproval';
 export {
   createNativeTeamHttpApis,
   type NativeTeamHttpApisDependencies,

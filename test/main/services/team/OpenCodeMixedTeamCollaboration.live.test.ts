@@ -228,7 +228,9 @@ liveDescribe('OpenCode mixed provider paid team collaboration', () => {
           sessionId: snapshot.members[name].runtimeSessionId,
         }));
         await checkpoint('tasks');
-        const taskService = new TeamDataService();
+        const taskService = new TeamDataService((teamName) =>
+          harness!.svc.getTeamAgentRuntimeSnapshot(teamName)
+        );
         const reader = new TeamTaskReader();
         const tasks: ((typeof members)[number] & {
           taskId: string;
@@ -541,7 +543,9 @@ liveDescribe('OpenCode mixed provider paid team collaboration', () => {
         await checkpoint('fresh-message-after-relaunch');
         const recipient = members[0];
         const nonce = randomUUID();
-        const freshTaskService = new TeamDataService();
+        const freshTaskService = new TeamDataService((teamName) =>
+          harness!.svc.getTeamAgentRuntimeSnapshot(teamName)
+        );
         const sent = await freshTaskService.sendMessage(teamName, {
           member: recipient.name,
           from: 'user',

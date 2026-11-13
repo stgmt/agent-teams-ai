@@ -3,13 +3,14 @@ import { createHash, createPublicKey, generateKeyPairSync, sign, verify } from '
 
 import { describe, expect, it } from 'vitest';
 
-import type { DesktopSigningKeyStore } from './DesktopSigningKeyStore';
 import {
   digestTaskCreationToken,
   signTaskGenesisAttestation,
   taskGenesisRequestDigest,
   taskLifecycleOperationCompletionDigest,
 } from './TaskAttestation';
+
+import type { DesktopSigningKeyStore } from './DesktopSigningKeyStore';
 
 const POLICY_DIGEST = createHash('sha256')
   .update(JSON.stringify(['omp-spec-kit/task-policy@1', true, 'proof.pdf']), 'utf8')

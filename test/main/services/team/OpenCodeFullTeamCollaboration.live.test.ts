@@ -217,7 +217,9 @@ liveDescribe('OpenCode full paid team collaboration', () => {
         activeTranscript = { runId, snapshot };
 
         await checkpoint('assigned-work');
-        const taskService = new TeamDataService();
+        const taskService = new TeamDataService((teamName) =>
+          harness!.svc.getTeamAgentRuntimeSnapshot(teamName)
+        );
         const reader = new TeamTaskReader();
         const aliceNonce = randomUUID();
         const bobNonce = randomUUID();

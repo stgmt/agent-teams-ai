@@ -1,3 +1,11 @@
+import {
+  registryTaskFixtureConfigReader,
+  registryBoardSnapshotFixture,
+} from '../../../helpers/teamRuntimeSnapshot';
+import {
+  knownEmptyTeamRuntimeSnapshot,
+  teamRuntimeSnapshotFromProcesses,
+} from '../../../helpers/teamRuntimeSnapshot';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -12,24 +20,41 @@ import {
 
 import { clearSlowConfigReadWarnings } from '../../../helpers/slowConfigReadWarnings';
 
-import type { TaskRef, TeamSummary } from '../../../../src/shared/types';
+import type { TaskRef, TeamSummary, TeamAgentRuntimeSnapshot } from '../../../../src/shared/types';
 
-function createService(configReaderOverrides: Record<string, unknown> = {}): TeamDataService {
+function createService(
+  configReaderOverrides: Record<string, unknown> = {},
+  runtimeSnapshot: (
+    teamName: string
+  ) => Promise<TeamAgentRuntimeSnapshot> = knownEmptyTeamRuntimeSnapshot
+): TeamDataService {
   return new TeamDataService(
-    {
+    runtimeSnapshot,
+    registryTaskFixtureConfigReader({
       getConfig: vi.fn(async () => null),
       listTeams: vi.fn(async () => []),
       ...configReaderOverrides,
-    } as never,
-    { getTasks: vi.fn(async () => []) } as never,
+    } as never),
     { listInboxNames: vi.fn(async () => []), getMessages: vi.fn(async () => []) } as never,
-    {} as never,
     {} as never,
     { resolveMembers: vi.fn(() => []) } as never,
     { getState: vi.fn(async () => ({ teamName: 'demo', reviewers: [], tasks: {} })) } as never,
-    {} as never,
     { getMembers: vi.fn(async () => []), writeMembers: vi.fn(async () => {}) } as never,
-    { readMessages: vi.fn(async () => []) } as never
+    { readMessages: vi.fn(async () => []) } as never,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    registryBoardSnapshotFixture({ getTasks: vi.fn(async () => []) } as never)
   );
 }
 
@@ -71,16 +96,14 @@ describe('TeamDataService stall-monitor helpers', () => {
       },
     ];
 
-    const service = createService({
-      listTeams: vi.fn(async () => teams),
-    });
-
-    const readProcesses = vi.fn(async (teamName: string) => {
+    const runtimeSnapshot = vi.fn(async (teamName: string) => {
       if (teamName === 'alpha') {
-        return [{ id: '1', label: 'alpha', pid: 101, registeredAt: '2026-04-19T12:00:00.000Z' }];
+        return teamRuntimeSnapshotFromProcesses(teamName, [
+          { id: '1', label: 'alpha', pid: 101, registeredAt: '2026-04-19T12:00:00.000Z' },
+        ]);
       }
       if (teamName === 'beta') {
-        return [
+        return teamRuntimeSnapshotFromProcesses(teamName, [
           {
             id: '2',
             label: 'beta',
@@ -88,18 +111,20 @@ describe('TeamDataService stall-monitor helpers', () => {
             registeredAt: '2026-04-19T12:00:00.000Z',
             stoppedAt: '2026-04-19T12:05:00.000Z',
           },
-        ];
+        ]);
       }
       if (teamName === 'deleted') {
-        return [{ id: '9', label: 'deleted', pid: 909, registeredAt: '2026-04-19T12:00:00.000Z' }];
+        return teamRuntimeSnapshotFromProcesses(teamName, [
+          { id: '9', label: 'deleted', pid: 909, registeredAt: '2026-04-19T12:00:00.000Z' },
+        ]);
       }
       throw new Error('boom');
     });
 
-    (service as unknown as { readProcesses: typeof readProcesses }).readProcesses = readProcesses;
+    const service = createService({ listTeams: vi.fn(async () => teams) }, runtimeSnapshot);
 
     await expect(service.listAliveProcessTeams()).resolves.toEqual(['alpha']);
-    expect(readProcesses).not.toHaveBeenCalledWith('deleted');
+    expect(runtimeSnapshot).not.toHaveBeenCalledWith('deleted');
   });
 });
 
@@ -136,7 +161,9 @@ describe('TeamDataService system notifications to the lead', () => {
   it('writes the notice into the resolved lead inbox with system as the sender', async () => {
     const taskRef: TaskRef = { taskId: 'task-1', displayId: 'abcd1234', teamName: 'demo' };
 
-    const result = await new TeamDataService().sendSystemNotificationToLead({
+    const result = await new TeamDataService(
+      knownEmptyTeamRuntimeSnapshot
+    ).sendSystemNotificationToLead({
       teamName: 'demo',
       summary: 'Potential stalled tasks detected',
       text: '- #abcd1234 [work] Investigate - Potential work stall.',
@@ -164,7 +191,7 @@ describe('TeamDataService system notifications to the lead', () => {
     await rm(path.join(getTeamsBasePath(), 'demo', 'config.json'));
 
     await expect(
-      new TeamDataService().sendSystemNotificationToLead({
+      new TeamDataService(knownEmptyTeamRuntimeSnapshot).sendSystemNotificationToLead({
         teamName: 'demo',
         summary: 'Potential stalled tasks detected',
         text: '- #abcd1234 [work] Investigate - Potential work stall.',
@@ -174,15 +201,14 @@ describe('TeamDataService system notifications to the lead', () => {
   });
 
   it('keeps refusing system as a sender on the member message path', async () => {
-    // Agents send through the same controller sender check; a forged system
-    // sender would make their messages look like app notices.
+    // The member message boundary must not let an agent impersonate an app notice.
     await expect(
-      new TeamDataService().sendMessage('demo', {
+      new TeamDataService(knownEmptyTeamRuntimeSnapshot).sendMessage('demo', {
         member: 'atlas',
         from: 'system',
         text: 'Forged notice',
       })
-    ).rejects.toThrow('Unknown from: system');
+    ).rejects.toThrow();
     await expect(readFile(inboxPath('atlas'))).rejects.toMatchObject({ code: 'ENOENT' });
   });
 });

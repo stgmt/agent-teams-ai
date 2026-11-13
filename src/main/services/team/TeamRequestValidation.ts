@@ -17,7 +17,7 @@ import {
 } from '@shared/utils/teamRuntimeSelection';
 import { isAbsolute } from 'path';
 
-import { resolveTeamSpecBinding, TeamSpecBindingError } from './registry/TeamSpecBinding';
+import { resolveTeamSpecScope, TeamSpecBindingError } from './registry/TeamSpecBinding';
 
 import type {
   EffortLevel,
@@ -25,6 +25,7 @@ import type {
   TeamCreateRequest,
   TeamFastMode,
   TeamLaunchRequest,
+  TeamSpecScope,
 } from '@shared/types/team';
 
 const PROVIDER_BACKEND_ERROR =
@@ -325,13 +326,29 @@ export function parseLaunchRequest(teamName: string, body: unknown): TeamLaunchR
   };
 }
 
-function optionalTeamSpecBinding(
-  binding: Pick<TeamCreateRequest, 'specProject' | 'specSlug'>,
+/** Normalize form/API input once; all downstream consumers use canonical scope. */
+function optionalTeamSpecScope(
+  input: { specScope?: unknown; specProject?: unknown; specSlug?: unknown },
   teamName: string
-): { project: string; spec: string } | undefined {
-  if (binding.specProject === undefined && binding.specSlug === undefined) return undefined;
+): TeamSpecScope | undefined {
   try {
-    return resolveTeamSpecBinding(binding, teamName);
+    const hasFormScope = input.specProject !== undefined || input.specSlug !== undefined;
+    if (input.specScope !== undefined && hasFormScope) {
+      throw new TeamRequestValidationError('Use specScope or specProject/specSlug, not both');
+    }
+    if (input.specScope !== undefined) return resolveTeamSpecScope(input, teamName);
+    if (!hasFormScope) return undefined;
+    const project = assertOptionalString(input.specProject, 'specProject');
+    const spec = assertOptionalString(input.specSlug, 'specSlug');
+    if (!project || (input.specSlug !== undefined && !spec)) {
+      throw new TeamRequestValidationError(
+        'A non-empty specProject is required for specification scope'
+      );
+    }
+    return resolveTeamSpecScope(
+      { specScope: { projects: [project], bindings: spec ? [{ project, spec }] : [] } },
+      teamName
+    );
   } catch (error) {
     if (error instanceof TeamSpecBindingError) throw new TeamRequestValidationError(error.message);
     throw error;
@@ -349,15 +366,7 @@ export function parseCreateTeamRequest(body: unknown): TeamCreateConfigRequest {
     throw new TeamRequestValidationError('Explicit model/backend requires a provider');
   }
   const teamName = assertProvisioningTeamName(payload.teamName);
-  const project = assertOptionalString(payload.specProject, 'specProject');
-  const spec = assertOptionalString(payload.specSlug, 'specSlug');
-  if (
-    (Object.hasOwn(payload, 'specProject') || Object.hasOwn(payload, 'specSlug')) &&
-    (!project || !spec)
-  ) {
-    throw new TeamRequestValidationError('specProject and specSlug must both be non-empty');
-  }
-  const binding = optionalTeamSpecBinding({ specProject: project, specSlug: spec }, teamName);
+  const specScope = optionalTeamSpecScope(payload, teamName);
   const providerId = payload.providerId == null ? undefined : parseProviderId(payload.providerId);
   const providerBackendId = parseLaunchProviderBackendId(providerId, payload.providerBackendId);
   const displayName = assertOptionalString(payload.displayName, 'displayName');
@@ -375,7 +384,7 @@ export function parseCreateTeamRequest(body: unknown): TeamCreateConfigRequest {
 
   const request: TeamCreateConfigRequest = {
     teamName,
-    ...(binding ? { specProject: binding.project, specSlug: binding.spec } : {}),
+    ...(specScope ? { specScope } : {}),
     runtimeSelectionVersion,
     members: parseCreateMembers(payload.members, providerId ?? 'anthropic'),
     ...(displayName ? { displayName } : {}),
@@ -494,11 +503,13 @@ export function parseDraftLaunchCreateRequest(
     assertOptionalExtraCliArgs(extraCliArgs);
   }
 
-  const binding = optionalTeamSpecBinding(savedRequest, teamName);
+  const specScope =
+    optionalTeamSpecScope(payload, teamName) ??
+    optionalTeamSpecScope({ specScope: savedRequest.specScope }, teamName);
 
   return {
     teamName,
-    ...(binding ? { specProject: binding.project, specSlug: binding.spec } : {}),
+    ...(specScope ? { specScope } : {}),
     runtimeSelectionVersion: normalizeRuntimeSelectionVersion(savedRequest.runtimeSelectionVersion),
     displayName: savedRequest.displayName,
     description: savedRequest.description,

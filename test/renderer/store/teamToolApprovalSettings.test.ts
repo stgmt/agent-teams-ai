@@ -9,7 +9,7 @@ import {
   saveLegacyToolApprovalSettings,
   saveToolApprovalSettingsForTeam,
 } from '../../../src/renderer/store/team/teamToolApprovalSettings';
-import { DEFAULT_TOOL_APPROVAL_SETTINGS } from '../../../src/shared/types/team';
+import { DEFAULT_TOOL_APPROVAL_SETTINGS } from '@shared/types/toolApproval';
 
 describe('teamToolApprovalSettings', () => {
   beforeEach(() => {
@@ -60,9 +60,9 @@ describe('teamToolApprovalSettings', () => {
   });
 
   it('accepts timeout actions allow, deny, and wait', () => {
-    expect(parseToolApprovalSettings(JSON.stringify({ timeoutAction: 'allow' })).timeoutAction).toBe(
-      'allow'
-    );
+    expect(
+      parseToolApprovalSettings(JSON.stringify({ timeoutAction: 'allow' })).timeoutAction
+    ).toBe('allow');
     expect(parseToolApprovalSettings(JSON.stringify({ timeoutAction: 'deny' })).timeoutAction).toBe(
       'deny'
     );

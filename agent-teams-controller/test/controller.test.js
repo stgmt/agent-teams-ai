@@ -277,7 +277,7 @@ controller.messages.sendMessage({
     const controller = createController({ teamName: 'my-team', claudeDir });
 
     expect(() => controller.tasks.createTask({ subject: 'Missing requirements' }))
-      .toThrow('requirements required');
+      .toThrow('Task creation requires at least one existing FR/NFR/AC requirement reference.');
     const created = controller.tasks.createTask({
       subject: 'Registry-backed task',
       requirements: ['FR-1'],

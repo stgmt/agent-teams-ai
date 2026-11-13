@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 import { shouldAutoAllow } from '@main/utils/toolApprovalRules';
-import type { ToolApprovalSettings } from '@shared/types/team';
-import { DEFAULT_TOOL_APPROVAL_SETTINGS } from '@shared/types/team';
+import type { ToolApprovalSettings } from '@shared/types';
+import { DEFAULT_TOOL_APPROVAL_SETTINGS } from '@shared/types/toolApproval';
 
 // Helper to create settings with overrides
 function settings(overrides: Partial<ToolApprovalSettings> = {}): ToolApprovalSettings {
@@ -42,7 +42,11 @@ describe('shouldAutoAllow', () => {
     const s = settings({ autoAllowFileEdits: true });
 
     it('auto-allows Edit', () => {
-      const result = shouldAutoAllow(s, 'Edit', { file_path: '/src/foo.ts', old_string: 'a', new_string: 'b' });
+      const result = shouldAutoAllow(s, 'Edit', {
+        file_path: '/src/foo.ts',
+        old_string: 'a',
+        new_string: 'b',
+      });
       expect(result).toEqual({ autoAllow: true, reason: 'auto_allow_category' });
     });
 

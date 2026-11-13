@@ -100,11 +100,15 @@ export function useGraphTaskActions(teamName: string): UseGraphTaskActionsResult
         release();
         publishTaskActionError({ ...identity, message: mapReviewError(error) });
       };
-      try {
-        void Promise.resolve(action()).then(release, handleError);
-      } catch (error) {
-        handleError(error);
-      }
+      const run = async (): Promise<void> => {
+        try {
+          await action();
+          release();
+        } catch (error) {
+          handleError(error);
+        }
+      };
+      void run();
     },
     [contextId, teamName]
   );

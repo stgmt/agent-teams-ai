@@ -1,6 +1,6 @@
 import { useAppTranslation } from '@features/localization/renderer';
 
-export function OrgMapLegendHud(): React.JSX.Element {
+export const OrgMapLegendHud = (): React.JSX.Element => {
   const { t } = useAppTranslation('team');
 
   return (
@@ -27,4 +27,4 @@ export function OrgMapLegendHud(): React.JSX.Element {
       </span>
     </div>
   );
-}
+};

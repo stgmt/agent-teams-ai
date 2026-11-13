@@ -45,8 +45,8 @@ export const TeamReviewRecovery = ({
   const { t: tCommon } = useAppTranslation('common');
   const contextId = useStore((state) => state.activeContextId);
   const isContextSwitching = useStore((state) => state.isContextSwitching);
-  const taskId = error.match(
-    /(?:Review|Task status) transition for task (\S+) has an unknown outcome/
+  const taskId = /(?:Review|Task status) transition for task (\S+) has an unknown outcome/.exec(
+    error
   )?.[1];
   const [snapshot, setSnapshot] = useState<PendingKanbanTransitionSnapshot | null>(null);
   const [busy, setBusy] = useState(false);

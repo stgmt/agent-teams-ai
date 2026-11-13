@@ -1,4 +1,4 @@
-import { isAbsolute } from 'node:path';
+import { dirname, isAbsolute, join } from 'node:path';
 
 import { getMemberColorByName } from '@shared/constants/memberColors';
 import {
@@ -15,8 +15,13 @@ import { NativeRuntimeConnection } from './NativeRuntimeConnection';
 
 import type { MemberProcessToken, OwnedProcessIdentity } from '../../../contracts';
 import type { ConfiguredMemberLaunch } from '../../../core/application/ports/MemberRuntimePorts';
+import type { NativeClaudeSdkHost, NativeClaudeSdkRecovery } from './NativeClaudeSdkHost';
 import type { NativeRuntimeConnectionExpected } from './NativeRuntimeConnection';
-import type { NodeMemberLaunchPlan, NodeMemberLaunchPlanner } from './NodeMemberRuntime';
+import type {
+  NodeMemberConnectionPlan,
+  NodeMemberLaunchPlan,
+  NodeMemberLaunchPlanner,
+} from './NodeMemberRuntime';
 import type { TeamMemberMcpPolicy } from '@shared/types';
 
 export const APP_OWNED_TEAM_DISALLOWED_TOOLS = [
@@ -53,6 +58,12 @@ export interface NativeLaunchArtifacts {
 }
 
 export interface NativeClaudeLaunchPlannerPorts {
+  sdkHost: NativeClaudeSdkHost;
+  releaseRecovered(
+    token: Readonly<MemberProcessToken>,
+    identity: Readonly<OwnedProcessIdentity>,
+    evidence: NativeClaudeSdkRecovery
+  ): Promise<void>;
   prepareWorkspace(
     settings: Readonly<ConfiguredMemberLaunch>,
     signal: AbortSignal
@@ -75,6 +86,8 @@ export interface NativeClaudeLaunchPlannerPorts {
 }
 
 const RESERVED_FLAGS = new Set([
+  '--sdk-url',
+  '--replay-user-messages',
   '--print',
   '-p',
   '--input-format',
@@ -175,6 +188,39 @@ function observeLeadBootstrap(
 export class NativeClaudeLaunchPlanner implements NodeMemberLaunchPlanner {
   constructor(private readonly ports: NativeClaudeLaunchPlannerPorts) {}
 
+  async recover(
+    settings: Readonly<ConfiguredMemberLaunch>,
+    token: Readonly<MemberProcessToken>,
+    signal: AbortSignal,
+    identity: Readonly<OwnedProcessIdentity>
+  ): Promise<NodeMemberConnectionPlan> {
+    assertIdentity(settings, token);
+    signal.throwIfAborted();
+    const evidence = await this.ports.sdkHost.recoverConnection(token);
+    return {
+      ...this.connectionPlan(token, evidence),
+      dispose: () => this.ports.releaseRecovered(token, identity, evidence),
+    };
+  }
+
+  private connectionPlan(
+    token: Readonly<MemberProcessToken>,
+    evidence: NativeClaudeSdkRecovery
+  ): NodeMemberConnectionPlan {
+    return {
+      sdk: {
+        host: this.ports.sdkHost,
+        token,
+        stdoutPath: evidence.stdoutPath,
+        stderrPath: evidence.stderrPath,
+      },
+      connectionTimeoutMs: 120_000,
+      observeOutput: (line, stream) =>
+        evidence.role === 'lead' ? observeLeadBootstrap(line, stream, token) : null,
+      ...(evidence.proof ? { connection: new NativeRuntimeConnection(evidence.proof) } : {}),
+    };
+  }
+
   async prepare(
     requested: Readonly<ConfiguredMemberLaunch>,
     token: Readonly<MemberProcessToken>,
@@ -234,7 +280,32 @@ export class NativeClaudeLaunchPlanner implements NodeMemberLaunchPlanner {
       )
         throw new Error('Native runtime launch artifacts are incomplete');
       const policy: TeamMemberMcpPolicy | undefined = settings.mcpPolicy;
+      if (!this.ports.sdkHost) throw new Error('Native Claude SDK host is required');
+      const sdk = await this.ports.sdkHost.prepare(token);
+      const directory = dirname(lead ? artifacts.bootstrapSpecPath! : artifacts.eventsPath!);
+      const evidence: NativeClaudeSdkRecovery = {
+        role: lead ? 'lead' : 'member',
+        mailboxOwner: 'runtime',
+        mcpConfigPath: artifacts.mcpConfigPath,
+        stdoutPath: join(directory, 'runtime-stdout.log'),
+        stderrPath: join(directory, 'runtime-stderr.log'),
+        ...(!lead
+          ? {
+              proof: {
+                ...artifacts.bootstrapProof!,
+                eventsPath: artifacts.eventsPath!,
+                teamName: token.teamName,
+                memberName: token.memberName,
+                runId: token.runId,
+              },
+            }
+          : {}),
+      };
+      await this.ports.sdkHost.rememberConnection(token, evidence);
       const args = [
+        '--sdk-url',
+        sdk.url,
+        '--replay-user-messages',
         ...(lead
           ? [
               '--print',
@@ -283,6 +354,7 @@ export class NativeClaudeLaunchPlanner implements NodeMemberLaunchPlanner {
         CLAUDE_CODE_TASK_LIST_ID: personalTaskListId(token),
         CLAUDE_CODE_ENABLE_TASKS: '1',
         CLAUDE_CODE_BOOTSTRAP_RUN_ID: token.runId,
+        CLAUDE_CODE_SESSION_ACCESS_TOKEN: sdk.bearerToken,
       });
       // Only the scoped MCP child receives this capability; never the model CLI or its shell tools.
       delete env.AGENT_TEAMS_LEAD_START_CREDENTIAL;
@@ -321,17 +393,7 @@ export class NativeClaudeLaunchPlanner implements NodeMemberLaunchPlanner {
         args,
         cwd: settings.workingDirectory,
         env,
-        connectionTimeoutMs: 120_000,
-        observeOutput: (line, stream) => (lead ? observeLeadBootstrap(line, stream, token) : null),
-        connection: lead
-          ? undefined
-          : new NativeRuntimeConnection({
-              ...artifacts.bootstrapProof!,
-              eventsPath: artifacts.eventsPath!,
-              teamName: token.teamName,
-              memberName: token.memberName,
-              runId: token.runId,
-            }),
+        ...this.connectionPlan(token, evidence),
         afterSpawn: artifacts.afterSpawn
           ? (identity, lifetime) => artifacts.afterSpawn!(identity, lifetime)
           : undefined,

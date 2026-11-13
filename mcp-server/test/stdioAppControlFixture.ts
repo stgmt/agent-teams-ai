@@ -72,9 +72,10 @@ function matchesContext(candidate: unknown, expected: StdioAppControlContext): b
   );
 }
 
-export async function startStdioAppControlFixture(
-  options: { claudeDir: string; context?: StdioAppControlContext }
-): Promise<StdioAppControlFixture> {
+export async function startStdioAppControlFixture(options: {
+  claudeDir: string;
+  context?: StdioAppControlContext;
+}): Promise<StdioAppControlFixture> {
   if (!isAbsolute(options.claudeDir)) {
     throw new Error('The app-control fixture requires an isolated absolute Claude directory');
   }
@@ -100,9 +101,11 @@ export async function startStdioAppControlFixture(
     const tasks = [...getTeamTasks(teamName).values()];
     return tasks.map((task) => ({
       ...clone(task),
-      blocks: tasks.filter((candidate) =>
-        Array.isArray(candidate.blockedBy) && candidate.blockedBy.includes(task.id)
-      ).map((candidate) => candidate.id),
+      blocks: tasks
+        .filter(
+          (candidate) => Array.isArray(candidate.blockedBy) && candidate.blockedBy.includes(task.id)
+        )
+        .map((candidate) => candidate.id),
     }));
   };
 
@@ -170,15 +173,17 @@ export async function startStdioAppControlFixture(
           if (!isRecord(member) || typeof member.name !== 'string' || !member.name.trim()) {
             return [];
           }
-          return [{
-            memberName: member.name.trim(),
-            isLead: member.agentType === 'team-lead' || member.role === 'team-lead',
-            diagnostics: [],
-            alive: true,
-            runtimeAlive: true,
-            launchState: 'confirmed_alive',
-            bootstrapConfirmed: true,
-          }];
+          return [
+            {
+              memberName: member.name.trim(),
+              isLead: member.agentType === 'team-lead' || member.role === 'team-lead',
+              diagnostics: [],
+              alive: true,
+              runtimeAlive: true,
+              launchState: 'confirmed_alive',
+              bootstrapConfirmed: true,
+            },
+          ];
         });
         sendJson(response, 200, {
           teamName,
@@ -201,7 +206,9 @@ export async function startStdioAppControlFixture(
         return;
       }
 
-      const taskMatch = /^\/api\/teams\/([^/]+)\/tasks(?:\/([^/]+)(?:\/(status))?)?(?:\?.*)?$/.exec(url);
+      const taskMatch = /^\/api\/teams\/([^/]+)\/tasks(?:\/([^/]+)(?:\/(status))?)?(?:\?.*)?$/.exec(
+        url
+      );
       if (!taskMatch) {
         sendJson(response, 404, { code: 'NOT_FOUND', message: `Unhandled ${method} ${url}` });
         return;
@@ -215,10 +222,34 @@ export async function startStdioAppControlFixture(
 
       if (method === 'GET' && taskId === undefined) {
         const allTasks = snapshotTasks(teamName);
-        const listedTasks = taskUrl.searchParams.get('includeDeleted') === 'true'
-          ? allTasks
-          : allTasks.filter((task) => task.status !== 'deleted');
+        const listedTasks =
+          taskUrl.searchParams.get('includeDeleted') === 'true'
+            ? allTasks
+            : allTasks.filter((task) => task.status !== 'deleted');
         sendJson(response, 200, { tasks: listedTasks });
+        return;
+      }
+
+      if (method === 'GET' && taskId !== undefined) {
+        const task = tasks.get(taskId);
+        if (!task) {
+          sendJson(response, 404, {
+            code: 'TASK_NOT_FOUND',
+            message: `Task "${taskId}" was not found`,
+          });
+          return;
+        }
+        sendJson(response, 200, {
+          task: {
+            ...clone(task),
+            blocks: [...tasks.values()]
+              .filter(
+                (candidate) =>
+                  Array.isArray(candidate.blockedBy) && candidate.blockedBy.includes(task.id)
+              )
+              .map((candidate) => candidate.id),
+          },
+        });
         return;
       }
 
@@ -231,7 +262,9 @@ export async function startStdioAppControlFixture(
         if (
           !Array.isArray(requirements) ||
           requirements.length === 0 ||
-          requirements.some((id) => typeof id !== 'string' || !Object.hasOwn(VALID_REQUIREMENT_IDS, id))
+          requirements.some(
+            (id) => typeof id !== 'string' || !Object.hasOwn(VALID_REQUIREMENT_IDS, id)
+          )
         ) {
           sendJson(response, 400, {
             code: 'REQUIREMENTS_REQUIRED',
@@ -241,14 +274,22 @@ export async function startStdioAppControlFixture(
         }
         for (const field of ['blockedBy', 'related'] as const) {
           const linkedIds = body[field];
-          if (linkedIds !== undefined && (!Array.isArray(linkedIds) || linkedIds.some((id) => !tasks.has(String(id))))) {
-            sendJson(response, 404, { code: 'TASK_NOT_FOUND', message: `Invalid ${field} task link` });
+          if (
+            linkedIds !== undefined &&
+            (!Array.isArray(linkedIds) || linkedIds.some((id) => !tasks.has(String(id))))
+          ) {
+            sendJson(response, 404, {
+              code: 'TASK_NOT_FOUND',
+              message: `Invalid ${field} task link`,
+            });
             return;
           }
         }
         const id = String(Math.max(0, ...[...tasks.keys()].map(Number)) + 1);
         const timestamp = new Date(TIMESTAMP_EPOCH + Number(id) * 1000).toISOString();
-        const status = (body.status === 'in_progress' ? 'in_progress' : 'pending') as StdioAppControlTaskStatus;
+        const status = (
+          body.status === 'in_progress' ? 'in_progress' : 'pending'
+        ) as StdioAppControlTaskStatus;
         const task = {
           id,
           displayId: id,
@@ -263,11 +304,22 @@ export async function startStdioAppControlFixture(
           blockedBy: Array.isArray(body.blockedBy) ? [...body.blockedBy] : [],
           related: Array.isArray(body.related) ? [...body.related] : [],
           ...(typeof body.description === 'string' ? { description: body.description } : {}),
-          ...(typeof body.owner === 'string' && body.owner.trim() ? { owner: body.owner.trim() } : {}),
+          ...(typeof body.owner === 'string' && body.owner.trim()
+            ? { owner: body.owner.trim() }
+            : {}),
           ...(typeof body.groupChatId === 'string' ? { groupChatId: body.groupChatId } : {}),
-          ...Object.fromEntries(Object.entries(body).filter(([key]) => [
-            'createdBy', 'from', 'prompt', 'descriptionTaskRefs', 'promptTaskRefs', 'creationCommand',
-          ].includes(key))),
+          ...Object.fromEntries(
+            Object.entries(body).filter(([key]) =>
+              [
+                'createdBy',
+                'from',
+                'prompt',
+                'descriptionTaskRefs',
+                'promptTaskRefs',
+                'creationCommand',
+              ].includes(key)
+            )
+          ),
         } as FixtureTask;
         tasks.set(id, task);
         sendJson(response, 201, { task: clone(task), outcome: 'APPLIED' });
@@ -275,13 +327,19 @@ export async function startStdioAppControlFixture(
       }
 
       if (!taskId || !tasks.has(taskId)) {
-        sendJson(response, 404, { code: 'TASK_NOT_FOUND', message: `Task "${taskId ?? ''}" was not found` });
+        sendJson(response, 404, {
+          code: 'TASK_NOT_FOUND',
+          message: `Task "${taskId ?? ''}" was not found`,
+        });
         return;
       }
       const task = tasks.get(taskId)!;
 
       if (method === 'POST' && isStatusRoute) {
-        if (!isRecord(body) || !['pending', 'in_progress', 'completed', 'deleted'].includes(String(body.status))) {
+        if (
+          !isRecord(body) ||
+          !['pending', 'in_progress', 'completed', 'deleted'].includes(String(body.status))
+        ) {
           sendJson(response, 400, { code: 'INVALID_STATUS', message: 'Invalid task status' });
           return;
         }
@@ -295,7 +353,9 @@ export async function startStdioAppControlFixture(
         const previousStatus = task.status;
         const nextStatus = body.status as StdioAppControlTaskStatus;
         if (nextStatus !== previousStatus) {
-          const timestamp = new Date(TIMESTAMP_EPOCH + (Number(taskId) + requests.length) * 1000).toISOString();
+          const timestamp = new Date(
+            TIMESTAMP_EPOCH + (Number(taskId) + requests.length) * 1000
+          ).toISOString();
           task.historyEvents = [
             ...(Array.isArray(task.historyEvents) ? task.historyEvents : []),
             {
@@ -320,7 +380,10 @@ export async function startStdioAppControlFixture(
 
       if (method === 'PATCH' && !isStatusRoute) {
         if (!isRecord(body)) {
-          sendJson(response, 400, { code: 'INVALID_PATCH', message: 'Task patch must be an object' });
+          sendJson(response, 400, {
+            code: 'INVALID_PATCH',
+            message: 'Task patch must be an object',
+          });
           return;
         }
         for (const [key, value] of Object.entries(body)) {
@@ -328,14 +391,23 @@ export async function startStdioAppControlFixture(
           if (value === null) delete task[key];
           else task[key] = clone(value);
         }
-        if (body.subject !== undefined || body.description !== undefined || body.owner !== undefined) {
-          task.updatedAt = new Date(TIMESTAMP_EPOCH + (Number(taskId) + requests.length) * 1000).toISOString();
+        if (
+          body.subject !== undefined ||
+          body.description !== undefined ||
+          body.owner !== undefined
+        ) {
+          task.updatedAt = new Date(
+            TIMESTAMP_EPOCH + (Number(taskId) + requests.length) * 1000
+          ).toISOString();
         }
         sendJson(response, 200, { task: clone(task) });
         return;
       }
 
-      sendJson(response, 405, { code: 'METHOD_NOT_ALLOWED', message: `Unsupported ${method} ${url}` });
+      sendJson(response, 405, {
+        code: 'METHOD_NOT_ALLOWED',
+        message: `Unsupported ${method} ${url}`,
+      });
     })().catch((error) => {
       if (!response.headersSent) {
         sendJson(response, 500, {
@@ -368,9 +440,10 @@ export async function startStdioAppControlFixture(
       if (!/^\d+$/.test(input.id)) throw new Error(`Fixture task id must be numeric: ${input.id}`);
       const tasks = getTeamTasks(teamName);
       if (tasks.has(input.id)) throw new Error(`Duplicate fixture task id: ${input.id}`);
-      const createdAt = typeof input.createdAt === 'string'
-        ? input.createdAt
-        : new Date(TIMESTAMP_EPOCH + Number(input.id) * 1000).toISOString();
+      const createdAt =
+        typeof input.createdAt === 'string'
+          ? input.createdAt
+          : new Date(TIMESTAMP_EPOCH + Number(input.id) * 1000).toISOString();
       const status = (input.status ?? 'pending') as StdioAppControlTaskStatus;
       const task = {
         displayId: input.id,
@@ -389,7 +462,9 @@ export async function startStdioAppControlFixture(
       if (
         !Array.isArray(task.requirements) ||
         task.requirements.length === 0 ||
-        task.requirements.some((id) => typeof id !== 'string' || !Object.hasOwn(VALID_REQUIREMENT_IDS, id))
+        task.requirements.some(
+          (id) => typeof id !== 'string' || !Object.hasOwn(VALID_REQUIREMENT_IDS, id)
+        )
       ) {
         throw new Error(`Fixture task ${input.id} must link valid requirement ids`);
       }

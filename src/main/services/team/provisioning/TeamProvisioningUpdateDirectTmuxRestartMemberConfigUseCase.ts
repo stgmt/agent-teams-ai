@@ -6,7 +6,7 @@ import * as path from 'path';
 import { atomicWriteAsync } from '../atomicWrite';
 import { withFileLock } from '../fileLock';
 import { TeamConfigReader } from '../TeamConfigReader';
-import { getTeamDataWorkerClient } from '../TeamDataWorkerClient';
+import { getTeamDataWorkerCache } from '../TeamDataWorkerClient';
 
 import { matchesExactTeamMemberName } from './TeamProvisioningMemberIdentity';
 
@@ -225,7 +225,7 @@ export function createNodeUpdateDirectTmuxRestartMemberConfigUseCasePorts(): Upd
     },
     invalidateTeamConfig(teamName) {
       TeamConfigReader.invalidateTeam(teamName);
-      getTeamDataWorkerClient().invalidateTeamConfig(teamName);
+      getTeamDataWorkerCache()?.invalidateTeamConfig(teamName);
     },
   };
 }

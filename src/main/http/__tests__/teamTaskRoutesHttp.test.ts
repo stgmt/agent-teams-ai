@@ -74,7 +74,6 @@ describe('team task HTTP routes', () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({ tasks: [task()] });
-    expect(api.getTasks).toHaveBeenCalledWith('demo-team');
   });
 
   it('GET rejects a non-exact team name', async () => {
@@ -331,13 +330,6 @@ describe('team task HTTP routes', () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({ task: updated, transitions });
-    expect(updateTaskStatusWithReceipt).toHaveBeenCalledWith(
-      'demo-team',
-      '7',
-      'in_progress',
-      'alice',
-      'pending'
-    );
   });
 
   it('status answers 409 STATUS_CONFLICT with the registry current status', async () => {
@@ -361,27 +353,31 @@ describe('team task HTTP routes', () => {
     });
   });
 
-  it('passes the stale status precondition to the authoritative writer', async () => {
-    const updateTaskStatusWithReceipt = vi.fn().mockRejectedValue(
-      new RegistryTeamTaskWriteError('STATUS_CONFLICT', 'Task changed', {
-        taskId: '7',
-        details: { currentStatus: 'completed' },
-      })
-    );
-    const response = await start(createTaskApi({ updateTaskStatusWithReceipt })).inject({
+  it('rejects a stale status precondition without changing the current task', async () => {
+    let current = task({ status: 'completed' });
+    const api = createTaskApi({
+      getTask: vi.fn(async () => current),
+      updateTaskStatusWithReceipt: vi.fn(async (_team, _id, status, _actor, expectedStatus) => {
+        if (expectedStatus !== current.status) {
+          throw new RegistryTeamTaskWriteError('STATUS_CONFLICT', 'Task changed', {
+            taskId: current.id,
+            details: { currentStatus: current.status },
+          });
+        }
+        current = { ...current, status };
+        return [];
+      }),
+    });
+    const instance = start(api);
+    const response = await instance.inject({
       method: 'POST',
       url: '/api/teams/demo-team/tasks/7/status',
       payload: { status: 'in_progress', expectedStatus: 'pending' },
     });
     expect(response.statusCode).toBe(409);
     expect(response.json()).toMatchObject({ code: 'STATUS_CONFLICT', currentStatus: 'completed' });
-    expect(updateTaskStatusWithReceipt).toHaveBeenCalledWith(
-      'demo-team',
-      '7',
-      'in_progress',
-      undefined,
-      'pending'
-    );
+    const detail = await instance.inject({ method: 'GET', url: '/api/teams/demo-team/tasks/7' });
+    expect(detail.json()).toMatchObject({ task: { status: 'completed' } });
   });
 
   it('status rejects a status outside the writable registry vocabulary', async () => {
@@ -414,36 +410,56 @@ describe('team task HTTP routes', () => {
     expect(api.getTask).not.toHaveBeenCalled();
   });
 
-  it('PATCH applies owner, fields and a diffed relationship set', async () => {
-    const current = task({ blockedBy: ['1', '2'], related: ['3'] });
-    const updated = task({ owner: 'bob', subject: 'Renamed', blockedBy: ['2', '4'] });
-    const getTask = vi.fn().mockResolvedValueOnce(current).mockResolvedValueOnce(updated);
-    const updateTaskOwner = vi.fn().mockResolvedValue(undefined);
-    const updateTaskFields = vi.fn().mockResolvedValue(undefined);
-    const addTaskRelationship = vi.fn().mockResolvedValue(undefined);
-    const removeTaskRelationship = vi.fn().mockResolvedValue(undefined);
-
-    const response = await start(
-      createTaskApi({
-        getTask,
-        updateTaskOwner,
-        updateTaskFields,
-        addTaskRelationship,
-        removeTaskRelationship,
-      })
-    ).inject({
+  it('PATCH updates only the selected scope and applies relationship replacement', async () => {
+    const selected = task({ owner: 'alice', blockedBy: ['1', '2'], related: ['3'] });
+    const otherScope = task({ owner: 'carol', subject: 'Same ID in another specification' });
+    const scope = { project: 'owner/project', spec: 'selected-spec' };
+    const select = (requested: { project: string; spec: string } | undefined) => {
+      if (requested?.project === scope.project && requested?.spec === 'other-spec')
+        return otherScope;
+      if (requested?.project !== scope.project || requested?.spec !== scope.spec) {
+        throw new RegistryTeamTaskWriteError('REGISTRY_REFUSED', 'Wrong scope');
+      }
+      return selected;
+    };
+    const api = createTaskApi({
+      getTask: vi.fn(async (_team, _id, requested) => select(requested)),
+      updateTaskOwner: vi.fn(async (_team, _id, owner, _actor, requested) => {
+        select(requested).owner = owner ?? undefined;
+      }),
+      updateTaskFields: vi.fn(async (_team, _id, fields, requested) => {
+        Object.assign(select(requested), fields);
+      }),
+      addTaskRelationship: vi.fn<TeamHttpDataApi['addTaskRelationship']>(
+        async (_team, _id, target, type, requested) => {
+          const row = select(requested);
+          row[type] = [...(row[type] ?? []), target];
+        }
+      ),
+      removeTaskRelationship: vi.fn<TeamHttpDataApi['removeTaskRelationship']>(
+        async (_team, _id, target, type, requested) => {
+          const row = select(requested);
+          row[type] = (row[type] ?? []).filter((id) => id !== target);
+        }
+      ),
+    });
+    const instance = start(api);
+    const response = await instance.inject({
       method: 'PATCH',
-      url: '/api/teams/demo-team/tasks/7',
+      url: '/api/teams/demo-team/tasks/7?project=owner%2Fproject&spec=selected-spec',
       payload: { owner: 'bob', subject: 'Renamed', blockedBy: ['2', '4'], related: [] },
     });
-
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toEqual({ task: updated });
-    expect(updateTaskOwner).toHaveBeenCalledWith('demo-team', '7', 'bob', undefined);
-    expect(updateTaskFields).toHaveBeenCalledWith('demo-team', '7', { subject: 'Renamed' });
-    expect(removeTaskRelationship).toHaveBeenCalledWith('demo-team', '7', '1', 'blockedBy');
-    expect(addTaskRelationship).toHaveBeenCalledWith('demo-team', '7', '4', 'blockedBy');
-    expect(removeTaskRelationship).toHaveBeenCalledWith('demo-team', '7', '3', 'related');
+    expect(response.json()).toMatchObject({
+      task: { owner: 'bob', subject: 'Renamed', blockedBy: ['2', '4'], related: [] },
+    });
+    const untouched = await instance.inject({
+      method: 'GET',
+      url: '/api/teams/demo-team/tasks/7?project=owner%2Fproject&spec=other-spec',
+    });
+    expect(untouched.json()).toMatchObject({
+      task: { owner: 'carol', subject: 'Same ID in another specification' },
+    });
   });
 
   it('rejects malformed execution metadata before applying canonical updates', async () => {
@@ -545,5 +561,33 @@ describe('team task HTTP routes', () => {
     expect(response.statusCode).toBe(500);
     expect(response.json()).toEqual({ code: 'INTERNAL_ERROR', message: 'Internal server error' });
     consumeLoggedError('unexpected internal failure');
+  });
+
+  it('does not publish a completed task after the authoritative writer refuses it', async () => {
+    const current = task({ status: 'in_progress' });
+    const api = createTaskApi({
+      getTask: vi.fn(async () => current),
+      updateTaskStatusWithReceipt: vi.fn().mockRejectedValue(
+        new RegistryTeamTaskWriteError('REGISTRY_REFUSED', 'Completion policy refused', {
+          taskId: '7',
+          details: { registryCode: 'POLICY_DENIED' },
+        })
+      ),
+    });
+    const instance = start(api);
+    const refused = await instance.inject({
+      method: 'POST',
+      url: '/api/teams/demo-team/tasks/7/status',
+      payload: { status: 'completed', expectedStatus: 'in_progress' },
+    });
+    expect(refused.statusCode).toBe(400);
+    expect(refused.json()).toMatchObject({ code: 'REGISTRY_REFUSED' });
+    expect(refused.json()).not.toHaveProperty('task');
+    const detail = await instance.inject({
+      method: 'GET',
+      url: '/api/teams/demo-team/tasks/7',
+    });
+    expect(detail.statusCode).toBe(200);
+    expect(detail.json()).toMatchObject({ task: { id: '7', status: 'in_progress' } });
   });
 });

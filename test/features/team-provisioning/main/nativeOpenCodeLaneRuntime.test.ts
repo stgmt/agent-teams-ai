@@ -41,6 +41,13 @@ const settings = (memberName: string, role: 'lead' | 'member'): ConfiguredMember
   workingDirectory: '/TEST/cwd',
   instructions: role === 'lead' ? 'TEST lead prompt' : 'TEST member workflow',
   skipPermissions: true,
+  specIntegration: {
+    scope: { projects: ['TEST/project'], bindings: [] },
+    environment: {
+      OMP_SPEC_REGISTRY_URL: 'http://127.0.0.1:8090',
+      OMP_SPEC_REGISTRY_TOKEN: 'TEST-registry-credential',
+    },
+  },
 });
 
 const evidence = (

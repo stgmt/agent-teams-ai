@@ -16,10 +16,10 @@ import { RegistryTeamTaskWriteError, RegistryTeamTaskWriter } from '../RegistryT
 import type {
   ListRegistryTasksInput,
   RegistryTask,
-  RegistryTaskStatusResult,
   RegistryTaskGenesisReplayRecord,
-  RegistryTaskWriteResult,
+  RegistryTaskStatusResult,
   RegistryTaskUpsertResult,
+  RegistryTaskWriteResult,
   ReplaceRegistryTaskLinksInput,
   ReplaceRegistryTaskOwnerInput,
   ReplaceRegistryTaskStatusInput,
@@ -67,6 +67,7 @@ function registryTask(localId: string, overrides: Partial<RegistryTask> = {}): R
     owner: null,
     tracking: null,
     contentHash: null,
+    review: 'none',
     source: {
       path: null,
       startLine: null,
@@ -90,6 +91,11 @@ function applied(): RegistryTaskWriteResult {
 class FakeRegistryClient implements RegistryTeamTaskClientPort {
   tasks: RegistryTask[] = [];
   readonly readTasksDocumentSha = vi.fn(async () => 'a'.repeat(64));
+  readonly updateTaskFields = vi.fn(
+    async (_input: { project: string; spec: string; entity: string; review?: string }) => ({
+      ok: true,
+    })
+  );
   readonly listTasks = vi.fn(async (_input: ListRegistryTasksInput) => this.tasks);
   readonly replayTaskGenesisRequest = vi.fn(
     async (_input: {
@@ -113,13 +119,15 @@ class FakeRegistryClient implements RegistryTeamTaskClientPort {
   readonly replaceTaskOwner = vi.fn(
     async (_input: ReplaceRegistryTaskOwnerInput): Promise<RegistryTaskWriteResult> => applied()
   );
-  readonly addTaskComment = vi.fn(async (_input: {
-    project: string;
-    spec: string;
-    entity: string;
-    text: string;
-    actor?: string;
-  }): Promise<{ ok?: unknown; error?: unknown }> => ({ ok: true }));
+  readonly addTaskComment = vi.fn(
+    async (_input: {
+      project: string;
+      spec: string;
+      entity: string;
+      text: string;
+      actor?: string;
+    }): Promise<{ ok?: unknown; error?: unknown }> => ({ ok: true })
+  );
   readonly replaceTaskLinks = vi.fn(
     async (_input: ReplaceRegistryTaskLinksInput): Promise<RegistryTaskWriteResult> => applied()
   );
@@ -794,6 +802,32 @@ describe('RegistryTeamTaskWriter status', () => {
     expect(store.read(TEAM, scopedTaskId('1'))).toBeNull();
   });
 
+  it('does not close work or publish completion when the registry refuses the write', async () => {
+    const client = new FakeRegistryClient();
+    client.tasks = [registryTask('1', { status: 'in-progress' })];
+    const { writer, store } = createWriter(client);
+    store.write(TEAM, scopedTaskId('1'), {
+      workIntervals: [{ startedAt: '2025-12-31T23:00:00.000Z' }],
+    });
+    const before = store.read(TEAM, scopedTaskId('1'));
+    client.replaceTaskStatus.mockRejectedValueOnce(
+      new RegistryTaskRequestFailedError(
+        'replace_task_status',
+        'POLICY_DENIED',
+        'Completion is not permitted',
+        false
+      )
+    );
+
+    await expectWriteError(
+      writer.replaceStatus({ taskId: '1', to: 'completed', actor: 'alice' }),
+      'REGISTRY_REFUSED'
+    );
+
+    expect(store.read(TEAM, scopedTaskId('1'))).toEqual(before);
+    expect(client.tasks[0].status).toBe('in-progress');
+  });
+
   it('deletes and restores using registry status preconditions', async () => {
     const client = new FakeRegistryClient();
     client.tasks = [registryTask('1', { status: 'in-progress' })];
@@ -863,6 +897,51 @@ describe('RegistryTeamTaskWriter review execution', () => {
       ],
     });
     expect(client.upsertTask).not.toHaveBeenCalled();
+    expect(client.updateTaskFields).toHaveBeenCalledWith(
+      expect.objectContaining({ entity: '1', review: 'requested' })
+    );
+    expect(client.updateTaskFields).toHaveBeenLastCalledWith(
+      expect.objectContaining({ entity: '1', review: 'approved' })
+    );
+  });
+
+  it('writes the verdict to the registry before touching the local record', async () => {
+    const client = new FakeRegistryClient();
+    client.tasks = [registryTask('1', { status: 'done' })];
+    const { writer, store } = createWriter(client);
+    await writer.transitionReview({ taskId: '1', action: 'request', actor: 'lead' });
+    store.write(TEAM, scopedTaskId('1'), {
+      reviewIntervals: [{ reviewer: 'bob', startedAt: '2025-12-31T23:00:00.000Z' }],
+    });
+    const recordBefore = store.read(TEAM, scopedTaskId('1'));
+    client.updateTaskFields.mockRejectedValueOnce(new Error('registry down'));
+
+    await expectWriteError(
+      writer.transitionReview({ taskId: '1', action: 'approve', actor: 'bob' }),
+      'REGISTRY_REFUSED'
+    );
+
+    const recordAfter = store.read(TEAM, scopedTaskId('1'));
+    expect(recordAfter?.reviewState).toBe(recordBefore?.reviewState);
+    expect(recordAfter?.historyEvents).toHaveLength(recordBefore?.historyEvents?.length ?? 0);
+  });
+
+  it('retries the canonical verdict when the local decision already landed', async () => {
+    const client = new FakeRegistryClient();
+    client.tasks = [registryTask('1', { status: 'done' })];
+    const { writer, store } = createWriter(client);
+    await writer.transitionReview({ taskId: '1', action: 'request', actor: 'lead' });
+    store.write(TEAM, scopedTaskId('1'), {
+      reviewState: 'approved',
+      reviewIntervals: [{ reviewer: 'bob', startedAt: '2025-12-31T23:00:00.000Z' }],
+    });
+    client.updateTaskFields.mockClear();
+
+    await writer.transitionReview({ taskId: '1', action: 'approve', actor: 'bob' });
+
+    expect(client.updateTaskFields).toHaveBeenCalledWith(
+      expect.objectContaining({ entity: '1', review: 'approved' })
+    );
   });
 });
 

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { ToolApprovalSettingsSynchronizer } from '../../../src/renderer/store/team/teamToolApprovalSettingsSync';
-import { DEFAULT_TOOL_APPROVAL_SETTINGS } from '../../../src/shared/types/team';
+import { DEFAULT_TOOL_APPROVAL_SETTINGS } from '@shared/types/toolApproval';
 
 describe('ToolApprovalSettingsSynchronizer', () => {
   afterEach(() => {

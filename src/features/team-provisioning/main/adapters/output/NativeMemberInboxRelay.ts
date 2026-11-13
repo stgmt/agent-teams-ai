@@ -26,6 +26,8 @@ export interface NativeMemberInboxRelayDependencies {
   /** Writes the forward prompt to the lead, which routes it to the member. */
   send(run: Readonly<TeamRunIdentity>, text: string): Promise<void>;
   teamsRoot: string;
+  /** SDK-native members consume their own mailbox; other lanes keep their existing app owner. */
+  ownsMailbox?(run: Readonly<TeamRunIdentity>, memberName: string): boolean;
   markRead?(teamName: string, memberName: string, messageIds: readonly string[]): Promise<void>;
   hasAcceptedMemberWorkSyncReport?(input: {
     teamName: string;
@@ -130,6 +132,7 @@ export class NativeMemberInboxRelay {
       member.phase !== 'ready'
     )
       return 0;
+    if (this.deps.ownsMailbox?.(snapshot.identity, memberName)) return 0;
     const lead = Object.values(snapshot.members).find(
       (candidate) => candidate.role === 'lead' && candidate.membership === 'configured'
     );

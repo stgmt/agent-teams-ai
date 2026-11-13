@@ -43,9 +43,10 @@ describe('specification registry discovery', () => {
         { id: 'owner/empty', specs: [] },
       ],
     });
-    const request = fetchImpl.mock.calls[0]?.[1] as RequestInit;
+    const request = fetchImpl.mock.calls[0][1]!;
     expect(JSON.parse(String(request.body)).params.name).toBe('spec_registry');
-    expect(JSON.parse(String(request.body)).params.arguments).toEqual({ allProjects: true });
+    // The published tool rejects unknown arguments, so discovery must send none.
+    expect(JSON.parse(String(request.body)).params.arguments).toEqual({});
     expect(request.headers).toMatchObject({ Authorization: 'Bearer test-token' });
   });
 

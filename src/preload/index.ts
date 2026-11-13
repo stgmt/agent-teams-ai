@@ -14,7 +14,10 @@ import { createRecentProjectsBridge } from '@features/recent-projects/preload';
 import { createRuntimeProviderManagementBridge } from '@features/runtime-provider-management/preload';
 import { createTeamGroupChatsBridge } from '@features/team-group-chats/preload';
 import { createTeamImportBridge } from '@features/team-import/preload';
-import { createTeamMemberSettingsBridge } from '@features/team-provisioning/preload';
+import {
+  createSpecRegistryCredentialBridge,
+  createTeamMemberSettingsBridge,
+} from '@features/team-provisioning/preload';
 import { createTeamReadRecoveryBridge } from '@features/team-read-recovery/preload';
 import { createTerminalWorkspaceBridge } from '@features/terminal-workspace/preload';
 import { createTmuxInstallerBridge } from '@features/tmux-installer/preload';
@@ -166,14 +169,7 @@ import {
   TEAM_DELETE_TASK_ATTACHMENT,
   TEAM_DELETE_TEAM,
   TEAM_DISCARD_QUEUED_USER_MESSAGES,
-  SPEC_REGISTRY_CLEAR,
-  SPEC_REGISTRY_GET_STATUS,
-  SPEC_REGISTRY_SAVE,
-  SPEC_REGISTRY_TEST,
   TEAM_DISCOVER_SPEC_REGISTRY,
-  TEAM_LIST_SPEC_BINDINGS,
-  TEAM_LINK_SPEC,
-  TEAM_UNLINK_SPEC,
   TEAM_FORCE_STOP,
   TEAM_GET_AGENT_RUNTIME,
   TEAM_GET_ALL_TASKS,
@@ -206,7 +202,9 @@ import {
   TEAM_LAUNCH_FAILURE_DIAGNOSTICS,
   TEAM_LEAD_ACTIVITY,
   TEAM_LEAD_CONTEXT,
+  TEAM_LINK_SPEC,
   TEAM_LIST,
+  TEAM_LIST_SPEC_BINDINGS,
   TEAM_MEMBER_SPAWN_STATUSES,
   TEAM_PERMANENTLY_DELETE,
   TEAM_PREPARE_PROVISIONING,
@@ -241,6 +239,7 @@ import {
   TEAM_TOOL_APPROVAL_READ_FILE,
   TEAM_TOOL_APPROVAL_RESPOND,
   TEAM_TOOL_APPROVAL_SETTINGS,
+  TEAM_UNLINK_SPEC,
   TEAM_UPDATE_CONFIG,
   TEAM_UPDATE_KANBAN,
   TEAM_UPDATE_KANBAN_COLUMN_ORDER,
@@ -380,6 +379,7 @@ import type {
   SessionsByIdsOptions,
   SessionsPaginationOptions,
   SnippetDiff,
+  SpecRegistryDiscovery,
   SshConfigHostEntry,
   SshConnectionConfig,
   SshConnectionStatus,
@@ -409,11 +409,8 @@ import type {
   TeamProvisioningModelVerificationMode,
   TeamProvisioningPrepareResult,
   TeamProvisioningProgress,
-  TeamSummary,
-  SpecRegistryDiscovery,
-  SpecRegistryCredentialStatus,
-  SpecRegistryProbeResult,
   TeamSpecBinding,
+  TeamSummary,
   TeamTask,
   TeamTaskChangeSummariesResponse,
   TeamTaskChangeSummaryRequest,
@@ -935,18 +932,12 @@ const electronAPI: ElectronAPI = {
   },
   teams: {
     ...createTeamMemberSettingsBridge(invokeIpcWithResult),
+    ...createSpecRegistryCredentialBridge(invokeIpcWithResult),
     readRecovery: createTeamReadRecoveryBridge((channel, ...args) =>
       ipcRenderer.invoke(channel, ...args)
     ),
     discoverSpecRegistry: async () =>
       invokeIpcWithResult<SpecRegistryDiscovery>(TEAM_DISCOVER_SPEC_REGISTRY),
-    getSpecRegistryCredentialStatus: async () =>
-      invokeIpcWithResult<SpecRegistryCredentialStatus>(SPEC_REGISTRY_GET_STATUS),
-    saveSpecRegistryCredential: async (url: string, token: string) =>
-      invokeIpcWithResult<SpecRegistryProbeResult>(SPEC_REGISTRY_SAVE, url, token),
-    clearSpecRegistryCredential: async () => invokeIpcWithResult<void>(SPEC_REGISTRY_CLEAR),
-    testSpecRegistryCredential: async (url?: string, token?: string) =>
-      invokeIpcWithResult<SpecRegistryProbeResult>(SPEC_REGISTRY_TEST, url, token),
     listTeamSpecBindings: async (teamName: string) =>
       invokeIpcWithResult<TeamSpecBinding[]>(TEAM_LIST_SPEC_BINDINGS, teamName),
     linkTeamSpec: async (teamName: string, binding: TeamSpecBinding) =>

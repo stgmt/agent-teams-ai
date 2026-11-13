@@ -6,8 +6,13 @@ import {
   type RuntimeToolApprovalSyncScope,
 } from '@main/services/team/approvals/RuntimeToolApprovalCoordinator';
 
+import type { TeamRunRegistryRead } from '../../contracts';
+import type {
+  NativeClaudeApproval,
+  NativeClaudeToolApprovals,
+} from '../adapters/output/NativeClaudeToolApprovals';
 import type { RuntimeToolApprovalEntry } from '@main/services/team/approvals/RuntimeToolApprovalCoordinator';
-import type { ToolApprovalRequest, ToolApprovalSettings } from '@shared/types/team';
+import type { ToolApprovalRequest, ToolApprovalSettings } from '@shared/types';
 
 type OpenCodeApprovalState = Parameters<
   OpenCodeRuntimeApprovalProvider['collectPendingApprovals']
@@ -25,12 +30,15 @@ export interface NativeOpenCodeApprovalSource {
 /**
  * What the approval surface needs from the shell.
  *
- * There is exactly one pending-approval owner: the coordinator. Claude requests
- * reach it through the lifecycle's own store, OpenCode requests through the
- * provider below, and both leave through `emitApprovalEvent`, so the renderer
- * cannot show the same approval twice or miss one for not knowing the provider.
+ * OpenCode requests belong to the coordinator; Claude requests stay in the
+ * lifecycle's own approval store. Both leave through `emitApprovalEvent`, without
+ * copying pending requests into a second store.
  */
 export interface NativeRuntimeToolApprovalSources {
+  claude: {
+    approvals: Pick<NativeClaudeToolApprovals, 'onEvent' | 'list'>;
+    runs: Pick<TeamRunRegistryRead, 'find' | 'findByRunId' | 'aliveTeamNames'>;
+  };
   getSettings(teamName: string): ToolApprovalSettings;
   /**
    * Sends the answer back to the bridge that asked. The shell supplies this because
@@ -80,7 +88,9 @@ export interface NativeRuntimeToolApproval {
     teamName: string,
     options?: Omit<RuntimeToolApprovalClearOptions, 'providerId'>
   ): void;
-  /** One pending-approval owner; the same instance answers and dismisses. */
+  /** Re-publishes unresolved native requests after the renderer becomes available. */
+  replayPendingClaudeApprovals(): void;
+  /** Owns OpenCode pending requests; Claude requests remain lifecycle-owned. */
   coordinator: RuntimeToolApprovalCoordinator;
 }
 
@@ -123,9 +133,55 @@ export function createNativeRuntimeToolApproval(
       : {}),
     ...(sources.logWarning ? { logWarning: sources.logWarning } : {}),
   });
+  const emitClaudeRequest = (approval: NativeClaudeApproval): void => {
+    sources.emitApprovalEvent({
+      requestId: approval.requestId,
+      runId: approval.run.runId,
+      teamName: approval.run.teamName,
+      source: approval.token.memberName,
+      toolName: approval.toolName,
+      toolInput: approval.toolInput,
+      receivedAt: approval.receivedAt,
+    });
+  };
+  sources.claude.approvals.onEvent((event) => {
+    if (event.type === 'requested') {
+      emitClaudeRequest(event.approval);
+    } else if (event.type === 'resolved') {
+      const run = sources.claude.runs.findByRunId(event.runId);
+      if (run)
+        sources.emitApprovalEvent({
+          autoResolved: true,
+          requestId: event.requestId,
+          runId: event.runId,
+          teamName: run.identity.teamName,
+          reason: 'runtime_resolved',
+          allowed: event.allow,
+        });
+    } else if (event.type === 'dismissed') {
+      sources.emitApprovalEvent({
+        dismissed: true,
+        teamName: event.teamName,
+        runId: event.runId,
+      });
+    } else {
+      sources.logWarning?.(`Native approval failed for ${event.runId}: ${event.message}`);
+    }
+  });
+  const replayPendingClaudeApprovals = (): void => {
+    for (const teamName of sources.claude.runs.aliveTeamNames()) {
+      const run = sources.claude.runs.find(teamName);
+      if (!run) continue;
+      for (const approval of sources.claude.approvals.list(run.identity.runId)) {
+        emitClaudeRequest(approval);
+      }
+    }
+  };
+  replayPendingClaudeApprovals();
 
   return {
     coordinator,
+    replayPendingClaudeApprovals,
     // The coordinator owns the pending set, the runId guard and the timeout, so the
     // answer goes through it rather than being routed around it.
     respond: ({ teamName, runId, requestId, allow, message }) =>

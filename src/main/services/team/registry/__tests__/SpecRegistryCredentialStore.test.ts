@@ -3,16 +3,17 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import {
-  SpecRegistryCredentialStore,
-  type SpecRegistryCredentialCipher,
-} from '../SpecRegistryCredentialStore';
 import { resolveRegistryTaskClientConfig } from '../RegistryTaskClientConfig';
+import {
+  type SpecRegistryCredentialCipher,
+  SpecRegistryCredentialStore,
+} from '../SpecRegistryCredentialStore';
 
 const directories: string[] = [];
 afterEach(() => {
+  vi.unstubAllEnvs();
   for (const directory of directories.splice(0))
     rmSync(directory, { recursive: true, force: true, maxRetries: 20 });
 });
@@ -56,19 +57,19 @@ describe('spec registry credential store', () => {
 
   it('refuses to store or read when the OS keychain is unavailable', async () => {
     const { store } = storeWith(cipher(false));
-    await expect(store.save({ url: 'http://x/mcp', token: 't' })).rejects.toThrow('keychain');
+    await expect(store.save({ url: 'https://x/mcp', token: 't' })).rejects.toThrow('keychain');
   });
 
   it('clears the stored credential', async () => {
     const { store } = storeWith();
-    await store.save({ url: 'http://x/mcp', token: 't' });
+    await store.save({ url: 'https://x/mcp', token: 't' });
     await store.clear();
     await expect(store.read()).resolves.toBeNull();
   });
 
   it('rejects an unknown stored shape instead of guessing', async () => {
     const { store, file } = storeWith();
-    await store.save({ url: 'http://x/mcp', token: 't' });
+    await store.save({ url: 'https://x/mcp', token: 't' });
     const broken = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>;
     require('node:fs').writeFileSync(file, JSON.stringify({ ...broken, version: 9 }));
     await expect(store.read()).rejects.toThrow('unknown shape');
@@ -76,31 +77,46 @@ describe('spec registry credential store', () => {
 });
 
 describe('registry credential resolution order', () => {
-  it('prefers the app store over environment variables', async () => {
+  it('uses the saved connection without consulting inherited environment variables', async () => {
     const { store } = storeWith();
     await store.save({ url: 'http://stored.example/mcp', token: 'stored-token' });
+    vi.stubEnv('OMP_SPEC_REGISTRY_URL', 'http://env.example/mcp');
+    vi.stubEnv('OMP_SPEC_REGISTRY_TOKEN', 'env-token');
     const resolved = await resolveRegistryTaskClientConfig({
       credentialStore: store,
-      env: {
-        OMP_SPEC_REGISTRY_URL: 'http://env.example/mcp',
-        OMP_SPEC_REGISTRY_TOKEN: 'env-token',
-      },
     });
     expect(resolved.url).toBe('http://stored.example/mcp');
     expect(resolved.token).toBe('stored-token');
   });
 
-  it('falls back to the environment only when the store is empty', async () => {
+  it('requires app setup when only inherited environment credentials exist', async () => {
     const { store } = storeWith();
+    vi.stubEnv('OMP_SPEC_REGISTRY_URL', 'https://inherited.unit.invalid/mcp');
+    vi.stubEnv('OMP_SPEC_REGISTRY_TOKEN', 'unit-inherited-token');
+    await expect(
+      resolveRegistryTaskClientConfig({
+        credentialStore: store,
+      })
+    ).rejects.toThrow();
+  });
+
+  it('does not recover an absent app credential from a legacy token file', async () => {
+    const { store, file } = storeWith();
+    const tokenFilePath = join(file, '..', 'legacy-token.txt');
+    require('node:fs').writeFileSync(tokenFilePath, 'unit-legacy-token');
+    vi.stubEnv('OMP_SPEC_REGISTRY_TOKEN_FILE', tokenFilePath);
+    await expect(resolveRegistryTaskClientConfig({ credentialStore: store })).rejects.toThrow();
+  });
+
+  it('reloads the saved endpoint and credential through a fresh store instance', async () => {
+    const { store, file } = storeWith();
+    await store.save({ url: 'https://saved.unit.invalid/mcp', token: 'unit-saved-token' });
+    const freshStore = new SpecRegistryCredentialStore(cipher(), file);
     const resolved = await resolveRegistryTaskClientConfig({
-      credentialStore: store,
-      env: {
-        OMP_SPEC_REGISTRY_URL: 'http://env.example/mcp',
-        OMP_SPEC_REGISTRY_TOKEN: 'env-token',
-      },
+      credentialStore: freshStore,
     });
-    expect(resolved.url).toBe('http://env.example/mcp');
-    expect(resolved.token).toBe('env-token');
+    expect(resolved.url).toBe('https://saved.unit.invalid/mcp');
+    expect(resolved.token === 'unit-saved-token').toBe(true);
   });
 
   it('surfaces an unreadable store instead of using a weaker source', async () => {
@@ -112,8 +128,21 @@ describe('registry credential resolution order', () => {
     await expect(
       resolveRegistryTaskClientConfig({
         credentialStore: broken,
-        env: { OMP_SPEC_REGISTRY_TOKEN: 'env-token' },
       })
     ).rejects.toThrow('unreadable');
+  });
+
+  it('preserves explicitly injected client configuration without opening the OS credential store', async () => {
+    const read = vi.fn(async () => {
+      throw new Error('must not read injected store');
+    });
+    const config = await resolveRegistryTaskClientConfig({
+      url: 'https://injected.unit.invalid/mcp',
+      token: 'unit-injected-token',
+      credentialStore: { read },
+    });
+    expect(config.url).toBe('https://injected.unit.invalid/mcp');
+    expect(config.token === 'unit-injected-token').toBe(true);
+    expect(read).not.toHaveBeenCalled();
   });
 });

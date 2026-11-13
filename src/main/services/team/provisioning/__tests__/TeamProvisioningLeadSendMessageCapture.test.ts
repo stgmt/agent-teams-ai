@@ -115,19 +115,16 @@ describe('lead SendMessage capture helpers', () => {
     captureLeadSendMessages(
       run,
       [
-        {
-          type: 'tool_use',
-          name: 'SendMessage',
-          input: { recipient: 'user', content: 'Transcript is attached' },
-        },
-        {
-          type: 'tool_use',
-          name: 'SendMessage',
-          input: { recipient: 'user', content: 'One more note' },
-        },
+        sendMessageCall('toolu-reply-1', {
+          recipient: 'user',
+          content: 'Transcript is attached',
+        }),
+        sendMessageCall('toolu-reply-2', { recipient: 'user', content: 'One more note' }),
       ],
       ports
     );
+    // A send is only delivered once the runtime accepts its tool call.
+    captureLeadSendMessages(run, [toolResult('toolu-reply-1'), toolResult('toolu-reply-2')], ports);
 
     expect(ports.sent[0]).toMatchObject({ replyChannel: 'explicit', replyToMessageIds: ['req-1'] });
     // A follow-up with no new request stays linked to the request it continues.

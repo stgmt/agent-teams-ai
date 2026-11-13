@@ -13,7 +13,7 @@ import {
 import {
   DEFAULT_TOOL_APPROVAL_SETTINGS,
   type ToolApprovalSettings,
-} from '../../../../src/shared/types/team';
+} from '@shared/types/toolApproval';
 
 import type { TeamRuntimeMemberLaunchEvidence } from '../../../../src/main/services/team/runtime';
 

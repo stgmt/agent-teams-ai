@@ -51,7 +51,8 @@ const liveDescribe =
     ? describe
     : describe.skip;
 
-const DEFAULT_ORCHESTRATOR_CLI = '/Users/belief/dev/projects/claude/agent_teams_orchestrator/cli-source';
+const DEFAULT_ORCHESTRATOR_CLI =
+  '/Users/belief/dev/projects/claude/agent_teams_orchestrator/cli-source';
 const DEFAULT_MODEL = 'sonnet';
 
 type ClaudeStopHookLiveScenarioState = 'still_working' | 'caught_up';
@@ -223,12 +224,14 @@ liveDescribe('Member work sync Claude Stop hook live e2e', () => {
 
     svc = new TeamProvisioningService();
     const activeService = svc;
-    const teamDataService = new TeamDataService();
+    const teamDataService = new TeamDataService((teamName) =>
+      activeService.getTeamAgentRuntimeSnapshot(teamName)
+    );
     const configReader = new TeamConfigReader();
     const membersMetaStore = new TeamMembersMetaStore();
     feature = createMemberWorkSyncFeature({
       isManagedByThisProfile: async () => true,
-    lifecycleIdentity: createTestWorkSyncIdentity(),
+      lifecycleIdentity: createTestWorkSyncIdentity(),
       teamsBasePath: getTeamsBasePath(),
       configReader,
       taskReader: new TeamTaskReader(),
@@ -319,10 +322,7 @@ liveDescribe('Member work sync Claude Stop hook live e2e', () => {
 
     await expect(
       fs.stat(
-        path.join(
-          getTeamsBasePath(),
-          '.member-work-sync/runtime-hooks/bin/turn-settled-hook-v1.sh'
-        )
+        path.join(getTeamsBasePath(), '.member-work-sync/runtime-hooks/bin/turn-settled-hook-v1.sh')
       )
     ).resolves.toMatchObject({ mode: expect.any(Number) });
 
@@ -350,9 +350,8 @@ liveDescribe('Member work sync Claude Stop hook live e2e', () => {
       );
     }, 30_000);
 
-    const processedMetasBeforeValidation = await readRuntimeTurnSettledProcessedMetas(
-      getTeamsBasePath()
-    );
+    const processedMetasBeforeValidation =
+      await readRuntimeTurnSettledProcessedMetas(getTeamsBasePath());
     const processedMetaPathsBeforeValidation = new Set(
       processedMetasBeforeValidation.map(({ filePath }) => filePath)
     );
@@ -368,76 +367,82 @@ liveDescribe('Member work sync Claude Stop hook live e2e', () => {
         .join('\n')
     );
 
-    await waitUntil(async () => {
-      await throwIfClaudeTranscriptApiError({
-        claudeRoot: tempClaudeRoot,
-        context: 'Claude validation turn',
-        projectPath,
-        sinceMs: startedAt,
-      });
-      await feature!.replayPendingReports([teamName!]);
-      const [status, metrics, tasks] = await Promise.all([
-        feature!.getStatus({ teamName: teamName!, memberName }),
-        feature!.getMetrics({ teamName: teamName! }),
-        new TeamTaskReader().getTasks(teamName!),
-      ]);
-      const currentTask = tasks.find((candidate) => candidate.id === task.id);
-      const expectedMarker = scenario.expectedMarkerText(marker);
-      const hasMarkerComment = currentTask?.comments?.some(
-        (comment) => comment.author === memberName && comment.text.includes(expectedMarker)
-      );
-      const reportAccepted =
-        (status.report?.accepted === true && status.report.state === scenario.expectedState) ||
-        hasAcceptedReportForScenario({
-          metrics,
-          memberName,
-          expectedState: scenario.expectedState,
+    await waitUntil(
+      async () => {
+        await throwIfClaudeTranscriptApiError({
+          claudeRoot: tempClaudeRoot,
+          context: 'Claude validation turn',
+          projectPath,
+          sinceMs: startedAt,
         });
-      return Boolean(
-        hasMarkerComment &&
-          currentTask?.status === scenario.expectedTaskStatus &&
-          reportAccepted
-      );
-    }, 300_000, 2_000, async () =>
-      formatMemberWorkSyncDiagnostics({
-        feature: feature!,
-        teamName: teamName!,
-        memberName,
-        taskId: task.id,
-      })
+        await feature!.replayPendingReports([teamName!]);
+        const [status, metrics, tasks] = await Promise.all([
+          feature!.getStatus({ teamName: teamName!, memberName }),
+          feature!.getMetrics({ teamName: teamName! }),
+          new TeamTaskReader().getTasks(teamName!),
+        ]);
+        const currentTask = tasks.find((candidate) => candidate.id === task.id);
+        const expectedMarker = scenario.expectedMarkerText(marker);
+        const hasMarkerComment = currentTask?.comments?.some(
+          (comment) => comment.author === memberName && comment.text.includes(expectedMarker)
+        );
+        const reportAccepted =
+          (status.report?.accepted === true && status.report.state === scenario.expectedState) ||
+          hasAcceptedReportForScenario({
+            metrics,
+            memberName,
+            expectedState: scenario.expectedState,
+          });
+        return Boolean(
+          hasMarkerComment && currentTask?.status === scenario.expectedTaskStatus && reportAccepted
+        );
+      },
+      300_000,
+      2_000,
+      async () =>
+        formatMemberWorkSyncDiagnostics({
+          feature: feature!,
+          teamName: teamName!,
+          memberName,
+          taskId: task.id,
+        })
     );
 
     const beforeTurnSettledReconciled = feature.getQueueDiagnostics().reconciled;
-    await waitUntil(async () => {
-      await throwIfClaudeTranscriptApiError({
-        claudeRoot: tempClaudeRoot,
-        context: 'Claude Stop hook turn',
-        projectPath,
-        sinceMs: startedAt,
-      });
-      await feature!.drainRuntimeTurnSettledEvents();
-      const metas = await readRuntimeTurnSettledProcessedMetas(getTeamsBasePath());
-      return metas.some(({ filePath, meta }) => {
-        const event = meta.event as Record<string, unknown> | undefined;
-        const recordedAt =
-          typeof event?.recordedAt === 'string' ? Date.parse(event.recordedAt) : Number.NaN;
-        return (
-          !processedMetaPathsBeforeValidation.has(filePath) &&
-          meta.outcome === 'enqueued' &&
-          meta.teamName === teamName &&
-          meta.memberName === memberName &&
-          event?.provider === 'claude' &&
-          Number.isFinite(recordedAt) &&
-          recordedAt >= validationSentAt
-        );
-      });
-    }, 180_000, 2_000, async () =>
-      formatMemberWorkSyncDiagnostics({
-        feature: feature!,
-        teamName: teamName!,
-        memberName,
-        taskId: task.id,
-      })
+    await waitUntil(
+      async () => {
+        await throwIfClaudeTranscriptApiError({
+          claudeRoot: tempClaudeRoot,
+          context: 'Claude Stop hook turn',
+          projectPath,
+          sinceMs: startedAt,
+        });
+        await feature!.drainRuntimeTurnSettledEvents();
+        const metas = await readRuntimeTurnSettledProcessedMetas(getTeamsBasePath());
+        return metas.some(({ filePath, meta }) => {
+          const event = meta.event as Record<string, unknown> | undefined;
+          const recordedAt =
+            typeof event?.recordedAt === 'string' ? Date.parse(event.recordedAt) : Number.NaN;
+          return (
+            !processedMetaPathsBeforeValidation.has(filePath) &&
+            meta.outcome === 'enqueued' &&
+            meta.teamName === teamName &&
+            meta.memberName === memberName &&
+            event?.provider === 'claude' &&
+            Number.isFinite(recordedAt) &&
+            recordedAt >= validationSentAt
+          );
+        });
+      },
+      180_000,
+      2_000,
+      async () =>
+        formatMemberWorkSyncDiagnostics({
+          feature: feature!,
+          teamName: teamName!,
+          memberName,
+          taskId: task.id,
+        })
     );
 
     await waitUntil(
@@ -586,7 +591,10 @@ async function cleanupScopedClaudeStopHookLiveTempDirs(): Promise<void> {
     }
     await Promise.all(
       entries
-        .filter((entry) => entry.isDirectory() && entry.name.startsWith('member-work-sync-claude-stop-live-'))
+        .filter(
+          (entry) =>
+            entry.isDirectory() && entry.name.startsWith('member-work-sync-claude-stop-live-')
+        )
         .map((entry) => removeTempDirBestEffort(path.join(tmpRoot, entry.name)))
     );
     if (attempt < 5) {

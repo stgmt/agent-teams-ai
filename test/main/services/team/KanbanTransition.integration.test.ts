@@ -58,12 +58,34 @@ describe('Kanban transition integration', () => {
     fs.rmSync(target, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
   });
 
+  /**
+   * Registry authority is published by the canonical metadata scope; config.json
+   * carries no specification fields any more, and the legacy keys are refused.
+   */
+  function writeRegistryScope(): void {
+    fs.writeFileSync(
+      path.join(teamDir, 'team.meta.json'),
+      JSON.stringify({
+        version: 1,
+        cwd: fixture.dir,
+        specScope: {
+          projects: ['owner/project'],
+          bindings: [{ project: 'owner/project', spec: 'spec' }],
+        },
+      })
+    );
+  }
+
   it('reads a local board using the explicitly local task backend', async () => {
     const controller = createController({
-      teamName: 'fixture', claudeDir: fixture.dir, localTaskBoard: true,
+      teamName: 'fixture',
+      claudeDir: fixture.dir,
+      localTaskBoard: true,
     });
     controller.taskBoard.createTask({ subject: 'Local task' });
-    await expect(new TeamKanbanManager().getState('fixture', { strict: true })).resolves.toMatchObject({
+    await expect(
+      new TeamKanbanManager().getState('fixture', { strict: true })
+    ).resolves.toMatchObject({
       teamName: 'fixture',
       tasks: {},
     });
@@ -71,13 +93,10 @@ describe('Kanban transition integration', () => {
 
   it('reads a registry draft from its metadata without contacting the registry', async () => {
     fs.unlinkSync(path.join(teamDir, 'config.json'));
-    fs.writeFileSync(
-      path.join(teamDir, 'team.meta.json'),
-      JSON.stringify({
-        version: 1, cwd: fixture.dir, specBindings: [{ project: 'owner/project', spec: 'spec' }],
-      })
-    );
-    await expect(new TeamKanbanManager().getState('fixture', { strict: true })).resolves.toMatchObject({
+    writeRegistryScope();
+    await expect(
+      new TeamKanbanManager().getState('fixture', { strict: true })
+    ).resolves.toMatchObject({
       teamName: 'fixture',
       tasks: {},
     });
@@ -102,15 +121,18 @@ describe('Kanban transition integration', () => {
   it('reads registry boards without consulting local canonical task files', async () => {
     fs.writeFileSync(
       path.join(teamDir, 'config.json'),
-      JSON.stringify({ name: 'fixture', members: [], specProject: 'owner/project', specSlug: 'spec' })
+      JSON.stringify({ name: 'fixture', members: [] })
     );
+    writeRegistryScope();
     const tasksDir = path.join(fixture.dir, 'tasks', 'fixture');
     fs.mkdirSync(tasksDir, { recursive: true });
     fs.writeFileSync(
       path.join(tasksDir, 'stale.json'),
       JSON.stringify({ id: 'stale', status: 'deleted', pendingKanbanTransition: null })
     );
-    await expect(new TeamKanbanManager().getState('fixture', { strict: true })).resolves.toMatchObject({
+    await expect(
+      new TeamKanbanManager().getState('fixture', { strict: true })
+    ).resolves.toMatchObject({
       teamName: 'fixture',
       tasks: {},
     });
@@ -119,16 +141,23 @@ describe('Kanban transition integration', () => {
   it('updates registry board ordering while preserving existing task entries', async () => {
     fs.writeFileSync(
       path.join(teamDir, 'config.json'),
-      JSON.stringify({ name: 'fixture', members: [], specProject: 'owner/project', specSlug: 'spec' })
+      JSON.stringify({ name: 'fixture', members: [] })
     );
+    writeRegistryScope();
     const statePath = path.join(teamDir, 'kanban-state.json');
     const task = { column: 'review', movedAt: '2026-01-01T00:00:00.000Z', reviewer: 'lead' };
-    fs.writeFileSync(statePath, JSON.stringify({
-      teamName: 'fixture', reviewers: ['lead'], tasks: { 'spec:TASK-1': task },
-    }));
+    fs.writeFileSync(
+      statePath,
+      JSON.stringify({
+        teamName: 'fixture',
+        reviewers: ['lead'],
+        tasks: { 'spec:TASK-1': task },
+      })
+    );
     await new TeamKanbanManager().updateColumnOrder('fixture', 'review', ['spec:TASK-1']);
     expect(JSON.parse(fs.readFileSync(statePath, 'utf8'))).toMatchObject({
-      reviewers: ['lead'], tasks: { 'spec:TASK-1': task },
+      reviewers: ['lead'],
+      tasks: { 'spec:TASK-1': task },
       columnOrder: { review: ['spec:TASK-1'] },
     });
   });
@@ -136,19 +165,30 @@ describe('Kanban transition integration', () => {
   it('blocks a registry board for an execution marker even without a canonical task', async () => {
     fs.writeFileSync(
       path.join(teamDir, 'config.json'),
-      JSON.stringify({ name: 'fixture', members: [], specProject: 'owner/project', specSlug: 'spec' })
+      JSON.stringify({ name: 'fixture', members: [] })
     );
+    writeRegistryScope();
     const taskId = 'orphan-task';
     const hash = 'a'.repeat(64);
     new ExecutionTaskStore().write('fixture', taskId, {
       pendingKanbanTransition: {
-        id: 'transition', taskId, kind: 'review', phase: 'prepared', column: 'review',
-        beforeTaskHash: hash, expectedTaskHash: hash, beforeBoardHash: hash,
-        expectedBoardHash: hash, beforeBoardToken: hash, contextHash: hash,
+        id: 'transition',
+        taskId,
+        kind: 'review',
+        phase: 'prepared',
+        column: 'review',
+        beforeTaskHash: hash,
+        expectedTaskHash: hash,
+        beforeBoardHash: hash,
+        expectedBoardHash: hash,
+        beforeBoardToken: hash,
+        contextHash: hash,
         targetBoard: { teamName: 'fixture', reviewers: [], tasks: {} },
       },
     });
-    await expect(new TeamKanbanManager().getState('fixture', { strict: true })).rejects.toMatchObject({
+    await expect(
+      new TeamKanbanManager().getState('fixture', { strict: true })
+    ).rejects.toMatchObject({
       code: 'KANBAN_TRANSITION_UNCERTAIN',
       taskId,
     });
@@ -386,7 +426,9 @@ describe('Kanban transition integration', () => {
     const inspected = controller.kanban.inspectPendingTransition(task.id);
     expect(inspected.mode).toBe('publish');
     if (inspected.mode === 'conflict') {
-      throw new Error('The pending transition cannot be resolved while its board snapshot conflicts.');
+      throw new Error(
+        'The pending transition cannot be resolved while its board snapshot conflicts.'
+      );
     }
     const activity = new TeamTaskActivityIntervalService();
     const pause = vi.fn(() =>
@@ -439,7 +481,11 @@ describe('Kanban transition integration', () => {
     expect(kill).not.toHaveBeenCalled();
     expect(cancelDeliveries).not.toHaveBeenCalled();
     expect(stopProcesses).toHaveBeenCalledTimes(1);
-    expect(pause).toHaveBeenCalledTimes(1);
+    // The clock is paused at both dedicated boundaries: before teardown, and
+    // again at the final persisted boundary after every owned stop settled.
+    // Both attempts are blocked by the same uncertain review, so both report
+    // the pending transition and neither rewrites the task.
+    expect(pause).toHaveBeenCalledTimes(2);
     expect(fs.readFileSync(taskPath, 'utf8')).toBe(before);
     expect(controller.kanban.inspectPendingTransition(task.id)).toEqual(inspected);
     controller.kanban.resolvePendingTransition(
@@ -500,15 +546,16 @@ describe('Kanban transition integration', () => {
       logger: { info: vi.fn() },
     };
     try {
-      await expect(stopTeamFlow('fixture', ports as never)).rejects.toMatchObject({
-        code: 'task_activity_interval_pause_failed_after_stop',
-        pendingTransition: false,
-      });
+      // The pre-teardown pause wrote the interval and then reported EIO. The
+      // final boundary re-reads the already-closed interval and settles the
+      // clock, so the stop confirms instead of failing — but the write itself
+      // is never retried, which `attempts` proves below.
+      await expect(stopTeamFlow('fixture', ports as never)).resolves.toBeUndefined();
     } finally {
       spy.mockRestore();
     }
     expect(stopProcesses).toHaveBeenCalledTimes(1);
-    expect(pause).toHaveBeenCalledTimes(1);
+    expect(pause).toHaveBeenCalledTimes(2);
     expect(attempts).toBe(1);
     expect(warning).toHaveBeenCalledWith(
       expect.any(String),
@@ -603,7 +650,9 @@ export const boardLocks = controller.boardLocks;`
       code: 'task_activity_interval_pause_failed_after_stop',
       pendingTransition: true,
     });
-    expect(pause).toHaveBeenCalledTimes(1);
+    // Pre-teardown and final boundary both stay blocked by the transition the
+    // other process left behind, so neither closes the uncertain interval.
+    expect(pause).toHaveBeenCalledTimes(2);
     expect(fs.readFileSync(taskPath, 'utf8')).toBe(before);
   });
 

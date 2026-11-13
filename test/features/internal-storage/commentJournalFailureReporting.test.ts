@@ -1,3 +1,9 @@
+import {
+  registryTaskFixtureConfigReader,
+  registryTaskFixtureMetaStore,
+  registryBoardSnapshotFixture,
+} from '../../helpers/teamRuntimeSnapshot';
+import { knownEmptyTeamRuntimeSnapshot } from '../../helpers/teamRuntimeSnapshot';
 // @vitest-environment node
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
@@ -71,19 +77,30 @@ describe('comment forwarding storage diagnostics', () => {
     };
     const sendMessage = vi.fn(async () => ({ deliveredToInbox: true, messageId: 'fixture' }));
     const service = new TeamDataService(
-      { listTeams: vi.fn(), getConfig } as never,
-      { getTasks } as never,
+      knownEmptyTeamRuntimeSnapshot,
+      registryTaskFixtureConfigReader({ listTeams: vi.fn(), getConfig } as never),
       inboxReader as never,
       { sendMessage } as never,
       {} as never,
       {} as never,
       {} as never,
       {} as never,
-      {} as never,
-      {} as never,
       (() => ({}) as never) as never,
-      new TeamTaskCommentNotificationJournal(storage.taskCommentNotificationJournalStore)
+      new TeamTaskCommentNotificationJournal(storage.taskCommentNotificationJournalStore),
+      registryTaskFixtureMetaStore(undefined),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      registryBoardSnapshotFixture({ getTasks } as never)
     );
+    service.setTeamProfileOwnership(async (teamName) => teamName === 'fixture');
     try {
       await service.notifyLeadOnTeammateTaskComment('fixture', 'task-1');
       await Promise.resolve();

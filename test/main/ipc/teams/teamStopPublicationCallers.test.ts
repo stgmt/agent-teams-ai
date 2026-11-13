@@ -34,6 +34,7 @@ import { readTeamLaunchFreshness } from '@main/services/team/TeamLaunchFreshness
 import { createPersistedLaunchSnapshot } from '@main/services/team/TeamLaunchStateEvaluator';
 import {
   TeamLaunchStateStore,
+  getTeamLaunchStatePath,
   withTeamLaunchStatePublicationLock,
 } from '@main/services/team/TeamLaunchStateStore';
 import { getTeamsBasePath, setClaudeBasePathOverride } from '@main/utils/pathDecoder';
@@ -257,7 +258,11 @@ describe('Stop publication admission through real IPC/HTTP wrappers', () => {
       vi.mocked(console.warn).mockClear();
       expect(runtime.stopTeam).toHaveBeenCalledOnce();
       expect(await readFile(freshnessPath, 'utf8')).toBe('{corrupt');
-      expect((await store.read(team))?.publicationRunId).toBe('original');
+      // `store.read` answers null for unreadable freshness by contract, so prove the
+      // persisted authority itself was left intact.
+      expect(
+        JSON.parse(await readFile(getTeamLaunchStatePath(team), 'utf8')).publicationRunId
+      ).toBe('original');
     }
   );
 

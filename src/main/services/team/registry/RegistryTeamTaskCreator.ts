@@ -2,8 +2,8 @@ import { createHash, randomUUID } from 'node:crypto';
 
 import { validateExecutionTaskPatch } from '../execution/ExecutionTaskStore';
 
-import { REGISTRY_TASK_STATUSES } from './RegistryTaskClientTypes';
 import { RegistryTaskClientError, RegistryTaskWriteRefusedError } from './RegistryTaskClientErrors';
+import { REGISTRY_TASK_STATUSES } from './RegistryTaskClientTypes';
 import {
   allocateLocalId,
   normalizeTaskIds,
@@ -25,9 +25,9 @@ import type {
   UpsertRegistryTaskInput,
 } from './RegistryTaskClientTypes';
 import type {
+  RegistryTaskGenesisSigner,
   RegistryTeamTaskClientPort,
   RegistryTeamTaskCreateInput,
-  RegistryTaskGenesisSigner,
 } from './RegistryTeamTaskWriter';
 import type { TeamSpecBinding } from './TeamSpecBinding';
 import type { RegistryRegistrationIdentity } from '@shared/types';

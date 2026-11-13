@@ -13,7 +13,7 @@ interface TeamLoadErrorProps {
 }
 
 /** Link a specification to a team without loading its task board. */
-export function SpecRegistryConnectButton({
+export const SpecRegistryConnectButton = ({
   teamName,
   onSaved,
   className,
@@ -21,10 +21,10 @@ export function SpecRegistryConnectButton({
   teamName: string;
   onSaved(): void;
   className?: string;
-}): React.JSX.Element {
+}): React.JSX.Element => {
   const { t } = useAppTranslation('team');
   const summary = useStore((state) => state.teamByName[teamName]);
-  const initialBinding = summary?.specBindings?.[0];
+  const initialBinding = summary?.specScope?.bindings[0];
   const [connecting, setConnecting] = useState(false);
   return (
     <>
@@ -34,7 +34,7 @@ export function SpecRegistryConnectButton({
       {connecting ? (
         <SpecRegistryConnectionDialog
           teamName={teamName}
-          initialProject={initialBinding?.project}
+          initialProject={initialBinding?.project ?? summary?.specScope?.projects[0]}
           initialSpec={initialBinding?.spec}
           onClose={() => setConnecting(false)}
           onSaved={() => {
@@ -45,10 +45,14 @@ export function SpecRegistryConnectButton({
       ) : null}
     </>
   );
-}
+};
 
 /** Allows a team without registry binding to be repaired without opening its task board. */
-export function TeamLoadError({ teamName, error, onRetry }: TeamLoadErrorProps): React.JSX.Element {
+export const TeamLoadError = ({
+  teamName,
+  error,
+  onRetry,
+}: TeamLoadErrorProps): React.JSX.Element => {
   const { t } = useAppTranslation('team');
   return (
     <div className="flex size-full items-center justify-center p-6">
@@ -59,4 +63,4 @@ export function TeamLoadError({ teamName, error, onRetry }: TeamLoadErrorProps):
       </div>
     </div>
   );
-}
+};

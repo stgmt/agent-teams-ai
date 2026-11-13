@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { lstat, mkdir, open, readFile, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, open, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
@@ -7,7 +7,14 @@ import { validateTeamName } from '@main/services/team/TeamIdentifierValidation';
 import { atomicWriteAsync } from '@main/utils/atomicWrite';
 import { inspectProcessByPid } from '@main/utils/processInspection';
 
+import type { Stats } from 'node:fs';
+
 export type NativeTeamConfig = Record<string, unknown>;
+
+export interface NativeTeamConfigLockFilesystem {
+  writeFile: typeof writeFile;
+  symlink: typeof symlink;
+}
 
 function object(value: unknown): value is NativeTeamConfig {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -21,8 +28,12 @@ function object(value: unknown): value is NativeTeamConfig {
  */
 async function takeOverDeadLock(lock: string): Promise<boolean> {
   let metadata: unknown;
+  let claimed: Stats;
+  let raw: string;
   try {
-    metadata = JSON.parse(await readFile(join(lock, 'metadata.json'), 'utf8'));
+    claimed = await lstat(lock);
+    raw = await readFile(join(lock, 'metadata.json'), 'utf8');
+    metadata = JSON.parse(raw);
   } catch {
     return false;
   }
@@ -33,12 +44,59 @@ async function takeOverDeadLock(lock: string): Promise<boolean> {
   if (pid === null || !Number.isSafeInteger(pid) || pid <= 0) return false;
   const inspection = await inspectProcessByPid(pid).catch(() => null);
   if (!inspection || inspection.status !== 'not_found') return false;
+  const current = await lstat(lock).catch(() => null);
+  if (!current || current.dev !== claimed.dev || current.ino !== claimed.ino) return false;
+  const latest = await readFile(join(lock, 'metadata.json'), 'utf8').catch(() => null);
+  if (latest !== raw) return false;
   await rm(lock, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
   return true;
 }
 
+/** Publish the complete owner atomically; an interrupted preparation never occupies the CLI lock. */
+async function acquireLock(
+  directory: string,
+  signal: AbortSignal,
+  assertDirectory: () => Promise<void>,
+  filesystem: NativeTeamConfigLockFilesystem
+) {
+  const lock = join(directory, '.config.lock');
+  const nonce = randomUUID();
+  const prepared = join(directory, `.config.lock-owner-${process.pid}-${nonce}`);
+  await mkdir(prepared, { mode: 0o700 });
+  let published = false;
+  try {
+    await filesystem.writeFile(
+      join(prepared, 'metadata.json'),
+      JSON.stringify({ pid: process.pid, createdAt: Date.now(), nonce }),
+      { mode: 0o600, flag: 'wx' }
+    );
+    const deadline = Date.now() + 30_000;
+    while (true) {
+      signal.throwIfAborted();
+      await assertDirectory();
+      try {
+        // Exclusive creation preserves an existing lock, including a legacy empty directory.
+        await filesystem.symlink(prepared, lock, process.platform === 'win32' ? 'junction' : 'dir');
+        published = true;
+        return { lock, nonce, prepared, claimed: await lstat(lock) };
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+        if (await takeOverDeadLock(lock)) continue;
+        if (Date.now() >= deadline) throw new Error('Native team config lock is occupied');
+        await delay(25, undefined, { signal });
+      }
+    }
+  } finally {
+    if (!published)
+      await rm(prepared, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
+  }
+}
+
 export class NativeTeamConfigStore {
-  constructor(private readonly teamsRoot: string) {}
+  constructor(
+    private readonly teamsRoot: string,
+    private readonly lockFilesystem: NativeTeamConfigLockFilesystem = { writeFile, symlink }
+  ) {}
 
   async mutate(
     teamName: string,
@@ -68,34 +126,14 @@ export class NativeTeamConfigStore {
       }
     };
     await assertDirectory();
-    const lock = join(directory, '.config.lock');
-    const nonce = randomUUID();
-    // Ten members write their own rows during one launch; a 10 s wait ran out
-    // for the tail of the roster and degraded the launch ("lock is occupied").
-    const deadline = Date.now() + 30_000;
-    while (true) {
-      signal.throwIfAborted();
-      await assertDirectory();
-      try {
-        await mkdir(lock, { mode: 0o700 });
-        break;
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-        // A lock whose recorded owner is gone must not wedge every later write:
-        // a killed app never releases it. Live or unreadable owners still block.
-        if (await takeOverDeadLock(lock)) continue;
-        if (Date.now() >= deadline) throw new Error('Native team config lock is occupied');
-        await delay(25, undefined, { signal });
-      }
-    }
-    const claimed = await lstat(lock);
+    const { lock, nonce, prepared, claimed } = await acquireLock(
+      directory,
+      signal,
+      assertDirectory,
+      this.lockFilesystem
+    );
     let operationError: Error | undefined;
     try {
-      await writeFile(
-        join(lock, 'metadata.json'),
-        JSON.stringify({ pid: process.pid, createdAt: Date.now(), nonce }),
-        { mode: 0o600, flag: 'wx' }
-      );
       await assertDirectory();
       const path = join(directory, 'config.json');
       const before = await this.read(path);
@@ -136,6 +174,7 @@ export class NativeTeamConfigStore {
       if (current.dev !== claimed.dev || current.ino !== claimed.ino)
         throw new Error('Native team config lock ownership changed');
       await rm(lock, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
+      await rm(prepared, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
     } catch (releaseError) {
       if (operationError)
         throw new AggregateError(

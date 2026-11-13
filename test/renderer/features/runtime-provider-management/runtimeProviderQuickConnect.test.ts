@@ -211,7 +211,7 @@ describe('RuntimeProviderQuickConnect', () => {
     });
   };
 
-  it('opens provider connection from an installed recognized native V2 runtime', async () => {
+  it('opens provider connection from an installed recognized native runtime', async () => {
     const onOpenCodeProviderAction = vi.fn();
     const onBrowseProviders = vi.fn();
     mocks.directory = {
@@ -240,7 +240,7 @@ describe('RuntimeProviderQuickConnect', () => {
             installed: true,
             source: 'path',
             state: 'ready',
-            version: '2.0.32',
+            version: '1.17.18',
           },
           openCodeRuntimeStatusLoading: false,
           onInstallOpenCode: vi.fn(),
@@ -256,9 +256,11 @@ describe('RuntimeProviderQuickConnect', () => {
     );
     expect(connect).not.toBeNull();
     expect(connect?.disabled).toBe(false);
-    expect(
-      host.querySelector('[data-testid="provider-quick-card-openrouter"]')?.textContent
-    ).toContain('cliStatus.quickConnect.v1CheckedUsingV2');
+    // The pinned runtime ships the V1-only delivery, so the V1 baseline card is
+    // simply connectable and advertises no V2 qualifier.
+    const openrouterCard = host.querySelector('[data-testid="provider-quick-card-openrouter"]');
+    expect(openrouterCard?.textContent).toContain('cliStatus.quickConnect.readyToConnect');
+    expect(openrouterCard?.textContent).not.toContain('cliStatus.quickConnect.v1CheckedUsingV2');
     const browse = [...host.querySelectorAll('button')].find((button) =>
       button.textContent?.includes('cliStatus.quickConnect.browseAll')
     );
@@ -273,7 +275,7 @@ describe('RuntimeProviderQuickConnect', () => {
     expect(onBrowseProviders).toHaveBeenCalledTimes(1);
   });
 
-  it('keeps unsupported V2 subscription routes visible without claiming CLI authentication is model access', async () => {
+  it('keeps subscription routes visible but unoffered while the V2 CLI is not served', async () => {
     const onOpenCodeProviderAction = vi.fn();
     const onConnectedCountChange = vi.fn();
     mocks.directory = {
@@ -314,28 +316,20 @@ describe('RuntimeProviderQuickConnect', () => {
       );
       await Promise.resolve();
     });
+    // The pinned runtime serves V1 only: a V2 CLI keeps every subscription route
+    // visible, but no route is offered and a provider listing asserts no model.
     for (const id of ['supergrok', 'github-copilot', 'kiro', 'cursor']) {
       const card = host.querySelector(`[data-testid="provider-quick-card-${id}"]`);
-      expect(card?.textContent).toMatch(/requiresV1|cliSignedInRequiresV1/);
+      expect(card).not.toBeNull();
       expect(card?.textContent).not.toContain('cliStatus.quickConnect.planConnected');
-      expect(host.querySelector(`[data-testid="provider-quick-action-${id}"]`)).toBeNull();
+      expect(card?.textContent).not.toMatch(/requiresV1|cliSignedInRequiresV1/);
+      expect(card?.textContent).toContain('cliStatus.quickConnect.requiresOpenCode');
     }
-    expect(host.querySelector('[data-testid="provider-quick-card-kiro"]')?.textContent).toContain(
-      'cliSignedInRequiresV1'
-    );
-    expect(host.querySelector('[data-testid="provider-quick-card-cursor"]')?.textContent).toContain(
-      'cliSignedInRequiresV1'
-    );
     expect(
       host.querySelector('[data-testid="provider-quick-card-openrouter"]')?.textContent
-    ).toContain('cliStatus.quickConnect.v1CheckedUsingV2');
-    // Help is accessible through the card's description tooltip, not rendered inline.
-    expect(
-      host.querySelector(
-        '[data-testid="provider-quick-card-openrouter"] [aria-label*="v1CheckedUsingV2Detail"]'
-      )
-    ).not.toBeNull();
-    expect(onConnectedCountChange).toHaveBeenLastCalledWith(1);
+    ).toContain('cliStatus.quickConnect.requiresOpenCode');
+    // Nothing is connected while the installed CLI is not a served runtime.
+    expect(onConnectedCountChange).toHaveBeenLastCalledWith(0);
     expect(onOpenCodeProviderAction).not.toHaveBeenCalled();
   });
 
@@ -791,7 +785,7 @@ describe('RuntimeProviderQuickConnect', () => {
     expect(onInstallOpenCode).toHaveBeenCalledTimes(1);
   });
 
-  it.each(['unknown', 'support required', 'support failed'] as const)(
+  it.each(['unknown', 'unserved V2', 'failed V2'] as const)(
     'does not warm provider reads while native readiness is %s',
     async (reason) => {
       mocks.directory = {
@@ -816,14 +810,14 @@ describe('RuntimeProviderQuickConnect', () => {
                 : {
                     installed: true,
                     source: 'override',
-                    state: reason === 'support failed' ? 'failed' : 'idle',
+                    state: reason === 'failed V2' ? 'failed' : 'idle',
                     version: '2.1.4',
                     v2Support: 'required',
                     compatibleV2Version: '2.2.0',
-                    ...(reason === 'support required' && {
+                    ...(reason === 'unserved V2' && {
                       error: 'V2 support files missing: ENOENT /TEST/cache/support/package.json',
                     }),
-                    ...(reason === 'support failed' && {
+                    ...(reason === 'failed V2' && {
                       error: 'V2 support download failed: network unavailable',
                     }),
                   },
@@ -844,23 +838,22 @@ describe('RuntimeProviderQuickConnect', () => {
         ])
       );
       if (reason !== 'unknown') {
-        expect(host.textContent).toContain('cliStatus.runtimeInstall.v2SupportInstall');
-        expect(host.textContent).not.toContain('cliStatus.quickConnect.requiresOpenCode');
-        expect(host.textContent).not.toContain('cliStatus.quickConnect.checkingPlan');
-        expect(
-          host.querySelector(
-            '[data-testid="provider-quick-card-xiaomi-mimo-token-plan"] svg.animate-spin'
-          )
-        ).toBeNull();
+        // The pinned runtime does not ship V2 support, so no support download is offered.
+        expect(host.textContent).not.toContain('cliStatus.runtimeInstall.v2SupportInstall');
+        expect(host.textContent).toContain('cliStatus.quickConnect.requiresOpenCode');
         expect(host.textContent).not.toContain('cliStatus.quickConnect.installOpenCode');
         expect(host.textContent).not.toContain('cliStatus.quickConnect.retryOpenCode');
-        expect(host.textContent).not.toContain('ENOENT');
         const notice = host.querySelector('[data-testid="provider-quick-opencode-prerequisite"]');
-        expect(notice?.textContent).not.toContain('cliStatus.runtimeInstall.overrideSelection');
+        expect(notice).not.toBeNull();
+        // A binary override cannot be replaced by a managed install, so refresh is the only action.
         expect(notice?.querySelector('button')?.textContent).toContain(
-          'cliStatus.runtimeInstall.v2SupportInstall'
+          'cliStatus.quickConnect.refreshOpenCode'
         );
-        if (reason === 'support failed') {
+        if (reason === 'unserved V2') {
+          // The runtime's own status error is surfaced instead of a support download.
+          expect(notice?.textContent).toContain('V2 support files missing');
+        }
+        if (reason === 'failed V2') {
           expect(host.querySelector('[role="alert"]')?.textContent).toContain(
             'V2 support download failed: network unavailable'
           );
@@ -881,7 +874,9 @@ function runtimeStatus(overrides: Partial<OpenCodeRuntimeStatus> = {}): OpenCode
 }
 
 describe('runtimeProviderQuickConnect domain policy', () => {
-  it('keeps a selected native V2 unavailable until its separate support is ready', () => {
+  it('keeps a native V2 unavailable because the pinned runtime does not serve it', () => {
+    // runtime.lock.json pins the V1-only delivery, so a V2 CLI is not a usable
+    // runtime even when its separate support files claim to be present.
     expect(
       resolveOpenCodeQuickConnectGate({
         runtimeStatus: runtimeStatus({ version: '2.9.0', v2Support: 'required' }),
@@ -889,7 +884,7 @@ describe('runtimeProviderQuickConnect domain policy', () => {
         provider: null,
         cliStatusLoading: false,
       })
-    ).toBe('support-required');
+    ).toBe('missing');
   });
 
   it('compares OpenCode versions without treating newer minor versions as outdated', () => {

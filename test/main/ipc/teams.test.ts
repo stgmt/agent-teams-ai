@@ -1,3 +1,7 @@
+import {
+  knownEmptyTeamRuntimeSnapshot,
+  registryTaskFixtureService,
+} from '../../helpers/teamRuntimeSnapshot';
 import 'fake-indexeddb/auto';
 
 import { createRequire } from 'node:module';
@@ -11,6 +15,7 @@ import {
 } from '@main/services/team/opencode/bridge/OpenCodeStartupSweepGate';
 import { setAppDataBasePath, setClaudeBasePathOverride } from '@main/utils/pathDecoder';
 import { MAX_TEXT_LENGTH } from '@shared/constants/teamLimits';
+import { RegistryTaskProvider } from '@main/services/team/registry/RegistryTaskProvider';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -100,6 +105,16 @@ const { mockTeamDataWorkerClient } = vi.hoisted(() => ({
     invalidateMemberRuntimeAdvisory: vi.fn(),
   },
 }));
+// Launch admission reads the persisted registry authority, so the suite owns a
+// configured credential like the onboarding flow would leave behind.
+const { specRegistryCredentialMocks } = vi.hoisted(() => ({
+  specRegistryCredentialMocks: {
+    readSpecRegistryCredentialStatus: vi.fn(),
+    testSpecRegistryCredential: vi.fn(),
+    saveSpecRegistryCredential: vi.fn(),
+    clearSpecRegistryCredential: vi.fn(),
+  },
+}));
 
 function createDeferred<T>(): {
   promise: Promise<T>;
@@ -159,6 +174,7 @@ vi.mock('@main/services/team/TeamMembersMetaStore', () => ({
 }));
 vi.mock('@main/services/team/TeamDataWorkerClient', () => ({
   getTeamDataWorkerClient: () => mockTeamDataWorkerClient,
+  getTeamDataWorkerCache: () => mockTeamDataWorkerClient,
   isTeamDataWorkerFatalError: (error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
     return (
@@ -169,6 +185,12 @@ vi.mock('@main/services/team/TeamDataWorkerClient', () => ({
       message.includes('Worker call timeout after')
     );
   },
+}));
+vi.mock('@main/services/team/registry/SpecRegistryCredentialOnboarding', () => ({
+  readSpecRegistryCredentialStatus: specRegistryCredentialMocks.readSpecRegistryCredentialStatus,
+  testSpecRegistryCredential: specRegistryCredentialMocks.testSpecRegistryCredential,
+  saveSpecRegistryCredential: specRegistryCredentialMocks.saveSpecRegistryCredential,
+  clearSpecRegistryCredential: specRegistryCredentialMocks.clearSpecRegistryCredential,
 }));
 vi.mock('@main/services/team/AutoResumeService', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@main/services/team/AutoResumeService')>();
@@ -197,6 +219,12 @@ import { LaunchIoGovernor } from '../../../src/main/services/team/LaunchIoGovern
 import { TeamAttachmentStore } from '../../../src/main/services/team/TeamAttachmentStore';
 import { TeamTaskAttachmentStore } from '../../../src/main/services/team/TeamTaskAttachmentStore';
 import { getAppDataPath } from '../../../src/main/utils/pathDecoder';
+import {
+  SPEC_REGISTRY_GET_STATUS,
+  SPEC_REGISTRY_SAVE,
+  SPEC_REGISTRY_CLEAR,
+  SPEC_REGISTRY_TEST,
+} from '../../../src/preload/constants/ipcChannels';
 import {
   TEAM_ADD_MEMBER,
   TEAM_ADD_TASK_COMMENT,
@@ -310,6 +338,10 @@ type PermanentlyDeleteTeamMock = (
 ) => Promise<boolean>;
 
 const TEAM_HANDLER_KEYS = [
+  SPEC_REGISTRY_GET_STATUS,
+  SPEC_REGISTRY_SAVE,
+  SPEC_REGISTRY_CLEAR,
+  SPEC_REGISTRY_TEST,
   TEAM_ADD_MEMBER,
   TEAM_ADD_TASK_COMMENT,
   TEAM_ADD_TASK_RELATIONSHIP,
@@ -418,6 +450,13 @@ describe('ipc teams handlers', () => {
     return operation();
   };
   const handlers = new Map<string, (...args: unknown[]) => Promise<unknown>>();
+  // These launch/runtime tests use a configured, initially spec-less project.
+  const scopedTeamStartHandler =
+    (handler: (...args: unknown[]) => Promise<unknown>) => (event: unknown, request: object) =>
+      handler(event, {
+        specScope: { projects: ['owner/project'], bindings: [] },
+        ...request,
+      });
   const ipcMain = {
     handle: vi.fn((channel: string, fn: (...args: unknown[]) => Promise<unknown>) => {
       handlers.set(channel, fn);
@@ -529,12 +568,18 @@ describe('ipc teams handlers', () => {
     discoverSpecRegistry: vi.fn(() =>
       resolved<SpecRegistryDiscovery>({ url: 'https://registry.example/', projects: [] })
     ),
-    listTeamSpecBindings: vi.fn((_teamName: string) => resolved<TeamSpecBinding[]>([])),
-    linkTeamSpec: vi.fn(
-      (_teamName: string, _binding: TeamSpecBinding) => resolved<TeamSpecBinding[]>([])
+    readSpecBindingConfigForGate: vi.fn((_teamName: string) =>
+      resolved<{ projects: string[]; bindings: TeamSpecBinding[] }>({
+        projects: ['owner/project'],
+        bindings: [],
+      })
     ),
-    unlinkTeamSpec: vi.fn(
-      (_teamName: string, _binding: TeamSpecBinding) => resolved<TeamSpecBinding[]>([])
+    listTeamSpecBindings: vi.fn((_teamName: string) => resolved<TeamSpecBinding[]>([])),
+    linkTeamSpec: vi.fn((_teamName: string, _binding: TeamSpecBinding) =>
+      resolved<TeamSpecBinding[]>([])
+    ),
+    unlinkTeamSpec: vi.fn((_teamName: string, _binding: TeamSpecBinding) =>
+      resolved<TeamSpecBinding[]>([])
     ),
     listTeams: vi.fn(() => resolved([{ teamName: 'my-team', displayName: 'My Team' }])),
     getTeamData: vi.fn(
@@ -877,8 +922,28 @@ describe('ipc teams handlers', () => {
     service.unlinkTeamSpec.mockReset();
     service.discoverSpecRegistry.mockResolvedValue({
       url: 'https://registry.example/',
-      projects: [],
+      projects: [{ id: 'owner/project', specs: [] }],
     });
+    service.readSpecBindingConfigForGate.mockReset();
+    service.readSpecBindingConfigForGate.mockResolvedValue({
+      projects: ['owner/project'],
+      bindings: [],
+    });
+    specRegistryCredentialMocks.readSpecRegistryCredentialStatus.mockReset();
+    specRegistryCredentialMocks.readSpecRegistryCredentialStatus.mockResolvedValue({
+      configured: true,
+      url: 'https://registry.example/',
+      source: 'store',
+    });
+    specRegistryCredentialMocks.testSpecRegistryCredential.mockReset();
+    specRegistryCredentialMocks.testSpecRegistryCredential.mockResolvedValue({
+      ok: true,
+      url: 'https://registry.example/',
+      toolCount: 1,
+      errorCode: null,
+    });
+    specRegistryCredentialMocks.saveSpecRegistryCredential.mockReset();
+    specRegistryCredentialMocks.clearSpecRegistryCredential.mockReset();
     service.listTeamSpecBindings.mockResolvedValue([]);
     service.linkTeamSpec.mockResolvedValue([]);
     service.unlinkTeamSpec.mockResolvedValue([]);
@@ -1077,15 +1142,17 @@ describe('ipc teams handlers', () => {
       success: true,
       data: discovery,
     });
-    await expect(
-      handlers.get(TEAM_LIST_SPEC_BINDINGS)!({} as never, 'my-team')
-    ).resolves.toEqual({ success: true, data: linkedBindings });
-    await expect(
-      handlers.get(TEAM_LINK_SPEC)!({} as never, 'my-team', binding)
-    ).resolves.toEqual({ success: true, data: linkedBindings });
-    await expect(
-      handlers.get(TEAM_UNLINK_SPEC)!({} as never, 'my-team', binding)
-    ).resolves.toEqual({ success: true, data: [] });
+    await expect(handlers.get(TEAM_LIST_SPEC_BINDINGS)!({} as never, 'my-team')).resolves.toEqual({
+      success: true,
+      data: linkedBindings,
+    });
+    await expect(handlers.get(TEAM_LINK_SPEC)!({} as never, 'my-team', binding)).resolves.toEqual({
+      success: true,
+      data: linkedBindings,
+    });
+    await expect(handlers.get(TEAM_UNLINK_SPEC)!({} as never, 'my-team', binding)).resolves.toEqual(
+      { success: true, data: [] }
+    );
 
     expect(service.discoverSpecRegistry).toHaveBeenCalledOnce();
     expect(service.listTeamSpecBindings).toHaveBeenCalledWith('my-team');
@@ -3263,7 +3330,12 @@ describe('ipc teams handlers', () => {
         // Electron transports a plain result, not the original Error instance.
         return JSON.parse(JSON.stringify(result)) as unknown;
       });
-      const request = { teamName: 'cleanup-fixture', cwd: fixtureRoot, members: [] };
+      const request = {
+        teamName: 'cleanup-fixture',
+        cwd: fixtureRoot,
+        members: [],
+        specScope: { projects: ['owner/project'], bindings: [] },
+      };
       const message = new OpenCodeStartupCleanupBusyError().message;
       for (const operation of ['createTeam', 'launchTeam'] as const) {
         await expect(api.teams[operation](request)).rejects.toThrow(message);
@@ -3302,6 +3374,49 @@ describe('ipc teams handlers', () => {
     }
   });
 
+  it('refuses to start a team and surfaces the setup code while Spec Kit is unconfigured', async () => {
+    // A new user who never configured the integration: no stored credential and
+    // no permitted project, so the app must refuse the start instead of
+    // launching a team without Spec Kit.
+    specRegistryCredentialMocks.readSpecRegistryCredentialStatus.mockResolvedValue({
+      configured: false,
+      url: null,
+      source: 'none',
+    });
+    service.discoverSpecRegistry.mockResolvedValue({
+      url: 'https://registry.example/',
+      projects: [],
+    });
+    // The preload module runs renderer-boundary side effects on load, so this
+    // boundary test imports it lazily like the cleanup-busy test above.
+    await import('../../../src/preload/index');
+    const api = cleanupPreload.exposed.current!;
+    cleanupPreload.invoke.mockImplementation(async (channel: string, ...args: unknown[]) => {
+      const result = await handlers.get(channel)!({ sender: {} } as never, ...args);
+      // Electron transports a plain result, not the original Error instance.
+      return JSON.parse(JSON.stringify(result)) as unknown;
+    });
+    const request = {
+      teamName: 'unconfigured-team',
+      cwd: os.tmpdir(),
+      members: [],
+      specScope: { projects: ['owner/project'], bindings: [] },
+    };
+
+    for (const operation of ['createTeam', 'launchTeam'] as const) {
+      await expect(api.teams[operation](request)).rejects.toThrow('SPEC_REGISTRY_NOT_CONFIGURED');
+      const transported = await cleanupPreload.invoke.mock.results.at(-1)!.value;
+      expect(transported).toEqual({ success: false, error: 'SPEC_REGISTRY_NOT_CONFIGURED' });
+      // The refusal carries no run: the renderer must not mistake it for a start.
+      expect(transported).not.toHaveProperty('data');
+    }
+    // Nothing reached provisioning, and the refusal needs no registry round trip.
+    expect(teamHandlerMocks.createTeam).not.toHaveBeenCalled();
+    expect(teamHandlerMocks.launchTeam).not.toHaveBeenCalled();
+    expect(specRegistryCredentialMocks.testSpecRegistryCredential).not.toHaveBeenCalled();
+    expect(service.discoverSpecRegistry).not.toHaveBeenCalled();
+  });
+
   it('calls service and returns success on happy paths', async () => {
     const listResult = (await handlers.get(TEAM_LIST)!({} as never)) as {
       success: boolean;
@@ -3310,11 +3425,14 @@ describe('ipc teams handlers', () => {
     expect(listResult.success).toBe(true);
     expect(service.listTeams).toHaveBeenCalledTimes(1);
 
-    const createResult = (await handlers.get(TEAM_CREATE)!({ sender: { send: vi.fn() } } as never, {
-      teamName: 'my-team',
-      members: [{ name: 'alice' }],
-      cwd: os.tmpdir(),
-    })) as { success: boolean };
+    const createResult = (await scopedTeamStartHandler(handlers.get(TEAM_CREATE)!)(
+      { sender: { send: vi.fn() } } as never,
+      {
+        teamName: 'my-team',
+        members: [{ name: 'alice' }],
+        cwd: os.tmpdir(),
+      }
+    )) as { success: boolean };
     expect(createResult.success).toBe(true);
     expect(teamHandlerMocks.createTeam).toHaveBeenCalledTimes(1);
 
@@ -3458,7 +3576,21 @@ describe('ipc teams handlers', () => {
       expect(String(transitionError)).toMatch(/Task status transition.*unknown outcome/);
       expect(failures).toBe(1);
       const { TeamDataService } = await import('@main/services/team/TeamDataService');
-      const actualService = new TeamDataService();
+      const provider = new RegistryTaskProvider({
+        readConfig: async () => ({
+          specScope: {
+            projects: ['owner/project'],
+            bindings: [{ project: 'owner/project', spec: 'fixture' }],
+          },
+        }),
+      });
+      // Seed the canonical unit registry row; the local board below is only the fault/recovery harness.
+      vi.spyOn(provider, 'readTaskSnapshot').mockResolvedValue(task);
+      const actualService = registryTaskFixtureService(
+        { readBoardSnapshot: async () => [task] },
+        undefined,
+        { provider }
+      );
       Object.defineProperty(actualService, 'controllerFactory', { value: () => controller });
       const update = service.updateKanban as unknown as {
         mockImplementation: (
@@ -3569,11 +3701,14 @@ describe('ipc teams handlers', () => {
       return resolved({ runId: 'run-created-watch-scope' });
     });
 
-    const result = (await handlers.get(TEAM_CREATE)!({ sender: { send: vi.fn() } } as never, {
-      teamName: createTeam,
-      members: [{ name: 'alice' }],
-      cwd: os.tmpdir(),
-    })) as { success: boolean };
+    const result = (await scopedTeamStartHandler(handlers.get(TEAM_CREATE)!)(
+      { sender: { send: vi.fn() } } as never,
+      {
+        teamName: createTeam,
+        members: [{ name: 'alice' }],
+        cwd: os.tmpdir(),
+      }
+    )) as { success: boolean };
 
     expect(result.success).toBe(true);
     expect(computeTeamWatchScope()?.has(createTeam)).toBe(true);
@@ -3694,11 +3829,14 @@ describe('ipc teams handlers', () => {
       .mockResolvedValueOnce([{ teamName: 'background-fresh', displayName: 'Background Fresh' }])
       .mockResolvedValueOnce([{ teamName: 'fresh-team', displayName: 'Fresh' }]);
 
-    const createResult = (await handlers.get(TEAM_CREATE)!({ sender: { send: vi.fn() } } as never, {
-      teamName: 'my-team',
-      members: [{ name: 'alice' }],
-      cwd: os.tmpdir(),
-    })) as { success: boolean };
+    const createResult = (await scopedTeamStartHandler(handlers.get(TEAM_CREATE)!)(
+      { sender: { send: vi.fn() } } as never,
+      {
+        teamName: 'my-team',
+        members: [{ name: 'alice' }],
+        cwd: os.tmpdir(),
+      }
+    )) as { success: boolean };
     expect(createResult.success).toBe(false);
     vi.mocked(console.error).mockClear();
 
@@ -3863,9 +4001,11 @@ describe('ipc teams handlers', () => {
 
     expect(result.success).toBe(true);
     expect(result.data?.teamName).toBe('my-team');
-    expect(mockTeamDataWorkerClient.getTeamData).toHaveBeenCalledWith('my-team', {
-      includeMemberBranches: false,
-    });
+    expect(mockTeamDataWorkerClient.getTeamData).toHaveBeenCalledWith(
+      'my-team',
+      expect.objectContaining({ members: expect.any(Object) }),
+      { includeMemberBranches: false }
+    );
     expect(service.getTeamData).not.toHaveBeenCalled();
   });
 
@@ -3915,7 +4055,11 @@ describe('ipc teams handlers', () => {
     };
 
     expect(result.success).toBe(true);
-    expect(mockTeamDataWorkerClient.getTeamData).toHaveBeenCalledWith('my-team');
+    expect(mockTeamDataWorkerClient.getTeamData).toHaveBeenCalledWith(
+      'my-team',
+      expect.objectContaining({ members: expect.any(Object) }),
+      undefined
+    );
   });
 
   it('forwards thin TEAM_GET_DATA options through packaged main-thread fallback', async () => {
@@ -4243,7 +4387,11 @@ describe('ipc teams handlers', () => {
       expect(Date.now() - startedAt).toBeLessThan(1500);
       expect(result.success).toBe(true);
       expect(result.data?.teamName).toBe('slow-meta-team');
-      expect(mockTeamDataWorkerClient.getTeamData).toHaveBeenCalledWith('slow-meta-team');
+      expect(mockTeamDataWorkerClient.getTeamData).toHaveBeenCalledWith(
+        'slow-meta-team',
+        expect.objectContaining({ members: expect.any(Object) }),
+        undefined
+      );
     } finally {
       metaSpy.mockRestore();
       await fs.promises.rm(claudeRoot, { recursive: true, force: true });
@@ -5498,7 +5646,9 @@ describe('ipc teams handlers', () => {
       for (const request of partialRequests) {
         await expect(handler({} as never, 'my-team', request)).resolves.toMatchObject({
           success: false,
-          error: 'specProject, specSlug, and requirements must be provided together',
+          error:
+            'A registry task needs specProject, specSlug and requirements together: read the corpus requirement ids first ' +
+            '(team_spec_spec_entities kinds ["requirement"]) and pass ids that exist in the bound specification.',
         });
       }
 
@@ -7870,7 +8020,7 @@ describe('ipc teams handlers', () => {
 
   describe('createTeam prompt validation', () => {
     it('accepts valid prompt in team create request', async () => {
-      const handler = handlers.get(TEAM_CREATE)!;
+      const handler = scopedTeamStartHandler(handlers.get(TEAM_CREATE)!);
       const result = (await handler({ sender: { send: vi.fn() } } as never, {
         teamName: 'test-team',
         members: [{ name: 'alice' }],
@@ -7883,7 +8033,7 @@ describe('ipc teams handlers', () => {
     });
 
     it('rejects non-string prompt in team create request', async () => {
-      const handler = handlers.get(TEAM_CREATE)!;
+      const handler = scopedTeamStartHandler(handlers.get(TEAM_CREATE)!);
       const result = (await handler({ sender: { send: vi.fn() } } as never, {
         teamName: 'test-team',
         members: [{ name: 'alice' }],
@@ -7895,7 +8045,7 @@ describe('ipc teams handlers', () => {
     });
 
     it('rejects a non-boolean experimental local-model override', async () => {
-      const handler = handlers.get(TEAM_CREATE)!;
+      const handler = scopedTeamStartHandler(handlers.get(TEAM_CREATE)!);
       const result = (await handler({ sender: { send: vi.fn() } } as never, {
         teamName: 'test-team',
         members: [{ name: 'alice' }],
@@ -8060,7 +8210,7 @@ describe('ipc teams handlers', () => {
 
   describe('solo team (zero members)', () => {
     it('createTeam accepts members: [] (provisioning validation)', async () => {
-      const handler = handlers.get(TEAM_CREATE)!;
+      const handler = scopedTeamStartHandler(handlers.get(TEAM_CREATE)!);
       const result = (await handler({ sender: { send: vi.fn() } } as never, {
         teamName: 'solo-team',
         members: [],
@@ -8073,7 +8223,7 @@ describe('ipc teams handlers', () => {
     });
 
     it('createTeam preserves teammate backend and fast mode metadata', async () => {
-      const handler = handlers.get(TEAM_CREATE)!;
+      const handler = scopedTeamStartHandler(handlers.get(TEAM_CREATE)!);
       const result = (await handler({ sender: { send: vi.fn() } } as never, {
         teamName: 'runtime-team',
         members: [
@@ -8116,7 +8266,7 @@ describe('ipc teams handlers', () => {
     });
 
     it('createTeam validates teammate runtime fields against inherited team provider metadata', async () => {
-      const handler = handlers.get(TEAM_CREATE)!;
+      const handler = scopedTeamStartHandler(handlers.get(TEAM_CREATE)!);
       const result = (await handler({ sender: { send: vi.fn() } } as never, {
         teamName: 'inherited-backend-team',
         members: [
@@ -8148,7 +8298,7 @@ describe('ipc teams handlers', () => {
     });
 
     it('createTeam preserves top-level OpenCode provider and inherited teammate backend', async () => {
-      const handler = handlers.get(TEAM_CREATE)!;
+      const handler = scopedTeamStartHandler(handlers.get(TEAM_CREATE)!);
       const result = (await handler({ sender: { send: vi.fn() } } as never, {
         teamName: 'opencode-runtime-team',
         members: [
@@ -8420,7 +8570,13 @@ describe('ipc teams handlers', () => {
           }
           const result = await handlers.get(entry === 'create' ? TEAM_CREATE : TEAM_LAUNCH)!(
             { sender: { send: vi.fn() } } as never,
-            { teamName, cwd, runtimeSelectionVersion: 1, members: [{ name: 'builder' }] }
+            {
+              teamName,
+              cwd,
+              runtimeSelectionVersion: 1,
+              members: [{ name: 'builder' }],
+              specScope: { projects: ['owner/project'], bindings: [] },
+            }
           );
           expect(result).toEqual({
             success: false,
@@ -8472,11 +8628,14 @@ describe('ipc teams handlers', () => {
             cwd: claudeRoot,
             members: [],
           });
-          const result = await handlers.get(TEAM_LAUNCH)!({ sender: { send: vi.fn() } } as never, {
-            teamName: 'marker-team',
-            cwd: claudeRoot,
-            runtimeSelectionVersion: 2,
-          });
+          const result = await scopedTeamStartHandler(handlers.get(TEAM_LAUNCH)!)(
+            { sender: { send: vi.fn() } } as never,
+            {
+              teamName: 'marker-team',
+              cwd: claudeRoot,
+              runtimeSelectionVersion: 2,
+            }
+          );
           expect(result).toEqual({
             success: false,
             error: expect.stringContaining('RUNTIME_SELECTION_UNSUPPORTED'),
@@ -8538,7 +8697,7 @@ describe('ipc teams handlers', () => {
           ],
         });
 
-        const handler = handlers.get(TEAM_LAUNCH)!;
+        const handler = scopedTeamStartHandler(handlers.get(TEAM_LAUNCH)!);
         const result = (await handler({ sender: { send: vi.fn() } } as never, {
           teamName: 'draft-team',
           cwd: os.tmpdir(),
@@ -8614,7 +8773,7 @@ describe('ipc teams handlers', () => {
           })
         );
 
-        const handler = handlers.get(TEAM_LAUNCH)!;
+        const handler = scopedTeamStartHandler(handlers.get(TEAM_LAUNCH)!);
         const result = (await handler({ sender: { send: vi.fn() } } as never, {
           teamName: 'anthropic-team',
           cwd: os.tmpdir(),
@@ -8679,7 +8838,7 @@ describe('ipc teams handlers', () => {
           })
         );
 
-        const handler = handlers.get(TEAM_LAUNCH)!;
+        const handler = scopedTeamStartHandler(handlers.get(TEAM_LAUNCH)!);
         const result = (await handler({ sender: { send: vi.fn() } } as never, {
           teamName: 'anthropic-team',
           cwd: os.tmpdir(),
@@ -8741,7 +8900,7 @@ describe('ipc teams handlers', () => {
           })
         );
 
-        const handler = handlers.get(TEAM_LAUNCH)!;
+        const handler = scopedTeamStartHandler(handlers.get(TEAM_LAUNCH)!);
         const result = (await handler({ sender: { send: vi.fn() } } as never, {
           teamName: 'runtime-change-team',
           cwd: os.tmpdir(),
@@ -8811,7 +8970,7 @@ describe('ipc teams handlers', () => {
           })
         );
 
-        const handler = handlers.get(TEAM_LAUNCH)!;
+        const handler = scopedTeamStartHandler(handlers.get(TEAM_LAUNCH)!);
         const result = (await handler({ sender: { send: vi.fn() } } as never, {
           teamName: 'runtime-default-change-team',
           cwd: os.tmpdir(),
@@ -8862,7 +9021,7 @@ describe('ipc teams handlers', () => {
           })
         );
 
-        const handler = handlers.get(TEAM_LAUNCH)!;
+        const handler = scopedTeamStartHandler(handlers.get(TEAM_LAUNCH)!);
         const result = (await handler({ sender: { send: vi.fn() } } as never, {
           teamName: 'gemini-backend-team',
           cwd: os.tmpdir(),
@@ -8925,7 +9084,7 @@ describe('ipc teams handlers', () => {
           })
         );
 
-        const handler = handlers.get(TEAM_LAUNCH)!;
+        const handler = scopedTeamStartHandler(handlers.get(TEAM_LAUNCH)!);
         const result = (await handler({ sender: { send: vi.fn() } } as never, {
           teamName: 'codex-default-model-team',
           cwd: os.tmpdir(),
@@ -8975,7 +9134,7 @@ describe('ipc teams handlers', () => {
           })
         );
 
-        const handler = handlers.get(TEAM_LAUNCH)!;
+        const handler = scopedTeamStartHandler(handlers.get(TEAM_LAUNCH)!);
         const result = (await handler({ sender: { send: vi.fn() } } as never, {
           teamName: 'runtime-backend-change-team',
           cwd: os.tmpdir(),
@@ -9004,7 +9163,7 @@ describe('ipc teams handlers', () => {
     });
 
     it('still rejects unknown providerBackendId values during launch', async () => {
-      const handler = handlers.get(TEAM_LAUNCH)!;
+      const handler = scopedTeamStartHandler(handlers.get(TEAM_LAUNCH)!);
       const result = (await handler({ sender: { send: vi.fn() } } as never, {
         teamName: 'my-team',
         cwd: os.tmpdir(),
@@ -9019,7 +9178,7 @@ describe('ipc teams handlers', () => {
     });
 
     it('rejects invalid launch limitContext before dispatching', async () => {
-      const handler = handlers.get(TEAM_LAUNCH)!;
+      const handler = scopedTeamStartHandler(handlers.get(TEAM_LAUNCH)!);
       const result = (await handler({ sender: { send: vi.fn() } } as never, {
         teamName: 'my-team',
         cwd: os.tmpdir(),
@@ -9033,7 +9192,7 @@ describe('ipc teams handlers', () => {
     });
 
     it('rejects invalid experimental local-model override before dispatching', async () => {
-      const handler = handlers.get(TEAM_LAUNCH)!;
+      const handler = scopedTeamStartHandler(handlers.get(TEAM_LAUNCH)!);
       const result = (await handler({ sender: { send: vi.fn() } } as never, {
         teamName: 'my-team',
         cwd: os.tmpdir(),
@@ -9047,7 +9206,7 @@ describe('ipc teams handlers', () => {
     });
 
     it('launchTeam preserves top-level OpenCode provider and backend', async () => {
-      const handler = handlers.get(TEAM_LAUNCH)!;
+      const handler = scopedTeamStartHandler(handlers.get(TEAM_LAUNCH)!);
       const result = (await handler({ sender: { send: vi.fn() } } as never, {
         teamName: 'opencode-runtime-team',
         cwd: os.tmpdir(),
@@ -9082,7 +9241,7 @@ describe('ipc teams handlers', () => {
     });
 
     it('still rejects members as non-array in createTeam', async () => {
-      const handler = handlers.get(TEAM_CREATE)!;
+      const handler = scopedTeamStartHandler(handlers.get(TEAM_CREATE)!);
       const result = (await handler({ sender: { send: vi.fn() } } as never, {
         teamName: 'solo-team',
         members: 'not-array',
@@ -9169,7 +9328,7 @@ describe('ipc teams handlers', () => {
 
   describe('reserved teammate names', () => {
     it('rejects teammate name "user" in createTeam', async () => {
-      const handler = handlers.get(TEAM_CREATE)!;
+      const handler = scopedTeamStartHandler(handlers.get(TEAM_CREATE)!);
       const result = (await handler({ sender: { send: vi.fn() } } as never, {
         teamName: 'solo-team',
         members: [{ name: 'user' }],
@@ -9180,7 +9339,7 @@ describe('ipc teams handlers', () => {
     });
 
     it('rejects teammate name "team-lead" in createTeam', async () => {
-      const handler = handlers.get(TEAM_CREATE)!;
+      const handler = scopedTeamStartHandler(handlers.get(TEAM_CREATE)!);
       const result = (await handler({ sender: { send: vi.fn() } } as never, {
         teamName: 'solo-team',
         members: [{ name: 'team-lead' }],

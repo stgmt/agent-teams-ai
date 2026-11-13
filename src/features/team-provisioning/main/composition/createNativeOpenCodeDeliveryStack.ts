@@ -283,8 +283,7 @@ export function createNativeOpenCodeDeliveryStack(
     createLedger: (teamName, laneId) => ledgers.open(teamName, laneId),
     resolveMembersForRuntimeLane: (teamName, laneId) =>
       identity.resolveMembersForRuntimeLane(teamName, laneId),
-    getInboxMessages: async (teamName, memberName) =>
-      (await sources.inbox.getMessagesFor(teamName, memberName)) as InboxMessage[],
+    getInboxMessages: (teamName, memberName) => sources.inbox.getMessagesFor(teamName, memberName),
     resolveCurrentRuntimeRunId: (teamName, laneId) =>
       identity.resolveCurrentOpenCodeRuntimeRunId(teamName, laneId),
     resolveTrackedBootstrapRunId: (input) =>
@@ -452,8 +451,8 @@ export function createNativeOpenCodeDeliveryStack(
       bootstrap,
       lanes,
       stoppedLanes,
-      readInboxMessages: async (teamName, memberName) =>
-        (await sources.inbox.getMessagesFor(teamName, memberName)) as InboxMessage[],
+      readInboxMessages: (teamName, memberName) =>
+        sources.inbox.getMessagesFor(teamName, memberName),
       canDeliverToTeamRuntime: (teamName) => isLive(teamName),
       hasAcceptedMemberWorkSyncReport: (input) => sources.hasAcceptedMemberWorkSyncReport(input),
       hasAcknowledgedInbound: sources.hasAcknowledgedInbound,

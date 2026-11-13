@@ -11,7 +11,12 @@ import {
   useOpenCodeProviderConnectionBlocked,
 } from '../../../../src/features/runtime-provider-management/renderer/ui/OpenCodeProviderCompatibilityStatus';
 
-const mocks = vi.hoisted(() => ({ version: '2.1.4' as string | null }));
+// The pinned runtime ships the V1-only delivery, so a V2 CLI never reaches the app;
+// this suite drives the component's generation contract directly.
+const mocks = vi.hoisted(() => ({
+  generation: 'v2' as 'v1' | 'v2' | null,
+  version: '2.1.4' as string | null,
+}));
 vi.mock('@features/localization/renderer', () => ({
   useAppTranslation: () => ({ t: (key: string) => key }),
 }));
@@ -40,6 +45,7 @@ describe('OpenCode provider compatibility in advanced settings', () => {
     host = document.createElement('div');
     document.body.appendChild(host);
     root = createRoot(host);
+    mocks.generation = 'v2';
     mocks.version = '2.1.4';
   });
   afterEach(async () => {
@@ -51,13 +57,7 @@ describe('OpenCode provider compatibility in advanced settings', () => {
   async function show(): Promise<void> {
     await act(async () =>
       root.render(
-        <OpenCodeProviderCompatibilityScope
-          generation={
-            mocks.version === null || !isRecognizedOpenCodeRuntimeVersion(mocks.version)
-              ? null
-              : getOpenCodeGeneration(mocks.version)
-          }
-        >
+        <OpenCodeProviderCompatibilityScope generation={mocks.generation}>
           <OpenCodeProviderCompatibilityStatus providerId="cursor-acp" />
           <OpenCodeProviderCompatibilityStatus providerId="openrouter" />
           <OpenCodeProviderCompatibilityStatus providerId="xai" />
@@ -100,6 +100,7 @@ describe('OpenCode provider compatibility in advanced settings', () => {
   });
   it('blocks connection while native status is unavailable without claiming V1', async () => {
     mocks.version = null;
+    mocks.generation = null;
     await show();
     expect(
       host.querySelector<HTMLButtonElement>('[data-testid="connect-action-cursor-acp"]')?.disabled
@@ -113,6 +114,9 @@ describe('OpenCode provider compatibility in advanced settings', () => {
   });
   it('does not treat unknown OpenCode 3.x as a valid V1 runtime', async () => {
     mocks.version = '3.0.0';
+    mocks.generation = isRecognizedOpenCodeRuntimeVersion('3.0.0')
+      ? getOpenCodeGeneration('3.0.0')
+      : null;
     await show();
     expect(
       host.querySelector<HTMLButtonElement>('[data-testid="connect-action-cursor-acp"]')?.disabled
@@ -136,24 +140,28 @@ describe('OpenCode provider compatibility in advanced settings', () => {
     // Re-render the same mounted tree: no saved credentials, route mutation or
     // fallback may be inferred from the previous generation's rendered state.
     mocks.version = '1.19.5';
+    mocks.generation = 'v1';
     await show();
     expect(cursor()?.disabled).toBe(false);
     expect(xaiOAuth()?.disabled).toBe(false);
     expect(xaiKey()?.disabled).toBe(false);
 
     mocks.version = '2.1.4';
+    mocks.generation = 'v2';
     await show();
     expect(cursor()?.disabled).toBe(true);
     expect(xaiOAuth()?.disabled).toBe(true);
     expect(xaiKey()?.disabled).toBe(false);
 
     mocks.version = null;
+    mocks.generation = null;
     await show();
     expect(cursor()?.disabled).toBe(true);
     expect(xaiOAuth()?.disabled).toBe(true);
     expect(xaiKey()?.disabled).toBe(true);
 
     mocks.version = '1.19.5';
+    mocks.generation = 'v1';
     await show();
     expect(cursor()?.disabled).toBe(false);
     expect(xaiOAuth()?.disabled).toBe(false);
@@ -165,6 +173,7 @@ describe('OpenCode provider compatibility in advanced settings', () => {
 
   it('does not show V2 warnings on an installed V1 runtime', async () => {
     mocks.version = '1.19.5';
+    mocks.generation = 'v1';
     await show();
     expect(host.querySelectorAll('[data-testid^="runtime-provider-compatibility-"]')).toHaveLength(
       0

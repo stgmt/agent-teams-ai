@@ -316,7 +316,9 @@ export class ExecutionTaskStore {
 
   private readRecordFile(taskId: string, recordPath: string): ExecutionTaskRecord | null {
     let raw: string | null = null;
-    for (let attempt = 1; raw === null; attempt += 1) {
+    let attempt = 0;
+    while (raw === null) {
+      attempt += 1;
       try {
         raw = fs.readFileSync(recordPath, 'utf8');
       } catch (error) {

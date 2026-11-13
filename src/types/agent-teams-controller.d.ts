@@ -1,4 +1,11 @@
 declare module 'agent-teams-controller' {
+  export const specGateway: {
+    readToolDescriptors(result: unknown): ReadonlyArray<{
+      name: string;
+      description: string;
+      inputSchema: Record<string, unknown>;
+    }>;
+  };
   export const boardLocks: {
     withTeamBoardLock<T>(paths: { teamDir: string; claudeDir?: string }, fn: () => T): T;
     tryWithTeamBoardLock<T>(
@@ -37,7 +44,7 @@ declare module 'agent-teams-controller' {
     displayId?: string;
     subject: string;
     status: string;
-    owner?: string | null | undefined;
+    owner?: string | null;
     comments?: ControllerTaskCommentRecord[];
     attachments?: ControllerTaskAttachmentRecord[];
     historyEvents?: Record<string, unknown>[];

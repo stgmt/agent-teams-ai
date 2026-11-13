@@ -1,10 +1,12 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
-import { taskPolicyDigest, type TaskPolicy } from '@main/services/identity/TaskAttestation';
+import { type TaskPolicy, taskPolicyDigest } from '@main/services/identity/TaskAttestation';
+
 import { atomicWriteSync } from '../../../utils/atomicWrite';
 import { withFileLock } from '../fileLock';
 import { isRecord } from '../registry/RegistryJson';
+
 import type {
   RegistryTaskCompletionReplayRecord,
   RegistryTaskPolicyChangeReplayRecord,

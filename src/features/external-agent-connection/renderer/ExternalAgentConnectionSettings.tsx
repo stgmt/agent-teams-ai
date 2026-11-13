@@ -15,13 +15,13 @@ interface Props {
   onCdpEnabledChange(enabled: boolean): void;
 }
 
-export function ExternalAgentConnectionSettings({
+export const ExternalAgentConnectionSettings = ({
   api,
   local,
   cdpEnabled,
   saving,
   onCdpEnabledChange,
-}: Readonly<Props>): React.JSX.Element {
+}: Readonly<Props>): React.JSX.Element => {
   const { t } = useAppTranslation('settings');
   const { info, error, retrying, retry } = useConnectionInfo(api, local);
   const mcpReady = info?.mcp.status === 'ready' && info.control.status === 'ready';
@@ -125,4 +125,4 @@ export function ExternalAgentConnectionSettings({
       )}
     </section>
   );
-}
+};

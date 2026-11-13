@@ -1,12 +1,15 @@
+import { nativeSdkDeferred } from './nativeSdkTestHarness';
 // @vitest-environment node
 import { spawn } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, utimes, writeFile } from 'node:fs/promises';
+import * as filesystem from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { NativeTeamConfigStore } from '../../../../src/features/team-provisioning/main/infrastructure/NativeTeamConfigStore';
+import * as processInspection from '../../../../src/main/utils/processInspection';
 
 const directories: string[] = [];
 afterEach(async () => {
@@ -103,6 +106,131 @@ describe('pinned native config storage boundary', () => {
     await expect(readFile(join(directory, '.config.lock', 'metadata.json'))).rejects.toMatchObject({
       code: 'ENOENT',
     });
+  });
+
+  it.each(['metadata', 'publication'] as const)(
+    'does not occupy the CLI lock when interrupted before %s publication',
+    async (phase) => {
+      const { teamName, directory, path } = await setup();
+      const entered = nativeSdkDeferred<string>();
+      const interruption = nativeSdkDeferred<void>();
+      const crash = new Error('TEST interrupted lock publication');
+      const write = filesystem.writeFile;
+      const link = filesystem.symlink;
+      const boundary = {
+        writeFile:
+          phase === 'metadata'
+            ? async (...args: Parameters<typeof write>) => {
+                entered.resolve(String(args[0]));
+                await interruption.promise;
+                return write(...args);
+              }
+            : write,
+        symlink:
+          phase === 'publication'
+            ? async (...args: Parameters<typeof link>) => {
+                entered.resolve(String(args[0]));
+                await interruption.promise;
+                return link(...args);
+              }
+            : link,
+      };
+      const store = new NativeTeamConfigStore(join(directory, '..'), boundary);
+      const firstUpdate = vi.fn(async () => ({ first: true }));
+      const first = store.mutate(teamName, new AbortController().signal, firstUpdate);
+      const rejected = expect(first).rejects.toBe(crash);
+      try {
+        const stage = await entered.promise;
+        if (phase === 'publication') {
+          expect(JSON.parse(await readFile(join(stage, 'metadata.json'), 'utf8'))).toMatchObject({
+            pid: process.pid,
+            nonce: expect.any(String),
+          });
+        }
+        // The interrupted writer has NOT run its finally/cleanup. A fresh writer
+        // must progress without deleting its live preparation directory by age.
+        const fresh = new NativeTeamConfigStore(join(directory, '..'));
+        await fresh.mutate(teamName, AbortSignal.timeout(5_000), async () => ({ recovered: true }));
+        expect(firstUpdate).not.toHaveBeenCalled();
+        expect(JSON.parse(await readFile(path, 'utf8'))).toEqual({ recovered: true });
+      } finally {
+        interruption.reject(crash);
+        await rejected;
+      }
+    },
+    10_000
+  );
+
+  it('preserves an unowned legacy empty lock rather than guessing its owner is dead', async () => {
+    const { teamName, directory } = await setup();
+    const lock = join(directory, '.config.lock');
+    await mkdir(lock);
+    const attempted = nativeSdkDeferred<void>();
+    const link = filesystem.symlink;
+    const store = new NativeTeamConfigStore(join(directory, '..'), {
+      writeFile: filesystem.writeFile,
+      symlink: async (...args) => {
+        try {
+          return await link(...args);
+        } finally {
+          attempted.resolve();
+        }
+      },
+    });
+    const abort = new AbortController();
+    const update = vi.fn(async () => ({ overwritten: true }));
+    const mutation = store.mutate(teamName, abort.signal, update);
+    const rejected = expect(mutation).rejects.toThrow();
+    await attempted.promise;
+    abort.abort();
+    await rejected;
+    expect(update).not.toHaveBeenCalled();
+    expect((await filesystem.lstat(lock)).isDirectory()).toBe(true);
+  });
+
+  it('never evicts a demonstrably live lock owner solely because its timestamp is old', async () => {
+    const { store, teamName, directory, path } = await setup();
+    const lock = join(directory, '.config.lock');
+    const metadataPath = join(lock, 'metadata.json');
+    const originalConfig = JSON.stringify({ retained: true });
+    await writeFile(path, originalConfig);
+    await mkdir(lock);
+    const old = new Date('2000-01-01T00:00:00.000Z');
+    const metadata = JSON.stringify({
+      pid: process.pid,
+      createdAt: old.getTime(),
+      nonce: 'TEST-live-lock',
+    });
+    await writeFile(metadataPath, metadata);
+    await utimes(metadataPath, old, old);
+    await utimes(lock, old, old);
+    const update = vi.fn(async () => ({ overwritten: true }));
+    const controller = new AbortController();
+    const inspected = nativeSdkDeferred<void>();
+    const inspect = processInspection.inspectProcessByPid;
+    const probe = vi
+      .spyOn(processInspection, 'inspectProcessByPid')
+      .mockImplementation(async (...args) => {
+        const result = await inspect(...args);
+        inspected.resolve();
+        return result;
+      });
+    try {
+      const mutation = store.mutate(teamName, controller.signal, update);
+      const rejection = expect(mutation).rejects.toThrow();
+      // Wait for actual ownership evidence, not a guessed sleep or an early abort.
+      await Promise.race([inspected.promise, mutation]);
+      const settled = nativeSdkDeferred<void>();
+      setImmediate(settled.resolve);
+      await settled.promise;
+      controller.abort();
+      await rejection;
+      expect(update).not.toHaveBeenCalled();
+      expect(await readFile(metadataPath, 'utf8')).toBe(metadata);
+      expect(await readFile(path, 'utf8')).toBe(originalConfig);
+    } finally {
+      probe.mockRestore();
+    }
   });
 
   it('does not overwrite a non-cooperating writer that changes config while the mutation is prepared', async () => {

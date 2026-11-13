@@ -15,7 +15,6 @@ import { isBoardTaskExactLogsReadEnabled } from '../taskLogs/exact/featureGates'
 import { TeamKanbanManager } from '../TeamKanbanManager';
 import { TeamMembersMetaStore } from '../TeamMembersMetaStore';
 import { getTeamTaskWorkflowColumn, isTeamTaskActivelyWorked } from '../teamTaskActiveState';
-import { TeamTaskReader } from '../TeamTaskReader';
 
 import { BoardTaskActivityBatchIndexer } from './BoardTaskActivityBatchIndexer';
 import {
@@ -28,6 +27,7 @@ import { TeamTaskLogFreshnessReader } from './TeamTaskLogFreshnessReader';
 import { TeamTaskStallExactRowReader } from './TeamTaskStallExactRowReader';
 
 import type { BoardTaskActivityRecord } from '../taskLogs/activity/BoardTaskActivityRecord';
+import type { TeamTaskReader } from '../TeamTaskReader';
 import type { TeamTaskStallExactRow, TeamTaskStallSnapshot } from './TeamTaskStallTypes';
 import type { TeamConfig, TeamMember, TeamProviderId, TeamTask } from '@shared/types';
 
@@ -71,14 +71,10 @@ function buildProviderByMemberName(args: {
   return providerByMemberName;
 }
 
-/**
- * Collaborators of the snapshot source. Every one has a production default, so
- * a caller overrides only what it already owns; the object shape keeps that
- * possible without spelling out the collaborators in front of it positionally.
- */
+/** Task authority is injected from main; optional analysis collaborators retain their defaults. */
 export interface TeamTaskStallSnapshotSourceDeps {
   transcriptSourceLocator?: TeamTranscriptSourceLocator;
-  taskReader?: TeamTaskReader;
+  taskReader?: Pick<TeamTaskReader, 'getTasks' | 'getDeletedTasks'>;
   kanbanManager?: TeamKanbanManager;
   transcriptReader?: BoardTaskActivityTranscriptReader;
   activityBatchIndexer?: BoardTaskActivityBatchIndexer;
@@ -91,7 +87,7 @@ export interface TeamTaskStallSnapshotSourceDeps {
 
 export class TeamTaskStallSnapshotSource {
   private readonly transcriptSourceLocator: TeamTranscriptSourceLocator;
-  private readonly taskReader: TeamTaskReader;
+  private readonly taskReader: Pick<TeamTaskReader, 'getTasks' | 'getDeletedTasks'> | null;
   private readonly kanbanManager: TeamKanbanManager;
   private readonly transcriptReader: BoardTaskActivityTranscriptReader;
   private readonly activityBatchIndexer: BoardTaskActivityBatchIndexer;
@@ -104,7 +100,7 @@ export class TeamTaskStallSnapshotSource {
   constructor(deps: TeamTaskStallSnapshotSourceDeps = {}) {
     this.transcriptSourceLocator =
       deps.transcriptSourceLocator ?? new TeamTranscriptSourceLocator();
-    this.taskReader = deps.taskReader ?? new TeamTaskReader();
+    this.taskReader = deps.taskReader ?? null;
     this.kanbanManager = deps.kanbanManager ?? new TeamKanbanManager();
     this.transcriptReader = deps.transcriptReader ?? new BoardTaskActivityTranscriptReader();
     this.activityBatchIndexer = deps.activityBatchIndexer ?? new BoardTaskActivityBatchIndexer();
@@ -126,6 +122,8 @@ export class TeamTaskStallSnapshotSource {
     if (!transcriptContext) {
       return null;
     }
+    if (!this.taskReader)
+      throw new Error('Main-owned registry task reader is required for stall monitoring');
 
     const [activeTasks, deletedTasks, kanbanState, metaMembers] = await Promise.all([
       this.taskReader.getTasks(teamName),

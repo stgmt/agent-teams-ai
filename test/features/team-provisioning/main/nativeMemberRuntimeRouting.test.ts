@@ -64,6 +64,13 @@ function setup(providers: Record<string, string>, withAdapter = true) {
         model: null,
         workingDirectory: '/TEST/cwd',
         instructions: 'TEST',
+        specIntegration: {
+          scope: { projects: ['TEST/project'], bindings: [] },
+          environment: {
+            OMP_SPEC_REGISTRY_URL: 'http://127.0.0.1:8090',
+            OMP_SPEC_REGISTRY_TOKEN: 'TEST-registry-credential',
+          },
+        },
       }) satisfies ConfiguredMemberLaunch,
   };
   const routing = createNativeMemberRuntimeRouting({
@@ -102,6 +109,13 @@ describe('native member runtime routing', () => {
       model: null,
       workingDirectory: '/TEST/cwd',
       instructions: 'TEST',
+      specIntegration: {
+        scope: { projects: ['TEST/project'], bindings: [] },
+        environment: {
+          OMP_SPEC_REGISTRY_URL: 'http://127.0.0.1:8090',
+          OMP_SPEC_REGISTRY_TOKEN: 'TEST-registry-credential',
+        },
+      },
     } satisfies ConfiguredMemberLaunch;
     await routing.runtime.spawn(
       settings,
@@ -129,6 +143,13 @@ describe('native member runtime routing', () => {
       role,
       workingDirectory: '/TEST/cwd',
       instructions: 'TEST',
+      specIntegration: {
+        scope: { projects: ['TEST/project'], bindings: [] },
+        environment: {
+          OMP_SPEC_REGISTRY_URL: 'http://127.0.0.1:8090',
+          OMP_SPEC_REGISTRY_TOKEN: 'TEST-registry-credential',
+        },
+      },
     });
     const token = (memberName: string) => ({
       ...run,

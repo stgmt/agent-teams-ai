@@ -36,12 +36,14 @@ import {
 } from './TeamProvisioningProviderPreflight';
 import { getTeamProviderLabel } from './TeamProvisioningRuntimeDiagnostics';
 import {
-  type AuthStatusCommandResponse,
   extractJsonObjectFromCli,
   isProbeTimeoutMessage,
-  type RuntimeStatusCommandResponse,
 } from './TeamProvisioningRuntimeLaunchSelection';
 
+import type {
+  AuthStatusCommandResponse,
+  RuntimeStatusCommandResponse,
+} from './TeamProvisioningModelListNormalization';
 import type { TeamProviderId } from '@shared/types';
 
 const { AGENT_TEAMS_TEAMMATE_OPERATIONAL_TOOL_NAMES } = agentTeamsControllerModule;
@@ -431,11 +433,11 @@ export async function runProviderOneShotDiagnostic({
     resolvedProviderId === 'codex'
       ? diagnosticModel?.trim() || ports.getConfiguredCodexCustomProviderModel()
       : getAnthropicCompatibleDiagnosticModelOverride(resolvedProviderId, env);
-  const args = buildProviderCliCommandArgs(
+  const args = buildProviderLaunchCliCommandArgs(
     providerArgs,
     buildProviderPreflightPingArgs(providerId, { modelOverride })
   );
-  const timeoutMs = getPreflightTimeoutMs(providerId);
+  const timeoutMs = getProviderModelProbeTimeoutMs(providerId);
   ports.appendPreflightDebugLog('provider_one_shot_diagnostic_start', {
     providerId: resolvedProviderId,
     cwd,
@@ -1175,14 +1177,6 @@ export async function spawnProbe({
       });
     });
   });
-}
-
-function getPreflightTimeoutMs(providerId: TeamProviderId | undefined): number {
-  return getProviderModelProbeTimeoutMs(providerId);
-}
-
-function buildProviderCliCommandArgs(providerArgs: string[], args: string[]): string[] {
-  return buildProviderLaunchCliCommandArgs(providerArgs, args);
 }
 
 function isMissingCwdSpawnError(message: string): boolean {

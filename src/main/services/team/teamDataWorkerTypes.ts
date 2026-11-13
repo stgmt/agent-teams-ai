@@ -3,11 +3,17 @@
  */
 
 import type {
+  RegistryBoardSnapshotReadOptions,
+  RegistryTaskProviderError,
+} from './registry/RegistryTaskProvider';
+import type {
   InboxMessage,
   MemberLogSummary,
   MessagesPage,
+  TeamAgentRuntimeSnapshot,
   TeamGetDataOptions,
   TeamMemberActivityMeta,
+  TeamTask,
   TeamViewSnapshot,
 } from '@shared/types';
 
@@ -15,6 +21,7 @@ import type {
 
 export interface GetTeamDataPayload {
   teamName: string;
+  runtimeSnapshot: TeamAgentRuntimeSnapshot;
   options?: TeamGetDataOptions;
 }
 
@@ -88,4 +95,36 @@ export type TeamDataWorkerResponse =
       result: TeamViewSnapshot | MessagesPage | TeamMemberActivityMeta | MemberLogSummary[] | null;
       diag?: TeamDataWorkerDiag;
     }
-  | { id: string; ok: false; error: string };
+  | {
+      id: string;
+      ok: false;
+      error: string;
+      registryFailure?: RegistryBoardReadFailure;
+    };
+
+export type RegistryBoardReadFailure = ConstructorParameters<typeof RegistryTaskProviderError>[0];
+
+/** Keep domain failure identity across structured-clone worker boundaries. */
+export function serializeRegistryBoardReadFailure(
+  error: RegistryTaskProviderError
+): RegistryBoardReadFailure {
+  return {
+    code: error.code,
+    teamName: error.teamName,
+    message: error.message,
+    ...(error.project !== undefined ? { project: error.project } : {}),
+    ...(error.spec !== undefined ? { spec: error.spec } : {}),
+    ...(error.causeCode !== undefined ? { causeCode: error.causeCode } : {}),
+  };
+}
+
+/** Private worker requests use the app's existing MCP-backed snapshot owner. */
+export interface RegistryBoardReadRequest {
+  id: string;
+  op: 'readRegistryBoard';
+  payload: { teamName: string; options?: RegistryBoardSnapshotReadOptions };
+}
+
+export type RegistryBoardReadResponse =
+  | { id: string; op: 'registryBoardResult'; ok: true; tasks: TeamTask[] }
+  | { id: string; op: 'registryBoardResult'; ok: false; failure: RegistryBoardReadFailure };

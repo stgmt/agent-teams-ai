@@ -30,6 +30,7 @@ const AGENT_TEAMS_TASK_TOOL_NAMES = [
   'task_set_status',
   'task_start',
   'task_unlink',
+  'task_update',
 ];
 
 const AGENT_TEAMS_LEAD_TOOL_NAMES = ['lead_briefing'];

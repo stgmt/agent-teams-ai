@@ -239,7 +239,8 @@ export function assertOpenCodeRuntimeStopEffective(input: {
  */
 export function assertEscalatedStopConfirmed(result: TeamForceStopResult): void {
   // Dead processes do not establish whether the original stop finished its
-  // durable task-clock work. Only the stop's own acknowledgement can do that.
+  // durable task-clock work. Only the stop's own acknowledgement can do that,
+  // so `runtime_already_down` is refused with the other unconfirmed outcomes.
   if (result.cleanupOutcome === 'incomplete' || result.stopOutcome !== 'stopped') {
     const outcome =
       ['stopped', 'stop_failed', 'timed_out', 'runtime_already_down'].find(

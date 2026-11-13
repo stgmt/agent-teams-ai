@@ -5,6 +5,7 @@ import * as fs from 'fs';
 import Module from 'module';
 import * as os from 'os';
 import * as path from 'path';
+import Fastify, { type FastifyInstance } from 'fastify';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 type ExecCliMock = (
@@ -132,7 +133,8 @@ describe('TeamMcpConfigBuilder', () => {
     entry: string
   ): void {
     expect(server?.args).toEqual([entry]);
-    expect(server?.command).toMatch(/(^node(?:-\d+)?$|[\\/]node(?:-\d+)?(?:\.exe)?$)/);
+    // Windows paths are case-insensitive: the host binary may be `node.EXE`.
+    expect(server?.command).toMatch(/(^node(?:-\d+)?$|[\\/]node(?:-\d+)?(?:\.exe)?$)/i);
   }
 
   function getBuiltWorkspaceEntry(): string {
@@ -898,7 +900,54 @@ describe('TeamMcpConfigBuilder', () => {
 
     let child: ReturnType<typeof spawn> | undefined;
     let childClosed: Promise<void> | undefined;
+    // The child registers the spec proxy before it reports ready, so the fixture
+    // registry must complete discovery with one valid spec_catalog descriptor.
+    let specRegistry: FastifyInstance | undefined;
     try {
+      specRegistry = Fastify();
+      specRegistry.post('/mcp', (request, reply) => {
+        const body = request.body as { id?: number; method?: string } | null;
+        if (!body || typeof body.method !== 'string') return reply.code(400).send();
+        if (body.method === 'initialize') {
+          reply.header('mcp-session-id', 'mcp-config-launch-fixture');
+          return {
+            jsonrpc: '2.0',
+            id: body.id,
+            result: {
+              protocolVersion: '2024-11-05',
+              capabilities: { tools: {} },
+              serverInfo: { name: 'registry-fixture', version: '1' },
+            },
+          };
+        }
+        if (body.method === 'notifications/initialized') return reply.code(202).send();
+        if (body.method === 'tools/list')
+          return {
+            jsonrpc: '2.0',
+            id: body.id,
+            result: {
+              tools: [
+                {
+                  name: 'spec_catalog',
+                  description: 'List specifications',
+                  inputSchema: {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      view: { enum: ['specs'] },
+                      project: { type: 'string' },
+                      requestId: { type: 'string' },
+                    },
+                    required: ['view', 'project'],
+                  },
+                },
+              ],
+            },
+          };
+        return reply.code(400).send();
+      });
+      await specRegistry.listen({ host: '127.0.0.1', port: 0 });
+      const specRegistryUrl = `${specRegistry.listeningOrigin}/mcp`;
       const configPath = await new TeamMcpConfigBuilder().writeConfigFile(tempAppData);
       createdPaths.push(configPath);
       const server = readGeneratedServer(configPath);
@@ -914,7 +963,14 @@ describe('TeamMcpConfigBuilder', () => {
 
       child = spawn(server.command, server.args, {
         cwd: tempAppData,
-        env: { ...process.env, ...server.env, HOME: tempAppData },
+        env: {
+          ...process.env,
+          ...server.env,
+          HOME: tempAppData,
+          OMP_SPEC_REGISTRY_URL: specRegistryUrl,
+          OMP_SPEC_REGISTRY_TOKEN: 'fixture-token',
+          AGENT_TEAMS_SPEC_SCOPE: JSON.stringify({ projects: ['stgm/sandbox'], bindings: [] }),
+        },
         stdio: ['pipe', 'pipe', 'pipe'],
       });
       childClosed = new Promise((resolve) => child!.once('close', () => resolve()));
@@ -995,6 +1051,7 @@ describe('TeamMcpConfigBuilder', () => {
       } finally {
         if (previousNodeBinary === undefined) delete process.env.NODE_BINARY;
         else process.env.NODE_BINARY = previousNodeBinary;
+        if (specRegistry) await specRegistry.close();
       }
     }
   }, 45_000);

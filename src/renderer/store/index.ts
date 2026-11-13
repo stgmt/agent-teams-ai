@@ -2226,16 +2226,16 @@ export function initializeNotificationListeners(): () => void {
     }
   }
 
-  // Tool approval events from CLI control_request protocol
   if (api.teams?.onToolApprovalEvent) {
     const cleanup = api.teams.onToolApprovalEvent((_event: unknown, data: unknown) => {
       const event = data as ToolApprovalEvent;
       if ('autoResolved' in event && event.autoResolved) {
-        // Timeout or auto-allow resolved in main — remove from UI and record result
-        const allowed = event.reason !== 'timeout_deny';
+        const allowed =
+          event.allowed ??
+          (event.reason === 'runtime_resolved' ? undefined : event.reason !== 'timeout_deny');
         useStore.setState((s) => {
           const next = new Map(s.resolvedApprovals);
-          next.set(event.requestId, allowed);
+          if (allowed !== undefined) next.set(event.requestId, allowed);
           return {
             pendingApprovals: s.pendingApprovals.filter(
               (a) => !(a.runId === event.runId && a.requestId === event.requestId)

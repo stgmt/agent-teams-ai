@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import type {
   MemberProcessToken,
   TeamLifecycleSnapshot,
@@ -12,7 +14,7 @@ interface Dependencies {
     run: Readonly<TeamRunIdentity>,
     attachments: readonly Readonly<AttachmentPayload>[]
   ): Promise<string>;
-  write(token: MemberProcessToken, line: string): Promise<void>;
+  write(token: MemberProcessToken, line: string, operationId: string): Promise<void>;
 }
 
 /** Selects the current configured lead before encoding, then fences the write by that exact attempt. */
@@ -22,7 +24,8 @@ export class SendLeadMessage {
   async execute(
     identity: TeamRunIdentity,
     text: string,
-    attachments: readonly Readonly<AttachmentPayload>[] = []
+    attachments: readonly Readonly<AttachmentPayload>[] = [],
+    operationId?: string
   ): Promise<void> {
     if (!text.trim() && attachments.length === 0) throw new Error('Lead message must not be empty');
     const capturedAttachments = Object.freeze(
@@ -48,6 +51,9 @@ export class SendLeadMessage {
       !lead.operationId
     )
       throw new Error('Configured lead is not running');
+    if (operationId !== undefined && !operationId.trim())
+      throw new Error('Lead command identity must be nonempty');
+    const commandId = operationId ?? randomUUID();
     const token = Object.freeze({
       ...run,
       memberName: lead.memberName,
@@ -55,6 +61,6 @@ export class SendLeadMessage {
       operationId: lead.operationId,
     });
     const line = await this.ports.encode(text, run, capturedAttachments);
-    await this.ports.write(token, line);
+    await this.ports.write(token, line, commandId);
   }
 }

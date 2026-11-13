@@ -54,13 +54,20 @@ describe('OpenCode dashboard catalog detection gate', () => {
   });
 });
 
-describe('OpenCode V2 verified free availability', () => {
+describe('OpenCode verified free availability', () => {
+  // The pinned V1-only release serves OpenCode V1 only; the free-model proof path
+  // is exercised against the runtime this branch ships.
   const runtime = {
     installed: true,
     state: 'ready',
     source: 'app-managed',
+    version: '1.18.3',
+  } as OpenCodeRuntimeStatus;
+  const unservedV2Runtime = {
+    installed: true,
+    state: 'ready',
+    source: 'path',
     version: '2.1.4',
-    v2Support: 'ready',
   } as OpenCodeRuntimeStatus;
   const provider = (proofState: 'verified' | 'needs_probe' | 'failed') =>
     ({
@@ -127,12 +134,17 @@ describe('OpenCode V2 verified free availability', () => {
       expect(hasAvailableFreeOpenCodeDashboardModel(provider(state), runtime)).toBe(false);
     }
   );
-  it('does not reuse a verified free model when the V2 support installation is missing', () => {
+  it('does not reuse a verified free model while V2 support is still required', () => {
     expect(
       hasAvailableFreeOpenCodeDashboardModel(provider('verified'), {
         ...runtime,
         v2Support: 'required',
       })
     ).toBe(false);
+  });
+  it('does not report free availability for a V2 native runtime the pinned release does not serve', () => {
+    expect(hasAvailableFreeOpenCodeDashboardModel(provider('verified'), unservedV2Runtime)).toBe(
+      false
+    );
   });
 });

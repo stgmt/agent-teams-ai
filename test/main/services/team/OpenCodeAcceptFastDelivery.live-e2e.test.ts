@@ -4,9 +4,7 @@ import * as path from 'path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { createOpenCodePromptDeliveryLedgerStore } from '../../../../src/main/services/team/opencode/delivery/OpenCodePromptDeliveryLedger';
-import {
-  getOpenCodeLaneScopedRuntimeFilePath,
-} from '../../../../src/main/services/team/opencode/store/OpenCodeRuntimeManifestEvidenceReader';
+import { getOpenCodeLaneScopedRuntimeFilePath } from '../../../../src/main/services/team/opencode/store/OpenCodeRuntimeManifestEvidenceReader';
 import { OpenCodeTaskLogStreamSource } from '../../../../src/main/services/team/taskLogs/stream/OpenCodeTaskLogStreamSource';
 import { TeamDataService } from '../../../../src/main/services/team/TeamDataService';
 import { TeamTaskReader } from '../../../../src/main/services/team/TeamTaskReader';
@@ -24,14 +22,18 @@ import {
 
 import type { ClaudeMultimodelBridgeService } from '../../../../src/main/services/runtime/ClaudeMultimodelBridgeService';
 import type { ParsedMessage } from '../../../../src/main/types';
-import type { BoardTaskLogStreamResponse, TeamProvisioningProgress } from '../../../../src/shared/types';
+import type {
+  BoardTaskLogStreamResponse,
+  TeamProvisioningProgress,
+} from '../../../../src/shared/types';
 
 const liveDescribe =
   process.env.OPENCODE_E2E === '1' && process.env.OPENCODE_DELIVERY_ACCEPT_FAST_LIVE === '1'
     ? describe
     : describe.skip;
 
-const DEFAULT_ORCHESTRATOR_CLI = '/Users/belief/dev/projects/claude/agent_teams_orchestrator/cli-source';
+const DEFAULT_ORCHESTRATOR_CLI =
+  '/Users/belief/dev/projects/claude/agent_teams_orchestrator/cli-source';
 const DEFAULT_MODEL = 'opencode/big-pickle';
 
 liveDescribe('OpenCode accept-fast delivery live e2e', () => {
@@ -80,184 +82,181 @@ liveDescribe('OpenCode accept-fast delivery live e2e', () => {
     }
   }, 90_000);
 
-  it(
-    'returns after prompt acceptance and later projects exact-session task logs',
-    async () => {
-      const selectedModel = process.env.OPENCODE_E2E_MODEL?.trim() || DEFAULT_MODEL;
-      const projectPath = path.join(tempDir, 'project');
-      await fs.mkdir(projectPath, { recursive: true });
-      await fs.writeFile(
-        path.join(projectPath, 'README.md'),
-        '# OpenCode accept-fast live e2e\n\nSmall project for exact-session delivery checks.\n',
-        'utf8'
-      );
+  it('returns after prompt acceptance and later projects exact-session task logs', async () => {
+    const selectedModel = process.env.OPENCODE_E2E_MODEL?.trim() || DEFAULT_MODEL;
+    const projectPath = path.join(tempDir, 'project');
+    await fs.mkdir(projectPath, { recursive: true });
+    await fs.writeFile(
+      path.join(projectPath, 'README.md'),
+      '# OpenCode accept-fast live e2e\n\nSmall project for exact-session delivery checks.\n',
+      'utf8'
+    );
 
-      harness = await createOpenCodeLiveHarness({
-        tempDir,
-        selectedModel,
-        projectPath,
-      });
+    harness = await createOpenCodeLiveHarness({
+      tempDir,
+      selectedModel,
+      projectPath,
+    });
 
-      const memberName = 'bob';
-      const marker = `accept-fast-live-${Date.now()}`;
-      teamName = `opencode-accept-fast-${Date.now()}`;
-      const progressEvents: TeamProvisioningProgress[] = [];
+    const memberName = 'bob';
+    const marker = `accept-fast-live-${Date.now()}`;
+    teamName = `opencode-accept-fast-${Date.now()}`;
+    const progressEvents: TeamProvisioningProgress[] = [];
 
-      await harness.svc.createTeam(
-        {
-          teamName,
-          cwd: projectPath,
-          providerId: 'opencode',
-          model: selectedModel,
-          skipPermissions: true,
-          prompt: [
-            'Keep launch work minimal.',
-            'When instructed to work on a task, use the Agent Teams task tools exactly as requested.',
-            'Do not send app messages unless explicitly asked.',
-          ].join(' '),
-          members: [
-            {
-              name: memberName,
-              role: 'Developer',
-              providerId: 'opencode',
-              model: selectedModel,
-            },
-          ],
-        },
-        (progress) => {
-          progressEvents.push(progress);
-        }
-      );
-
-      expect(
-        progressEvents.some((progress) =>
-          progress.message.includes('OpenCode team launch is ready')
-        ),
-        formatProgressDump(progressEvents)
-      ).toBe(true);
-
-      const task = await new TeamDataService().createTask(teamName, {
-        subject: `OpenCode accept-fast delivery proof ${marker}`,
-        owner: memberName,
-        startImmediately: false,
-        prompt: `Live accept-fast marker: ${marker}`,
-      });
-      const taskRef = {
+    await harness.svc.createTeam(
+      {
         teamName,
-        taskId: task.id,
-        displayId: task.displayId ?? task.id.slice(0, 8),
-      };
-      const messageId = `accept-fast-live-message-${Date.now()}`;
-      const sleepSeconds = Number(process.env.OPENCODE_ACCEPT_FAST_LIVE_SLEEP_SECONDS ?? 20);
+        cwd: projectPath,
+        providerId: 'opencode',
+        model: selectedModel,
+        skipPermissions: true,
+        prompt: [
+          'Keep launch work minimal.',
+          'When instructed to work on a task, use the Agent Teams task tools exactly as requested.',
+          'Do not send app messages unless explicitly asked.',
+        ].join(' '),
+        members: [
+          {
+            name: memberName,
+            role: 'Developer',
+            providerId: 'opencode',
+            model: selectedModel,
+          },
+        ],
+      },
+      (progress) => {
+        progressEvents.push(progress);
+      }
+    );
 
-      const startedAtMs = Date.now();
-      const delivery = await harness.svc.deliverOpenCodeMemberMessage(teamName, {
-        memberName,
-        messageId,
-        source: 'ui-send',
-        replyRecipient: 'user',
-        actionMode: 'do',
-        taskRefs: [taskRef],
-        text: [
-          `Work on task #${task.displayId}.`,
-          `First call agent-teams_task_start for taskId "${task.id}".`,
-          `Then run exactly one bash command: sleep ${sleepSeconds}; pwd`,
-          `After that command finishes, call agent-teams_task_add_comment for taskId "${task.id}" with text exactly "${marker}:task-comment-after-sleep".`,
-          'Do not call agent-teams_message_send for this validation.',
-          'Stop after the task comment.',
-        ].join('\n'),
-      });
-      const acceptedAtMs = Date.now();
+    expect(
+      progressEvents.some((progress) => progress.message.includes('OpenCode team launch is ready')),
+      formatProgressDump(progressEvents)
+    ).toBe(true);
 
-      expect(delivery.delivered, JSON.stringify(delivery, null, 2)).toBe(true);
-      expect(delivery.accepted, JSON.stringify(delivery, null, 2)).toBe(true);
-      expect(delivery.responsePending, JSON.stringify(delivery, null, 2)).toBe(true);
-      expect(delivery.ledgerRecordId).toBeTruthy();
-      expect(delivery.laneId).toBeTruthy();
+    const task = await new TeamDataService((teamName) =>
+      harness!.svc.getTeamAgentRuntimeSnapshot(teamName)
+    ).createTask(teamName, {
+      subject: `OpenCode accept-fast delivery proof ${marker}`,
+      owner: memberName,
+      startImmediately: false,
+      prompt: `Live accept-fast marker: ${marker}`,
+    });
+    const taskRef = {
+      teamName,
+      taskId: task.id,
+      displayId: task.displayId ?? task.id.slice(0, 8),
+    };
+    const messageId = `accept-fast-live-message-${Date.now()}`;
+    const sleepSeconds = Number(process.env.OPENCODE_ACCEPT_FAST_LIVE_SLEEP_SECONDS ?? 20);
 
-      const immediateTask = await readTask(teamName, task.id);
-      expect(
-        Boolean(
-          immediateTask?.comments?.some((comment) =>
-            comment.text.includes(`${marker}:task-comment-after-sleep`)
-          )
-        ),
-        'accept-fast should return before the delayed task comment is produced'
-      ).toBe(false);
+    const startedAtMs = Date.now();
+    const delivery = await harness.svc.deliverOpenCodeMemberMessage(teamName, {
+      memberName,
+      messageId,
+      source: 'ui-send',
+      replyRecipient: 'user',
+      actionMode: 'do',
+      taskRefs: [taskRef],
+      text: [
+        `Work on task #${task.displayId}.`,
+        `First call agent-teams_task_start for taskId "${task.id}".`,
+        `Then run exactly one bash command: sleep ${sleepSeconds}; pwd`,
+        `After that command finishes, call agent-teams_task_add_comment for taskId "${task.id}" with text exactly "${marker}:task-comment-after-sleep".`,
+        'Do not call agent-teams_message_send for this validation.',
+        'Stop after the task comment.',
+      ].join('\n'),
+    });
+    const acceptedAtMs = Date.now();
 
-      const ledgerRecord = await waitForLedgerRecord({
-        teamName,
-        laneId: delivery.laneId!,
-        messageId,
-      });
-      expect(ledgerRecord.acceptedAt).toBeTruthy();
-      expect(ledgerRecord.runtimeSessionId).toBeTruthy();
-      expect(ledgerRecord.runtimePromptMessageId).toBeTruthy();
-      expect(ledgerRecord.runtimePromptMessageIds ?? []).toContain(
-        ledgerRecord.runtimePromptMessageId
-      );
-      expect(ledgerRecord.taskRefs).toEqual([taskRef]);
-      expect(Date.parse(ledgerRecord.acceptedAt!)).toBeGreaterThanOrEqual(startedAtMs - 1_000);
-      expect(Date.parse(ledgerRecord.acceptedAt!)).toBeLessThanOrEqual(acceptedAtMs + 1_000);
+    expect(delivery.delivered, JSON.stringify(delivery, null, 2)).toBe(true);
+    expect(delivery.accepted, JSON.stringify(delivery, null, 2)).toBe(true);
+    expect(delivery.responsePending, JSON.stringify(delivery, null, 2)).toBe(true);
+    expect(delivery.ledgerRecordId).toBeTruthy();
+    expect(delivery.laneId).toBeTruthy();
 
-      await waitUntil(async () => {
+    const immediateTask = await readTask(teamName, task.id);
+    expect(
+      Boolean(
+        immediateTask?.comments?.some((comment) =>
+          comment.text.includes(`${marker}:task-comment-after-sleep`)
+        )
+      ),
+      'accept-fast should return before the delayed task comment is produced'
+    ).toBe(false);
+
+    const ledgerRecord = await waitForLedgerRecord({
+      teamName,
+      laneId: delivery.laneId!,
+      messageId,
+    });
+    expect(ledgerRecord.acceptedAt).toBeTruthy();
+    expect(ledgerRecord.runtimeSessionId).toBeTruthy();
+    expect(ledgerRecord.runtimePromptMessageId).toBeTruthy();
+    expect(ledgerRecord.runtimePromptMessageIds ?? []).toContain(
+      ledgerRecord.runtimePromptMessageId
+    );
+    expect(ledgerRecord.taskRefs).toEqual([taskRef]);
+    expect(Date.parse(ledgerRecord.acceptedAt!)).toBeGreaterThanOrEqual(startedAtMs - 1_000);
+    expect(Date.parse(ledgerRecord.acceptedAt!)).toBeLessThanOrEqual(acceptedAtMs + 1_000);
+
+    await waitUntil(
+      async () => {
         const currentTask = await readTask(teamName!, task.id);
         return Boolean(
           currentTask?.comments?.some((comment) =>
             comment.text.includes(`${marker}:task-comment-after-sleep`)
           )
         );
-      }, 180_000, 2_000, async () => {
+      },
+      180_000,
+      2_000,
+      async () => {
         const currentTask = await readTask(teamName!, task.id);
         return `Task comments: ${JSON.stringify(currentTask?.comments ?? [], null, 2)}\nDelivery: ${JSON.stringify(
           delivery,
           null,
           2
         )}`;
-      });
+      }
+    );
 
-      await waitForOpenCodeMemberIdle({
-        bridgeClient: harness.bridgeClient,
-        teamName,
-        memberName,
-        projectPath,
-        timeoutMs: 90_000,
-      }).catch(() => undefined);
+    await waitForOpenCodeMemberIdle({
+      bridgeClient: harness.bridgeClient,
+      teamName,
+      memberName,
+      projectPath,
+      timeoutMs: 90_000,
+    }).catch(() => undefined);
 
-      const stream = await waitForTaskLogStream({
-        source: createLiveOpenCodeTaskLogSource(harness, projectPath),
-        teamName,
-        taskId: task.id,
-        marker,
-      });
-      const rawMessages = flattenRawMessages(stream);
-      const toolNames = rawMessages.flatMap((message) =>
-        message.toolCalls.map((toolCall) => toolCall.name)
-      );
-      const serialized = rawMessages
-        .map((message) =>
-          typeof message.content === 'string' ? message.content : JSON.stringify(message.content)
-        )
-        .join('\n');
+    const stream = await waitForTaskLogStream({
+      source: createLiveOpenCodeTaskLogSource(harness, projectPath),
+      teamName,
+      taskId: task.id,
+      marker,
+    });
+    const rawMessages = flattenRawMessages(stream);
+    const toolNames = rawMessages.flatMap((message) =>
+      message.toolCalls.map((toolCall) => toolCall.name)
+    );
+    const serialized = rawMessages
+      .map((message) =>
+        typeof message.content === 'string' ? message.content : JSON.stringify(message.content)
+      )
+      .join('\n');
 
-      expect(stream.source).toMatch(/^opencode_runtime_/);
-      expect(stream.runtimeProjection?.provider).toBe('opencode');
-      expect(stream.runtimeProjection?.attributionRecordCount ?? 0).toBeGreaterThan(0);
-      expect(stream.runtimeProjection?.nativeToolCount ?? 0).toBeGreaterThan(0);
-      expect(toolNames).toEqual(
-        expect.arrayContaining(['agent-teams_task_start', 'agent-teams_task_add_comment', 'bash'])
-      );
-      expect(serialized).toContain(`${marker}:task-comment-after-sleep`);
-    },
-    360_000
-  );
+    expect(stream.source).toMatch(/^opencode_runtime_/);
+    expect(stream.runtimeProjection?.provider).toBe('opencode');
+    expect(stream.runtimeProjection?.attributionRecordCount ?? 0).toBeGreaterThan(0);
+    expect(stream.runtimeProjection?.nativeToolCount ?? 0).toBeGreaterThan(0);
+    expect(toolNames).toEqual(
+      expect.arrayContaining(['agent-teams_task_start', 'agent-teams_task_add_comment', 'bash'])
+    );
+    expect(serialized).toContain(`${marker}:task-comment-after-sleep`);
+  }, 360_000);
 });
 
-async function waitForLedgerRecord(input: {
-  teamName: string;
-  laneId: string;
-  messageId: string;
-}) {
+async function waitForLedgerRecord(input: { teamName: string; laneId: string; messageId: string }) {
   return await waitUntilValue(async () => {
     const ledger = createOpenCodePromptDeliveryLedgerStore({
       filePath: getOpenCodeLaneScopedRuntimeFilePath({
@@ -279,43 +278,47 @@ async function waitForTaskLogStream(input: {
   marker: string;
 }): Promise<BoardTaskLogStreamResponse> {
   let lastStream: BoardTaskLogStreamResponse | null = null;
-  return await waitUntilValue(async () => {
-    const stream = await input.source.getTaskLogStream(input.teamName, input.taskId);
-    lastStream = stream;
-    if (!stream) {
-      return null;
-    }
-    const rawMessages = flattenRawMessages(stream);
-    const toolNames = rawMessages.flatMap((message) =>
-      message.toolCalls.map((toolCall) => toolCall.name)
-    );
-    const serialized = rawMessages
-      .map((message) =>
-        typeof message.content === 'string' ? message.content : JSON.stringify(message.content)
-      )
-      .join('\n');
-    const hasExpectedTools =
-      toolNames.includes('agent-teams_task_start') &&
-      toolNames.includes('agent-teams_task_add_comment') &&
-      toolNames.includes('bash');
-    return hasExpectedTools && serialized.includes(`${input.marker}:task-comment-after-sleep`)
-      ? stream
-      : null;
-  }, 90_000, 500, async () =>
-    `Last stream: ${JSON.stringify(
-      {
-        source: lastStream?.source,
-        runtimeProjection: lastStream?.runtimeProjection,
-        segmentCount: lastStream?.segments.length ?? 0,
-        toolNames: lastStream
-          ? flattenRawMessages(lastStream).flatMap((message) =>
-              message.toolCalls.map((toolCall) => toolCall.name)
-            )
-          : [],
-      },
-      null,
-      2
-    )}`
+  return await waitUntilValue(
+    async () => {
+      const stream = await input.source.getTaskLogStream(input.teamName, input.taskId);
+      lastStream = stream;
+      if (!stream) {
+        return null;
+      }
+      const rawMessages = flattenRawMessages(stream);
+      const toolNames = rawMessages.flatMap((message) =>
+        message.toolCalls.map((toolCall) => toolCall.name)
+      );
+      const serialized = rawMessages
+        .map((message) =>
+          typeof message.content === 'string' ? message.content : JSON.stringify(message.content)
+        )
+        .join('\n');
+      const hasExpectedTools =
+        toolNames.includes('agent-teams_task_start') &&
+        toolNames.includes('agent-teams_task_add_comment') &&
+        toolNames.includes('bash');
+      return hasExpectedTools && serialized.includes(`${input.marker}:task-comment-after-sleep`)
+        ? stream
+        : null;
+    },
+    90_000,
+    500,
+    async () =>
+      `Last stream: ${JSON.stringify(
+        {
+          source: lastStream?.source,
+          runtimeProjection: lastStream?.runtimeProjection,
+          segmentCount: lastStream?.segments.length ?? 0,
+          toolNames: lastStream
+            ? flattenRawMessages(lastStream).flatMap((message) =>
+                message.toolCalls.map((toolCall) => toolCall.name)
+              )
+            : [],
+        },
+        null,
+        2
+      )}`
   );
 }
 

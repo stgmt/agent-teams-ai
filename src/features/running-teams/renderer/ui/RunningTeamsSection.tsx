@@ -16,9 +16,9 @@ function getRowTitle(row: RunningTeamRowModel): string {
   return row.projectPath ? `${row.displayName} - ${row.projectPath}` : row.displayName;
 }
 
-export function RunningTeamsSection({
+export const RunningTeamsSection = ({
   searchQuery,
-}: Readonly<RunningTeamsSectionProps>): React.JSX.Element | null {
+}: Readonly<RunningTeamsSectionProps>): React.JSX.Element | null => {
   const { t } = useAppTranslation('team');
   const { rows, hidden, openRunningTeam } = useRunningTeamsSection(searchQuery);
 
@@ -70,4 +70,4 @@ export function RunningTeamsSection({
       </div>
     </section>
   );
-}
+};

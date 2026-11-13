@@ -34,9 +34,11 @@ describe('ConfigManager persistence barrier', () => {
 
   it('propagates filesystem failures instead of claiming a successful save', async () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'config-persistence-error-'));
-    const parentFile = path.join(dir, 'not-a-directory');
-    fs.writeFileSync(parentFile, 'occupied');
-    const manager = new ConfigManager(path.join(parentFile, 'settings.json'));
+    // A directory where the config file belongs fails both reading (EISDIR) and
+    // publishing (the atomic rename cannot replace a directory) on every platform.
+    const brokenConfigPath = path.join(dir, 'settings.json');
+    fs.mkdirSync(brokenConfigPath);
+    const manager = new ConfigManager(brokenConfigPath);
     manager.updateConfig('general', { useNativeTitleBar: true });
     await expect(manager.waitForPersistence()).rejects.toThrow();
     // Both diagnostics are expected in this intentionally broken filesystem fixture.

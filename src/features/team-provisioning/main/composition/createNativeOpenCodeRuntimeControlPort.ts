@@ -114,7 +114,14 @@ export function createNativeOpenCodeRuntimeControlPort(
         observedAt,
       });
       sources.emitMemberSpawnChange({ teamName, runId, memberName });
-      return ack('accepted', { teamName, runId, memberName, runtimeSessionId, observedAt, location: { laneId } });
+      return ack('accepted', {
+        teamName,
+        runId,
+        memberName,
+        runtimeSessionId,
+        observedAt,
+        location: { laneId },
+      });
     },
 
     async recordOpenCodeRuntimeHeartbeat(raw) {
@@ -143,7 +150,8 @@ export function createNativeOpenCodeRuntimeControlPort(
       const runId = requiredString(payload, 'runId');
       const memberName = requiredString(payload, 'memberName');
       const taskId = requiredString(payload, 'taskId');
-      const detail = optionalString(payload, 'detail') ?? optionalString(payload, 'event') ?? 'task event';
+      const detail =
+        optionalString(payload, 'detail') ?? optionalString(payload, 'event') ?? 'task event';
       const observedAt = optionalString(payload, 'observedAt') ?? nowIso();
       sources.emitTaskLogChange({ teamName, runId, taskId, detail });
       return ack('recorded', { teamName, runId, memberName, observedAt, location: { taskId } });
@@ -156,15 +164,14 @@ export function createNativeOpenCodeRuntimeControlPort(
       const memberName = requiredString(payload, 'memberName');
       const requestId = requiredString(payload, 'requestId');
       const decision = requiredString(payload, 'decision');
+      const message = optionalString(payload, 'message');
       const answered = await sources.answerPermission({
         teamName,
         runId,
         memberName,
         requestId,
         allow: decision === 'allow',
-        ...(optionalString(payload, 'message')
-          ? { message: optionalString(payload, 'message') as string }
-          : {}),
+        ...(message ? { message } : {}),
       });
       return ack('accepted', {
         teamName,
@@ -187,14 +194,13 @@ export function createNativeOpenCodeRuntimeControlPort(
       const text = requiredString(payload, 'text');
       const recipient = optionalString(payload, 'to') ?? 'team-lead';
       const observedAt = optionalString(payload, 'observedAt') ?? nowIso();
+      const idempotencyKey = optionalString(payload, 'idempotencyKey');
       const sent = await sources.sendInboxMessage({
         teamName,
         recipient,
         from: memberName,
         text,
-        ...(optionalString(payload, 'idempotencyKey')
-          ? { messageId: optionalString(payload, 'idempotencyKey') as string }
-          : {}),
+        ...(idempotencyKey ? { messageId: idempotencyKey } : {}),
         observedAt,
       });
       return ack('delivered', {
@@ -203,9 +209,7 @@ export function createNativeOpenCodeRuntimeControlPort(
         memberName,
         observedAt,
         location: { recipient, messageId: sent.messageId },
-        ...(optionalString(payload, 'idempotencyKey')
-          ? { idempotencyKey: optionalString(payload, 'idempotencyKey') as string }
-          : {}),
+        ...(idempotencyKey ? { idempotencyKey } : {}),
       });
     },
   };

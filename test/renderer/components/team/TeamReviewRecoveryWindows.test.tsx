@@ -146,7 +146,12 @@ describe('Kanban recovery across independent panels', () => {
         ],
       })
     );
-    controller = createController({ teamName: 'fixture', claudeDir: fixture });
+    // Canonical task operations need a board: bind the local fixture board.
+    controller = createController({
+      teamName: 'fixture',
+      claudeDir: fixture,
+      localTaskBoard: true,
+    });
     const task = controller.taskBoard.createTask({ subject: 'Target', owner: 'worker' });
     taskId = task.id;
     controller.taskBoard.completeTask(taskId, 'worker');

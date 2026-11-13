@@ -15,10 +15,10 @@ interface OrgOverviewHudProps {
   onSelectNode: (nodeId: string, reveal?: boolean) => void;
 }
 
-export function OrgOverviewHud({
+export const OrgOverviewHud = ({
   viewModel,
   onSelectNode,
-}: Readonly<OrgOverviewHudProps>): React.JSX.Element | null {
+}: Readonly<OrgOverviewHudProps>): React.JSX.Element | null => {
   const { t } = useAppTranslation('team');
   const [hoveredRootNodeId, setHoveredRootNodeId] = useState<string | null>(null);
   const summaries = useMemo(
@@ -138,4 +138,4 @@ export function OrgOverviewHud({
       </div>
     </TooltipProvider>
   );
-}
+};

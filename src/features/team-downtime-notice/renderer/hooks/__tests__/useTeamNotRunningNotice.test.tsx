@@ -43,10 +43,10 @@ describe('useTeamNotRunningNotice', () => {
   const onLaunch = vi.fn();
 
   async function render(patch: Partial<NoticeParams> = {}): Promise<void> {
-    function Probe(): null {
+    const Probe = (): null => {
       latest = useTeamNotRunningNotice({ ...deadTeam, onLaunch, ...patch });
       return null;
-    }
+    };
     await act(async () => root.render(<Probe />));
   }
 

@@ -17,7 +17,7 @@ import { getReviewStateFromTask } from '@shared/utils/reviewState';
 import { TaskCreationJournal } from '../execution/TaskCreationJournal';
 
 import { RegistryStatusConflictError } from './RegistryTaskClientErrors';
-import { REGISTRY_TASK_STATUSES } from './RegistryTaskClientTypes';
+import { REGISTRY_TASK_STATUSES, type RegistryTaskReview } from './RegistryTaskClientTypes';
 import {
   canonicalTaskRef,
   localIdFromRef,
@@ -26,6 +26,13 @@ import {
   registryTaskId,
   TEAM_TO_REGISTRY_STATUS,
 } from './RegistryTaskIdentity';
+import {
+  admitRegistryTaskReview,
+  assertNoRegistryTaskDependencyCycle,
+  isRegistryTaskStatusUnchanged,
+  requireRegistryTaskLocalId,
+  resolveRegistryTaskLocalId,
+} from './RegistryTaskWriteAdmission';
 import { RegistryTeamTaskCreator } from './RegistryTeamTaskCreator';
 import { RegistryTeamTaskWriteError, toTypedWriteError } from './RegistryTeamTaskWriteErrors';
 
@@ -33,23 +40,23 @@ import type { ExecutionTaskPatch, ExecutionTaskStore } from '../execution/Execut
 import type {
   ListRegistryTasksInput,
   RegistryTask,
+  RegistryTaskGenesisReplayRecord,
   RegistryTaskStatus,
   RegistryTaskStatusResult,
   RegistryTaskTransition,
   RegistryTaskUpsertResult,
-  RegistryTaskGenesisReplayRecord,
   RegistryTaskWriteResult,
   ReplaceRegistryTaskLinksInput,
   ReplaceRegistryTaskOwnerInput,
   ReplaceRegistryTaskStatusInput,
   UpsertRegistryTaskInput,
 } from './RegistryTaskClientTypes';
-import type { RegistryRegistrationIdentity } from '@shared/types';
+import type { TeamSpecBinding } from './TeamSpecBinding';
 import type {
   SignedTaskPayload,
   TaskGenesisAttestationExpected,
 } from '@main/services/identity/TaskAttestation';
-import type { TeamSpecBinding } from './TeamSpecBinding';
+import type { RegistryRegistrationIdentity } from '@shared/types';
 import type {
   TaskAttachmentMeta,
   TaskComment,
@@ -93,6 +100,12 @@ export interface RegistryTeamTaskClientPort {
     text: string;
     actor?: string;
     signal?: AbortSignal;
+  }): Promise<{ ok?: unknown; error?: unknown }>;
+  updateTaskFields(input: {
+    project: string;
+    spec: string;
+    entity: string;
+    review?: RegistryTaskReview;
   }): Promise<{ ok?: unknown; error?: unknown }>;
 }
 
@@ -220,7 +233,7 @@ export class RegistryTeamTaskWriter {
     options: { force?: boolean } = {}
   ): Promise<RegistryTask> {
     const tasks = await this.#list(options.force === true);
-    const localId = this.#resolveLocalId(taskId, tasks);
+    const localId = resolveRegistryTaskLocalId(this.#binding, taskId, tasks);
     const found = tasks.find((candidate) => normalizeLocalId(candidate.localId) === localId);
     if (!found) {
       throw new RegistryTeamTaskWriteError(
@@ -230,25 +243,6 @@ export class RegistryTeamTaskWriter {
       );
     }
     return found;
-  }
-
-  #resolveLocalId(taskId: string, tasks: readonly RegistryTask[]): string {
-    const key = taskId.trim();
-    const byIdentity = tasks.find(
-      (candidate) => registryTaskId({ ...this.#binding, localId: candidate.localId }) === key
-    );
-    if (byIdentity) return normalizeLocalId(byIdentity.localId) ?? byIdentity.localId;
-    const localId = key.includes(':')
-      ? localIdFromRef(this.#binding.spec, key)
-      : normalizeLocalId(key);
-    if (localId !== null && tasks.some((task) => normalizeLocalId(task.localId) === localId)) {
-      return localId;
-    }
-    throw new RegistryTeamTaskWriteError(
-      'TASK_NOT_FOUND',
-      `"${taskId}" is not a task id of ${this.#binding.project}/${this.#binding.spec}`,
-      { taskId }
-    );
   }
 
   #executionId(localId: string): string {
@@ -269,7 +263,7 @@ export class RegistryTeamTaskWriter {
       const needsTaskResolution = Boolean(input.blockedBy?.length || input.related?.length);
       const tasks = needsTaskResolution ? await this.#list(true) : [];
       const toLocalIds = (values: readonly string[] | undefined): string[] | undefined =>
-        values?.map((value) => this.#resolveLocalId(value, tasks));
+        values?.map((value) => resolveRegistryTaskLocalId(this.#binding, value, tasks));
       return this.#taskCreator.prepareTask(
         {
           ...input,
@@ -297,37 +291,7 @@ export class RegistryTeamTaskWriter {
         force: input.expectedStatus !== undefined,
       });
       const localId = normalizeLocalId(current.localId) ?? current.localId;
-      if (
-        input.expectedStatus !== undefined &&
-        REGISTRY_TO_TEAM_STATUS[current.status] !== input.expectedStatus
-      ) {
-        throw new RegistryTeamTaskWriteError(
-          'STATUS_CONFLICT',
-          `Task #${localId} has changed status. Re-read the task and retry.`,
-          {
-            taskId: localId,
-            details: {
-              currentStatus: REGISTRY_TO_TEAM_STATUS[current.status],
-              expectedStatus: input.expectedStatus,
-            },
-          }
-        );
-      }
-      if (
-        current.status === 'deleted' &&
-        input.to !== 'deleted' &&
-        input.expectedStatus !== 'deleted'
-      ) {
-        throw new RegistryTeamTaskWriteError(
-          'STATUS_CONFLICT',
-          `Task #${localId} is deleted; restore it before changing status.`,
-          {
-            taskId: localId,
-            details: { currentStatus: 'deleted', expectedStatus: input.expectedStatus },
-          }
-        );
-      }
-      if (REGISTRY_TO_TEAM_STATUS[current.status] === input.to)
+      if (isRegistryTaskStatusUnchanged(current, input, localId))
         return { outcome: 'UNCHANGED', transitions: [] };
       let transitions: readonly RegistryTaskTransition[] = [];
       try {
@@ -438,7 +402,7 @@ export class RegistryTeamTaskWriter {
       const current = await this.readCanonicalTask(input.taskId, { force: true });
       const localId = normalizeLocalId(current.localId) ?? current.localId;
       const allTasks = await this.#list();
-      const targetLocalId = this.#resolveLocalId(input.targetId, allTasks);
+      const targetLocalId = resolveRegistryTaskLocalId(this.#binding, input.targetId, allTasks);
       if (localId === targetLocalId) {
         throw new RegistryTeamTaskWriteError('LINK_CYCLE', 'Cannot link a task to itself', {
           taskId: input.taskId,
@@ -446,7 +410,7 @@ export class RegistryTeamTaskWriter {
       }
       const targetRef = canonicalTaskRef(this.#binding.spec, targetLocalId);
       if (input.type === 'blockedBy') {
-        this.#assertNoDependencyCycle(allTasks, localId, targetRef);
+        assertNoRegistryTaskDependencyCycle(this.#binding, allTasks, localId, targetRef);
         const dependsOn = [...new Set([...current.dependsOn, targetRef])];
         await this.#replaceLinks(localId, { dependsOn });
         return;
@@ -471,7 +435,11 @@ export class RegistryTeamTaskWriter {
     await this.#withWriteLock(async () => {
       const current = await this.readCanonicalTask(input.taskId, { force: true });
       const localId = normalizeLocalId(current.localId) ?? current.localId;
-      const targetLocalId = this.#resolveLocalId(input.targetId, await this.#list());
+      const targetLocalId = resolveRegistryTaskLocalId(
+        this.#binding,
+        input.targetId,
+        await this.#list()
+      );
       if (input.type === 'blockedBy') {
         await this.#replaceLinks(localId, {
           dependsOn: current.dependsOn.filter(
@@ -539,7 +507,7 @@ export class RegistryTeamTaskWriter {
     taskRefs?: TaskRef[]
   ): Promise<TaskComment> {
     const current = await this.readCanonicalTask(taskId);
-    const localId = this.#requireLocalId(current.localId);
+    const localId = requireRegistryTaskLocalId(current.localId);
     const comment: TaskComment = {
       id: randomUUID(),
       author: 'user',
@@ -567,7 +535,7 @@ export class RegistryTeamTaskWriter {
   async appendLinkedMessageComment(taskId: string, comment: TaskComment): Promise<boolean> {
     const current = await this.readCanonicalTask(taskId, { force: true });
     if (current.status === 'deleted') return false;
-    const localId = this.#requireLocalId(current.localId);
+    const localId = requireRegistryTaskLocalId(current.localId);
     return this.#executionStore.addCommentIfAbsent(
       this.#teamName,
       this.#executionId(localId),
@@ -585,36 +553,41 @@ export class RegistryTeamTaskWriter {
     manual?: boolean;
   }): Promise<void> {
     const canonical = await this.readCanonicalTask(input.taskId, { force: true });
-    const localId = this.#requireLocalId(canonical.localId);
+    const localId = requireRegistryTaskLocalId(canonical.localId);
     const timestamp = this.#clock().toISOString();
-    this.#executionStore.update(this.#teamName, this.#executionId(localId), (record) => {
-      const from =
-        record.reviewState ??
-        getReviewStateFromTask({
-          historyEvents: record.historyEvents,
-          status: REGISTRY_TO_TEAM_STATUS[canonical.status],
-        });
-      if (input.action === 'clear') {
-        if (from !== 'none')
-          throw new Error(
-            `Task #${localId} is in reviewState=${from}; use review or status transitions instead`
-          );
-        return null;
-      }
-      if (input.action === 'request' && canonical.status !== 'done') {
-        throw new Error(`Task #${localId} must be completed before review`);
-      }
-      if (input.action === 'request' && from === 'approved') {
-        throw new Error(`Task #${localId} is already approved`);
-      }
-      if (input.action === 'approve' && from === 'approved') return null;
-      if (
-        input.action !== 'request' &&
-        from !== 'review' &&
-        !(input.action === 'approve' && input.manual && canonical.status === 'done')
-      ) {
-        throw new Error(`Task #${localId} must be in review before this action`);
-      }
+    const executionId = this.#executionId(localId);
+    const record = this.#executionStore.read(this.#teamName, executionId);
+    const from =
+      record?.reviewState ??
+      getReviewStateFromTask({
+        historyEvents: record?.historyEvents ?? [],
+        status: REGISTRY_TO_TEAM_STATUS[canonical.status],
+      });
+    // Every rule is decided before anything is written: a refusal must leave
+    // both the canonical task and the local record untouched.
+    const { unchanged, alreadyApproved } = admitRegistryTaskReview(canonical, input, from, localId);
+    if (unchanged) return;
+    // The verdict is canonical shared state: write it first, so a refusal
+    // leaves the local record unchanged and a retry can re-attempt the write.
+    const review =
+      input.action === 'request'
+        ? 'requested'
+        : input.action === 'approve'
+          ? 'approved'
+          : 'changes-requested';
+    try {
+      await this.#client.updateTaskFields({
+        project: this.#binding.project,
+        spec: this.#binding.spec,
+        entity: localId,
+        review,
+      });
+    } catch (error) {
+      throw toTypedWriteError(error, 'transitionReview', localId);
+    }
+    this.#listingCache = null;
+    if (alreadyApproved) return;
+    this.#executionStore.update(this.#teamName, executionId, (current) => {
       const common = { id: randomUUID(), timestamp, actor: input.actor, from };
       const event: TaskHistoryEvent =
         input.action === 'request'
@@ -632,7 +605,7 @@ export class RegistryTeamTaskWriter {
                 to: 'needsFix',
                 note: input.note ?? 'Reviewer requested changes.',
               };
-      const reviewIntervals = record.reviewIntervals.map((interval) =>
+      const reviewIntervals = current.reviewIntervals.map((interval) =>
         input.action !== 'request' && !interval.completedAt
           ? { ...interval, completedAt: timestamp }
           : interval
@@ -640,7 +613,7 @@ export class RegistryTeamTaskWriter {
       const comments =
         input.action === 'changes'
           ? [
-              ...record.comments,
+              ...current.comments,
               {
                 id: randomUUID(),
                 author: input.actor,
@@ -650,7 +623,7 @@ export class RegistryTeamTaskWriter {
                 ...(input.taskRefs?.length ? { taskRefs: input.taskRefs } : {}),
               },
             ]
-          : record.comments;
+          : current.comments;
       return {
         reviewState:
           input.action === 'request'
@@ -658,7 +631,7 @@ export class RegistryTeamTaskWriter {
             : input.action === 'approve'
               ? 'approved'
               : 'needsFix',
-        historyEvents: [...record.historyEvents, event],
+        historyEvents: [...current.historyEvents, event],
         reviewIntervals,
         comments,
       };
@@ -669,14 +642,14 @@ export class RegistryTeamTaskWriter {
     const current = await this.readCanonicalTask(taskId);
     this.#executionStore.addAttachmentMeta(
       this.#teamName,
-      this.#executionId(this.#requireLocalId(current.localId)),
+      this.#executionId(requireRegistryTaskLocalId(current.localId)),
       meta
     );
   }
 
   async removeAttachment(taskId: string, attachmentId: string): Promise<void> {
     const current = await this.readCanonicalTask(taskId);
-    const localId = this.#requireLocalId(current.localId);
+    const localId = requireRegistryTaskLocalId(current.localId);
     this.#executionStore.update(this.#teamName, this.#executionId(localId), (record) => {
       const attachments = record.attachments.filter((entry) => entry.id !== attachmentId);
       return attachments.length === record.attachments.length ? null : { attachments };
@@ -687,75 +660,30 @@ export class RegistryTeamTaskWriter {
     const current = await this.readCanonicalTask(taskId);
     this.#executionStore.write(
       this.#teamName,
-      this.#executionId(this.#requireLocalId(current.localId)),
+      this.#executionId(requireRegistryTaskLocalId(current.localId)),
       { needsClarification: value }
     );
   }
 
-  #requireLocalId(taskId: string): string {
-    const localId = normalizeLocalId(taskId);
-    if (localId === null) {
-      throw new RegistryTeamTaskWriteError('TASK_NOT_FOUND', `"${taskId}" is not a task id`, {
-        taskId,
-      });
-    }
-    return localId;
-  }
-
-  /** Walks the target's dependency chain; a reachable source means the write would close a cycle. */
-  #assertNoDependencyCycle(
-    tasks: readonly RegistryTask[],
-    sourceLocalId: string,
-    targetRef: string
-  ): void {
-    const byLocalId = new Map<string, RegistryTask>();
-    for (const task of tasks) {
-      const parsed = normalizeLocalId(task.localId);
-      if (parsed !== null) byLocalId.set(parsed, task);
-    }
-    const visited = new Set<string>();
-    const stack = [localIdFromRef(this.#binding.spec, targetRef)].filter(
-      (value): value is string => value !== null
-    );
-    while (stack.length > 0) {
-      const currentId = stack.pop()!;
-      if (currentId === sourceLocalId) {
-        throw new RegistryTeamTaskWriteError(
-          'LINK_CYCLE',
-          `Circular dependency: #${targetRef} already depends on #${sourceLocalId}`,
-          { taskId: sourceLocalId }
-        );
-      }
-      if (visited.has(currentId)) continue;
-      visited.add(currentId);
-      const task = byLocalId.get(currentId);
-      if (!task) continue;
-      for (const ref of task.dependsOn) {
-        const dependency = localIdFromRef(this.#binding.spec, ref);
-        if (dependency !== null) stack.push(dependency);
-      }
-    }
-  }
-
   /** Each half is fenced by a fresh TASKS.md hash; no concurrent edit is overwritten. */
   async #changeRelated(
-    localId: string,
-    targetId: string,
+    subjectId: string,
+    counterpartId: string,
     add: boolean
   ): Promise<{
     before: string[];
     after: string[];
   } | null> {
     const expectedSha = await this.#client.readTasksDocumentSha(this.#binding);
-    const current = await this.readCanonicalTask(localId, { force: true });
+    const current = await this.readCanonicalTask(subjectId, { force: true });
     const before = current.refs;
     const after = add
-      ? before.some((ref) => localIdFromRef(this.#binding.spec, ref) === targetId)
+      ? before.some((ref) => localIdFromRef(this.#binding.spec, ref) === counterpartId)
         ? before
-        : [...before, canonicalTaskRef(this.#binding.spec, targetId)]
-      : before.filter((ref) => localIdFromRef(this.#binding.spec, ref) !== targetId);
+        : [...before, canonicalTaskRef(this.#binding.spec, counterpartId)]
+      : before.filter((ref) => localIdFromRef(this.#binding.spec, ref) !== counterpartId);
     if (after === before || (!add && after.length === before.length)) return null;
-    await this.#replaceLinks(localId, { refs: after, expectedSha });
+    await this.#replaceLinks(subjectId, { refs: after, expectedSha });
     return { before: [...before], after: [...after] };
   }
 

@@ -10,6 +10,7 @@ import type {
   MemberGenerationTarget,
   MemberProcessToken,
   MemberStartAdmission,
+  OwnedProcessIdentity,
   TeamRunIdentity,
 } from '../../../contracts';
 import type { MemberLifecycleRegistry } from '../../domain/MemberLifecycleRegistry';
@@ -20,6 +21,7 @@ import type {
   MemberLaunchSettingsPort,
   MemberRuntimePort,
   OwnedMemberLane,
+  OwnedMemberProcess,
   OwnedMemberRuntime,
   TeamOperationGate,
 } from '../ports/MemberRuntimePorts';
@@ -98,6 +100,40 @@ export class MemberLifecycleCommands {
       awaitStops: (stops) => this.awaitStops(stops),
       settled: (team, memberName) => this.settled(team, memberName),
       teamLaunchInProgress: (team) => this.teamLaunches.has(key(team, '')),
+    });
+  }
+
+  /** Reuses the execution owner for an already-admitted surviving process, without starting work. */
+  async adoptProcess(
+    token: Readonly<MemberProcessToken>,
+    runtime: OwnedMemberProcess,
+    launchSettings: Readonly<ConfiguredMemberLaunch>,
+    abort: AbortController
+  ): Promise<void> {
+    await this.ports.gate.run(token.teamName, async () => {
+      this.ports.registry.assertRun(token);
+      const member = this.ports.registry.snapshot(token.teamName).members[token.memberName];
+      if (
+        this.executions.has(key(token, token.memberName)) ||
+        member?.generation !== token.generation ||
+        member.operationId !== token.operationId ||
+        member.process?.pid !== runtime.identity.pid ||
+        member.process.birthId !== runtime.identity.birthId
+      )
+        throw new Error('Surviving process adoption is stale or already owned');
+      const execution: Execution = {
+        token,
+        abort,
+        runtime,
+        unsubscribe: null,
+        released: false,
+        cleanup: null,
+        completion: Promise.resolve(),
+        stop: null,
+      };
+      this.executions.set(key(token, token.memberName), execution);
+      execution.completion = this.attachRuntime(execution, launchSettings, runtime, true);
+      await execution.completion;
     });
   }
 
@@ -223,7 +259,7 @@ export class MemberLifecycleCommands {
     }
   }
 
-  async writeInput(token: MemberProcessToken, line: string): Promise<void> {
+  async writeInput(token: MemberProcessToken, line: string, operationId?: string): Promise<void> {
     const selected = await this.ports.gate.run(token.teamName, async () => {
       this.ports.registry.assertRun(token);
       const member = this.ports.registry.snapshot(token.teamName).members[token.memberName];
@@ -257,8 +293,8 @@ export class MemberLifecycleCommands {
         execution.abort.signal.aborted
       )
         throw new Error('Member runtime input is no longer current');
-      // writeInput validates the owned pipe synchronously; backpressure never holds the operation gate.
-      return { written: execution.runtime.writeInput(line) };
+      // Runtime transport admission is synchronous; acknowledgment never holds the operation gate.
+      return { written: execution.runtime.writeInput(line, operationId) };
     });
     await selected.written;
   }
@@ -430,7 +466,7 @@ export class MemberLifecycleCommands {
     const stops: Promise<void>[] = [];
     for (const execution of [...this.executions.values()]) {
       execution.abort.abort();
-      stops.push(this.stopOwnedRuntime(execution));
+      stops.push(execution.completion.then(() => this.stopOwnedRuntime(execution)));
     }
     for (const group of this.lanes.entries()) {
       group.abort.abort();
@@ -454,7 +490,7 @@ export class MemberLifecycleCommands {
         (group) =>
           (!group.released || group.stop !== null) &&
           group.tokens.length > 0 &&
-          key(group.tokens[0]!, '') === key(team, '')
+          key(group.tokens[0], '') === key(team, '')
       )
     );
   }
@@ -573,83 +609,11 @@ export class MemberLifecycleCommands {
         kind === 'lane'
           ? await this.startLane(launchSettings, token, execution.abort.signal)
           : await this.ports.runtime.spawn(launchSettings, token, execution.abort.signal);
-      execution.runtime = runtime;
       const accepted =
         'identity' in runtime
           ? this.ports.registry.observeSpawn(token, runtime.identity)
           : this.ports.registry.observeLane(token, runtime.lane);
-      let terminated = false;
-      const unsubscribe = runtime.subscribe({
-        connected: () => {
-          if (accepted && this.ports.registry.observeConnected(token)) {
-            const notification = this.ports.onMemberConnected?.(launchSettings, token);
-            if (notification) void notification.catch(() => undefined);
-          }
-          this.settleTeamLaunch(token);
-        },
-        connectionLost: () => {
-          if (accepted) this.ports.registry.observeConnectionLost(token);
-          this.settleTeamLaunch(token);
-        },
-        failed: (error) => {
-          if (accepted) this.ports.registry.observeRuntimeFailed(token, error);
-          if (accepted)
-            this.ports.reportRuntimeFailure?.({
-              teamName: token.teamName,
-              memberName: token.memberName,
-              runId: token.runId,
-              detail: error,
-            });
-          this.settleTeamLaunch(token);
-        },
-        releaseFailed: (error) => {
-          if (!accepted) {
-            this.settleTeamLaunch(token);
-            return;
-          }
-          this.ports.registry.observeRuntimeFailed(token, error);
-          this.ports.registry.observeMemberReleaseFailed(token);
-          this.ports.reportRuntimeFailure?.({
-            teamName: token.teamName,
-            memberName: token.memberName,
-            runId: token.runId,
-            detail: error,
-          });
-          this.settleTeamLaunch(token);
-        },
-        exited: (exit) => {
-          terminated = true;
-          if (accepted && 'identity' in runtime)
-            this.ports.registry.observeExit(token, runtime.identity, exit);
-          this.settleTeamLaunch(token);
-        },
-        laneObserved: (observation) => {
-          if (accepted) this.ports.registry.observeLane(token, observation);
-          this.settleTeamLaunch(token);
-        },
-        laneLost: (error) => {
-          terminated = true;
-          if (accepted) this.ports.registry.observeLaneLost(token, error);
-          this.settleTeamLaunch(token);
-        },
-        released: () => {
-          // A lane release is authoritative: clear any lane that never reported a loss.
-          if ('lane' in runtime) {
-            if (accepted) this.ports.registry.observeLaneLost(token);
-          } else if (!terminated) return;
-          // Release belongs to this subscribed handle even when its generation is no longer current.
-          if (accepted) this.ports.registry.observeMemberReleased(token);
-          execution.runtime = null;
-          execution.released = true;
-          execution.unsubscribe?.();
-          execution.unsubscribe = null;
-          this.settleTeamLaunch(token);
-        },
-      });
-      // Resource release may have been replayed synchronously by subscribe().
-      if (execution.released) unsubscribe();
-      else execution.unsubscribe = unsubscribe;
-      if (!accepted || execution.abort.signal.aborted) await this.stopOwnedRuntime(execution);
+      await this.attachRuntime(execution, launchSettings, runtime, accepted);
     } catch (error) {
       if (error instanceof OwnedRuntimeCleanupError) execution.cleanup = error.release;
       else if (!execution.runtime) execution.released = true;
@@ -660,6 +624,90 @@ export class MemberLifecycleCommands {
       if (execution.cleanup) this.ports.registry.observeMemberReleaseFailed(token);
       else if (execution.released) this.ports.registry.observeMemberReleased(token);
     }
+  }
+
+  private async attachRuntime(
+    execution: Execution,
+    launchSettings: Readonly<ConfiguredMemberLaunch>,
+    runtime: OwnedMemberProcess | OwnedMemberLane,
+    accepted: boolean
+  ): Promise<void> {
+    const { token } = execution;
+    execution.runtime = runtime;
+    const processIdentity: Readonly<OwnedProcessIdentity> | null =
+      'identity' in runtime ? runtime.identity : null;
+    let terminated = false;
+    const unsubscribe = runtime.subscribe({
+      connected: () => {
+        if (accepted && this.ports.registry.observeConnected(token)) {
+          const notification = this.ports.onMemberConnected?.(launchSettings, token);
+          if (notification) void notification.catch(() => undefined);
+        }
+        this.settleTeamLaunch(token);
+      },
+      connectionLost: () => {
+        if (accepted) this.ports.registry.observeConnectionLost(token);
+        this.settleTeamLaunch(token);
+      },
+      failed: (error) => {
+        if (accepted) this.ports.registry.observeRuntimeFailed(token, error);
+        if (accepted)
+          this.ports.reportRuntimeFailure?.({
+            teamName: token.teamName,
+            memberName: token.memberName,
+            runId: token.runId,
+            detail: error,
+          });
+        this.settleTeamLaunch(token);
+      },
+      releaseFailed: (error) => {
+        if (!accepted) {
+          this.settleTeamLaunch(token);
+          return;
+        }
+        this.ports.registry.observeRuntimeFailed(token, error);
+        this.ports.registry.observeMemberReleaseFailed(token);
+        this.ports.reportRuntimeFailure?.({
+          teamName: token.teamName,
+          memberName: token.memberName,
+          runId: token.runId,
+          detail: error,
+        });
+        this.settleTeamLaunch(token);
+      },
+      exited: (exit) => {
+        terminated = true;
+        if (accepted && processIdentity)
+          this.ports.registry.observeExit(token, processIdentity, exit);
+        this.settleTeamLaunch(token);
+      },
+      laneObserved: (observation) => {
+        if (accepted) this.ports.registry.observeLane(token, observation);
+        this.settleTeamLaunch(token);
+      },
+      laneLost: (error) => {
+        terminated = true;
+        if (accepted) this.ports.registry.observeLaneLost(token, error);
+        this.settleTeamLaunch(token);
+      },
+      released: () => {
+        // A lane release is authoritative: clear any lane that never reported a loss.
+        if ('lane' in runtime) {
+          if (accepted) this.ports.registry.observeLaneLost(token);
+        } else if (!terminated) return;
+        // Release belongs to this subscribed handle even when its generation is no longer current.
+        if (accepted) this.ports.registry.observeMemberReleased(token);
+        execution.runtime = null;
+        execution.released = true;
+        execution.unsubscribe?.();
+        execution.unsubscribe = null;
+        this.settleTeamLaunch(token);
+      },
+    });
+    // Resource release may have been replayed synchronously by subscribe().
+    if (execution.released) unsubscribe();
+    else execution.unsubscribe = unsubscribe;
+    if (!accepted || execution.abort.signal.aborted) await this.stopOwnedRuntime(execution);
   }
 
   private stopOwnedRuntime(execution: Execution): Promise<void> {

@@ -303,6 +303,13 @@ describe('native provider dependency composition', () => {
           },
           memberName: 'builder',
           configurationRevision: 'TEST-revision',
+          specIntegration: {
+            scope: { projects: ['TEST/project'], bindings: [] },
+            environment: {
+              OMP_SPEC_REGISTRY_URL: 'http://127.0.0.1:8090',
+              OMP_SPEC_REGISTRY_TOKEN: 'TEST-registry-credential',
+            },
+          },
           providerId: 'anthropic',
           model: null,
           workingDirectory: cwd,

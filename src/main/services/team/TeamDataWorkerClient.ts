@@ -20,11 +20,21 @@ import { createLogger } from '@shared/utils/logger';
 
 import { formatCurrentProcessMemorySnapshot } from '../../utils/startupTelemetry';
 
-import type { TeamDataWorkerRequest, TeamDataWorkerResponse } from './teamDataWorkerTypes';
+import { RegistryTaskProviderError } from './registry/RegistryTaskProvider';
+import { serializeRegistryBoardReadFailure } from './teamDataWorkerTypes';
+
+import type { RegistryBoardSnapshotReadPort } from './registry/RegistryTaskProvider';
+import type {
+  RegistryBoardReadRequest,
+  RegistryBoardReadResponse,
+  TeamDataWorkerRequest,
+  TeamDataWorkerResponse,
+} from './teamDataWorkerTypes';
 import type {
   InboxMessage,
   MemberLogSummary,
   MessagesPage,
+  TeamAgentRuntimeSnapshot,
   TeamGetDataOptions,
   TeamMemberActivityMeta,
   TeamViewSnapshot,
@@ -106,10 +116,13 @@ function getTeamDataRequestKey(teamName: string, options?: TeamGetDataOptions): 
 
 function getTeamDataRequestPayload(
   teamName: string,
+  runtimeSnapshot: TeamAgentRuntimeSnapshot,
   options?: TeamGetDataOptions
 ): Extract<TeamDataWorkerRequest, { op: 'getTeamData' }>['payload'] {
   const normalizedOptions = normalizeTeamGetDataOptions(options);
-  return normalizedOptions ? { teamName, options: normalizedOptions } : { teamName };
+  return normalizedOptions
+    ? { teamName, runtimeSnapshot, options: normalizedOptions }
+    : { teamName, runtimeSnapshot };
 }
 
 function shortHash(value: unknown): string | undefined {
@@ -266,6 +279,46 @@ export class TeamDataWorkerClient {
    */
   private readonly advisoryRunFloorMsByTeam = new Map<string, number>();
 
+  constructor(private readonly boardSnapshots: RegistryBoardSnapshotReadPort) {}
+
+  private async readRegistryBoard(
+    worker: Worker,
+    root: string,
+    request: RegistryBoardReadRequest
+  ): Promise<void> {
+    if (this.worker !== worker || getClaudeBasePath() !== root) return;
+    let response: RegistryBoardReadResponse;
+    try {
+      const tasks = await this.boardSnapshots.readBoardSnapshot(
+        request.payload.teamName,
+        request.payload.options
+      );
+      response = { id: request.id, op: 'registryBoardResult', ok: true, tasks };
+    } catch (error) {
+      const failure =
+        error instanceof RegistryTaskProviderError
+          ? error
+          : new RegistryTaskProviderError({
+              code: 'REGISTRY_UNAVAILABLE',
+              teamName: request.payload.teamName,
+              message: error instanceof Error ? error.message : String(error),
+            });
+      response = {
+        id: request.id,
+        op: 'registryBoardResult',
+        ok: false,
+        failure: serializeRegistryBoardReadFailure(failure),
+      };
+    }
+    // Never deliver an old profile's data into a replacement worker or root.
+    if (this.worker !== worker || getClaudeBasePath() !== root) return;
+    try {
+      worker.postMessage(response);
+    } catch (error) {
+      this.failWorker(worker, error instanceof Error ? error : new Error(String(error)));
+    }
+  }
+
   private failWorker(worker: Worker, error: Error): void {
     if (this.worker !== worker) return;
 
@@ -330,12 +383,17 @@ export class TeamDataWorkerClient {
       );
     }
 
-    const w = new Worker(this.workerPath, { workerData: getClaudeBasePath() });
+    const root = getClaudeBasePath();
+    const w = new Worker(this.workerPath, { workerData: root });
     this.worker = w;
     this.recoveryFailure = null;
 
-    w.on('message', (msg: TeamDataWorkerResponse) => {
+    w.on('message', (msg: TeamDataWorkerResponse | RegistryBoardReadRequest) => {
       if (this.worker !== w) return;
+      if ('op' in msg) {
+        void this.readRegistryBoard(w, root, msg);
+        return;
+      }
       const entry = this.pending.get(msg.id);
       if (!entry) return;
       this.pending.delete(msg.id);
@@ -343,7 +401,11 @@ export class TeamDataWorkerClient {
       if (msg.ok) {
         entry.resolve(msg.result, msg.diag);
       } else {
-        entry.reject(new Error(msg.error));
+        entry.reject(
+          msg.registryFailure
+            ? new RegistryTaskProviderError(msg.registryFailure)
+            : new Error(msg.error)
+        );
       }
       this.processQueue();
     });
@@ -554,13 +616,18 @@ export class TeamDataWorkerClient {
     }
   }
 
-  async getTeamData(teamName: string, options?: TeamGetDataOptions): Promise<TeamViewSnapshot> {
+  async getTeamData(
+    teamName: string,
+    runtimeSnapshot: TeamAgentRuntimeSnapshot,
+    options?: TeamGetDataOptions
+  ): Promise<TeamViewSnapshot> {
     if (!SAFE_NAME_RE.test(teamName)) throw new Error('Invalid teamName');
+    if (runtimeSnapshot.teamName !== teamName) throw new Error('Runtime snapshot team mismatch');
     const key = getTeamDataRequestKey(teamName, options);
     const existing = this.getTeamDataInFlight.get(key);
     if (existing) return existing;
 
-    const payload = getTeamDataRequestPayload(teamName, options);
+    const payload = getTeamDataRequestPayload(teamName, runtimeSnapshot, options);
     const promise = (this.call('getTeamData', payload) as Promise<TeamViewSnapshot>).finally(() => {
       if (this.getTeamDataInFlight.get(key) === promise) {
         this.getTeamDataInFlight.delete(key);
@@ -699,8 +766,21 @@ export class TeamDataWorkerClient {
 
 // Singleton
 let singleton: TeamDataWorkerClient | null = null;
-export function getTeamDataWorkerClient(): TeamDataWorkerClient {
-  if (!singleton) singleton = new TeamDataWorkerClient();
+export function getTeamDataWorkerClient(
+  boardSnapshots: RegistryBoardSnapshotReadPort
+): TeamDataWorkerClient {
+  if (!singleton) singleton = new TeamDataWorkerClient(boardSnapshots);
+  return singleton;
+}
+
+/** Cache-only callers must not create a worker or acquire registry read authority. */
+export function getTeamDataWorkerCache(): Pick<
+  TeamDataWorkerClient,
+  | 'invalidateTeamConfig'
+  | 'invalidateTeamMessageFeed'
+  | 'invalidateMemberRuntimeAdvisory'
+  | 'resetMemberRuntimeAdvisoriesForNewRun'
+> | null {
   return singleton;
 }
 

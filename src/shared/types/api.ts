@@ -6,7 +6,6 @@
  *
  * Shared between preload and renderer processes.
  */
-import type { SpecRegistryCredentialStatus, SpecRegistryProbeResult } from './registryTask';
 import type { CliArgsValidationResult } from '../utils/cliArgsParser';
 import type { CliInstallerAPI, OpenCodeRuntimeAPI } from './cliInstaller';
 import type { TelemetryAPI, WindowsElevationStatus } from './desktopShell';
@@ -20,6 +19,11 @@ import type {
   TriggerTestResult,
 } from './notifications';
 import type { OpenCodeStartupCleanupRecoveryAPI } from './openCodeStartupCleanup';
+import type {
+  SpecRegistryCredentialStatus,
+  SpecRegistryLocalTokenResult,
+  SpecRegistryProbeResult,
+} from './registryTask';
 import type { SpecRegistryDiscovery, TeamSpecBinding } from './registryTask';
 import type {
   AgentChangeSet,
@@ -114,14 +118,16 @@ import type {
   TeamTaskWithKanban,
   TeamUpdateConfigRequest,
   TeamWorktreeGitStatus,
-  ToolApprovalEvent,
-  ToolApprovalFileContent,
-  ToolApprovalSettings,
   UpdateKanbanPatch,
 } from './team';
 import type { TeamMemberRestartResult } from './teamMemberRestart';
 import type { TerminalAPI } from './terminal';
 import type { TmuxAPI } from './tmux';
+import type {
+  ToolApprovalEvent,
+  ToolApprovalFileContent,
+  ToolApprovalSettings,
+} from './toolApproval';
 import type { WaterfallData } from './visualization';
 import type { AnnouncementsApi } from '@features/announcements/contracts';
 import type { AppCloseCoordinationElectronApi } from '@features/app-close-coordination/contracts';
@@ -459,6 +465,8 @@ export interface TeamsAPI extends TeamMemberSettingsApi, TeamReadLegacyApi {
   saveSpecRegistryCredential(url: string, token: string): Promise<SpecRegistryProbeResult>;
   clearSpecRegistryCredential(): Promise<void>;
   testSpecRegistryCredential(url?: string, token?: string): Promise<SpecRegistryProbeResult>;
+  /** Loopback bootstrap: obtain this machine's registry token instead of pasting one. */
+  requestSpecRegistryLocalToken(url: string): Promise<SpecRegistryLocalTokenResult>;
   readRecovery?: TeamReadRecoveryApi;
   discoverSpecRegistry: () => Promise<SpecRegistryDiscovery>;
   listTeamSpecBindings: (teamName: string) => Promise<TeamSpecBinding[]>;

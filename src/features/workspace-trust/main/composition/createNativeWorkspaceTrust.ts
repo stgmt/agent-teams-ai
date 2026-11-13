@@ -12,12 +12,10 @@ import {
   resolveWorkspaceTrustFilesystemGitRoot,
 } from '../infrastructure/WorkspaceTrustCanonicalGitRoot';
 import { resolveWorkspaceTrustFeatureFlags } from '../infrastructure/WorkspaceTrustFeatureFlags';
+
 import { createWorkspaceTrustCoordinator } from './createWorkspaceTrustCoordinator';
 
-import type {
-  WorkspaceTrustProvider,
-  WorkspaceTrustWorkspace,
-} from '../../core/domain';
+import type { WorkspaceTrustProvider, WorkspaceTrustWorkspace } from '../../core/domain';
 
 /**
  * Workspace trust for native provider spawns.

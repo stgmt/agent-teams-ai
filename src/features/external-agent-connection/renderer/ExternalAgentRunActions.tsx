@@ -11,7 +11,7 @@ import { useExternalAgentRun } from './useExternalAgentRun';
 import type { AppConnectionContext, ExternalAgentRunApi } from '../contracts';
 import type { ReactNode } from 'react';
 
-export function ExternalAgentRunActions({
+export const ExternalAgentRunActions = ({
   api,
   task,
   context,
@@ -23,7 +23,7 @@ export function ExternalAgentRunActions({
   context: AppConnectionContext;
   ready: boolean;
   copyAction?: ReactNode;
-}>): React.JSX.Element {
+}>): React.JSX.Element => {
   const { t } = useAppTranslation('team');
   const run = useExternalAgentRun(api, task, context);
   const blocked =
@@ -123,4 +123,4 @@ export function ExternalAgentRunActions({
       )}
     </div>
   );
-}
+};

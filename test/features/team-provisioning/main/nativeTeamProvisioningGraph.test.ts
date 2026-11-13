@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { installNativeSdkHostFixture } from './nativeSdkTestHarness';
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -12,6 +13,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createNativeTeamProvisioningGraph } from '../../../../src/features/team-provisioning/main/composition/createNativeTeamProvisioningGraph';
 
 import type { NativeTeamProvisioningGraphDependencies } from '../../../../src/features/team-provisioning/main/composition/createNativeTeamProvisioningGraph';
+const sdkHost = installNativeSdkHostFixture();
 const originalClaudeBasePath = getClaudeBasePath();
 
 const owner = {
@@ -50,6 +52,7 @@ function build(
     mcpConfig: { removeConfigFile },
     runtimeDeps: {
       owner,
+      sdkHost: sdkHost(),
       currentContext: () => owner,
       teamsRoot,
       provider: {} as never,
@@ -157,9 +160,7 @@ describe('production native graph', () => {
     const { root } = build(claudeRoot);
 
     await expect(root.scanOpenCodePromptDeliveryWatchdog('TEST-team')).resolves.toBeUndefined();
-    await expect(
-      root.cancelPendingRuntimeAdapterLaunchesForShutdown()
-    ).resolves.toBeUndefined();
+    await expect(root.cancelPendingRuntimeAdapterLaunchesForShutdown()).resolves.toBeUndefined();
   });
 
   it('exposes the transport surface it built instead of a second one', async () => {

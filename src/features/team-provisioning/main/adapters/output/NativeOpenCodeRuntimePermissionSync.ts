@@ -172,7 +172,7 @@ export function createNativeOpenCodeRuntimePermissionSync(
       if (persisted === false || deps.runs.aliveRunId(input.teamName) !== runId) return;
 
       const members: Record<string, TeamRuntimePendingPermission[]> = {
-        [input.memberName]: pendingPermissions as TeamRuntimePendingPermission[],
+        [input.memberName]: pendingPermissions,
       };
       deps.syncToolApprovals({
         teamName: input.teamName,

@@ -4,7 +4,7 @@ import agentTeamsController from 'agent-teams-controller';
 
 import type { DeliveredLeadReport, LeadReportRunIdentity } from '../../../contracts';
 import type { LeadReportDelivery } from '../../../core/application/ports';
-
+import type { TeamTask } from '@shared/types';
 
 /** Only this app-side adapter writes user reports. MCP never appends them independently. */
 export class NodeLeadReportDelivery implements LeadReportDelivery {
@@ -13,6 +13,12 @@ export class NodeLeadReportDelivery implements LeadReportDelivery {
       teamsRoot: string;
       leadName(run: LeadReportRunIdentity): Promise<string>;
       assertCurrentRun(run: LeadReportRunIdentity): Promise<void>;
+      /**
+       * Canonical team tasks the app already read: the inbox append verifies board
+       * completion state, and resolving that through the app-bound task API would park
+       * the very thread serving this append.
+       */
+      tasks(run: LeadReportRunIdentity): Promise<readonly TeamTask[]>;
       delivered(run: LeadReportRunIdentity, report: DeliveredLeadReport): void;
       changed(teamName: string): void;
     }
@@ -23,10 +29,12 @@ export class NodeLeadReportDelivery implements LeadReportDelivery {
   ): Promise<{ messageId: string }> {
     const from = await this.deps.leadName(input.run);
     await this.deps.assertCurrentRun(input.run);
+    const tasks = await this.deps.tasks(input.run);
     const controller = agentTeamsController.createController({
       teamName: input.run.teamName,
       claudeDir: dirname(this.deps.teamsRoot),
       allowUserMessageSender: true,
+      readOnlyTaskSnapshot: [...tasks],
     });
     const result = await controller.messages.sendMessageAsync({
       from,

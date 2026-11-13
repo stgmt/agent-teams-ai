@@ -1,3 +1,4 @@
+import { registryTaskFixtureService } from '../../helpers/teamRuntimeSnapshot';
 // @vitest-environment node
 
 import { BoundControlContext } from '@features/external-agent-connection/main';
@@ -39,6 +40,7 @@ import type {
   TeamProvisioningProgress,
   TeamRuntimeState,
 } from '@shared/types/team';
+import type { TeamTask } from '@shared/types';
 
 interface RegisteredTool {
   name: string;
@@ -174,12 +176,30 @@ function installControlApiFetchMock(app: FastifyInstance, baseUrl: string): () =
   };
 }
 
-function createServices(claudeRoot: string): {
+function createServices(
+  claudeRoot: string,
+  registryTasks = new Map<string, TeamTask[]>()
+): {
   createTeamCalls: TeamCreateRequest[];
   teamDataService: TeamDataService;
   services: HttpServices;
 } {
-  const teamDataService = new TeamDataService();
+  const teamDataService = registryTaskFixtureService({
+    readBoardSnapshot: async (teamName) =>
+      Promise.all(
+        (registryTasks.get(teamName) ?? []).map(async (task) => {
+          // Only execution metadata comes from the local projection; canonical fields stay in the dataset.
+          const local = JSON.parse(
+            await readFile(path.join(claudeRoot, 'tasks', teamName, `${task.id}.json`), 'utf8')
+          );
+          return {
+            ...task,
+            workIntervals: local.workIntervals,
+            reviewIntervals: local.reviewIntervals,
+          };
+        })
+      ),
+  });
   const createTeamCalls: TeamCreateRequest[] = [];
   const aliveTeams = new Set<string>();
   const progressByRunId = new Map<string, TeamProvisioningProgress>();
@@ -376,7 +396,14 @@ function enableManagement(services: HttpServices, teamDataService: TeamDataServi
     getRuntimeState: (name) => services.teamApis!.runtime.getRuntimeState(name),
     getSavedRequest: (name) => teamDataService.getSavedRequest(name),
     getTeamData: (name) => teamDataService.getTeamData(name),
-    createTeamConfig: (request) => teamDataService.createTeamConfig(request),
+    createTeamConfig: (request) =>
+      teamDataService.createTeamConfig({
+        specScope: {
+          projects: ['owner/project'],
+          bindings: [{ project: 'owner/project', spec: 'fixture' }],
+        },
+        ...request,
+      }),
     updateConfig: (name, updates) => teamDataService.updateConfig(name, updates),
     replaceMembers: (name, request) => teamDataService.replaceMembers(name, request),
     deleteTeam: (name) => teamDataService.deleteTeam(name),
@@ -695,7 +722,13 @@ describe('MCP team tools over the local REST control API', () => {
     const membersPath = path.join(directory, 'members.meta.json');
     const metaPath = path.join(directory, 'team.meta.json');
     try {
-      await teamDataService.createTeamConfig({ teamName, cwd: root, members: [] });
+      await teamDataService.createTeamConfig({
+        specScope: {
+          projects: ['owner/project'],
+          bindings: [{ project: 'owner/project', spec: 'fixture' }],
+        },
+        ...{ teamName, cwd: root, members: [] },
+      });
       const initial = await services.teamPromptManagement!.get(teamName);
       const savedMetadata = await readFile(metaPath);
       await writeFile(membersPath, unreadable);
@@ -789,7 +822,13 @@ describe('MCP team tools over the local REST control API', () => {
       const directory = path.join(root, 'teams', teamName);
       const configPath = path.join(directory, 'config.json');
       try {
-        await teamDataService.createTeamConfig({ teamName, cwd: root, members: [] });
+        await teamDataService.createTeamConfig({
+          specScope: {
+            projects: ['owner/project'],
+            bindings: [{ project: 'owner/project', spec: 'fixture' }],
+          },
+          ...{ teamName, cwd: root, members: [] },
+        });
         const initial = await services.teamPromptManagement!.get(teamName);
         const metaBytes = await readFile(path.join(directory, 'team.meta.json'));
         await writeFile(configPath, unreadable);
@@ -848,7 +887,13 @@ describe('MCP team tools over the local REST control API', () => {
     let operation: Promise<void> | undefined;
     let timeout: ReturnType<typeof setTimeout> | undefined;
     try {
-      await teamDataService.createTeamConfig({ teamName, cwd: root, members: [] });
+      await teamDataService.createTeamConfig({
+        specScope: {
+          projects: ['owner/project'],
+          bindings: [{ project: 'owner/project', spec: 'fixture' }],
+        },
+        ...{ teamName, cwd: root, members: [] },
+      });
       await writeFile(
         path.join(directory, 'config.json'),
         JSON.stringify({
@@ -954,12 +999,18 @@ describe('MCP team tools over the local REST control API', () => {
     const membersPath = path.join(directory, 'members.meta.json');
     try {
       await teamDataService.createTeamConfig({
-        teamName,
-        cwd: root,
-        members: [{ name: 'builder', role: 'Engineer' }],
-        runtimeSelectionVersion: 1,
-        providerId: 'codex',
-        prompt: 'Saved lead instructions',
+        specScope: {
+          projects: ['owner/project'],
+          bindings: [{ project: 'owner/project', spec: 'fixture' }],
+        },
+        ...{
+          teamName,
+          cwd: root,
+          members: [{ name: 'builder', role: 'Engineer' }],
+          runtimeSelectionVersion: 1,
+          providerId: 'codex',
+          prompt: 'Saved lead instructions',
+        },
       });
       const initial = await services.teamPromptManagement!.get(teamName);
       const meta = JSON.parse(await readFile(metaPath, 'utf8')) as Record<string, unknown>;
@@ -1040,7 +1091,13 @@ describe('MCP team tools over the local REST control API', () => {
       ];
       let expectedConfigMembers = members;
       try {
-        await teamDataService.createTeamConfig({ teamName, cwd: root, members: [] });
+        await teamDataService.createTeamConfig({
+          specScope: {
+            projects: ['owner/project'],
+            bindings: [{ project: 'owner/project', spec: 'fixture' }],
+          },
+          ...{ teamName, cwd: root, members: [] },
+        });
         await rm(membersPath);
         if (coverage === 'partial')
           await new TeamMembersMetaStore().writeMembers(teamName, [
@@ -1185,7 +1242,13 @@ describe('MCP team tools over the local REST control API', () => {
       const directory = path.join(root, 'teams', teamName);
       const targetPath = path.join(directory, filename);
       try {
-        await teamDataService.createTeamConfig({ teamName, cwd: root, members: [] });
+        await teamDataService.createTeamConfig({
+          specScope: {
+            projects: ['owner/project'],
+            bindings: [{ project: 'owner/project', spec: 'fixture' }],
+          },
+          ...{ teamName, cwd: root, members: [] },
+        });
         const initial = await services.teamPromptManagement!.get(teamName);
         const original =
           filename === 'config.json'
@@ -1228,7 +1291,8 @@ describe('MCP team tools over the local REST control API', () => {
     const root = await mkdtemp(path.join(tmpdir(), 'TEST-team-management-task-repair-'));
     setClaudeBasePathOverride(root);
     const app = Fastify();
-    const { services, teamDataService } = createServices(root);
+    const registryTasks = new Map<string, TeamTask[]>();
+    const { services, teamDataService } = createServices(root, registryTasks);
     const { lifecycle } = enableManagement(services, teamDataService, root);
     services.teamApis!.taskActivity = {
       repairStaleTaskActivityIntervalsBeforeSnapshot:
@@ -1243,8 +1307,22 @@ describe('MCP team tools over the local REST control API', () => {
       startedAt: '2026-05-08T10:10:00.000Z',
       completedAt: '2026-05-08T10:10:05.000Z',
     };
+    registryTasks.set(teamName, [
+      {
+        id: '1',
+        subject: 'Registry-owned interrupted task',
+        owner: 'builder',
+        status: 'in_progress',
+      },
+    ]);
     try {
-      await teamDataService.createTeamConfig({ teamName, cwd: root, members: [] });
+      await teamDataService.createTeamConfig({
+        specScope: {
+          projects: ['owner/project'],
+          bindings: [{ project: 'owner/project', spec: 'fixture' }],
+        },
+        ...{ teamName, cwd: root, members: [] },
+      });
       await writeFile(
         path.join(root, 'teams', teamName, 'config.json'),
         JSON.stringify({
@@ -1263,7 +1341,7 @@ describe('MCP team tools over the local REST control API', () => {
         taskPath,
         JSON.stringify({
           id: '1',
-          subject: 'Sandbox interrupted task',
+          subject: 'Untrusted local title must not become canonical',
           owner: 'builder',
           status: 'in_progress',
           historyEvents: [],
@@ -1288,7 +1366,12 @@ describe('MCP team tools over the local REST control API', () => {
       expect(response.json()).toMatchObject({
         configurationRevision: before.configurationRevision,
         tasks: [
-          expect.objectContaining({ id: '1', workIntervals: [work], reviewIntervals: [review] }),
+          expect.objectContaining({
+            id: '1',
+            subject: 'Registry-owned interrupted task',
+            workIntervals: [work],
+            reviewIntervals: [review],
+          }),
         ],
       });
       expect(JSON.parse(await readFile(taskPath, 'utf8'))).toMatchObject({
@@ -1329,12 +1412,18 @@ describe('MCP team tools over the local REST control API', () => {
       });
     try {
       await teamDataService.createTeamConfig({
-        teamName,
-        runtimeSelectionVersion: 1,
-        members: [],
-        prompt: 'Preserve saved lead instructions',
-        description: 'Initial',
-        cwd: root,
+        specScope: {
+          projects: ['owner/project'],
+          bindings: [{ project: 'owner/project', spec: 'fixture' }],
+        },
+        ...{
+          teamName,
+          runtimeSelectionVersion: 1,
+          members: [],
+          prompt: 'Preserve saved lead instructions',
+          description: 'Initial',
+          cwd: root,
+        },
       });
       await writeFile(
         configPath,
@@ -1487,10 +1576,16 @@ describe('MCP team tools over the local REST control API', () => {
     });
     try {
       await teamDataService.createTeamConfig({
-        teamName,
-        cwd: root,
-        members: [],
-        prompt: 'Original',
+        specScope: {
+          projects: ['owner/project'],
+          bindings: [{ project: 'owner/project', spec: 'fixture' }],
+        },
+        ...{
+          teamName,
+          cwd: root,
+          members: [],
+          prompt: 'Original',
+        },
       });
       const original = await services.teamPromptManagement!.get(teamName);
       const deletion = backup.withTeamIdentityFence(teamName, async () => {
@@ -1498,10 +1593,16 @@ describe('MCP team tools over the local REST control API', () => {
         await barrier;
         expect(await teamDataService.permanentlyDeleteTeam(teamName)).toBe(true);
         await teamDataService.createTeamConfig({
-          teamName,
-          cwd: root,
-          members: [],
-          prompt: 'Replacement',
+          specScope: {
+            projects: ['owner/project'],
+            bindings: [{ project: 'owner/project', spec: 'fixture' }],
+          },
+          ...{
+            teamName,
+            cwd: root,
+            members: [],
+            prompt: 'Replacement',
+          },
         });
       });
       await held;
@@ -1591,12 +1692,18 @@ describe('MCP team tools over the local REST control API', () => {
       });
     try {
       await teamDataService.createTeamConfig({
-        teamName: source,
-        cwd: root,
-        members: [],
-        runtimeSelectionVersion: 1,
-        providerId: 'anthropic',
-        description: 'Saved before launch',
+        specScope: {
+          projects: ['owner/project'],
+          bindings: [{ project: 'owner/project', spec: 'fixture' }],
+        },
+        ...{
+          teamName: source,
+          cwd: root,
+          members: [],
+          runtimeSelectionVersion: 1,
+          providerId: 'anthropic',
+          description: 'Saved before launch',
+        },
       });
       const launch = await app.inject({
         method: 'POST',

@@ -1,8 +1,8 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { writeJsonFileSync } = require('./atomicFile.js');
-const { assertValidGroupInboxRows, pickGroupProtocolFields } = require('./groupEnvelope.js');
+const { appendRow, readMessageRows, writeMessageRows } = require('./messagePersistence.js');
+const { pickGroupProtocolFields } = require('./groupEnvelope.js');
 const { withFileLock, withFileLockSync } = require('./fileLock.js');
 const { looksLikeIdleAckOnlyText } = require('./idleAckText.js');
 const runtimeHelpers = require('./runtimeHelpers.js');
@@ -23,31 +23,6 @@ const {
 
 function nowIso() {
   return new Date().toISOString();
-}
-
-// This module exclusively stores sentMessages.json and inboxes/*.json arrays.
-// Config/task JSON uses its own stores and does not pass this boundary.
-function readMessageRows(filePath) {
-  try {
-    const raw = fs.readFileSync(filePath);
-    const rows = JSON.parse(new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(raw));
-    assertValidGroupInboxRows(rows);
-    return rows;
-  } catch (error) {
-    if (error?.code === 'ENOENT') return [];
-    throw error;
-  }
-}
-
-function writeMessageRows(filePath, rows, newGroupMessage = false) {
-  assertValidGroupInboxRows(rows);
-  if (
-    newGroupMessage &&
-    Buffer.byteLength(JSON.stringify(rows, null, 2), 'utf8') > 10 * 1024 * 1024
-  ) {
-    throw new Error('Inbox storage unavailable: size limit exceeded');
-  }
-  writeJsonFileSync(filePath, rows);
 }
 
 function getInboxPath(paths, memberName) {
@@ -242,16 +217,6 @@ function buildMessage(flags, defaults) {
     ...(fileReferences ? { fileReferences } : {}),
     messageId,
   };
-}
-
-function appendRow(filePath, row) {
-  return withFileLockSync(filePath, () => {
-    const current = readMessageRows(filePath);
-    const list = Array.isArray(current) ? current : [];
-    list.push(row);
-    writeMessageRows(filePath, list, !!row.groupChatId);
-    return row;
-  });
 }
 
 const BOARD_EPOCH_EVENT_TYPES = new Set([

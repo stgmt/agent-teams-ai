@@ -1,4 +1,4 @@
-import { getTeamDataWorkerClient } from './TeamDataWorkerClient';
+import { getTeamDataWorkerCache } from './TeamDataWorkerClient';
 
 import type { TeamProvisioningMemberRuntimeAdvisoryInvalidator } from './provisioning/TeamProvisioningAppShellBoundary';
 import type { TeamMemberRuntimeAdvisoryService } from './TeamMemberRuntimeAdvisoryService';
@@ -17,11 +17,11 @@ export function createMemberRuntimeAdvisoryInvalidator(
   return (teamName, memberName, options) => {
     if (memberName) {
       advisoryService.invalidateMemberAdvisory(teamName, memberName);
-      getTeamDataWorkerClient().invalidateMemberRuntimeAdvisory(teamName, memberName);
+      getTeamDataWorkerCache()?.invalidateMemberRuntimeAdvisory(teamName, memberName);
       return;
     }
     const runStartedAtMs = options?.runStartedAtMs ?? Date.now();
     advisoryService.invalidateTeamAdvisories(teamName, runStartedAtMs);
-    getTeamDataWorkerClient().resetMemberRuntimeAdvisoriesForNewRun(teamName, runStartedAtMs);
+    getTeamDataWorkerCache()?.resetMemberRuntimeAdvisoriesForNewRun(teamName, runStartedAtMs);
   };
 }

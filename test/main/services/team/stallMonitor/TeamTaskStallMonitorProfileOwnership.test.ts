@@ -1,3 +1,4 @@
+import { teamRuntimeSnapshotFromProcesses } from '../../../../helpers/teamRuntimeSnapshot';
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
@@ -26,7 +27,7 @@ import {
 } from '../../../../../src/main/utils/pathDecoder';
 
 import type { TaskStallEvaluation } from '../../../../../src/main/services/team/stallMonitor/TeamTaskStallTypes';
-import type { TeamTask } from '../../../../../src/shared/types';
+import type { TeamAgentRuntimeSnapshot, TeamTask } from '../../../../../src/shared/types';
 
 /** alice runs on OpenCode and gets a direct nudge; bob's stall goes to the lead. */
 const OPENCODE_OWNER = 'alice';
@@ -34,6 +35,7 @@ const CLAUDE_OWNER = 'bob';
 
 let root: string;
 let deadPid: number;
+const runtimeSnapshots = new Map<string, TeamAgentRuntimeSnapshot>();
 
 function profileScope(profile: 'a' | 'b'): string {
   return buildOpenCodeAppProfileScope(
@@ -68,6 +70,24 @@ async function claimTeam(teamName: string, profile: 'a' | 'b'): Promise<void> {
  * without a stoppedAt, and two tasks that stay in progress.
  */
 async function writeRunningTeam(teamName: string, owner: 'a' | 'b' | null): Promise<void> {
+  runtimeSnapshots.set(
+    teamName,
+    teamRuntimeSnapshotFromProcesses(teamName, [
+      {
+        id: 'lead',
+        label: 'lead',
+        pid: process.pid,
+        registeredAt: '2026-10-30T00:00:00.000Z',
+      },
+      {
+        id: 'gone',
+        label: 'alice',
+        pid: deadPid,
+        registeredAt: '2026-10-30T00:00:00.000Z',
+        stoppedAt: '2026-10-30T00:00:01.000Z',
+      },
+    ])
+  );
   await mkdir(teamFile(teamName), { recursive: true });
   await writeFile(
     teamFile(teamName, 'config.json'),
@@ -135,13 +155,6 @@ function expectSameBytes(after: Map<string, Buffer>, before: Map<string, Buffer>
   }
 }
 
-async function readProcessRows(teamName: string): Promise<{ id: string; stoppedAt?: string }[]> {
-  return JSON.parse(await readFile(teamFile(teamName, 'processes.json'), 'utf8')) as {
-    id: string;
-    stoppedAt?: string;
-  }[];
-}
-
 /** The JSON journal, its lock and the SQLite fallback replica all start with this name. */
 function journalFilesOf(teamName: string): Promise<string[]> {
   return readdir(teamFile(teamName)).then((names) =>
@@ -165,7 +178,11 @@ function createHarness(
     realJournal?: boolean;
   } = {}
 ) {
-  const teamDataService = new TeamDataService();
+  const teamDataService = new TeamDataService(async (teamName) => {
+    const snapshot = runtimeSnapshots.get(teamName);
+    if (!snapshot) throw new Error(`Missing seeded runtime for ${teamName}`);
+    return snapshot;
+  });
   const ownership = createTeamProfileOwnership({ isTrackedInThisProcess: () => false });
   teamDataService.setTeamProfileOwnership((teamName) => ownership.isManagedByThisProfile(teamName));
   const leadAlert = vi
@@ -303,11 +320,6 @@ describe('task stall monitor and teams of other profiles', () => {
         taskRefs: [expect.objectContaining({ taskId: '2', teamName: 'own' })],
       })
     );
-    // Listing the own team still settles its exited teammate process.
-    const ownRows = await readProcessRows('own');
-    expect(ownRows.find((row) => row.id === 'gone')?.stoppedAt).toEqual(expect.any(String));
-    expect(ownRows.find((row) => row.id === 'lead')?.stoppedAt).toBeUndefined();
-
     for (const [teamName, teamBytes] of before) {
       expectNothingSentTo(harness, teamName);
       expectSameBytes(await readTeamBytes(teamName), teamBytes);
@@ -410,38 +422,14 @@ describe('task stall monitor and teams of other profiles', () => {
     expectNothingSentTo(harness, 'own');
   });
 
-  it('settles exited processes in the health tick and alive-team count only for its own team, one tick at a time', async () => {
+  it('counts native live teams without mutating either profile’s persisted files', async () => {
     await writeRunningTeam('own', 'a');
     await writeRunningTeam('other-profile', 'b');
-    const before = await readTeamBytes('other-profile');
+    const ownBefore = await readTeamBytes('own');
+    const foreignBefore = await readTeamBytes('other-profile');
     const { teamDataService } = createHarness();
-    teamDataService.trackProcessHealthForTeam('own');
-    teamDataService.trackProcessHealthForTeam('other-profile');
-
-    await (
-      teamDataService as unknown as { processHealthTick(): Promise<void> }
-    ).processHealthTick();
-
-    expect((await readProcessRows('own')).find((row) => row.id === 'gone')?.stoppedAt).toEqual(
-      expect.any(String)
-    );
-    expectSameBytes(await readTeamBytes('other-profile'), before);
-
-    // A tick that starts while the previous one still runs is skipped.
-    const ownershipCheck = vi.spyOn(teamDataService, 'isTeamManagedByThisProfile');
-    const tick = (): Promise<void> =>
-      (teamDataService as unknown as { processHealthTick(): Promise<void> }).processHealthTick();
-    await Promise.all([tick(), tick()]);
-    expect(ownershipCheck).toHaveBeenCalledTimes(2);
-    await tick();
-    expect(ownershipCheck).toHaveBeenCalledTimes(4);
-    ownershipCheck.mockRestore();
-
-    // Counting live processes still reads the other profile's team.
-    await expect(teamDataService.listAliveProcessTeams()).resolves.toEqual([
-      'other-profile',
-      'own',
-    ]);
-    expectSameBytes(await readTeamBytes('other-profile'), before);
+    expect(await teamDataService.listAliveProcessTeams()).toEqual(['other-profile', 'own']);
+    expectSameBytes(await readTeamBytes('own'), ownBefore);
+    expectSameBytes(await readTeamBytes('other-profile'), foreignBefore);
   });
 });

@@ -16,9 +16,12 @@ describe('OpenCode status in a macOS File Provider project', () => {
     const project = path.join(home, 'Library', 'CloudStorage', 'GoogleDrive', 'My Portfolio');
     try {
       await mkdir(project, { recursive: true });
-      expect(await resolveRuntimeStatusExecutionContext('opencode', project, {
-        platform: 'darwin', homePath: home,
-      })).toEqual({ cwd: home, projectArgs: ['--project-path', project] });
+      expect(
+        await resolveRuntimeStatusExecutionContext('opencode', project, {
+          platform: 'darwin',
+          homePath: home,
+        })
+      ).toEqual({ cwd: home, projectArgs: ['--project-path', project] });
     } finally {
       await rm(home, { recursive: true, force: true });
     }
@@ -26,24 +29,36 @@ describe('OpenCode status in a macOS File Provider project', () => {
   it('leaves other providers and other platforms alone', async () => {
     const cwd = '/TEST/Library/CloudStorage/My Portfolio';
     for (const [provider, platform] of [
-      ['codex', 'darwin'], ['anthropic', 'darwin'], ['gemini', 'darwin'],
-      ['opencode', 'linux'], ['opencode', 'win32'],
+      ['codex', 'darwin'],
+      ['anthropic', 'darwin'],
+      ['gemini', 'darwin'],
+      ['opencode', 'linux'],
+      ['opencode', 'win32'],
     ] as const) {
-      expect(await resolveRuntimeStatusExecutionContext(provider, cwd, {
-        platform, homePath: '/Users/TEST',
-      })).toEqual({ cwd, projectArgs: [] });
+      expect(
+        await resolveRuntimeStatusExecutionContext(provider, cwd, {
+          platform,
+          homePath: '/Users/TEST',
+        })
+      ).toEqual({ cwd, projectArgs: [] });
     }
-    expect(await resolveRuntimeStatusExecutionContext('opencode', undefined, {
-      platform: 'darwin', homePath: '/Users/TEST',
-    })).toEqual({ cwd: undefined, projectArgs: [] });
+    expect(
+      await resolveRuntimeStatusExecutionContext('opencode', undefined, {
+        platform: 'darwin',
+        homePath: '/Users/TEST',
+      })
+    ).toEqual({ cwd: undefined, projectArgs: [] });
   });
   it('does not disguise a missing project as an available home-scoped provider', async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), 'TEST-opencode-missing-'));
     try {
-      await expect(resolveRuntimeStatusExecutionContext('opencode',
-        path.join(home, 'Library', 'CloudStorage', 'missing'),
-        { platform: 'darwin', homePath: home },
-      )).rejects.toBeInstanceOf(WorkingDirectoryMissingError);
+      await expect(
+        resolveRuntimeStatusExecutionContext(
+          'opencode',
+          path.join(home, 'Library', 'CloudStorage', 'missing'),
+          { platform: 'darwin', homePath: home }
+        )
+      ).rejects.toBeInstanceOf(WorkingDirectoryMissingError);
     } finally {
       await rm(home, { recursive: true, force: true });
     }
@@ -53,11 +68,16 @@ describe('OpenCode status in a macOS File Provider project', () => {
     const statProject = vi.fn(async () => {
       throw Object.assign(new Error('private File Provider path'), { code: 'EPERM' });
     });
-    await expect(resolveRuntimeStatusExecutionContext('opencode', project, {
-      platform: 'darwin', homePath: '/Users/TEST', statProject,
-    })).rejects.toBeInstanceOf(RuntimeStatusProjectAccessDeniedError);
+    await expect(
+      resolveRuntimeStatusExecutionContext('opencode', project, {
+        platform: 'darwin',
+        homePath: '/Users/TEST',
+        statProject,
+      })
+    ).rejects.toBeInstanceOf(RuntimeStatusProjectAccessDeniedError);
     expect(statProject).toHaveBeenCalledOnce();
-    expect(statProject).toHaveBeenCalledWith(project);
+    // The execution context resolves the project with the host path rules.
+    expect(statProject).toHaveBeenCalledWith(path.resolve(project));
   });
 
   it('presents a denied CloudStorage directory as a permission error, not an invalid provider', () => {
@@ -74,9 +94,12 @@ describe('OpenCode status in a macOS File Provider project', () => {
   it('fails closed for a root user home', async () => {
     const project = await mkdtemp(path.join(os.tmpdir(), 'TEST-opencode-project-'));
     try {
-      await expect(resolveRuntimeStatusExecutionContext('opencode', project, {
-        platform: 'darwin', homePath: '/',
-      })).rejects.toThrow('non-root user home');
+      await expect(
+        resolveRuntimeStatusExecutionContext('opencode', project, {
+          platform: 'darwin',
+          homePath: '/',
+        })
+      ).rejects.toThrow('non-root user home');
     } finally {
       await rm(project, { recursive: true, force: true });
     }

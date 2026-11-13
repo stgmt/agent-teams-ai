@@ -81,10 +81,10 @@ export class DeliverPersistedLeadRequest {
     if (wasQueued) this.dequeue(scope, request);
     if (request.pending) return request.pending;
     if (request.deliveredMessageId || request.sent) return this.receipt(request);
-    if (request.unconfirmed)
+    if (request.unconfirmed && !this.ports.canReplayUnconfirmed?.(run))
       throw new Error('Lead input delivery is unconfirmed; it must not be resent');
     this.ledger.activate(run, request);
-    request.pending = Promise.resolve().then(() => this.prepare(request!));
+    request.pending = Promise.resolve().then(() => this.prepare(request));
     try {
       return await request.pending;
     } catch (error) {
@@ -236,10 +236,10 @@ export class DeliverPersistedLeadRequest {
       return this.receipt(request);
     }
     request.unconfirmed = true;
-    if (claim.state === 'unconfirmed')
+    if (claim.state === 'unconfirmed' && !this.ports.canReplayUnconfirmed?.(run))
       throw new Error('Lead input delivery is unconfirmed; it must not be resent');
     try {
-      await this.ports.send(run, text);
+      await this.ports.send(run, text, claim.operationId);
       await this.ports.input.sent(request.input, claim.operationId);
       request.sent = true;
       request.unconfirmed = false;

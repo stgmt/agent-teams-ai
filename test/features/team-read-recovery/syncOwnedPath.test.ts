@@ -69,8 +69,10 @@ it('retains both completion ports until the original close callback is delivered
 });
 
 function syncFailure(error: NodeJS.ErrnoException): DescriptorCallbacks['fsync'] {
-  // Execute real fsync first; substitute only delivered error for the policy contract.
-  return (fd, callback) => fs.fsync(fd, (nativeError) => callback(nativeError ?? error));
+  // Execute the real fsync so the native path stays exercised, then deliver the supplied fault.
+  // Windows cannot flush a directory handle (EPERM), so passing the native error through would
+  // mask the injected fault and leave the directory durability policy untestable on win32.
+  return (fd, callback) => fs.fsync(fd, () => callback(error));
 }
 
 it('reports a best-effort storage fault but preserves strict failure after closure', async () => {

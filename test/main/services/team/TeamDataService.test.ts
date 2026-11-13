@@ -1,3 +1,14 @@
+import { RegistryTaskProvider } from '../../../../src/main/services/team/registry/RegistryTaskProvider';
+import {
+  registryTaskFixtureConfigReader,
+  registryTaskFixtureMetaStore,
+  registryBoardSnapshotFixture,
+} from '../../../helpers/teamRuntimeSnapshot';
+import {
+  knownEmptyTeamRuntimeSnapshot,
+  teamRuntimeSnapshotFromProcesses,
+} from '../../../helpers/teamRuntimeSnapshot';
+import { registryTaskFixtureService } from '../../../helpers/teamRuntimeSnapshot';
 import { mergeMessageAttachments } from '@features/agent-attachments/contracts';
 import { createHash } from 'crypto';
 import * as nodeFs from 'fs';
@@ -298,20 +309,32 @@ async function createResolverBackedLeadFixture(options?: {
 
 function createResolverBackedService(): TeamDataService {
   return new TeamDataService(
-    new TeamConfigReader(),
-    { getTasks: vi.fn(async () => []) } as never,
+    knownEmptyTeamRuntimeSnapshot,
+    registryTaskFixtureConfigReader(new TeamConfigReader()),
     {
       listInboxNames: vi.fn(async () => []),
       getMessages: vi.fn(async () => []),
       getMessagesWindow: vi.fn(createMockInboxMessagesWindowReader(async () => [])),
     } as never,
     {} as never,
-    {} as never,
     { resolveMembers: vi.fn(() => []) } as never,
     { getState: vi.fn(async () => ({ teamName: 'my-team', reviewers: [], tasks: {} })) } as never,
-    {} as never,
     { getMembers: vi.fn(async () => []) } as never,
-    { readMessages: vi.fn(async () => []) } as never
+    { readMessages: vi.fn(async () => []) } as never,
+    undefined,
+    undefined,
+    registryTaskFixtureMetaStore(undefined),
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    registryBoardSnapshotFixture({ getTasks: vi.fn(async () => []) } as never)
   );
 }
 
@@ -319,7 +342,8 @@ function createLeadSessionCachingService(
   configOverrides: Partial<TeamConfig> = {}
 ): TeamDataService {
   return new TeamDataService(
-    {
+    knownEmptyTeamRuntimeSnapshot,
+    registryTaskFixtureConfigReader({
       listTeams: vi.fn(),
       getConfig: vi.fn(async () => ({
         name: 'My team',
@@ -327,15 +351,11 @@ function createLeadSessionCachingService(
         leadSessionId: 'lead-1',
         ...configOverrides,
       })),
-    } as never,
-    {
-      getTasks: vi.fn(async () => []),
-    } as never,
+    } as never),
     {
       listInboxNames: vi.fn(async () => []),
       getMessages: vi.fn(async () => []),
     } as never,
-    {} as never,
     {} as never,
     {
       resolveMembers: vi.fn(() => []),
@@ -343,7 +363,6 @@ function createLeadSessionCachingService(
     {
       getState: vi.fn(async () => ({ teamName: 'my-team', reviewers: [], tasks: {} })),
     } as never,
-    {} as never,
     {
       getMembers: vi.fn(async () => []),
     } as never,
@@ -357,10 +376,22 @@ function createLeadSessionCachingService(
         },
       }) as never) as never,
     {} as never,
-    {} as never,
+    registryTaskFixtureMetaStore({} as never),
     {
       getMemberAdvisories: vi.fn(async () => new Map()),
-    } as never
+    } as never,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    registryBoardSnapshotFixture({
+      getTasks: vi.fn(async () => []),
+    } as never)
   );
 }
 
@@ -375,87 +406,6 @@ afterEach(async () => {
 });
 
 describe('TeamDataService task projection cache invalidation', () => {
-  it('invalidates global task projection cache after direct task mutations', async () => {
-    const task: TeamTask = {
-      id: 'task-1',
-      subject: 'Task 1',
-      status: 'pending',
-      createdAt: '2026-05-02T12:00:00.000Z',
-      updatedAt: '2026-05-02T12:00:00.000Z',
-    };
-    const taskController = {
-      createTask: vi.fn(() => task),
-      startTask: vi.fn(),
-      setTaskStatus: vi.fn(),
-      softDeleteTask: vi.fn(),
-      restoreTask: vi.fn(),
-      setTaskOwner: vi.fn(),
-      updateTaskFields: vi.fn(),
-      addTaskAttachmentMeta: vi.fn(),
-      removeTaskAttachment: vi.fn(),
-      setNeedsClarification: vi.fn(),
-      linkTask: vi.fn(),
-      unlinkTask: vi.fn(),
-      addTaskComment: vi.fn(() => ({
-        comment: {
-          id: 'comment-1',
-          author: 'user',
-          text: 'Comment',
-          createdAt: '2026-05-02T12:01:00.000Z',
-          type: 'regular',
-        },
-      })),
-    };
-    const service = new TeamDataService(
-      {
-        getConfig: vi.fn(async () => ({
-          name: 'my-team',
-          projectPath: '/repo',
-          members: [{ name: 'team-lead', role: 'Lead' }],
-        })),
-      } as never,
-      {
-        getTasks: vi.fn(async () => [task]),
-      } as never,
-      {
-        listInboxNames: vi.fn(async () => []),
-        getMessages: vi.fn(async () => []),
-      } as never,
-      {} as never,
-      {} as never,
-      { resolveMembers: vi.fn(() => []) } as never,
-      { getState: vi.fn(async () => ({ teamName: 'my-team', reviewers: [], tasks: {} })) } as never,
-      {} as never,
-      { getMembers: vi.fn(async () => []) } as never,
-      { readMessages: vi.fn(async () => []) } as never,
-      (() => ({ taskBoard: taskController })) as never
-    );
-    const invalidateSpy = vi.spyOn(TeamTaskReader, 'invalidateAllTasksCache');
-
-    await service.createTask('my-team', { subject: 'Task 1' });
-    await service.startTask('my-team', 'task-1');
-    await service.startTaskByUser('my-team', 'task-1');
-    await service.updateTaskStatus('my-team', 'task-1', 'completed');
-    await service.softDeleteTask('my-team', 'task-1');
-    await service.restoreTask('my-team', 'task-1');
-    await service.updateTaskOwner('my-team', 'task-1', 'alice');
-    await service.updateTaskFields('my-team', 'task-1', { subject: 'Task 1 updated' });
-    await service.addTaskAttachment('my-team', 'task-1', {
-      id: 'att-1',
-      filename: 'note.txt',
-      mimeType: 'text/plain',
-      size: 1,
-      createdAt: '2026-05-02T12:02:00.000Z',
-    } as never);
-    await service.removeTaskAttachment('my-team', 'task-1', 'att-1');
-    await service.setTaskNeedsClarification('my-team', 'task-1', 'lead');
-    await service.addTaskRelationship('my-team', 'task-1', 'task-2', 'related');
-    await service.removeTaskRelationship('my-team', 'task-1', 'task-2', 'related');
-    await service.addTaskComment('my-team', 'task-1', 'Comment');
-
-    expect(invalidateSpy).toHaveBeenCalledTimes(14);
-  });
-
   it('removes detached trees, never recursively removes public paths, and stays idempotent', async () => {
     const claudeRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'team-data-delete-cache-'));
     tempPaths.push(claudeRoot);
@@ -467,10 +417,9 @@ describe('TeamDataService task projection cache invalidation', () => {
     await fs.mkdir(taskPath, { recursive: true });
 
     const configInvalidateSpy = vi.spyOn(TeamConfigReader, 'invalidateTeam');
-    const taskInvalidateSpy = vi.spyOn(TeamTaskReader, 'invalidateAllTasksCache');
     const removeSpy = vi.spyOn(nodeFs.promises, 'rm');
 
-    const service = new TeamDataService();
+    const service = new TeamDataService(knownEmptyTeamRuntimeSnapshot);
     await expect(service.permanentlyDeleteTeam('gone-team')).resolves.toBe(true);
     const firstRemovalCallCount = removeSpy.mock.calls.length;
     expect(firstRemovalCallCount).toBeGreaterThan(0);
@@ -480,7 +429,6 @@ describe('TeamDataService task projection cache invalidation', () => {
     await expect(fs.access(teamPath)).rejects.toThrow();
     await expect(fs.access(taskPath)).rejects.toThrow();
     expect(configInvalidateSpy).toHaveBeenCalledWith('gone-team');
-    expect(taskInvalidateSpy).toHaveBeenCalledTimes(2);
     const removeCalls = removeSpy.mock.calls.map(([removedPath, options]) => ({
       removedPath: path.resolve(String(removedPath)),
       options,
@@ -531,7 +479,7 @@ describe('TeamDataService task projection cache invalidation', () => {
     const getConfigSnapshot = vi.fn(async () => {
       throw new Error('snapshot config read should not be used for team deletion');
     });
-    const service = new TeamDataService({
+    const service = new TeamDataService(knownEmptyTeamRuntimeSnapshot, {
       listTeams: vi.fn(),
       getConfig,
       getConfigSnapshot,
@@ -554,7 +502,7 @@ describe('TeamDataService draft metadata', () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'TEST-team-draft-rename-admission-'));
     tempPaths.push(root);
     setClaudeBasePathOverride(root);
-    const service = new TeamDataService();
+    const service = new TeamDataService(knownEmptyTeamRuntimeSnapshot);
     const lifecycle = new TeamProvisioningService();
     service.setConfigurationGate((name, operation) =>
       lifecycle.runLiveRosterMutation(name, operation)
@@ -593,7 +541,7 @@ describe('TeamDataService draft metadata', () => {
         await writeMeta.call(this, teamName, meta);
       });
 
-    await new TeamDataService().createTeamConfig({
+    await new TeamDataService(knownEmptyTeamRuntimeSnapshot).createTeamConfig({
       teamName: 'test-empty-inbox',
       providerId: 'opencode',
       members: [{ name: 'researcher' }],
@@ -620,7 +568,10 @@ describe('TeamDataService draft metadata', () => {
     const publishDraft = vi.spyOn(TeamMetaStore.prototype, 'writeMeta');
 
     await expect(
-      new TeamDataService().createTeamConfig({ teamName: 'test-inbox-rollback', members: [] })
+      new TeamDataService(knownEmptyTeamRuntimeSnapshot).createTeamConfig({
+        teamName: 'test-inbox-rollback',
+        members: [],
+      })
     ).rejects.toThrow('TEST inbox initialization failed');
 
     expect(publishDraft).not.toHaveBeenCalled();
@@ -641,7 +592,7 @@ describe('TeamDataService draft metadata', () => {
     await fs.writeFile(path.join(tasksDir, '1.json'), '{"subject":"Existing task"}', 'utf8');
 
     await expect(
-      new TeamDataService().createTeamConfig({
+      new TeamDataService(knownEmptyTeamRuntimeSnapshot).createTeamConfig({
         teamName: 'draft-team',
         members: [{ name: 'replacement' }],
       })
@@ -662,7 +613,10 @@ describe('TeamDataService draft metadata', () => {
     await fs.mkdir(path.join(claudeRoot, 'tasks', 'draft-team'), { recursive: true });
 
     await expect(
-      new TeamDataService().createTeamConfig({ teamName: 'draft-team', members: [] })
+      new TeamDataService(knownEmptyTeamRuntimeSnapshot).createTeamConfig({
+        teamName: 'draft-team',
+        members: [],
+      })
     ).rejects.toThrow('Team already exists');
     await expect(fs.access(path.join(claudeRoot, 'teams', 'draft-team'))).rejects.toThrow();
   });
@@ -671,7 +625,7 @@ describe('TeamDataService draft metadata', () => {
     const claudeRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'team-data-create-race-'));
     tempPaths.push(claudeRoot);
     setClaudeBasePathOverride(claudeRoot);
-    const service = new TeamDataService();
+    const service = new TeamDataService(knownEmptyTeamRuntimeSnapshot);
 
     const results = await Promise.allSettled([
       service.createTeamConfig({ teamName: 'draft-team', members: [{ name: 'alpha' }] }),
@@ -690,7 +644,7 @@ describe('TeamDataService draft metadata', () => {
     const claudeRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'model-inheritance-roster-'));
     tempPaths.push(claudeRoot);
     setClaudeBasePathOverride(claudeRoot);
-    const service = new TeamDataService();
+    const service = new TeamDataService(knownEmptyTeamRuntimeSnapshot);
     await service.createTeamConfig({
       teamName: 'inheritance-team',
       members: [{ name: 'inherited' }],
@@ -713,7 +667,7 @@ describe('TeamDataService draft metadata', () => {
     tempPaths.push(claudeRoot);
     setClaudeBasePathOverride(claudeRoot);
 
-    const service = new TeamDataService();
+    const service = new TeamDataService(knownEmptyTeamRuntimeSnapshot);
     const listCacheInvalidateSpy = vi.spyOn(TeamConfigReader, 'invalidateListTeamsCache');
     await service.createTeamConfig({
       teamName: 'draft-team',
@@ -749,8 +703,10 @@ describe('TeamDataService draft metadata', () => {
     await expect(service.getSavedRequest('missing-team')).resolves.toBeNull();
     await expect(service.getSavedRequest('draft-team')).resolves.toMatchObject({
       teamName: 'draft-team',
-      specProject: 'owner/project',
-      specSlug: 'draft-spec',
+      specScope: {
+        projects: ['owner/project'],
+        bindings: [{ project: 'owner/project', spec: 'draft-spec' }],
+      },
       displayName: 'Draft Team',
       description: 'Saved draft',
       color: '#3366ff',
@@ -780,21 +736,31 @@ describe('TeamDataService draft metadata', () => {
     });
   });
 
-  it('rejects incomplete draft registry binding before creating the team', async () => {
+  it('persists a permitted project before the first specification exists', async () => {
     const claudeRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'team-draft-binding-'));
     tempPaths.push(claudeRoot);
     setClaudeBasePathOverride(claudeRoot);
-    await expect(new TeamDataService().createTeamConfig({
-      teamName: 'draft-team', members: [], specProject: 'owner/project',
-    })).rejects.toThrow('specProject and specSlug');
-    await expect(fs.access(path.join(claudeRoot, 'teams', 'draft-team'))).rejects.toThrow();
+    const service = new TeamDataService(knownEmptyTeamRuntimeSnapshot);
+    await service.createTeamConfig({
+      teamName: 'draft-team',
+      members: [],
+      specProject: 'owner/project',
+    });
+    expect((await new TeamMetaStore().getMeta('draft-team'))?.specScope).toEqual({
+      projects: ['owner/project'],
+      bindings: [],
+    });
+    expect((await service.getSavedRequest('draft-team'))?.specScope).toEqual({
+      projects: ['owner/project'],
+      bindings: [],
+    });
   });
 
   it('rejects oversized UTF-8 launch instructions without losing readable saved metadata', async () => {
     const claudeRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'test-team-metadata-bytes-'));
     tempPaths.push(claudeRoot);
     setClaudeBasePathOverride(claudeRoot);
-    const service = new TeamDataService();
+    const service = new TeamDataService(knownEmptyTeamRuntimeSnapshot);
     await service.createTeamConfig({
       teamName: 'byte-team',
       prompt: 'Keep the saved instructions',
@@ -822,7 +788,7 @@ describe('TeamDataService draft metadata', () => {
     const claudeRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'test-team-combined-bytes-'));
     tempPaths.push(claudeRoot);
     setClaudeBasePathOverride(claudeRoot);
-    const service = new TeamDataService();
+    const service = new TeamDataService(knownEmptyTeamRuntimeSnapshot);
     const prompt = 'p'.repeat(100_000);
     await service.createTeamConfig({
       teamName: 'byte-team',
@@ -861,7 +827,7 @@ describe('TeamDataService draft metadata', () => {
     const claudeRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'test-team-roster-bytes-'));
     tempPaths.push(claudeRoot);
     setClaudeBasePathOverride(claudeRoot);
-    const service = new TeamDataService();
+    const service = new TeamDataService(knownEmptyTeamRuntimeSnapshot);
     const workflow = 'ж'.repeat(100_000);
     await service.createTeamConfig({
       teamName: 'byte-team',
@@ -884,7 +850,7 @@ describe('TeamDataService draft metadata', () => {
     const claudeRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'team-data-unresolved-'));
     tempPaths.push(claudeRoot);
     setClaudeBasePathOverride(claudeRoot);
-    await new TeamDataService().createTeamConfig({
+    await new TeamDataService(knownEmptyTeamRuntimeSnapshot).createTeamConfig({
       teamName: 'unresolved-team',
       runtimeSelectionVersion: 1,
       prompt: 'Coordinate the investigation',
@@ -899,7 +865,9 @@ describe('TeamDataService draft metadata', () => {
     // Existing writers replacing presentation/settings must not remove opt-in authority.
     const { runtimeSelectionVersion: _marker, ...oldWriterPayload } = current!;
     await store.writeMeta('unresolved-team', oldWriterPayload);
-    const reopened = await new TeamDataService().getSavedRequest('unresolved-team');
+    const reopened = await new TeamDataService(knownEmptyTeamRuntimeSnapshot).getSavedRequest(
+      'unresolved-team'
+    );
     expect(reopened).toMatchObject({
       runtimeSelectionVersion: 1,
       description: 'Edited description',
@@ -928,7 +896,7 @@ describe('TeamDataService draft metadata', () => {
       setClaudeBasePathOverride(secondRoot);
       return writeMeta.call(this, teamName, metadata, capturedBase);
     });
-    await new TeamDataService().createTeamConfig({
+    await new TeamDataService(knownEmptyTeamRuntimeSnapshot).createTeamConfig({
       teamName: 'captured-team',
       runtimeSelectionVersion: 1,
       members: [{ name: 'investigator', workflow: 'Read and report evidence' }],
@@ -958,7 +926,7 @@ describe('TeamDataService draft metadata', () => {
     tempPaths.push(claudeRoot);
     setClaudeBasePathOverride(claudeRoot);
 
-    const service = new TeamDataService();
+    const service = new TeamDataService(knownEmptyTeamRuntimeSnapshot);
     await service.createTeamConfig({
       teamName: 'draft-team',
       cwd: '/Users/test/project',
@@ -998,7 +966,7 @@ describe('TeamDataService draft metadata', () => {
     tempPaths.push(claudeRoot);
     setClaudeBasePathOverride(claudeRoot);
 
-    const service = new TeamDataService();
+    const service = new TeamDataService(knownEmptyTeamRuntimeSnapshot);
     await service.createTeamConfig({
       teamName: 'signal-ops',
       displayName: 'Signal Ops',
@@ -1031,7 +999,7 @@ describe('TeamDataService draft metadata', () => {
     tempPaths.push(claudeRoot);
     setClaudeBasePathOverride(claudeRoot);
 
-    const service = new TeamDataService();
+    const service = new TeamDataService(knownEmptyTeamRuntimeSnapshot);
     await service.createTeamConfig({
       teamName: 'signal-ops',
       cwd: '/Users/test/project',
@@ -1050,7 +1018,7 @@ describe('TeamDataService draft metadata', () => {
     tempPaths.push(claudeRoot);
     setClaudeBasePathOverride(claudeRoot);
 
-    const service = new TeamDataService();
+    const service = new TeamDataService(knownEmptyTeamRuntimeSnapshot);
     await service.createTeamConfig({
       teamName: 'signal-ops',
       cwd: '/Users/test/project',
@@ -1118,9 +1086,9 @@ describe('TeamDataService draft metadata', () => {
         .map((name) => fs.writeFile(path.join(teamDir, 'inboxes', `${name}.json`), '[]'))
     );
 
-    await new TeamDataService().removeMember('restart-team', 'alice');
+    await new TeamDataService(knownEmptyTeamRuntimeSnapshot).removeMember('restart-team', 'alice');
     await expect(
-      new TeamDataService().removeMember('restart-team', 'alice')
+      new TeamDataService(knownEmptyTeamRuntimeSnapshot).removeMember('restart-team', 'alice')
     ).resolves.toBeUndefined();
 
     const persisted = JSON.parse(
@@ -1191,17 +1159,15 @@ function createTaskCommentForwardingService(options: {
   const journal = options.journal ?? createForwardingJournalStore().journal;
 
   const service = new TeamDataService(
-    {
+    knownEmptyTeamRuntimeSnapshot,
+    registryTaskFixtureConfigReader({
       listTeams: vi.fn(),
       getConfig: vi.fn(async () => ({
         name: 'My team',
         members: options.members ?? [{ name: 'team-lead', role: 'Lead' }],
         leadSessionId: 'lead-1',
       })),
-    } as never,
-    {
-      getTasks: vi.fn(async () => options.tasks),
-    } as never,
+    } as never),
     {
       listInboxNames: vi.fn(async () => []),
       getMessages: vi.fn(async () => []),
@@ -1212,10 +1178,22 @@ function createTaskCommentForwardingService(options: {
     {} as never,
     {} as never,
     {} as never,
-    {} as never,
-    {} as never,
     (() => ({}) as never) as never,
-    journal as never
+    journal as never,
+    registryTaskFixtureMetaStore(undefined),
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    registryBoardSnapshotFixture({
+      getTasks: vi.fn(async () => options.tasks),
+    } as never)
   );
   service.setTeamProfileOwnership(async () => true);
 
@@ -1348,21 +1326,29 @@ function createGetTeamDataHarness(
     getMemberAdvisories: vi.fn(getMemberAdvisories),
   };
 
+  const fixtureConfigReader = registryTaskFixtureConfigReader({
+    listTeams: vi.fn(),
+    getConfig,
+    getConfigSnapshot,
+  } as never);
+  const registryTaskProvider = new RegistryTaskProvider({
+    readConfig: (teamName) => fixtureConfigReader.getConfigSnapshot(teamName),
+  });
+  vi.spyOn(registryTaskProvider, 'readTaskSnapshot').mockImplementation(
+    async (_teamName, taskId) =>
+      options.getTask
+        ? options.getTask(taskId)
+        : ((await getTasks()).find((task) => task.id === taskId) ?? null)
+  );
   const service = new TeamDataService(
-    {
-      listTeams: vi.fn(),
-      getConfig,
-      getConfigSnapshot,
-    } as never,
-    taskReader as never,
+    (teamName) => Promise.resolve(teamRuntimeSnapshotFromProcesses(teamName, listProcessesSpy())),
+    fixtureConfigReader,
     inboxReader as never,
-    {} as never,
     {} as never,
     {
       resolveMembers: resolveMembersSpy,
     } as never,
     kanbanManager as never,
-    {} as never,
     membersMetaStore as never,
     sentMessagesStore as never,
     (() =>
@@ -1375,8 +1361,18 @@ function createGetTeamDataHarness(
         },
       }) as never) as never,
     {} as never,
-    teamMetaStore as never,
-    advisoryService as never
+    registryTaskFixtureMetaStore(teamMetaStore as never),
+    advisoryService as never,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    registryTaskProvider,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    registryBoardSnapshotFixture(taskReader as never)
   );
 
   return {
@@ -1406,66 +1402,6 @@ function buildResolvedMember(name: string): ResolvedTeamMember {
   };
 }
 
-function createDurableTaskStartNotificationHarness(options: {
-  task: TeamTask;
-  commandResults?: Array<{ outcome: string; createdInAttempt: boolean }>;
-  commandFacadeCreateTask?: ReturnType<typeof vi.fn>;
-  sendMessage?: ReturnType<typeof vi.fn>;
-}): {
-  service: TeamDataService;
-  sendMessage: ReturnType<typeof vi.fn>;
-  commandFacadeCreateTask: ReturnType<typeof vi.fn>;
-} {
-  const sendMessage =
-    options.sendMessage ??
-    vi.fn(async (_teamName: string, request: { messageId?: string }) => ({
-      deliveredToInbox: true,
-      messageId: request.messageId ?? 'generated-message-id',
-    }));
-  const commandResults = options.commandResults ?? [
-    { outcome: 'executed', createdInAttempt: true },
-  ];
-  let commandAttempt = 0;
-  const commandFacadeCreateTask =
-    options.commandFacadeCreateTask ??
-    vi.fn(async () => {
-      const result = commandResults[Math.min(commandAttempt, commandResults.length - 1)];
-      commandAttempt += 1;
-      return {
-        task: options.task,
-        outcome: result?.outcome ?? 'replayed',
-        createdInAttempt: result?.createdInAttempt ?? false,
-      };
-    });
-  const service = new TeamDataService(
-    {
-      getConfig: vi.fn(async () => ({
-        name: 'My team',
-        members: [{ name: 'lead-agent', agentType: 'team-lead', role: 'Lead' }],
-        leadSessionId: 'lead-session-1',
-      })),
-    } as never,
-    {} as never,
-    {} as never,
-    { sendMessage } as never,
-    {} as never,
-    {} as never,
-    {} as never,
-    null,
-    {} as never,
-    {} as never,
-    () =>
-      ({
-        taskBoard: {
-          getTask: vi.fn(() => options.task),
-          createTask: vi.fn(() => options.task),
-          reconcileTaskCreation: vi.fn(() => options.task),
-        },
-      }) as never
-  );
-  service.setTaskBoardCommandFacade({ createTask: commandFacadeCreateTask } as never);
-  return { service, sendMessage, commandFacadeCreateTask };
-}
 interface GlobalTaskBoardTestOptions {
   teams: Array<{
     teamName: string;
@@ -1477,88 +1413,42 @@ interface GlobalTaskBoardTestOptions {
   getState: (teamName: string) => Promise<KanbanState>;
 }
 
-function createRegistryGlobalTaskBoardHarness(options: GlobalTaskBoardTestOptions): {
-  service: TeamDataService;
-  listTeams: Mock<() => Promise<GlobalTaskBoardTestOptions['teams']>>;
-  getConfigSnapshot: Mock<(teamName: string) => Promise<TeamConfig | null>>;
-  getTasks: Mock<
-    (teamName: string) => Promise<{ backed: true; tasks: TeamTask[] }>
-  >;
-} {
+function createRegistryGlobalTaskBoardHarness(options: GlobalTaskBoardTestOptions) {
   const configs = new Map(Object.entries(options.configs));
-  const bindings = new Map<string, NonNullable<TeamConfig['specBindings']>>();
-  const metadata = new Map<string, TeamMetaFile>();
-  for (const team of options.teams) {
-    const config = configs.get(team.teamName);
-    if (!config) throw new Error(`Missing test config for ${team.teamName}`);
-    bindings.set(team.teamName, [...(config.specBindings ?? [])]);
-    metadata.set(team.teamName, {
-      version: 1,
-      cwd: `/teams/${team.teamName}`,
-      createdAt: 1,
-      registryTeamId: config.registryTeamId,
-      specBindings: [...(config.specBindings ?? [])],
-    });
-  }
-
   const listTeams = vi.fn(async () => options.teams);
   const getConfigSnapshot = vi.fn(async (teamName: string) => configs.get(teamName) ?? null);
-  const updateSpecBindings = vi.fn(
-    async (teamName: string, nextBindings: NonNullable<TeamConfig['specBindings']>) => {
-      const current = configs.get(teamName);
-      if (!current) throw new Error(`Missing test config for ${teamName}`);
-      const next = { ...current, specBindings: [...nextBindings] };
-      configs.set(teamName, next);
-      bindings.set(teamName, [...nextBindings]);
-      return next;
-    }
-  );
-  const configReader = { listTeams, getConfigSnapshot, updateSpecBindings };
-
-  const teamMetaStore = {
-    getMeta: vi.fn(async (teamName: string) => metadata.get(teamName) ?? null),
-    updateMeta: vi.fn(
-      async (
-        teamName: string,
-        update: (
-          current: TeamMetaFile | null
-        ) => Omit<TeamMetaFile, 'version'> | Promise<Omit<TeamMetaFile, 'version'>>
-      ) => {
-        const current = metadata.get(teamName) ?? null;
-        const next = await update(current);
-        metadata.set(teamName, { ...next, version: current?.version ?? 1 });
-      }
-    ),
-  };
-
-  const getBindings = vi.fn(async (teamName: string) => [...(bindings.get(teamName) ?? [])]);
-  const linkTeamSpec = vi.fn(
-    async (teamId: string, binding: { project: string; spec: string }) => {
-      const team = options.teams.find(
-        ({ teamName }) => configs.get(teamName)?.registryTeamId === teamId
-      );
-      if (!team) throw new Error(`Unknown test registry team ${teamId}`);
-      const current = bindings.get(team.teamName) ?? [];
-      const next = current.some(
-        (entry) => entry.project === binding.project && entry.spec === binding.spec
-      )
-        ? current
-        : [...current, binding];
-      bindings.set(team.teamName, next);
-      return [...next];
-    }
-  );
+  const configReader = registryTaskFixtureConfigReader({ listTeams, getConfigSnapshot } as never);
   const getTasks = vi.fn(async (teamName: string) => ({
     backed: true as const,
     tasks: options.tasks
       .filter((task) => task.teamName === teamName)
       .map(({ teamName: _teamName, ...task }) => task),
   }));
-  const registryTaskProvider = { getBindings, linkTeamSpec, getTasks };
+  const registryTaskProvider = new RegistryTaskProvider({
+    readConfig: (teamName) => configReader.getConfigSnapshot(teamName),
+  });
+  const readBoardCalls: Array<{ teamName: string; options: unknown }> = [];
+  vi.spyOn(registryTaskProvider, 'readBoardSnapshot').mockImplementation(
+    async (teamName, options) => {
+      readBoardCalls.push({ teamName, options });
+      return (await getTasks(teamName)).tasks;
+    }
+  );
+  // Canonical scope lives in team metadata. The fixture declares the same scope it persists in
+  // the runtime config, so the registry authority check passes without reading team directories.
+  const getMeta = vi.fn(async (teamName: string) => {
+    const config = configs.get(teamName);
+    return {
+      cwd: '',
+      createdAt: 0,
+      registryRegistrationCompleted: true,
+      ...(config?.specScope ? { specScope: config.specScope } : {}),
+    };
+  });
+  const teamMetaStore = registryTaskFixtureMetaStore({ getMeta } as never);
   const service = new TeamDataService(
-    configReader as never,
-    undefined,
-    undefined,
+    knownEmptyTeamRuntimeSnapshot,
+    configReader,
     undefined,
     undefined,
     undefined,
@@ -1567,17 +1457,15 @@ function createRegistryGlobalTaskBoardHarness(options: GlobalTaskBoardTestOption
     undefined,
     undefined,
     undefined,
-    undefined,
-    teamMetaStore as never,
-    undefined,
+    teamMetaStore,
     undefined,
     undefined,
     undefined,
     undefined,
-    registryTaskProvider as never
+    undefined,
+    registryTaskProvider
   );
-
-  return { service, listTeams, getConfigSnapshot, getTasks };
+  return { service, listTeams, getConfigSnapshot, getTasks, getMeta, readBoardCalls };
 }
 
 function buildGlobalTaskBoardConfig(
@@ -1586,8 +1474,10 @@ function buildGlobalTaskBoardConfig(
 ): TeamConfig {
   return buildDefaultTeamConfig({
     name: teamName,
-    registryTeamId: `registry-${teamName}`,
-    specBindings: [{ project: 'owner/project', spec: 'global-board' }],
+    specScope: {
+      projects: ['owner/project'],
+      bindings: [{ project: 'owner/project', spec: 'global-board' }],
+    },
     ...overrides,
   });
 }
@@ -1603,18 +1493,30 @@ describe('TeamDataService', () => {
     } as never;
 
     const service = new TeamDataService(
-      { getConfig: vi.fn(), listTeams: vi.fn() } as never,
-      { getTasks: vi.fn(async () => []) } as never,
+      knownEmptyTeamRuntimeSnapshot,
+      registryTaskFixtureConfigReader({ getConfig: vi.fn(), listTeams: vi.fn() } as never),
       { listInboxNames: vi.fn(async () => []), getMessages: vi.fn(async () => []) } as never,
-      {} as never,
       {} as never,
       { resolveMembers: vi.fn(() => []) } as never,
       {
         getState: vi.fn(async () => ({ teamName: 'dup-team', reviewers: [], tasks: {} })),
       } as never,
-      {} as never,
       membersMetaStore,
-      { readMessages: vi.fn(async () => []) } as never
+      { readMessages: vi.fn(async () => []) } as never,
+      undefined,
+      undefined,
+      registryTaskFixtureMetaStore(undefined),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      registryBoardSnapshotFixture({ getTasks: vi.fn(async () => []) } as never)
     );
 
     await expect(
@@ -1639,18 +1541,30 @@ describe('TeamDataService', () => {
     } as never;
 
     const service = new TeamDataService(
-      { getConfig: vi.fn(), listTeams: vi.fn() } as never,
-      { getTasks: vi.fn(async () => []) } as never,
+      knownEmptyTeamRuntimeSnapshot,
+      registryTaskFixtureConfigReader({ getConfig: vi.fn(), listTeams: vi.fn() } as never),
       { listInboxNames: vi.fn(async () => []), getMessages: vi.fn(async () => []) } as never,
-      {} as never,
       {} as never,
       { resolveMembers: vi.fn(() => []) } as never,
       {
         getState: vi.fn(async () => ({ teamName: 'dup-team', reviewers: [], tasks: {} })),
       } as never,
-      {} as never,
       membersMetaStore,
-      { readMessages: vi.fn(async () => []) } as never
+      { readMessages: vi.fn(async () => []) } as never,
+      undefined,
+      undefined,
+      registryTaskFixtureMetaStore(undefined),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      registryBoardSnapshotFixture({ getTasks: vi.fn(async () => []) } as never)
     );
 
     await expect(
@@ -1693,18 +1607,30 @@ describe('TeamDataService', () => {
     } as never;
 
     const service = new TeamDataService(
-      { getConfig: vi.fn(), listTeams: vi.fn() } as never,
-      { getTasks: vi.fn(async () => []) } as never,
+      knownEmptyTeamRuntimeSnapshot,
+      registryTaskFixtureConfigReader({ getConfig: vi.fn(), listTeams: vi.fn() } as never),
       { listInboxNames: vi.fn(async () => []), getMessages: vi.fn(async () => []) } as never,
-      {} as never,
       {} as never,
       { resolveMembers: vi.fn(() => []) } as never,
       {
         getState: vi.fn(async () => ({ teamName: 'runtime-team', reviewers: [], tasks: {} })),
       } as never,
-      {} as never,
       membersMetaStore,
-      { readMessages: vi.fn(async () => []) } as never
+      { readMessages: vi.fn(async () => []) } as never,
+      undefined,
+      undefined,
+      registryTaskFixtureMetaStore(undefined),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      registryBoardSnapshotFixture({ getTasks: vi.fn(async () => []) } as never)
     );
 
     await service.replaceMembers('runtime-team', {
@@ -1745,18 +1671,30 @@ describe('TeamDataService', () => {
     } as never;
 
     const service = new TeamDataService(
-      { getConfig: vi.fn(), listTeams: vi.fn() } as never,
-      { getTasks: vi.fn(async () => []) } as never,
+      knownEmptyTeamRuntimeSnapshot,
+      registryTaskFixtureConfigReader({ getConfig: vi.fn(), listTeams: vi.fn() } as never),
       { listInboxNames: vi.fn(async () => []), getMessages: vi.fn(async () => []) } as never,
-      {} as never,
       {} as never,
       { resolveMembers: vi.fn(() => []) } as never,
       {
         getState: vi.fn(async () => ({ teamName: 'runtime-team', reviewers: [], tasks: {} })),
       } as never,
-      {} as never,
       membersMetaStore,
-      { readMessages: vi.fn(async () => []) } as never
+      { readMessages: vi.fn(async () => []) } as never,
+      undefined,
+      undefined,
+      registryTaskFixtureMetaStore(undefined),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      registryBoardSnapshotFixture({ getTasks: vi.fn(async () => []) } as never)
     );
 
     await service.replaceMembers('runtime-team', {
@@ -1792,21 +1730,32 @@ describe('TeamDataService', () => {
     } as never;
 
     const service = new TeamDataService(
-      { getConfig: vi.fn(), listTeams: vi.fn() } as never,
-      { getTasks: vi.fn(async () => []) } as never,
+      knownEmptyTeamRuntimeSnapshot,
+      registryTaskFixtureConfigReader({ getConfig: vi.fn(), listTeams: vi.fn() } as never),
       { listInboxNames: vi.fn(async () => []), getMessages: vi.fn(async () => []) } as never,
-      {} as never,
       {} as never,
       { resolveMembers: vi.fn(() => []) } as never,
       {
         getState: vi.fn(async () => ({ teamName: 'runtime-team', reviewers: [], tasks: {} })),
       } as never,
-      {} as never,
       membersMetaStore,
       { readMessages: vi.fn(async () => []) } as never,
       (() => ({ processes: { listProcesses: vi.fn(async () => []) } }) as never) as never,
       {} as never,
-      { getMeta: vi.fn(async () => ({ providerId: 'codex' })) } as never
+      registryTaskFixtureMetaStore({
+        getMeta: vi.fn(async () => ({ providerId: 'codex' })),
+      } as never),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      registryBoardSnapshotFixture({ getTasks: vi.fn(async () => []) } as never)
     );
 
     await service.replaceMembers('runtime-team', {
@@ -1846,21 +1795,32 @@ describe('TeamDataService', () => {
     } as never;
 
     const service = new TeamDataService(
-      { getConfig: vi.fn(), listTeams: vi.fn() } as never,
-      { getTasks: vi.fn(async () => []) } as never,
+      knownEmptyTeamRuntimeSnapshot,
+      registryTaskFixtureConfigReader({ getConfig: vi.fn(), listTeams: vi.fn() } as never),
       { listInboxNames: vi.fn(async () => []), getMessages: vi.fn(async () => []) } as never,
-      {} as never,
       {} as never,
       { resolveMembers: vi.fn(() => []) } as never,
       {
         getState: vi.fn(async () => ({ teamName: 'runtime-team', reviewers: [], tasks: {} })),
       } as never,
-      {} as never,
       membersMetaStore,
       { readMessages: vi.fn(async () => []) } as never,
       (() => ({ processes: { listProcesses: vi.fn(async () => []) } }) as never) as never,
       {} as never,
-      { getMeta: vi.fn(async () => ({ providerId: 'codex' })) } as never
+      registryTaskFixtureMetaStore({
+        getMeta: vi.fn(async () => ({ providerId: 'codex' })),
+      } as never),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      registryBoardSnapshotFixture({ getTasks: vi.fn(async () => []) } as never)
     );
 
     await service.addMember('runtime-team', {
@@ -1893,21 +1853,32 @@ describe('TeamDataService', () => {
     } as never;
 
     const service = new TeamDataService(
-      { getConfig: vi.fn(), listTeams: vi.fn() } as never,
-      { getTasks: vi.fn(async () => []) } as never,
+      knownEmptyTeamRuntimeSnapshot,
+      registryTaskFixtureConfigReader({ getConfig: vi.fn(), listTeams: vi.fn() } as never),
       { listInboxNames: vi.fn(async () => []), getMessages: vi.fn(async () => []) } as never,
-      {} as never,
       {} as never,
       { resolveMembers: vi.fn(() => []) } as never,
       {
         getState: vi.fn(async () => ({ teamName: 'runtime-team', reviewers: [], tasks: {} })),
       } as never,
-      {} as never,
       membersMetaStore,
       { readMessages: vi.fn(async () => []) } as never,
       (() => ({ processes: { listProcesses: vi.fn(async () => []) } }) as never) as never,
       {} as never,
-      { getMeta: vi.fn(async () => ({ providerId: 'codex' })) } as never
+      registryTaskFixtureMetaStore({
+        getMeta: vi.fn(async () => ({ providerId: 'codex' })),
+      } as never),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      registryBoardSnapshotFixture({ getTasks: vi.fn(async () => []) } as never)
     );
 
     await expect(
@@ -1946,33 +1917,40 @@ describe('TeamDataService', () => {
     } as never;
 
     const service = new TeamDataService(
-      { getConfig: vi.fn(), listTeams: vi.fn() } as never,
-      { getTasks: vi.fn(async () => []) } as never,
+      async (teamName) =>
+        teamRuntimeSnapshotFromProcesses(teamName, [
+          {
+            id: 'run-1',
+            label: 'mixed-team',
+            pid: 123,
+            registeredAt: '2026-11-12T00:00:00.000Z',
+          },
+        ]),
+      registryTaskFixtureConfigReader({ getConfig: vi.fn(), listTeams: vi.fn() } as never),
       { listInboxNames: vi.fn(async () => []), getMessages: vi.fn(async () => []) } as never,
-      {} as never,
       {} as never,
       { resolveMembers: vi.fn(() => []) } as never,
       {
         getState: vi.fn(async () => ({ teamName: 'mixed-team', reviewers: [], tasks: {} })),
       } as never,
-      {} as never,
       membersMetaStore,
       { readMessages: vi.fn(async () => []) } as never,
-      (() =>
-        ({
-          processes: {
-            listProcesses: vi.fn(async () => [
-              {
-                id: 'run-1',
-                label: 'mixed-team',
-                pid: 123,
-                registeredAt: new Date().toISOString(),
-              },
-            ]),
-          },
-        }) as never) as never,
+      undefined,
       {} as never,
-      { getMeta: vi.fn(async () => ({ providerId: 'codex' })) } as never
+      registryTaskFixtureMetaStore({
+        getMeta: vi.fn(async () => ({ providerId: 'codex' })),
+      } as never),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      registryBoardSnapshotFixture({ getTasks: vi.fn(async () => []) } as never)
     );
 
     await expect(
@@ -2008,33 +1986,40 @@ describe('TeamDataService', () => {
     } as never;
 
     const service = new TeamDataService(
-      { getConfig: vi.fn(), listTeams: vi.fn() } as never,
-      { getTasks: vi.fn(async () => []) } as never,
+      async (teamName) =>
+        teamRuntimeSnapshotFromProcesses(teamName, [
+          {
+            id: 'run-1',
+            label: 'mixed-team',
+            pid: 123,
+            registeredAt: '2026-11-12T00:00:00.000Z',
+          },
+        ]),
+      registryTaskFixtureConfigReader({ getConfig: vi.fn(), listTeams: vi.fn() } as never),
       { listInboxNames: vi.fn(async () => []), getMessages: vi.fn(async () => []) } as never,
-      {} as never,
       {} as never,
       { resolveMembers: vi.fn(() => []) } as never,
       {
         getState: vi.fn(async () => ({ teamName: 'mixed-team', reviewers: [], tasks: {} })),
       } as never,
-      {} as never,
       membersMetaStore,
       { readMessages: vi.fn(async () => []) } as never,
-      (() =>
-        ({
-          processes: {
-            listProcesses: vi.fn(async () => [
-              {
-                id: 'run-1',
-                label: 'mixed-team',
-                pid: 123,
-                registeredAt: new Date().toISOString(),
-              },
-            ]),
-          },
-        }) as never) as never,
+      undefined,
       {} as never,
-      { getMeta: vi.fn(async () => ({ providerId: 'codex' })) } as never
+      registryTaskFixtureMetaStore({
+        getMeta: vi.fn(async () => ({ providerId: 'codex' })),
+      } as never),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      registryBoardSnapshotFixture({ getTasks: vi.fn(async () => []) } as never)
     );
 
     await expect(
@@ -2064,33 +2049,40 @@ describe('TeamDataService', () => {
     } as never;
 
     const service = new TeamDataService(
-      { getConfig: vi.fn(), listTeams: vi.fn() } as never,
-      { getTasks: vi.fn(async () => []) } as never,
+      async (teamName) =>
+        teamRuntimeSnapshotFromProcesses(teamName, [
+          {
+            id: 'run-1',
+            label: 'mixed-team',
+            pid: 123,
+            registeredAt: '2026-11-12T00:00:00.000Z',
+          },
+        ]),
+      registryTaskFixtureConfigReader({ getConfig: vi.fn(), listTeams: vi.fn() } as never),
       { listInboxNames: vi.fn(async () => []), getMessages: vi.fn(async () => []) } as never,
-      {} as never,
       {} as never,
       { resolveMembers: vi.fn(() => []) } as never,
       {
         getState: vi.fn(async () => ({ teamName: 'mixed-team', reviewers: [], tasks: {} })),
       } as never,
-      {} as never,
       membersMetaStore,
       { readMessages: vi.fn(async () => []) } as never,
-      (() =>
-        ({
-          processes: {
-            listProcesses: vi.fn(async () => [
-              {
-                id: 'run-1',
-                label: 'mixed-team',
-                pid: 123,
-                registeredAt: new Date().toISOString(),
-              },
-            ]),
-          },
-        }) as never) as never,
+      undefined,
       {} as never,
-      { getMeta: vi.fn(async () => ({ providerId: 'codex' })) } as never
+      registryTaskFixtureMetaStore({
+        getMeta: vi.fn(async () => ({ providerId: 'codex' })),
+      } as never),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      registryBoardSnapshotFixture({ getTasks: vi.fn(async () => []) } as never)
     );
 
     await expect(service.removeMember('mixed-team', 'alice')).resolves.toBeUndefined();
@@ -2120,18 +2112,30 @@ describe('TeamDataService', () => {
     } as never;
 
     const service = new TeamDataService(
-      { getConfig: vi.fn(), listTeams: vi.fn() } as never,
-      { getTasks: vi.fn(async () => []) } as never,
+      knownEmptyTeamRuntimeSnapshot,
+      registryTaskFixtureConfigReader({ getConfig: vi.fn(), listTeams: vi.fn() } as never),
       { listInboxNames: vi.fn(async () => []), getMessages: vi.fn(async () => []) } as never,
-      {} as never,
       {} as never,
       { resolveMembers: vi.fn(() => []) } as never,
       {
         getState: vi.fn(async () => ({ teamName: 'runtime-team', reviewers: [], tasks: {} })),
       } as never,
-      {} as never,
       membersMetaStore,
-      { readMessages: vi.fn(async () => []) } as never
+      { readMessages: vi.fn(async () => []) } as never,
+      undefined,
+      undefined,
+      registryTaskFixtureMetaStore(undefined),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      registryBoardSnapshotFixture({ getTasks: vi.fn(async () => []) } as never)
     );
 
     await service.replaceMembers('runtime-team', {
@@ -2193,18 +2197,30 @@ describe('TeamDataService', () => {
     } as never;
 
     const service = new TeamDataService(
-      { getConfig: vi.fn(), listTeams: vi.fn() } as never,
-      { getTasks: vi.fn(async () => []) } as never,
+      knownEmptyTeamRuntimeSnapshot,
+      registryTaskFixtureConfigReader({ getConfig: vi.fn(), listTeams: vi.fn() } as never),
       { listInboxNames: vi.fn(async () => []), getMessages: vi.fn(async () => []) } as never,
-      {} as never,
       {} as never,
       { resolveMembers: vi.fn(() => []) } as never,
       {
         getState: vi.fn(async () => ({ teamName: 'runtime-team', reviewers: [], tasks: {} })),
       } as never,
-      {} as never,
       membersMetaStore,
-      { readMessages: vi.fn(async () => []) } as never
+      { readMessages: vi.fn(async () => []) } as never,
+      undefined,
+      undefined,
+      registryTaskFixtureMetaStore(undefined),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      registryBoardSnapshotFixture({ getTasks: vi.fn(async () => []) } as never)
     );
 
     await expect(service.restoreMember('runtime-team', 'alice')).resolves.toMatchObject({
@@ -2285,7 +2301,7 @@ describe('TeamDataService', () => {
       );
 
       await expect(
-        new TeamDataService().restoreMember('runtime-team', 'alice')
+        new TeamDataService(knownEmptyTeamRuntimeSnapshot).restoreMember('runtime-team', 'alice')
       ).resolves.toMatchObject({
         name: expect.stringMatching(/^alice$/i),
         role: 'Developer',
@@ -2360,7 +2376,7 @@ describe('TeamDataService', () => {
       .fn()
       .mockRejectedValueOnce(new Error('metadata write failed'))
       .mockResolvedValue(undefined);
-    const service = new TeamDataService();
+    const service = new TeamDataService(knownEmptyTeamRuntimeSnapshot);
     Object.assign(service as unknown as { membersMetaStore: unknown }, {
       membersMetaStore: {
         getMembers: vi.fn(async () => []),
@@ -2401,21 +2417,15 @@ describe('TeamDataService', () => {
     ];
 
     const service = new TeamDataService(
-      {
+      knownEmptyTeamRuntimeSnapshot,
+      registryTaskFixtureConfigReader({
         listTeams: vi.fn(),
         getConfig: vi.fn(async () => ({ name: 'My team', members: [] })),
-      } as never,
-      {
-        getTasks: vi.fn(async () => {
-          order.push('tasks');
-          return tasks;
-        }),
-      } as never,
+      } as never),
       {
         listInboxNames: vi.fn(async () => []),
         getMessages: vi.fn(async () => []),
       } as never,
-      {} as never,
       {} as never,
       {
         resolveMembers: vi.fn(() => []),
@@ -2425,7 +2435,28 @@ describe('TeamDataService', () => {
         garbageCollect: vi.fn(async () => {
           order.push('gc');
         }),
-      } as never
+      } as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      registryTaskFixtureMetaStore(undefined),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      registryBoardSnapshotFixture({
+        getTasks: vi.fn(async () => {
+          order.push('tasks');
+          return tasks;
+        }),
+      } as never)
     );
 
     await service.getTeamData('my-team');
@@ -2435,6 +2466,7 @@ describe('TeamDataService', () => {
   it('delegates explicit reconcile to controller maintenance API', async () => {
     const reconcileArtifacts = vi.fn();
     const service = new TeamDataService(
+      knownEmptyTeamRuntimeSnapshot,
       {
         listTeams: vi.fn(),
         getConfig: vi.fn(async () => ({
@@ -2444,8 +2476,6 @@ describe('TeamDataService', () => {
       } as never,
       {} as never,
       {} as never,
-      {} as never,
-      {} as never,
       {
         resolveMembers: vi.fn(() => []),
       } as never,
@@ -2453,7 +2483,6 @@ describe('TeamDataService', () => {
         getState: vi.fn(async () => ({ teamName: 'my-team', reviewers: [], tasks: {} })),
         garbageCollect: vi.fn(async () => undefined),
       } as never,
-      {} as never,
       {
         readMembers: vi.fn(async () => []),
       } as never,
@@ -2477,12 +2506,11 @@ describe('TeamDataService', () => {
     const disableTracking = vi.fn(async () => undefined);
 
     const service = new TeamDataService(
+      knownEmptyTeamRuntimeSnapshot,
       {
         listTeams: vi.fn(),
         getConfig: vi.fn(async () => ({ name: 'My team', members: [] })),
       } as never,
-      {} as never,
-      {} as never,
       {} as never,
       {} as never,
       {
@@ -2519,12 +2547,11 @@ describe('TeamDataService', () => {
       throw new Error('reconcile failed');
     });
     const service = new TeamDataService(
+      knownEmptyTeamRuntimeSnapshot,
       {
         listTeams: vi.fn(),
         getConfig: vi.fn(async () => ({ name: 'My team', members: [] })),
       } as never,
-      {} as never,
-      {} as never,
       {} as never,
       {} as never,
       {
@@ -2534,7 +2561,6 @@ describe('TeamDataService', () => {
         getState: vi.fn(async () => ({ teamName: 'my-team', reviewers: [], tasks: {} })),
         garbageCollect: vi.fn(async () => undefined),
       } as never,
-      {} as never,
       {} as never,
       {} as never,
       () =>
@@ -2548,148 +2574,21 @@ describe('TeamDataService', () => {
     await expect(service.reconcileTeamArtifacts('my-team')).rejects.toThrow('reconcile failed');
   });
 
-  it('writes UI task comments with author user', async () => {
-    const addTaskComment = vi.fn(() => ({
-      comment: {
-        id: 'comment-1',
-        author: 'user',
-        text: 'Need clarification',
-        createdAt: '2026-03-07T20:00:00.000Z',
-        type: 'regular',
-      },
-      task: {
-        id: 'task-1',
-        subject: 'Investigate',
-        status: 'pending',
-        owner: 'team-lead',
-      },
-    }));
-
-    const service = new TeamDataService(
-      {
-        listTeams: vi.fn(),
-        getConfig: vi.fn(async () => ({
-          name: 'My team',
-          members: [{ name: 'team-lead', role: 'Lead' }],
-        })),
-      } as never,
-      {
-        getTasks: vi.fn(async () => []),
-      } as never,
-      {
-        listInboxNames: vi.fn(async () => []),
-        getMessages: vi.fn(async () => []),
-      } as never,
-      {} as never,
-      {} as never,
-      {
-        resolveMembers: vi.fn(() => []),
-      } as never,
-      {
-        getState: vi.fn(async () => ({ teamName: 'my-team', reviewers: [], tasks: {} })),
-        garbageCollect: vi.fn(async () => undefined),
-      } as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      () =>
-        ({
-          taskBoard: {
-            addTaskComment,
-            setNeedsClarification: vi.fn(),
-          },
-        }) as never
-    );
-
-    await service.addTaskComment('my-team', 'task-1', 'Need clarification');
-
-    expect(addTaskComment).toHaveBeenCalledWith('task-1', {
-      from: 'user',
-      text: 'Need clarification',
-      attachments: undefined,
-    });
-  });
-
-  it('allows local creation and includes projectPath from config', async () => {
-    const createTaskMock = vi.fn((task) => task);
-    const getConfig = vi.fn(async () => {
-      throw new Error('verified config read should not be used for task enrichment');
-    });
-    const getConfigSnapshot = vi.fn(async () => ({
-      name: 'My team',
-      members: [],
-      projectPath: '/Users/dev/my-project',
-    }));
-
-    const service = new TeamDataService(
-      {
-        listTeams: vi.fn(),
-        getConfig,
-        getConfigSnapshot,
-      } as never,
-      {
-        getNextTaskId: vi.fn(async () => '1'),
-        getTasks: vi.fn(async () => []),
-      } as never,
-      {
-        listInboxNames: vi.fn(async () => []),
-        getMessages: vi.fn(async () => []),
-      } as never,
-      {} as never,
-      {
-        createTask: createTaskMock,
-        addBlocksEntry: vi.fn(async () => undefined),
-      } as never,
-      {
-        resolveMembers: vi.fn(() => []),
-      } as never,
-      {
-        getState: vi.fn(async () => ({ teamName: 'my-team', reviewers: [], tasks: {} })),
-        garbageCollect: vi.fn(async () => undefined),
-      } as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      (_teamName: string) =>
-        ({
-          taskBoard: {
-            createTask: createTaskMock,
-          },
-        }) as never
-    );
-
-    const result = await service.createTask('my-team', { subject: 'Test' });
-
-    expect(result.projectPath).toBe('/Users/dev/my-project');
-    expect(createTaskMock).toHaveBeenCalledWith(
-      expect.objectContaining({ projectPath: '/Users/dev/my-project' })
-    );
-    expect(getConfigSnapshot).toHaveBeenCalledWith('my-team');
-    expect(getConfig).not.toHaveBeenCalled();
-    await expect(
-      service.createTask('my-team', {
-        subject: 'Do not fall back for an explicit registry scope',
-        specProject: 'owner/project',
-        specSlug: 'demo-spec',
-        requirements: ['FR-1'],
-      })
-    ).rejects.toMatchObject({ code: 'REGISTRY_SCOPE_UNLINKED' });
-    expect(createTaskMock).toHaveBeenCalledTimes(1);
-  });
-
-  it('requires registry scope for task creation on a registry-bound team', async () => {
-    const service = new TeamDataService({
+  it('refuses task creation when runtime scope lacks canonical metadata', async () => {
+    const service = new TeamDataService(knownEmptyTeamRuntimeSnapshot, {
       getConfigSnapshot: vi.fn(async () => ({
         name: 'My team',
         members: [],
-        specProject: 'owner/project',
-        specSlug: 'demo-spec',
+        specScope: {
+          projects: ['owner/project'],
+          bindings: [{ project: 'owner/project', spec: 'demo-spec' }],
+        },
       })),
     } as never);
 
     await expect(
       service.createTask('my-team', { subject: 'Missing registry scope' })
-    ).rejects.toMatchObject({ code: 'REGISTRY_SCOPE_INCOMPLETE' });
+    ).rejects.toMatchObject({ code: 'SPEC_BINDINGS_INVALID' });
   });
 
   it('fails closed when team binding configuration cannot be verified', async () => {
@@ -2699,7 +2598,7 @@ describe('TeamDataService', () => {
     const teamDirectory = path.join(root, 'teams', 'my-team');
     await fs.mkdir(teamDirectory, { recursive: true });
     await fs.writeFile(path.join(teamDirectory, 'config.json'), '{invalid', 'utf8');
-    const service = new TeamDataService({
+    const service = new TeamDataService(knownEmptyTeamRuntimeSnapshot, {
       getConfig: vi.fn(async () => null),
       getConfigSnapshot: vi.fn(async () => null),
     } as never);
@@ -2707,605 +2606,6 @@ describe('TeamDataService', () => {
     await expect(
       service.createTask('my-team', { subject: 'Unknown binding' })
     ).rejects.toMatchObject({ code: 'REGISTRY_SCOPE_INCOMPLETE' });
-  });
-
-  it('routes identified task creates through the durable command facade without legacy fallback', async () => {
-    const directCreate = vi.fn();
-    const durableTask = {
-      id: '11111111-1111-4111-8111-111111111111',
-      subject: 'Durable task',
-      status: 'pending' as const,
-    };
-    const commandFacade = {
-      createTask: vi.fn(async () => ({
-        task: durableTask,
-        outcome: 'executed',
-        createdInAttempt: true,
-      })),
-    };
-    let supportsReconciliation = true;
-    const reconcileTaskCreation = vi.fn();
-    const service = new TeamDataService(
-      {
-        getConfig: vi.fn(async () => ({ name: 'My team', members: [] })),
-      } as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      null,
-      {} as never,
-      {} as never,
-      () =>
-        ({
-          taskBoard: {
-            getTask: vi.fn(),
-            createTask: directCreate,
-            reconcileTaskCreation: supportsReconciliation ? reconcileTaskCreation : undefined,
-          },
-        }) as never
-    );
-    service.setTaskBoardCommandFacade(commandFacade as never);
-    const command = {
-      commandId: durableTask.id,
-      idempotencyKey: 'create-task-intent-1',
-    };
-
-    await expect(
-      service.createTask('my-team', { subject: durableTask.subject, command })
-    ).resolves.toEqual(durableTask);
-    expect(commandFacade.createTask).toHaveBeenCalledWith(
-      expect.objectContaining({
-        teamName: 'my-team',
-        identity: command,
-        payload: expect.objectContaining({ subject: durableTask.subject, createdBy: 'user' }),
-        destination: expect.objectContaining({
-          findById: expect.any(Function),
-          findByIdempotencyKey: expect.any(Function),
-          create: expect.any(Function),
-          reconcile: expect.any(Function),
-        }),
-      })
-    );
-    expect(directCreate).not.toHaveBeenCalled();
-
-    supportsReconciliation = false;
-    await expect(
-      service.createTask('my-team', {
-        subject: 'Mixed controller must fail before create',
-        command: {
-          commandId: '22222222-2222-4222-8222-222222222222',
-          idempotencyKey: 'create-task-intent-2',
-        },
-      })
-    ).rejects.toThrow('Durable task-board commands are unavailable');
-    expect(commandFacade.createTask).toHaveBeenCalledTimes(1);
-    expect(directCreate).not.toHaveBeenCalled();
-  });
-
-  it('uses one legacy create when durable task commands are unavailable', async () => {
-    const commandId = '33333333-3333-4333-8333-333333333333';
-    const legacyTask: TeamTask = {
-      id: commandId,
-      subject: 'Legacy task',
-      status: 'pending',
-    };
-    let storedTask: TeamTask | null = null;
-    const directCreate = vi.fn((input: Pick<TeamTask, 'creationCommand'>) => {
-      storedTask = {
-        ...legacyTask,
-        ...(input.creationCommand ? { creationCommand: input.creationCommand } : {}),
-      };
-      return storedTask;
-    });
-    const getTask = vi.fn((taskId: string) => {
-      if (!storedTask || storedTask.id !== taskId) {
-        throw new Error(`Task not found: ${taskId}`);
-      }
-      return storedTask;
-    });
-    const reconcileTaskCreation = vi.fn(() => storedTask);
-    const listTasks = vi.fn(() => (storedTask ? [storedTask] : []));
-    const listDeletedTasks = vi.fn(() => []);
-    const service = new TeamDataService(
-      {
-        getConfig: vi.fn(async () => ({
-          name: 'My team',
-          members: [],
-          projectPath: '/projects/legacy',
-        })),
-      } as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      null,
-      {} as never,
-      {} as never,
-      () =>
-        ({
-          taskBoard: {
-            getTask,
-            listTasks,
-            listDeletedTasks,
-            createTask: directCreate,
-            reconcileTaskCreation,
-          },
-        }) as never
-    );
-
-    await expect(
-      service.createTask('my-team', {
-        subject: legacyTask.subject,
-        command: {
-          commandId,
-          idempotencyKey: 'create-task-intent-3',
-        },
-      })
-    ).resolves.toEqual(legacyTask);
-    await expect(
-      service.createTask('my-team', {
-        subject: legacyTask.subject,
-        command: {
-          commandId: '34343434-3434-4434-8434-343434343434',
-          idempotencyKey: 'create-task-intent-3',
-        },
-      })
-    ).resolves.toEqual(legacyTask);
-
-    expect(directCreate).toHaveBeenCalledOnce();
-    expect(directCreate).toHaveBeenCalledWith({
-      subject: legacyTask.subject,
-      createdBy: 'user',
-      projectPath: '/projects/legacy',
-      id: commandId,
-      creationCommand: {
-        namespace: 'task-board',
-        scopeKey: 'my-team',
-        operation: 'task.create',
-        commandId,
-        payloadHash: expect.stringMatching(/^sha256:/),
-        idempotencyKey: 'create-task-intent-3',
-      },
-    });
-    expect(reconcileTaskCreation).toHaveBeenCalledTimes(2);
-    expect(reconcileTaskCreation).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        id: commandId,
-        creationCommand: expect.objectContaining({
-          commandId,
-          idempotencyKey: 'create-task-intent-3',
-        }),
-      })
-    );
-  });
-
-  it('notifies a lead-owned task from the final started state on fresh durable execution', async () => {
-    const task: TeamTask = {
-      id: '11111111-1111-4111-8111-111111111111',
-      displayId: '11111111',
-      subject: 'Durable lead task',
-      description: 'Use the final task description.',
-      owner: 'lead-agent',
-      status: 'in_progress',
-    };
-    const { service, sendMessage } = createDurableTaskStartNotificationHarness({ task });
-
-    await expect(
-      service.createTask('my-team', {
-        subject: task.subject,
-        owner: 'lead-agent',
-        startImmediately: true,
-        command: {
-          commandId: task.id,
-          idempotencyKey: 'durable-lead-task',
-        },
-      })
-    ).resolves.toEqual(task);
-
-    expect(sendMessage).toHaveBeenCalledTimes(1);
-    expect(sendMessage).toHaveBeenCalledWith(
-      'my-team',
-      expect.objectContaining({
-        member: 'lead-agent',
-        from: 'user',
-        source: 'system_notification',
-        leadSessionId: 'lead-session-1',
-        messageId: 'task-start:my-team:11111111-1111-4111-8111-111111111111',
-        summary: 'Start working on #11111111',
-      })
-    );
-    expect(sendMessage.mock.calls[0]?.[1]?.text).toContain(
-      'This start notification can become stale after reassignment or completion.'
-    );
-    expect(sendMessage.mock.calls[0]?.[1]?.text).toContain(
-      'If the owner changed or the task is completed/deleted, do not start or reopen it'
-    );
-    expect(sendMessage.mock.calls[0]?.[1]?.text).toContain(
-      'task_complete { teamName: "my-team", taskId: "11111111-1111-4111-8111-111111111111", actor: "lead-agent" }'
-    );
-  });
-
-  it.each(['reconciled', 'replayed'])(
-    'notifies from the resolved lead-owned started state when a durable command is %s',
-    async (outcome) => {
-      const task: TeamTask = {
-        id: '11111111-1111-4111-8111-111111111111',
-        subject: 'Recovered lead task',
-        owner: 'lead-agent',
-        status: 'in_progress',
-      };
-      const { service, sendMessage } = createDurableTaskStartNotificationHarness({
-        task,
-        commandResults: [{ outcome, createdInAttempt: false }],
-      });
-
-      await service.createTask('my-team', {
-        subject: task.subject,
-        owner: 'lead-agent',
-        startImmediately: true,
-        command: {
-          commandId: task.id,
-          idempotencyKey: 'recovered-lead-task',
-        },
-      });
-
-      expect(sendMessage).toHaveBeenCalledWith(
-        'my-team',
-        expect.objectContaining({
-          messageId: 'task-start:my-team:11111111-1111-4111-8111-111111111111',
-        })
-      );
-    }
-  );
-
-  it.each([
-    {
-      name: 'a non-lead owner',
-      owner: 'alice',
-      status: 'in_progress' as const,
-    },
-    {
-      name: 'a non-started final state',
-      owner: 'lead-agent',
-      status: 'pending' as const,
-    },
-  ])('does not send the durable lead notification for $name', async ({ owner, status }) => {
-    const task: TeamTask = {
-      id: '11111111-1111-4111-8111-111111111111',
-      subject: 'No lead notification',
-      owner,
-      status,
-    };
-    const { service, sendMessage } = createDurableTaskStartNotificationHarness({
-      task,
-      commandResults: [{ outcome: 'replayed', createdInAttempt: false }],
-    });
-
-    await service.createTask('my-team', {
-      subject: task.subject,
-      owner: 'lead-agent',
-      startImmediately: true,
-      command: {
-        commandId: task.id,
-        idempotencyKey: 'no-lead-notification',
-      },
-    });
-
-    expect(sendMessage).not.toHaveBeenCalled();
-  });
-
-  it('attempts the same deterministic lead notification on every durable replay', async () => {
-    const task: TeamTask = {
-      id: '11111111-1111-4111-8111-111111111111',
-      subject: 'Replay notification',
-      owner: 'lead-agent',
-      status: 'in_progress',
-    };
-    const { service, sendMessage } = createDurableTaskStartNotificationHarness({
-      task,
-      commandResults: [
-        { outcome: 'replayed', createdInAttempt: false },
-        { outcome: 'replayed', createdInAttempt: false },
-      ],
-    });
-    const request = {
-      subject: task.subject,
-      owner: 'lead-agent',
-      startImmediately: true,
-      command: {
-        commandId: task.id,
-        idempotencyKey: 'replay-notification',
-      },
-    };
-
-    await service.createTask('my-team', request);
-    await service.createTask('my-team', request);
-
-    expect(sendMessage).toHaveBeenCalledTimes(2);
-    expect(sendMessage.mock.calls.map((call) => call[1]?.messageId)).toEqual([
-      'task-start:my-team:11111111-1111-4111-8111-111111111111',
-      'task-start:my-team:11111111-1111-4111-8111-111111111111',
-    ]);
-  });
-
-  it('keeps a post-commit notification failure nonfatal and deduplicates its replay', async () => {
-    const task: TeamTask = {
-      id: '11111111-1111-4111-8111-111111111111',
-      subject: 'Retry notification',
-      owner: 'lead-agent',
-      status: 'in_progress',
-    };
-    const notificationFailure = {
-      message: 'notification-message-field-marker',
-      stack: 'notification-stack-field-marker',
-      path: '/private/notification-path-field-marker/team.json',
-      details: { value: 'notification-object-field-marker' },
-      cause: { message: 'notification-cause-field-marker' },
-      code: 'notification-code-field-marker',
-      toString: () => 'notification-string-field-marker',
-    };
-    const deliveredMessageIds = new Set<string>();
-    const deliveryDeduplication: boolean[] = [];
-    let deliveryAttempt = 0;
-    const sendMessage = vi.fn(async (_teamName: string, notification: { messageId?: string }) => {
-      const messageId = notification.messageId ?? 'missing-message-id';
-      const deduplicated = deliveredMessageIds.has(messageId);
-      deliveryAttempt += 1;
-      deliveredMessageIds.add(messageId);
-      if (deliveryAttempt === 1) {
-        throw notificationFailure;
-      }
-      deliveryDeduplication.push(deduplicated);
-      return {
-        deliveredToInbox: true,
-        messageId,
-        ...(deduplicated ? { deduplicated: true } : {}),
-      };
-    });
-    let commitFirstAttempt: ((value: unknown) => void) | undefined;
-    const commandFacadeCreateTask = vi
-      .fn()
-      .mockImplementationOnce(
-        () =>
-          new Promise((resolve) => {
-            commitFirstAttempt = resolve;
-          })
-      )
-      .mockResolvedValueOnce({
-        task,
-        outcome: 'replayed',
-        createdInAttempt: false,
-      });
-    const { service } = createDurableTaskStartNotificationHarness({
-      task,
-      sendMessage,
-      commandFacadeCreateTask,
-    });
-    const request = {
-      subject: task.subject,
-      owner: 'lead-agent',
-      startImmediately: true,
-      command: {
-        commandId: task.id,
-        idempotencyKey: 'retry-notification',
-      },
-    };
-
-    const firstCreate = service.createTask('my-team', request);
-    await vi.waitFor(() => expect(commandFacadeCreateTask).toHaveBeenCalledTimes(1));
-    expect(sendMessage).not.toHaveBeenCalled();
-
-    commitFirstAttempt?.({
-      task,
-      outcome: 'executed',
-      createdInAttempt: true,
-    });
-    await expect(firstCreate).resolves.toEqual(task);
-    await expect(service.createTask('my-team', request)).resolves.toEqual(task);
-
-    expect(commandFacadeCreateTask).toHaveBeenCalledTimes(2);
-    expect(sendMessage).toHaveBeenCalledTimes(2);
-    expect(sendMessage.mock.calls.map((call) => call[1]?.messageId)).toEqual([
-      'task-start:my-team:11111111-1111-4111-8111-111111111111',
-      'task-start:my-team:11111111-1111-4111-8111-111111111111',
-    ]);
-    expect([...deliveredMessageIds]).toEqual([
-      'task-start:my-team:11111111-1111-4111-8111-111111111111',
-    ]);
-    expect(deliveryDeduplication).toEqual([true]);
-
-    const warningCalls = vi.mocked(console.warn).mock.calls;
-    expect(warningCalls).toEqual([
-      [
-        '[Service:TeamDataService]',
-        '[TeamDataService] category=post_commit_notification code=task_start_notification_failed team=my-team task=11111111-1111-4111-8111-111111111111',
-      ],
-    ]);
-    const warningOutput = warningCalls.flat().map(String).join('\n');
-    expect(warningOutput.length).toBeLessThanOrEqual(256);
-    for (const rawValue of [
-      notificationFailure.message,
-      notificationFailure.stack,
-      notificationFailure.path,
-      notificationFailure.details.value,
-      notificationFailure.cause.message,
-      notificationFailure.code,
-      String(notificationFailure),
-    ]) {
-      expect(warningOutput).not.toContain(rawValue);
-    }
-    vi.mocked(console.warn).mockClear();
-  });
-
-  it('rejects a pre-commit persistence failure without sending a notification', async () => {
-    const task: TeamTask = {
-      id: '11111111-1111-4111-8111-111111111111',
-      subject: 'Persistence retry',
-      owner: 'lead-agent',
-      status: 'in_progress',
-    };
-    const persistenceFailure = new Error('pre-commit-persistence-failure');
-    const { service, sendMessage, commandFacadeCreateTask } =
-      createDurableTaskStartNotificationHarness({ task });
-    commandFacadeCreateTask
-      .mockRejectedValueOnce(persistenceFailure)
-      .mockResolvedValueOnce({
-        task,
-        outcome: 'executed',
-        createdInAttempt: true,
-      });
-    const request = {
-      subject: task.subject,
-      owner: 'lead-agent',
-      startImmediately: true,
-      command: {
-        commandId: task.id,
-        idempotencyKey: 'persistence-retry',
-      },
-    };
-
-    await expect(service.createTask('my-team', request)).rejects.toBe(persistenceFailure);
-    expect(sendMessage).not.toHaveBeenCalled();
-
-    await expect(service.createTask('my-team', request)).resolves.toEqual(task);
-    expect(commandFacadeCreateTask).toHaveBeenCalledTimes(2);
-    expect(sendMessage).toHaveBeenCalledTimes(1);
-    expect(sendMessage).toHaveBeenCalledWith(
-      'my-team',
-      expect.objectContaining({
-        messageId: 'task-start:my-team:11111111-1111-4111-8111-111111111111',
-      })
-    );
-  });
-
-  it('keeps non-durable task-start notification failure best-effort', async () => {
-    const task: TeamTask = {
-      id: 'legacy-task-1',
-      subject: 'Legacy best-effort task',
-      owner: 'lead-agent',
-      status: 'in_progress',
-    };
-    const sendMessage = vi.fn(() => {
-      throw new Error('legacy inbox unavailable');
-    });
-    const service = new TeamDataService(
-      {
-        getConfig: vi.fn(async () => ({
-          name: 'My team',
-          members: [{ name: 'lead-agent', agentType: 'team-lead', role: 'Lead' }],
-        })),
-      } as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      null,
-      {} as never,
-      {} as never,
-      () =>
-        ({
-          taskBoard: { createTask: vi.fn(() => task) },
-          messages: { sendMessageAsync: sendMessage },
-        }) as never
-    );
-
-    await expect(
-      service.createTask('my-team', {
-        subject: task.subject,
-        owner: 'lead-agent',
-        startImmediately: true,
-      })
-    ).resolves.toEqual(task);
-    expect(sendMessage).toHaveBeenCalledTimes(1);
-  });
-
-  it('keeps derived projectPath outside the durable command payload', async () => {
-    const directCreate = vi.fn((input: Record<string, unknown>) => ({
-      ...input,
-      status: 'pending' as const,
-    }));
-    const commandFacade = {
-      createTask: vi.fn(
-        async (command: {
-          identity: { commandId: string };
-          payload: Record<string, unknown>;
-          destination: { create(input: Record<string, unknown>): Promise<TeamTask> | TeamTask };
-        }) => ({
-          task: await command.destination.create({
-            ...command.payload,
-            id: command.identity.commandId,
-            creationCommand: {
-              namespace: 'task-board',
-              scopeKey: 'my-team',
-              operation: 'task.create',
-              commandId: command.identity.commandId,
-              payloadHash: 'sha256:test',
-            },
-          }),
-          outcome: 'executed',
-          createdInAttempt: true,
-        })
-      ),
-    };
-    const service = new TeamDataService(
-      {
-        getConfig: vi.fn(() =>
-          Promise.resolve({
-            name: 'My team',
-            members: [],
-            projectPath: '/projects/current',
-          })
-        ),
-      } as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      null,
-      {} as never,
-      {} as never,
-      () =>
-        ({
-          taskBoard: {
-            getTask: vi.fn(),
-            createTask: directCreate,
-            reconcileTaskCreation: vi.fn(),
-          },
-        }) as never
-    );
-    service.setTaskBoardCommandFacade(commandFacade as never);
-
-    await service.createTask('my-team', {
-      subject: 'Stable intent',
-      blockedBy: ['task-b', 'task-a', 'task-b'],
-      related: ['task-d', 'task-c', 'task-d'],
-      command: {
-        commandId: '33333333-3333-4333-8333-333333333333',
-        idempotencyKey: 'stable-intent',
-      },
-    });
-
-    expect(commandFacade.createTask).toHaveBeenCalledWith(
-      expect.objectContaining({
-        payload: expect.objectContaining({
-          blockedBy: ['task-a', 'task-b'],
-          related: ['task-c', 'task-d'],
-        }),
-      })
-    );
-    expect(commandFacade.createTask.mock.calls[0]?.[0].payload).not.toHaveProperty('projectPath');
-    expect(directCreate).toHaveBeenCalledWith(
-      expect.objectContaining({ projectPath: '/projects/current' })
-    );
   });
 
   it('returns lightweight notification context from config without hydrating team data', async () => {
@@ -3321,14 +2621,12 @@ describe('TeamDataService', () => {
     }));
 
     const service = new TeamDataService(
+      knownEmptyTeamRuntimeSnapshot,
       {
         listTeams: vi.fn(),
         getConfig,
         getConfigSnapshot,
       } as never,
-      {} as never,
-      {} as never,
-      {} as never,
       {} as never,
       {} as never,
       {} as never,
@@ -3360,14 +2658,12 @@ describe('TeamDataService', () => {
     }));
 
     const service = new TeamDataService(
+      knownEmptyTeamRuntimeSnapshot,
       {
         listTeams: vi.fn(),
         getConfig,
         getConfigSnapshot,
       } as never,
-      {} as never,
-      {} as never,
-      {} as never,
       {} as never,
       {} as never,
       {} as never,
@@ -3393,165 +2689,6 @@ describe('TeamDataService', () => {
     expect(getConfig).not.toHaveBeenCalled();
   });
 
-  it('creates task with status pending when startImmediately is false', async () => {
-    const createTaskMock = vi.fn((task) => ({ ...task, status: 'pending' }));
-    const service = new TeamDataService(
-      {
-        listTeams: vi.fn(),
-        getConfig: vi.fn(async () => ({ name: 'My team', members: [] })),
-      } as never,
-      {
-        getNextTaskId: vi.fn(async () => '2'),
-        getTasks: vi.fn(async () => []),
-      } as never,
-      {
-        listInboxNames: vi.fn(async () => []),
-        getMessages: vi.fn(async () => []),
-      } as never,
-      {} as never,
-      {
-        createTask: createTaskMock,
-        addBlocksEntry: vi.fn(async () => undefined),
-      } as never,
-      {
-        resolveMembers: vi.fn(() => []),
-      } as never,
-      {
-        getState: vi.fn(async () => ({ teamName: 'my-team', reviewers: [], tasks: {} })),
-        garbageCollect: vi.fn(async () => undefined),
-      } as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      (_teamName: string) =>
-        ({
-          taskBoard: {
-            createTask: createTaskMock,
-          },
-        }) as never
-    );
-
-    const result = await service.createTask('my-team', {
-      subject: 'Review main file',
-      owner: 'alice',
-      startImmediately: false,
-    });
-
-    expect(result.status).toBe('pending');
-    expect(createTaskMock).toHaveBeenCalledWith(
-      expect.objectContaining({ owner: 'alice', createdBy: 'user' })
-    );
-    expect(createTaskMock).not.toHaveBeenCalledWith(
-      expect.objectContaining({ startImmediately: true })
-    );
-  });
-
-  it('creates task with explicit immediate start only when startImmediately is true', async () => {
-    const createTaskMock = vi.fn((task) => ({ ...task, status: 'in_progress' }));
-    const service = new TeamDataService(
-      {
-        listTeams: vi.fn(),
-        getConfig: vi.fn(async () => ({ name: 'My team', members: [] })),
-      } as never,
-      {
-        getNextTaskId: vi.fn(async () => '2'),
-        getTasks: vi.fn(async () => []),
-      } as never,
-      {
-        listInboxNames: vi.fn(async () => []),
-        getMessages: vi.fn(async () => []),
-      } as never,
-      {} as never,
-      {
-        createTask: createTaskMock,
-        addBlocksEntry: vi.fn(async () => undefined),
-      } as never,
-      {
-        resolveMembers: vi.fn(() => []),
-      } as never,
-      {
-        getState: vi.fn(async () => ({ teamName: 'my-team', reviewers: [], tasks: {} })),
-        garbageCollect: vi.fn(async () => undefined),
-      } as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      (_teamName: string) =>
-        ({
-          taskBoard: {
-            createTask: createTaskMock,
-          },
-        }) as never
-    );
-
-    const result = await service.createTask('my-team', {
-      subject: 'Start now',
-      owner: 'alice',
-      startImmediately: true,
-      prompt: 'Begin immediately.',
-    });
-
-    expect(result.status).toBe('in_progress');
-    expect(createTaskMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        owner: 'alice',
-        createdBy: 'user',
-        startImmediately: true,
-        prompt: 'Begin immediately.',
-      })
-    );
-    expect(createTaskMock).not.toHaveBeenCalledWith(
-      expect.objectContaining({ status: 'in_progress' })
-    );
-  });
-
-  it('persists explicit related task links when creating a task', async () => {
-    const createTaskMock = vi.fn((task) => task);
-    const service = new TeamDataService(
-      {
-        listTeams: vi.fn(),
-        getConfig: vi.fn(async () => ({ name: 'My team', members: [] })),
-      } as never,
-      {
-        getNextTaskId: vi.fn(async () => '3'),
-        getTasks: vi.fn(async () => []),
-      } as never,
-      {
-        listInboxNames: vi.fn(async () => []),
-        getMessages: vi.fn(async () => []),
-      } as never,
-      {} as never,
-      {
-        createTask: createTaskMock,
-        addBlocksEntry: vi.fn(async () => undefined),
-      } as never,
-      {
-        resolveMembers: vi.fn(() => []),
-      } as never,
-      {
-        getState: vi.fn(async () => ({ teamName: 'my-team', reviewers: [], tasks: {} })),
-        garbageCollect: vi.fn(async () => undefined),
-      } as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      (_teamName: string) =>
-        ({
-          taskBoard: {
-            createTask: createTaskMock,
-          },
-        }) as never
-    );
-
-    const result = await service.createTask('my-team', {
-      subject: 'Review work task',
-      related: ['1', '2'],
-    });
-
-    expect(result.related).toEqual(['1', '2']);
-    expect(createTaskMock).toHaveBeenCalledWith(expect.objectContaining({ related: ['1', '2'] }));
-  });
-
   it('awaits the async controller message API for durable inbox writes', async () => {
     let settle!: (value: { deliveredToInbox: boolean; messageId: string }) => void;
     const pendingWrite = new Promise<{ deliveredToInbox: boolean; messageId: string }>(
@@ -3562,13 +2699,11 @@ describe('TeamDataService', () => {
     const sendMessageMock = vi.fn(() => pendingWrite);
 
     const service = new TeamDataService(
+      knownEmptyTeamRuntimeSnapshot,
       {
         listTeams: vi.fn(),
         getConfig: vi.fn(async () => ({ name: 'My team', members: [], leadSessionId: 'lead-1' })),
       } as never,
-      {} as never,
-      {} as never,
-      {} as never,
       {} as never,
       {} as never,
       {} as never,
@@ -3613,86 +2748,60 @@ describe('TeamDataService', () => {
     );
   });
 
-  it('delegates review entry to controller review API', async () => {
-    const requestReviewMock = vi.fn();
-
-    const service = new TeamDataService(
-      {
-        listTeams: vi.fn(),
-        getConfig: vi.fn(async () => ({
-          name: 'My team',
-          members: [{ name: 'lead', role: 'team lead' }],
-          leadSessionId: 'lead-1',
-        })),
-      } as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      () =>
-        ({
-          taskBoard: {
-            requestReview: requestReviewMock,
-          },
-        }) as never
-    );
-
-    await service.requestReview('my-team', 'task-1');
-
-    expect(requestReviewMock).toHaveBeenCalledWith('task-1', {
-      from: 'team-lead',
-      leadSessionId: 'lead-1',
+  it('uses the canonical lead for the registry review transition, not tech-lead role text', async () => {
+    const task: TeamTask = {
+      id: 'task-1',
+      subject: 'Review this change',
+      status: 'completed',
+      owner: 'alice',
+      specProject: 'owner/project',
+      specSlug: 'fixture',
+    };
+    const transitionReview = vi.fn(async () => {
+      task.reviewState = 'review';
     });
-  });
-
-  it('resolves the canonical lead instead of matching tech-lead role text', async () => {
-    const requestReviewMock = vi.fn();
-
-    const service = new TeamDataService(
+    const provider = new RegistryTaskProvider({
+      readConfig: async () => ({
+        specScope: {
+          projects: ['owner/project'],
+          bindings: [{ project: 'owner/project', spec: 'fixture' }],
+        },
+      }),
+    });
+    vi.spyOn(provider, 'getTask').mockImplementation(async () => ({ backed: true, task }));
+    const service = registryTaskFixtureService(
+      { readBoardSnapshot: async () => [structuredClone(task)] },
       {
-        listTeams: vi.fn(),
-        getConfig: vi.fn(async () => ({
+        getConfig: async () => ({
           name: 'My team',
           members: [
             { name: 'alice', role: 'tech lead' },
             { name: 'team-lead', agentType: 'team-lead', role: 'lead' },
           ],
-          leadSessionId: 'lead-1',
-        })),
+        }),
       } as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      () =>
-        ({
-          taskBoard: {
-            requestReview: requestReviewMock,
-          },
-        }) as never
+      {
+        provider,
+        writerProvider: async ({ binding }) => ({ binding, transitionReview }) as never,
+        kanbanManager: {
+          getState: async () => ({ teamName: 'my-team', reviewers: [], tasks: {} }),
+        } as never,
+      }
     );
-
     await service.requestReview('my-team', 'task-1');
-
-    expect(requestReviewMock).toHaveBeenCalledWith('task-1', {
-      from: 'team-lead',
-      leadSessionId: 'lead-1',
+    expect(transitionReview).toHaveBeenCalledWith({
+      taskId: 'task-1',
+      action: 'request',
+      actor: 'team-lead',
+      reviewer: undefined,
     });
+    expect((await service.getTasks('my-team'))[0].reviewState).toBe('review');
   });
 
   it('preserves legacy kanban reviewer for tasks still in review without review history', async () => {
     const service = new TeamDataService(
-      {
+      knownEmptyTeamRuntimeSnapshot,
+      registryTaskFixtureConfigReader({
         listTeams: vi.fn(),
         getConfig: vi.fn(async () => ({
           name: 'My team',
@@ -3702,8 +2811,44 @@ describe('TeamDataService', () => {
             { name: 'carol', role: 'reviewer' },
           ],
         })),
+      } as never),
+      {
+        listInboxNames: vi.fn(async () => []),
+        getMessages: vi.fn(async () => []),
+      } as never,
+      {} as never,
+      {
+        resolveMembers: vi.fn(() => []),
       } as never,
       {
+        getState: vi.fn(async () => ({
+          teamName: 'my-team',
+          reviewers: [],
+          tasks: {
+            'task-legacy-review': {
+              column: 'review',
+              reviewer: 'carol',
+              movedAt: '2026-03-01T10:00:00.000Z',
+            },
+          },
+        })),
+      } as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      registryTaskFixtureMetaStore(undefined),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      registryBoardSnapshotFixture({
         getTasks: vi.fn(async () => [
           {
             id: 'task-legacy-review',
@@ -3721,29 +2866,7 @@ describe('TeamDataService', () => {
             ],
           },
         ]),
-      } as never,
-      {
-        listInboxNames: vi.fn(async () => []),
-        getMessages: vi.fn(async () => []),
-      } as never,
-      {} as never,
-      {} as never,
-      {
-        resolveMembers: vi.fn(() => []),
-      } as never,
-      {
-        getState: vi.fn(async () => ({
-          teamName: 'my-team',
-          reviewers: [],
-          tasks: {
-            'task-legacy-review': {
-              column: 'review',
-              reviewer: 'carol',
-              movedAt: '2026-03-01T10:00:00.000Z',
-            },
-          },
-        })),
-      } as never
+      } as never)
     );
 
     const data = await service.getTeamData('my-team');
@@ -3758,7 +2881,8 @@ describe('TeamDataService', () => {
 
   it('does not leak stale reviewer after review is reset to pending', async () => {
     const service = new TeamDataService(
-      {
+      knownEmptyTeamRuntimeSnapshot,
+      registryTaskFixtureConfigReader({
         listTeams: vi.fn(),
         getConfig: vi.fn(async () => ({
           name: 'My team',
@@ -3768,8 +2892,34 @@ describe('TeamDataService', () => {
             { name: 'carol', role: 'reviewer' },
           ],
         })),
+      } as never),
+      {
+        listInboxNames: vi.fn(async () => []),
+        getMessages: vi.fn(async () => []),
+      } as never,
+      {} as never,
+      {
+        resolveMembers: vi.fn(() => []),
       } as never,
       {
+        getState: vi.fn(async () => ({ teamName: 'my-team', reviewers: [], tasks: {} })),
+      } as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      registryTaskFixtureMetaStore(undefined),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      registryBoardSnapshotFixture({
         getTasks: vi.fn(async () => [
           {
             id: 'task-reopened',
@@ -3796,19 +2946,7 @@ describe('TeamDataService', () => {
             ],
           },
         ]),
-      } as never,
-      {
-        listInboxNames: vi.fn(async () => []),
-        getMessages: vi.fn(async () => []),
-      } as never,
-      {} as never,
-      {} as never,
-      {
-        resolveMembers: vi.fn(() => []),
-      } as never,
-      {
-        getState: vi.fn(async () => ({ teamName: 'my-team', reviewers: [], tasks: {} })),
-      } as never
+      } as never)
     );
 
     const data = await service.getTeamData('my-team');
@@ -4049,48 +3187,45 @@ describe('TeamDataService', () => {
   });
 
   it('uses config snapshots instead of full team summaries for global task team info', async () => {
-    const {
-      service,
-      listTeams,
-      getConfigSnapshot,
-      getTasks,
-    } = createRegistryGlobalTaskBoardHarness({
-      teams: [
-        {
-          teamName: 'my-team',
-          displayName: 'My team from list',
-          projectPath: '/repo-from-list',
+    const { service, listTeams, getConfigSnapshot, getMeta, readBoardCalls } =
+      createRegistryGlobalTaskBoardHarness({
+        teams: [
+          {
+            teamName: 'my-team',
+            displayName: 'My team from list',
+            projectPath: '/repo-from-list',
+          },
+        ],
+        configs: {
+          'my-team': buildGlobalTaskBoardConfig('My team from config', {
+            members: [{ name: 'lead', role: 'Team Lead', cwd: '/repo-from-lead' }],
+            deletedAt: '2026-03-01T12:00:00.000Z',
+          }),
         },
-      ],
-      configs: {
-        'my-team': buildGlobalTaskBoardConfig('My team from config', {
-          members: [{ name: 'lead', role: 'Team Lead', cwd: '/repo-from-lead' }],
-          deletedAt: '2026-03-01T12:00:00.000Z',
+        tasks: [
+          {
+            id: 'task-global-config',
+            teamName: 'my-team',
+            subject: 'Global config task',
+            status: 'pending',
+            owner: 'bob',
+            blockedBy: ['old-blocker'],
+          },
+        ],
+        getState: async () => ({
+          teamName: 'my-team',
+          reviewers: [],
+          tasks: {},
         }),
-      },
-      tasks: [
-        {
-          id: 'task-global-config',
-          teamName: 'my-team',
-          subject: 'Global config task',
-          status: 'pending',
-          owner: 'bob',
-          blockedBy: ['old-blocker'],
-        },
-      ],
-      getState: async () => ({
-        teamName: 'my-team',
-        reviewers: [],
-        tasks: {},
-      }),
-    });
+      });
 
     const tasks = await service.getAllTasks();
 
     expect(listTeams).toHaveBeenCalledOnce();
-    expect(getTasks).toHaveBeenCalledWith('my-team', {
-      binding: { project: 'owner/project', spec: 'global-board' },
-    });
+    // The global projection reads the registry board once for the named team without forcing a
+    // refresh, and resolves its canonical scope from metadata instead of a per-binding fan-out.
+    expect(readBoardCalls).toEqual([{ teamName: 'my-team', options: { refresh: false } }]);
+    expect(getMeta).toHaveBeenCalledWith('my-team');
     expect(getConfigSnapshot).toHaveBeenCalledWith('my-team');
     expect(tasks[0]).toMatchObject({
       id: 'task-global-config',
@@ -4102,26 +3237,30 @@ describe('TeamDataService', () => {
   });
 
   it('caps global task projections before building lightweight comment payloads', async () => {
-    const rawTasks = Array.from({ length: 501 }, (_, index) => ({
-      id: `task-${index}`,
-      teamName: index === 0 ? 'old-team' : 'my-team',
-      subject: `Task ${index}`,
-      status: 'pending',
-      owner: 'bob',
-      createdAt: `2026-03-01T00:${String(index % 60).padStart(2, '0')}:00.000Z`,
-      updatedAt: `2026-03-01T${String(Math.floor(index / 60)).padStart(2, '0')}:${String(
-        index % 60
-      ).padStart(2, '0')}:00.000Z`,
-      comments: [
-        {
-          id: `comment-${index}`,
-          author: 'bob',
-          text: `Comment ${index}`,
-          createdAt: '2026-03-01T09:00:00.000Z',
-          type: 'regular',
-        },
-      ],
-    } satisfies TeamTask & { teamName: string }));
+    const rawTasks = Array.from(
+      { length: 501 },
+      (_, index) =>
+        ({
+          id: `task-${index}`,
+          teamName: index === 0 ? 'old-team' : 'my-team',
+          subject: `Task ${index}`,
+          status: 'pending',
+          owner: 'bob',
+          createdAt: `2026-03-01T00:${String(index % 60).padStart(2, '0')}:00.000Z`,
+          updatedAt: `2026-03-01T${String(Math.floor(index / 60)).padStart(2, '0')}:${String(
+            index % 60
+          ).padStart(2, '0')}:00.000Z`,
+          comments: [
+            {
+              id: `comment-${index}`,
+              author: 'bob',
+              text: `Comment ${index}`,
+              createdAt: '2026-03-01T09:00:00.000Z',
+              type: 'regular',
+            },
+          ],
+        }) satisfies TeamTask & { teamName: string }
+    );
     const getState = vi.fn(async (teamName: string) => ({
       teamName,
       reviewers: [],
@@ -4199,129 +3338,6 @@ describe('TeamDataService', () => {
     });
   });
 
-
-  it('propagates leadSessionId for kanban-driven review transitions', async () => {
-    const requestReviewMock = vi.fn();
-    const approveReviewMock = vi.fn();
-    const requestChangesMock = vi.fn();
-
-    const service = new TeamDataService(
-      {
-        listTeams: vi.fn(),
-        getConfig: vi.fn(async () => ({
-          name: 'My team',
-          members: [{ name: 'lead', role: 'team lead' }],
-          leadSessionId: 'lead-2',
-        })),
-      } as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      () =>
-        ({
-          taskBoard: {
-            getTask: vi.fn(() => ({
-              id: 'task-1',
-              status: 'completed',
-              reviewState: 'none',
-            })),
-            getKanbanState: vi.fn(() => ({
-              teamName: 'my-team',
-              reviewers: [],
-              tasks: {
-                'task-1': {
-                  column: 'review',
-                  movedAt: '2026-05-20T10:00:00.000Z',
-                },
-              },
-            })),
-            requestReview: requestReviewMock,
-            approveReview: approveReviewMock,
-            requestChanges: requestChangesMock,
-          },
-        }) as never
-    );
-
-    await service.updateKanban('my-team', 'task-1', { op: 'set_column', column: 'review' });
-    await service.updateKanban('my-team', 'task-1', { op: 'set_column', column: 'approved' });
-    await service.updateKanban('my-team', 'task-1', {
-      op: 'request_changes',
-      comment: 'Needs fixes',
-    });
-
-    expect(requestReviewMock).toHaveBeenCalledWith('task-1', {
-      from: 'team-lead',
-      leadSessionId: 'lead-2',
-    });
-    expect(approveReviewMock).toHaveBeenCalledWith('task-1', {
-      from: 'team-lead',
-      suppressTaskComment: true,
-      'notify-owner': true,
-      leadSessionId: 'lead-2',
-    });
-    expect(requestChangesMock).toHaveBeenCalledWith('task-1', {
-      from: 'team-lead',
-      comment: 'Needs fixes',
-      leadSessionId: 'lead-2',
-    });
-  });
-
-  it('uses direct kanban approval for completed tasks that are not in review', async () => {
-    const approveReviewMock = vi.fn();
-    const setKanbanColumnMock = vi.fn();
-
-    const service = new TeamDataService(
-      {
-        listTeams: vi.fn(),
-        getConfig: vi.fn(async () => ({
-          name: 'My team',
-          members: [{ name: 'lead', role: 'team lead' }],
-          leadSessionId: 'lead-2',
-        })),
-      } as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      () =>
-        ({
-          taskBoard: {
-            getTask: vi.fn(() => ({
-              id: 'task-1',
-              status: 'completed',
-              reviewState: 'none',
-              historyEvents: [],
-            })),
-            getKanbanState: vi.fn(() => ({
-              teamName: 'my-team',
-              reviewers: [],
-              tasks: {},
-            })),
-            setKanbanColumn: setKanbanColumnMock,
-            approveReview: approveReviewMock,
-          },
-        }) as never
-    );
-
-    await service.updateKanban('my-team', 'task-1', { op: 'set_column', column: 'approved' });
-
-    expect(setKanbanColumnMock).toHaveBeenCalledWith('task-1', 'approved', {
-      transition: 'manual_approve',
-    });
-    expect(approveReviewMock).not.toHaveBeenCalled();
-  });
-
   it('seeds historical eligible task comments without sending when the journal is missing', async () => {
     const previous = process.env[TASK_COMMENT_FORWARDING_ENV];
     process.env[TASK_COMMENT_FORWARDING_ENV] = 'on';
@@ -4343,7 +3359,8 @@ describe('TeamDataService', () => {
 
     try {
       const service = new TeamDataService(
-        {
+        knownEmptyTeamRuntimeSnapshot,
+        registryTaskFixtureConfigReader({
           listTeams: vi.fn(async () => [
             {
               teamName: 'my-team',
@@ -4359,8 +3376,31 @@ describe('TeamDataService', () => {
             members: [{ name: 'team-lead', role: 'Lead' }],
             leadSessionId: 'lead-1',
           })),
-        } as never,
+        } as never),
         {
+          listInboxNames: vi.fn(async () => []),
+          getMessages: vi.fn(async () => []),
+          getMessagesFor: vi.fn(async () => []),
+        } as never,
+        inboxWriter as never,
+        {} as never,
+        {} as never,
+        {} as never,
+        {} as never,
+        (() => ({}) as never) as never,
+        journal as never,
+        registryTaskFixtureMetaStore(undefined),
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        registryBoardSnapshotFixture({
           getTasks: vi.fn(async () => [
             {
               id: 'task-1',
@@ -4379,21 +3419,7 @@ describe('TeamDataService', () => {
               ],
             },
           ]),
-        } as never,
-        {
-          listInboxNames: vi.fn(async () => []),
-          getMessages: vi.fn(async () => []),
-          getMessagesFor: vi.fn(async () => []),
-        } as never,
-        inboxWriter as never,
-        {} as never,
-        {} as never,
-        {} as never,
-        {} as never,
-        {} as never,
-        {} as never,
-        (() => ({}) as never) as never,
-        journal as never
+        } as never)
       );
       service.setTeamProfileOwnership(async () => true);
 
@@ -4426,6 +3452,12 @@ describe('TeamDataService', () => {
     const getConfig = vi.fn(async () => {
       throw new Error('unexpected config read');
     });
+    // Registry task authority resolves through the snapshot read, so the snapshot exists; its
+    // lead is deliberately the task owner, which would suppress the notification if any baseline
+    // path reread config instead of using the startup team summary.
+    const getConfigSnapshot = vi.fn(async () =>
+      buildDefaultTeamConfig({ members: [{ name: 'alice', role: 'Lead' }] })
+    );
     const journal = {
       exists: vi.fn(async () => false),
       ensureFile: vi.fn(async () => undefined),
@@ -4439,7 +3471,8 @@ describe('TeamDataService', () => {
 
     try {
       const service = new TeamDataService(
-        {
+        knownEmptyTeamRuntimeSnapshot,
+        registryTaskFixtureConfigReader({
           listTeams: vi.fn(async () => [
             {
               teamName: 'my-team',
@@ -4453,8 +3486,32 @@ describe('TeamDataService', () => {
             },
           ]),
           getConfig,
-        } as never,
+          getConfigSnapshot,
+        } as never),
         {
+          listInboxNames: vi.fn(async () => []),
+          getMessages: vi.fn(async () => []),
+          getMessagesFor: vi.fn(async () => []),
+        } as never,
+        inboxWriter as never,
+        {} as never,
+        {} as never,
+        {} as never,
+        {} as never,
+        (() => ({}) as never) as never,
+        journal as never,
+        registryTaskFixtureMetaStore(undefined),
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        registryBoardSnapshotFixture({
           getTasks: vi.fn(async () => [
             {
               id: 'task-1',
@@ -4473,21 +3530,7 @@ describe('TeamDataService', () => {
               ],
             },
           ]),
-        } as never,
-        {
-          listInboxNames: vi.fn(async () => []),
-          getMessages: vi.fn(async () => []),
-          getMessagesFor: vi.fn(async () => []),
-        } as never,
-        inboxWriter as never,
-        {} as never,
-        {} as never,
-        {} as never,
-        {} as never,
-        {} as never,
-        {} as never,
-        (() => ({}) as never) as never,
-        journal as never
+        } as never)
       );
       service.setTeamProfileOwnership(async () => true);
 
@@ -4528,15 +3571,39 @@ describe('TeamDataService', () => {
 
     try {
       const service = new TeamDataService(
-        {
+        knownEmptyTeamRuntimeSnapshot,
+        registryTaskFixtureConfigReader({
           listTeams: vi.fn(),
           getConfig: vi.fn(async () => ({
             name: 'My team',
             members: [{ name: 'team-lead', role: 'Lead' }],
             leadSessionId: 'lead-1',
           })),
-        } as never,
+        } as never),
         {
+          listInboxNames: vi.fn(async () => []),
+          getMessages: vi.fn(async () => []),
+          getMessagesFor: vi.fn(async () => []),
+        } as never,
+        inboxWriter as never,
+        {} as never,
+        {} as never,
+        {} as never,
+        {} as never,
+        (() => ({}) as never) as never,
+        journal as never,
+        registryTaskFixtureMetaStore(undefined),
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        registryBoardSnapshotFixture({
           getTasks: vi.fn(async () => [
             {
               id: 'task-1',
@@ -4555,21 +3622,7 @@ describe('TeamDataService', () => {
               ],
             },
           ]),
-        } as never,
-        {
-          listInboxNames: vi.fn(async () => []),
-          getMessages: vi.fn(async () => []),
-          getMessagesFor: vi.fn(async () => []),
-        } as never,
-        inboxWriter as never,
-        {} as never,
-        {} as never,
-        {} as never,
-        {} as never,
-        {} as never,
-        {} as never,
-        (() => ({}) as never) as never,
-        journal as never
+        } as never)
       );
       service.setTeamProfileOwnership(async () => true);
 
@@ -4626,14 +3679,38 @@ describe('TeamDataService', () => {
 
     try {
       const service = new TeamDataService(
-        {
+        knownEmptyTeamRuntimeSnapshot,
+        registryTaskFixtureConfigReader({
           listTeams: vi.fn(),
           getConfig: vi.fn(async () => ({
             name: 'My team',
             members: [{ name: 'team-lead', role: 'Lead' }],
           })),
-        } as never,
+        } as never),
         {
+          listInboxNames: vi.fn(async () => []),
+          getMessages: vi.fn(async () => []),
+          getMessagesFor: vi.fn(async () => []),
+        } as never,
+        inboxWriter as never,
+        {} as never,
+        {} as never,
+        {} as never,
+        {} as never,
+        (() => ({}) as never) as never,
+        journal as never,
+        registryTaskFixtureMetaStore(undefined),
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        registryBoardSnapshotFixture({
           getTasks: vi.fn(async () => [
             {
               id: 'task-1',
@@ -4668,21 +3745,7 @@ describe('TeamDataService', () => {
               ],
             },
           ]),
-        } as never,
-        {
-          listInboxNames: vi.fn(async () => []),
-          getMessages: vi.fn(async () => []),
-          getMessagesFor: vi.fn(async () => []),
-        } as never,
-        inboxWriter as never,
-        {} as never,
-        {} as never,
-        {} as never,
-        {} as never,
-        {} as never,
-        {} as never,
-        (() => ({}) as never) as never,
-        journal as never
+        } as never)
       );
       service.setTeamProfileOwnership(async () => true);
 
@@ -4728,15 +3791,39 @@ describe('TeamDataService', () => {
 
     try {
       const service = new TeamDataService(
-        {
+        knownEmptyTeamRuntimeSnapshot,
+        registryTaskFixtureConfigReader({
           listTeams: vi.fn(),
           getConfig: vi.fn(async () => ({
             name: 'My team',
             deletedAt: '2026-03-14T10:00:00.000Z',
             members: [{ name: 'team-lead', role: 'Lead' }],
           })),
-        } as never,
+        } as never),
         {
+          listInboxNames: vi.fn(async () => []),
+          getMessages: vi.fn(async () => []),
+          getMessagesFor: vi.fn(async () => []),
+        } as never,
+        inboxWriter as never,
+        {} as never,
+        {} as never,
+        {} as never,
+        {} as never,
+        (() => ({}) as never) as never,
+        journal as never,
+        registryTaskFixtureMetaStore(undefined),
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        registryBoardSnapshotFixture({
           getTasks: vi.fn(async () => [
             {
               id: 'task-1',
@@ -4755,21 +3842,7 @@ describe('TeamDataService', () => {
               ],
             },
           ]),
-        } as never,
-        {
-          listInboxNames: vi.fn(async () => []),
-          getMessages: vi.fn(async () => []),
-          getMessagesFor: vi.fn(async () => []),
-        } as never,
-        inboxWriter as never,
-        {} as never,
-        {} as never,
-        {} as never,
-        {} as never,
-        {} as never,
-        {} as never,
-        (() => ({}) as never) as never,
-        journal as never
+        } as never)
       );
       service.setTeamProfileOwnership(async () => true);
 
@@ -4812,7 +3885,8 @@ describe('TeamDataService', () => {
 
     try {
       const service = new TeamDataService(
-        {
+        knownEmptyTeamRuntimeSnapshot,
+        registryTaskFixtureConfigReader({
           listTeams: vi.fn(async () => [
             {
               teamName: 'my-team',
@@ -4827,27 +3901,7 @@ describe('TeamDataService', () => {
             name: 'My team',
             members: [{ name: 'team-lead', role: 'Lead' }],
           })),
-        } as never,
-        {
-          getTasks: vi.fn(async () => [
-            {
-              id: 'task-1',
-              displayId: 'abcd1234',
-              subject: 'Investigate',
-              status: 'pending',
-              owner: 'alice',
-              comments: [
-                {
-                  id: 'comment-1',
-                  author: 'alice',
-                  text: 'Recovered after restart.',
-                  createdAt: '2026-03-14T10:00:00.000Z',
-                  type: 'regular',
-                },
-              ],
-            },
-          ]),
-        } as never,
+        } as never),
         {
           listInboxNames: vi.fn(async () => []),
           getMessages: vi.fn(async () => []),
@@ -4867,10 +3921,39 @@ describe('TeamDataService', () => {
         {} as never,
         {} as never,
         {} as never,
-        {} as never,
-        {} as never,
         (() => ({}) as never) as never,
-        journal as never
+        journal as never,
+        registryTaskFixtureMetaStore(undefined),
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        registryBoardSnapshotFixture({
+          getTasks: vi.fn(async () => [
+            {
+              id: 'task-1',
+              displayId: 'abcd1234',
+              subject: 'Investigate',
+              status: 'pending',
+              owner: 'alice',
+              comments: [
+                {
+                  id: 'comment-1',
+                  author: 'alice',
+                  text: 'Recovered after restart.',
+                  createdAt: '2026-03-14T10:00:00.000Z',
+                  type: 'regular',
+                },
+              ],
+            },
+          ]),
+        } as never)
       );
       service.setTeamProfileOwnership(async () => true);
 
@@ -4921,7 +4004,8 @@ describe('TeamDataService', () => {
 
     try {
       const service = new TeamDataService(
-        {
+        knownEmptyTeamRuntimeSnapshot,
+        registryTaskFixtureConfigReader({
           listTeams: vi.fn(async () => [
             {
               teamName: 'my-team',
@@ -4936,8 +4020,31 @@ describe('TeamDataService', () => {
             name: 'My team',
             members: [{ name: 'team-lead', role: 'Lead' }],
           })),
-        } as never,
+        } as never),
         {
+          listInboxNames: vi.fn(async () => []),
+          getMessages: vi.fn(async () => []),
+          getMessagesFor: vi.fn(async () => []),
+        } as never,
+        inboxWriter as never,
+        {} as never,
+        {} as never,
+        {} as never,
+        {} as never,
+        (() => ({}) as never) as never,
+        journal as never,
+        registryTaskFixtureMetaStore(undefined),
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        registryBoardSnapshotFixture({
           getTasks: vi.fn(async () => [
             {
               id: 'task-1',
@@ -4956,21 +4063,7 @@ describe('TeamDataService', () => {
               ],
             },
           ]),
-        } as never,
-        {
-          listInboxNames: vi.fn(async () => []),
-          getMessages: vi.fn(async () => []),
-          getMessagesFor: vi.fn(async () => []),
-        } as never,
-        inboxWriter as never,
-        {} as never,
-        {} as never,
-        {} as never,
-        {} as never,
-        {} as never,
-        {} as never,
-        (() => ({}) as never) as never,
-        journal as never
+        } as never)
       );
       service.setTeamProfileOwnership(async () => true);
 
@@ -5021,14 +4114,38 @@ describe('TeamDataService', () => {
 
     try {
       const service = new TeamDataService(
-        {
+        knownEmptyTeamRuntimeSnapshot,
+        registryTaskFixtureConfigReader({
           listTeams: vi.fn(),
           getConfig: vi.fn(async () => ({
             name: 'My team',
             members: [{ name: 'team-lead', role: 'Lead' }],
           })),
-        } as never,
+        } as never),
         {
+          listInboxNames: vi.fn(async () => []),
+          getMessages: vi.fn(async () => []),
+          getMessagesFor: vi.fn(async () => []),
+        } as never,
+        inboxWriter as never,
+        {} as never,
+        {} as never,
+        {} as never,
+        {} as never,
+        (() => ({}) as never) as never,
+        journal as never,
+        registryTaskFixtureMetaStore(undefined),
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        registryBoardSnapshotFixture({
           getTasks: vi.fn(async () => [
             {
               id: 'task-1',
@@ -5047,21 +4164,7 @@ describe('TeamDataService', () => {
               ],
             },
           ]),
-        } as never,
-        {
-          listInboxNames: vi.fn(async () => []),
-          getMessages: vi.fn(async () => []),
-          getMessagesFor: vi.fn(async () => []),
-        } as never,
-        inboxWriter as never,
-        {} as never,
-        {} as never,
-        {} as never,
-        {} as never,
-        {} as never,
-        {} as never,
-        (() => ({}) as never) as never,
-        journal as never
+        } as never)
       );
       service.setTeamProfileOwnership(async () => true);
 
@@ -5124,14 +4227,38 @@ describe('TeamDataService', () => {
 
     try {
       const service = new TeamDataService(
-        {
+        knownEmptyTeamRuntimeSnapshot,
+        registryTaskFixtureConfigReader({
           listTeams: vi.fn(),
           getConfig: vi.fn(async () => ({
             name: 'My team',
             members: [{ name: 'team-lead', role: 'Lead' }],
           })),
-        } as never,
+        } as never),
         {
+          listInboxNames: vi.fn(async () => []),
+          getMessages: vi.fn(async () => []),
+          getMessagesFor: vi.fn(async () => []),
+        } as never,
+        inboxWriter as never,
+        {} as never,
+        {} as never,
+        {} as never,
+        {} as never,
+        (() => ({}) as never) as never,
+        journal as never,
+        registryTaskFixtureMetaStore(undefined),
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        registryBoardSnapshotFixture({
           getTasks: vi.fn(async () => [
             {
               id: 'task-1',
@@ -5150,21 +4277,7 @@ describe('TeamDataService', () => {
               ],
             },
           ]),
-        } as never,
-        {
-          listInboxNames: vi.fn(async () => []),
-          getMessages: vi.fn(async () => []),
-          getMessagesFor: vi.fn(async () => []),
-        } as never,
-        inboxWriter as never,
-        {} as never,
-        {} as never,
-        {} as never,
-        {} as never,
-        {} as never,
-        {} as never,
-        (() => ({}) as never) as never,
-        journal as never
+        } as never)
       );
       service.setTeamProfileOwnership(async () => true);
 
@@ -5259,19 +4372,14 @@ describe('TeamDataService', () => {
 
     try {
       const service = new TeamDataService(
-        {
+        knownEmptyTeamRuntimeSnapshot,
+        registryTaskFixtureConfigReader({
           listTeams: vi.fn(),
           getConfig: vi.fn(async () => ({
             name: 'My team',
             members: [{ name: 'team-lead', role: 'Lead' }],
           })),
-        } as never,
-        {
-          getTasks: vi
-            .fn()
-            .mockResolvedValueOnce([firstTaskSnapshot])
-            .mockResolvedValue([secondTaskSnapshot]),
-        } as never,
+        } as never),
         {
           listInboxNames: vi.fn(async () => []),
           getMessages: vi.fn(async () => []),
@@ -5282,10 +4390,25 @@ describe('TeamDataService', () => {
         {} as never,
         {} as never,
         {} as never,
-        {} as never,
-        {} as never,
         (() => ({}) as never) as never,
-        journal as never
+        journal as never,
+        registryTaskFixtureMetaStore(undefined),
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        registryBoardSnapshotFixture({
+          getTasks: vi
+            .fn()
+            .mockResolvedValueOnce([firstTaskSnapshot])
+            .mockResolvedValue([secondTaskSnapshot]),
+        } as never)
       );
       service.setTeamProfileOwnership(async () => true);
 
@@ -5359,14 +4482,38 @@ describe('TeamDataService', () => {
 
     try {
       const service = new TeamDataService(
-        {
+        knownEmptyTeamRuntimeSnapshot,
+        registryTaskFixtureConfigReader({
           listTeams: vi.fn(),
           getConfig: vi.fn(async () => ({
             name: 'My team',
             members: [{ name: 'team-lead', role: 'Lead' }],
           })),
-        } as never,
+        } as never),
         {
+          listInboxNames: vi.fn(async () => []),
+          getMessages: vi.fn(async () => []),
+          getMessagesFor: vi.fn(async () => []),
+        } as never,
+        inboxWriter as never,
+        {} as never,
+        {} as never,
+        {} as never,
+        {} as never,
+        (() => ({}) as never) as never,
+        journal as never,
+        registryTaskFixtureMetaStore(undefined),
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        registryBoardSnapshotFixture({
           getTasks: vi.fn(async () => [
             {
               id: 'task-1',
@@ -5401,21 +4548,7 @@ describe('TeamDataService', () => {
               ],
             },
           ]),
-        } as never,
-        {
-          listInboxNames: vi.fn(async () => []),
-          getMessages: vi.fn(async () => []),
-          getMessagesFor: vi.fn(async () => []),
-        } as never,
-        inboxWriter as never,
-        {} as never,
-        {} as never,
-        {} as never,
-        {} as never,
-        {} as never,
-        {} as never,
-        (() => ({}) as never) as never,
-        journal as never
+        } as never)
       );
       service.setTeamProfileOwnership(async () => true);
 
@@ -5469,15 +4602,39 @@ describe('TeamDataService', () => {
 
     try {
       const service = new TeamDataService(
-        {
+        knownEmptyTeamRuntimeSnapshot,
+        registryTaskFixtureConfigReader({
           listTeams: vi.fn(),
           getConfig: vi.fn(async () => ({
             name: 'My team',
             members: [{ name: 'team-lead', role: 'Lead' }],
             leadSessionId: 'lead-1',
           })),
-        } as never,
+        } as never),
         {
+          listInboxNames: vi.fn(async () => []),
+          getMessages: vi.fn(async () => []),
+          getMessagesFor: vi.fn(async () => []),
+        } as never,
+        inboxWriter as never,
+        {} as never,
+        {} as never,
+        {} as never,
+        {} as never,
+        (() => ({}) as never) as never,
+        journal as never,
+        registryTaskFixtureMetaStore(undefined),
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        registryBoardSnapshotFixture({
           getTasks: vi.fn(async () => [
             {
               id: 'task-1',
@@ -5496,21 +4653,7 @@ describe('TeamDataService', () => {
               ],
             },
           ]),
-        } as never,
-        {
-          listInboxNames: vi.fn(async () => []),
-          getMessages: vi.fn(async () => []),
-          getMessagesFor: vi.fn(async () => []),
-        } as never,
-        inboxWriter as never,
-        {} as never,
-        {} as never,
-        {} as never,
-        {} as never,
-        {} as never,
-        {} as never,
-        (() => ({}) as never) as never,
-        journal as never
+        } as never)
       );
       service.setTeamProfileOwnership(async () => true);
 
@@ -5722,7 +4865,8 @@ describe('TeamDataService', () => {
 
     try {
       const service = new TeamDataService(
-        {
+        knownEmptyTeamRuntimeSnapshot,
+        registryTaskFixtureConfigReader({
           listTeams: vi.fn(async () => {
             await initGate;
             return [
@@ -5740,8 +4884,31 @@ describe('TeamDataService', () => {
             name: 'My team',
             members: [{ name: 'team-lead', role: 'Lead' }],
           })),
-        } as never,
+        } as never),
         {
+          listInboxNames: vi.fn(async () => []),
+          getMessages: vi.fn(async () => []),
+          getMessagesFor: vi.fn(async () => []),
+        } as never,
+        inboxWriter as never,
+        {} as never,
+        {} as never,
+        {} as never,
+        {} as never,
+        (() => ({}) as never) as never,
+        journal as never,
+        registryTaskFixtureMetaStore(undefined),
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        registryBoardSnapshotFixture({
           getTasks: vi.fn(async () => [
             {
               id: 'task-1',
@@ -5760,21 +4927,7 @@ describe('TeamDataService', () => {
               ],
             },
           ]),
-        } as never,
-        {
-          listInboxNames: vi.fn(async () => []),
-          getMessages: vi.fn(async () => []),
-          getMessagesFor: vi.fn(async () => []),
-        } as never,
-        inboxWriter as never,
-        {} as never,
-        {} as never,
-        {} as never,
-        {} as never,
-        {} as never,
-        {} as never,
-        (() => ({}) as never) as never,
-        journal as never
+        } as never)
       );
       service.setTeamProfileOwnership(async () => true);
 
@@ -5809,25 +4962,40 @@ describe('TeamDataService', () => {
     };
 
     const service = new TeamDataService(
-      {
+      knownEmptyTeamRuntimeSnapshot,
+      registryTaskFixtureConfigReader({
         listTeams: vi.fn(),
         getConfig: vi.fn(async () => ({ name: 'My team', members: [], projectPath: '/repo' })),
-      } as never,
-      {
-        getTasks: vi.fn(async () => [task]),
-      } as never,
+      } as never),
       {
         listInboxNames: vi.fn(async () => []),
         getMessages: vi.fn(async () => []),
       } as never,
-      {} as never,
       {} as never,
       {
         resolveMembers: vi.fn(() => []),
       } as never,
       {
         getState: vi.fn(async () => ({ teamName: 'my-team', reviewers: [], tasks: {} })),
-      } as never
+      } as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      registryTaskFixtureMetaStore(undefined),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      registryBoardSnapshotFixture({
+        getTasks: vi.fn(async () => [task]),
+      } as never)
     );
 
     const load = vi.fn(async () => null);
@@ -5873,25 +5041,40 @@ describe('TeamDataService', () => {
       trackerSnapshot: { projectFingerprint: string; logSourceGeneration: string } | null
     ) => {
       const service = new TeamDataService(
-        {
+        knownEmptyTeamRuntimeSnapshot,
+        registryTaskFixtureConfigReader({
           listTeams: vi.fn(),
           getConfig: vi.fn(async () => ({ name: 'My team', members: [], projectPath: '/repo' })),
-        } as never,
-        {
-          getTasks: vi.fn(async () => [task]),
-        } as never,
+        } as never),
         {
           listInboxNames: vi.fn(async () => []),
           getMessages: vi.fn(async () => []),
         } as never,
-        {} as never,
         {} as never,
         {
           resolveMembers: vi.fn(() => []),
         } as never,
         {
           getState: vi.fn(async () => ({ teamName: 'my-team', reviewers: [], tasks: {} })),
-        } as never
+        } as never,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        registryTaskFixtureMetaStore(undefined),
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        registryBoardSnapshotFixture({
+          getTasks: vi.fn(async () => [task]),
+        } as never)
       );
 
       service.setTaskChangePresenceServices(
@@ -5987,25 +5170,40 @@ describe('TeamDataService', () => {
     });
 
     const service = new TeamDataService(
-      {
+      knownEmptyTeamRuntimeSnapshot,
+      registryTaskFixtureConfigReader({
         listTeams: vi.fn(),
         getConfig: vi.fn(async () => ({ name: 'My team', members: [], projectPath: '/repo' })),
-      } as never,
-      {
-        getTasks: vi.fn(async () => [task]),
-      } as never,
+      } as never),
       {
         listInboxNames: vi.fn(async () => []),
         getMessages: vi.fn(async () => []),
       } as never,
-      {} as never,
       {} as never,
       {
         resolveMembers: vi.fn(() => []),
       } as never,
       {
         getState: vi.fn(async () => ({ teamName: 'my-team', reviewers: [], tasks: {} })),
-      } as never
+      } as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      registryTaskFixtureMetaStore(undefined),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      registryBoardSnapshotFixture({
+        getTasks: vi.fn(async () => [task]),
+      } as never)
     );
 
     service.setTaskChangePresenceServices(
@@ -6064,25 +5262,40 @@ describe('TeamDataService', () => {
     const getMessages = vi.fn(async () => []);
 
     const service = new TeamDataService(
-      {
+      knownEmptyTeamRuntimeSnapshot,
+      registryTaskFixtureConfigReader({
         listTeams: vi.fn(),
         getConfig: vi.fn(async () => ({ name: 'My team', members: [], projectPath: '/repo' })),
-      } as never,
-      {
-        getTasks: vi.fn(async () => [task]),
-      } as never,
+      } as never),
       {
         listInboxNames: vi.fn(async () => []),
         getMessages,
       } as never,
-      {} as never,
       {} as never,
       {
         resolveMembers: vi.fn(() => []),
       } as never,
       {
         getState: vi.fn(async () => ({ teamName: 'my-team', reviewers: [], tasks: {} })),
-      } as never
+      } as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      registryTaskFixtureMetaStore(undefined),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      registryBoardSnapshotFixture({
+        getTasks: vi.fn(async () => [task]),
+      } as never)
     );
 
     service.setTaskChangePresenceServices(
@@ -6141,25 +5354,40 @@ describe('TeamDataService', () => {
     });
 
     const service = new TeamDataService(
-      {
+      knownEmptyTeamRuntimeSnapshot,
+      registryTaskFixtureConfigReader({
         listTeams: vi.fn(),
         getConfig: vi.fn(async () => ({ name: 'My team', members: [], projectPath: '/repo' })),
-      } as never,
-      {
-        getTasks: vi.fn(async () => [task]),
-      } as never,
+      } as never),
       {
         listInboxNames: vi.fn(async () => []),
         getMessages: vi.fn(async () => []),
       } as never,
-      {} as never,
       {} as never,
       {
         resolveMembers: vi.fn(() => []),
       } as never,
       {
         getState: vi.fn(async () => ({ teamName: 'my-team', reviewers: [], tasks: {} })),
-      } as never
+      } as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      registryTaskFixtureMetaStore(undefined),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      registryBoardSnapshotFixture({
+        getTasks: vi.fn(async () => [task]),
+      } as never)
     );
 
     service.setTaskChangePresenceServices(
@@ -6205,13 +5433,13 @@ describe('TeamDataService', () => {
     setClaudeBasePathOverride(root);
     const createService = () =>
       new TeamDataService(
+        knownEmptyTeamRuntimeSnapshot,
         {
           getConfig: vi.fn(async () => ({
             name: 'My team',
             members: [{ name: 'team-lead', role: 'Lead' }],
           })),
         } as never,
-        {} as never,
         { getMessages: vi.fn(async () => []), listInboxNames: vi.fn(async () => []) } as never
       );
     const png = { id: 'png', filename: 'native.png', mimeType: 'image/png', size: 3, order: 0 };
@@ -6247,6 +5475,7 @@ describe('TeamDataService', () => {
   it('persists standalone slash metadata when sending directly to the live lead', async () => {
     const appendSentMessage = vi.fn((payload) => payload);
     const service = new TeamDataService(
+      knownEmptyTeamRuntimeSnapshot,
       {
         listTeams: vi.fn(),
         getConfig: vi.fn(async () => ({
@@ -6255,9 +5484,6 @@ describe('TeamDataService', () => {
           leadSessionId: 'lead-1',
         })),
       } as never,
-      {} as never,
-      {} as never,
-      {} as never,
       {} as never,
       {} as never,
       {} as never,
@@ -6294,17 +5520,15 @@ describe('TeamDataService', () => {
 
   it('annotates immediate lead replies after slash commands as command results', async () => {
     const service = new TeamDataService(
-      {
+      knownEmptyTeamRuntimeSnapshot,
+      registryTaskFixtureConfigReader({
         listTeams: vi.fn(),
         getConfig: vi.fn(async () => ({
           name: 'My team',
           members: [{ name: 'team-lead', role: 'Lead' }],
           leadSessionId: 'lead-1',
         })),
-      } as never,
-      {
-        getTasks: vi.fn(async () => []),
-      } as never,
+      } as never),
       {
         listInboxNames: vi.fn(async () => []),
         getMessages: vi.fn(async () => [
@@ -6320,14 +5544,12 @@ describe('TeamDataService', () => {
         ]),
       } as never,
       {} as never,
-      {} as never,
       {
         resolveMembers: vi.fn(() => []),
       } as never,
       {
         getState: vi.fn(async () => ({ teamName: 'my-team', reviewers: [], tasks: {} })),
       } as never,
-      {} as never,
       {} as never,
       {
         readMessages: vi.fn(async () => [
@@ -6342,7 +5564,23 @@ describe('TeamDataService', () => {
             messageId: 'user-cost-1',
           },
         ]),
-      } as never
+      } as never,
+      undefined,
+      undefined,
+      registryTaskFixtureMetaStore(undefined),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      registryBoardSnapshotFixture({
+        getTasks: vi.fn(async () => []),
+      } as never)
     );
 
     const feed = await service.getMessageFeed('my-team');
@@ -6359,17 +5597,15 @@ describe('TeamDataService', () => {
 
   it('keeps the inbox passive-summary row preferred over a read-state-changed lead_process duplicate', async () => {
     const service = new TeamDataService(
-      {
+      knownEmptyTeamRuntimeSnapshot,
+      registryTaskFixtureConfigReader({
         listTeams: vi.fn(),
         getConfig: vi.fn(async () => ({
           name: 'My team',
           members: [{ name: 'team-lead', role: 'Lead' }],
           leadSessionId: 'lead-1',
         })),
-      } as never,
-      {
-        getTasks: vi.fn(async () => []),
-      } as never,
+      } as never),
       {
         listInboxNames: vi.fn(async () => []),
         getMessages: vi.fn(async () => [
@@ -6401,7 +5637,6 @@ describe('TeamDataService', () => {
         ]),
       } as never,
       {} as never,
-      {} as never,
       {
         resolveMembers: vi.fn(() => []),
       } as never,
@@ -6409,10 +5644,25 @@ describe('TeamDataService', () => {
         getState: vi.fn(async () => ({ teamName: 'my-team', reviewers: [], tasks: {} })),
       } as never,
       {} as never,
-      {} as never,
       {
         readMessages: vi.fn(async () => []),
-      } as never
+      } as never,
+      undefined,
+      undefined,
+      registryTaskFixtureMetaStore(undefined),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      registryBoardSnapshotFixture({
+        getTasks: vi.fn(async () => []),
+      } as never)
     );
 
     const feed = await service.getMessageFeed('my-team');
@@ -6432,22 +5682,19 @@ describe('TeamDataService', () => {
   }): TeamDataService {
     const { inboxMessages = [], sentMessages = [] } = options;
     return new TeamDataService(
-      {
+      knownEmptyTeamRuntimeSnapshot,
+      registryTaskFixtureConfigReader({
         listTeams: vi.fn(),
         getConfig: vi.fn(async () => ({
           name: 'My team',
           members: [{ name: 'team-lead', role: 'Lead' }],
           leadSessionId: 'lead-1',
         })),
-      } as never,
-      {
-        getTasks: vi.fn(async () => []),
-      } as never,
+      } as never),
       {
         listInboxNames: vi.fn(async () => []),
         getMessages: vi.fn(async () => inboxMessages),
       } as never,
-      {} as never,
       {} as never,
       {
         resolveMembers: vi.fn(() => []),
@@ -6456,10 +5703,25 @@ describe('TeamDataService', () => {
         getState: vi.fn(async () => ({ teamName: 'my-team', reviewers: [], tasks: {} })),
       } as never,
       {} as never,
-      {} as never,
       {
         readMessages: vi.fn(async () => sentMessages),
-      } as never
+      } as never,
+      undefined,
+      undefined,
+      registryTaskFixtureMetaStore(undefined),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      registryBoardSnapshotFixture({
+        getTasks: vi.fn(async () => []),
+      } as never)
     );
   }
 
@@ -7913,7 +7175,7 @@ describe('TeamDataService', () => {
 
     expect(data.processes).toEqual([
       expect.objectContaining({
-        id: 'proc-1',
+        id: 'my-team:Lead',
         pid: 101,
       }),
     ]);
@@ -8416,7 +7678,14 @@ describe('TeamDataService', () => {
     expect(data.tasks).toEqual(expect.arrayContaining([expect.objectContaining({ id: 'task-1' })]));
     expect(feed.messages.map((message) => message.messageId)).toEqual(['sent-1', 'lead-1']);
     expect(resolveMembersSpy).toHaveBeenCalledWith(
-      buildDefaultTeamConfig(),
+      // The fixture reader declares registry authority for its configs, so the resolver sees the
+      // same explicit scope the registry task path resolves.
+      buildDefaultTeamConfig({
+        specScope: {
+          projects: ['owner/project'],
+          bindings: [{ project: 'owner/project', spec: 'fixture' }],
+        },
+      }),
       metaMembers,
       inboxNames,
       expect.arrayContaining([
@@ -8464,8 +7733,10 @@ describe('TeamDataService', () => {
         throw new Error('task read failed');
       },
     });
+    // Registry task reads are authoritative: an untyped read failure surfaces as a registry
+    // failure instead of being masked as a stale kanban snapshot.
     await expect(harness.service.getTeamData('my-team')).rejects.toMatchObject({
-      code: 'KANBAN_SNAPSHOT_CHANGED',
+      code: 'REGISTRY_UNAVAILABLE',
     });
   });
 
@@ -8590,15 +7861,15 @@ describe('TeamDataService', () => {
       }>
     ) {
       return new TeamDataService(
-        {
+        knownEmptyTeamRuntimeSnapshot,
+        registryTaskFixtureConfigReader({
           listTeams: vi.fn(),
           getConfig: vi.fn(async () => ({
             name: 'My team',
             members: [{ name: 'team-lead', role: 'Lead' }],
             leadSessionId: 'lead-1',
           })),
-        } as never,
-        { getTasks: vi.fn(async () => []) } as never,
+        } as never),
         {
           listInboxNames: vi.fn(async () => []),
           getMessages: vi.fn(async () => messages.map((m) => ({ ...m, read: true }))),
@@ -8609,14 +7880,26 @@ describe('TeamDataService', () => {
           ),
         } as never,
         {} as never,
-        {} as never,
         { resolveMembers: vi.fn(() => []) } as never,
         {
           getState: vi.fn(async () => ({ teamName: 'my-team', reviewers: [], tasks: {} })),
         } as never,
         {} as never,
-        {} as never,
-        { readMessages: vi.fn(async () => []) } as never
+        { readMessages: vi.fn(async () => []) } as never,
+        undefined,
+        undefined,
+        registryTaskFixtureMetaStore(undefined),
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        registryBoardSnapshotFixture({ getTasks: vi.fn(async () => []) } as never)
       );
     }
 

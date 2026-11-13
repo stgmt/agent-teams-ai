@@ -128,11 +128,29 @@ function getEffectiveReviewState(task, kanbanEntry) {
   };
 }
 
+/** Closes every still-open review interval at `timestamp` (never before its own start). */
+function closeOpenReviewIntervals(task, timestamp) {
+  if (!Array.isArray(task.reviewIntervals)) return;
+  task.reviewIntervals = task.reviewIntervals.map((interval) => {
+    if (!interval || interval.completedAt !== undefined) return interval;
+    const startedAt = Date.parse(interval.startedAt);
+    const completedAt = Date.parse(timestamp);
+    return {
+      ...interval,
+      completedAt:
+        Number.isFinite(startedAt) && Number.isFinite(completedAt) && completedAt < startedAt
+          ? interval.startedAt
+          : timestamp,
+    };
+  });
+}
+
 module.exports = {
   REVIEW_COLUMNS,
   REVIEW_LIFECYCLE_EVENTS,
   REVIEW_RESET_STATUSES,
   REVIEW_STATES,
+  closeOpenReviewIntervals,
   getEffectiveReviewState,
   getReviewStateFromHistory,
   normalizeReviewState,

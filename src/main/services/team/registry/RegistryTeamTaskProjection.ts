@@ -1,4 +1,4 @@
-import { localIdFromRef, registryTaskId, REGISTRY_TO_TEAM_STATUS } from './RegistryTaskIdentity';
+import { localIdFromRef, REGISTRY_TO_TEAM_STATUS, registryTaskId } from './RegistryTaskIdentity';
 
 import type { ExecutionTaskStore } from '../execution/ExecutionTaskStore';
 import type { RegistryTask } from './RegistryTaskClientTypes';

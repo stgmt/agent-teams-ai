@@ -400,7 +400,7 @@ describe('ClaudeMultimodelBridgeService status/catalog core', () => {
     expect(execCliMock).toHaveBeenCalledTimes(1);
   });
 
-  it('does not synthesize a catalog command when the OpenCode summary omits one', async () => {
+  it('does not synthesize a catalog command when the OpenCode full status omits one', async () => {
     execCliMock.mockImplementation(() => commandResult(statusPayload({ modelCatalog: undefined })));
     const { ClaudeMultimodelBridgeService } =
       await import('@main/services/runtime/ClaudeMultimodelBridgeService');
@@ -420,7 +420,8 @@ describe('ClaudeMultimodelBridgeService status/catalog core', () => {
       statusMessage: null,
       detailMessage: null,
       capabilities: { teamLaunch: false },
-      modelCatalogRefreshState: 'loading',
+      // Full status already attempted the dynamic catalog: its absence is a failure.
+      modelCatalogRefreshState: 'error',
       modelCatalog: null,
     });
     expect(execCliMock).toHaveBeenCalledTimes(1);
@@ -523,13 +524,9 @@ describe('ClaudeMultimodelBridgeService status/catalog core', () => {
     expect(two.authenticated).toBe(false);
     expect(
       execCliMock.mock.calls.filter((call) => call[2]?.cwd === path.resolve('/projects/one'))
-    ).toHaveLength(
-      1
-    );
+    ).toHaveLength(1);
     expect(
       execCliMock.mock.calls.filter((call) => call[2]?.cwd === path.resolve('/projects/two'))
-    ).toHaveLength(
-      1
-    );
+    ).toHaveLength(1);
   });
 });

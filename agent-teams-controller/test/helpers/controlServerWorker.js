@@ -24,7 +24,27 @@ function projectTask(task) {
   for (const field of ['workIntervals', 'reviewIntervals', 'comments', 'attachments', 'historyEvents']) {
     if (Array.isArray(projected[field]) && projected[field].length === 0) delete projected[field];
   }
+  // Mirrors RegistryTaskProvider.toTeamTask: incoming links and the deletedAt
+  // timestamp derived from the recorded transition. The app never serves a raw
+  // board row, so the single-task route answers with the same projection.
+  projected.blocks = tasks
+    .filter((candidate) => Array.isArray(candidate.blockedBy) && candidate.blockedBy.includes(task.id))
+    .map((candidate) => candidate.id);
+  const deletedAt = projected.status === 'deleted' ? lastDeletedTransition(projected) : undefined;
+  if (deletedAt === undefined) delete projected.deletedAt;
+  else projected.deletedAt = deletedAt;
   return projected;
+}
+
+function lastDeletedTransition(task) {
+  const events = Array.isArray(task.historyEvents) ? task.historyEvents : [];
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (event && event.type === 'status_changed') {
+      return event.to === 'deleted' ? event.timestamp : undefined;
+    }
+  }
+  return undefined;
 }
 
 function sendJson(response, status, payload) {
@@ -70,7 +90,7 @@ function handleCreate(body) {
           },
         };
       }
-      return { status: 200, payload: { task: existing, outcome: 'REPLAY' } };
+      return { status: 200, payload: { task: projectTask(existing), outcome: 'REPLAY' } };
     }
   }
   const {
@@ -110,7 +130,7 @@ function handleCreate(body) {
     reviewIntervals: body.reviewIntervals ?? [],
   };
   tasks.push(task);
-  return { status: 201, payload: { task, outcome: 'APPLIED' } };
+  return { status: 201, payload: { task: projectTask(task), outcome: 'APPLIED' } };
 }
 
 function handleStatus(taskId, body, searchParams) {
@@ -127,24 +147,36 @@ function handleStatus(taskId, body, searchParams) {
   const from = task.status;
   task.status = body.status;
   task.updatedAt = nowIso();
-  if (from !== task.status && task.status === 'deleted') task.deletedAt = task.updatedAt;
-  else if (from === 'deleted' && task.status !== 'deleted') delete task.deletedAt;
   if (from !== task.status) {
-    task.historyEvents = [...(task.historyEvents || []), {
-      type: 'status_changed', from, to: task.status, timestamp: task.updatedAt,
-      ...(body.actor ? { actor: body.actor } : {}),
-    }];
-    const intervals = [...(task.workIntervals || [])];
-    if (from === 'in_progress' && intervals.length && !intervals[intervals.length - 1].completedAt) {
-      intervals[intervals.length - 1] = { ...intervals[intervals.length - 1], completedAt: task.updatedAt };
+    // RegistryTeamTaskWriter records one status_changed event per transition.
+    // A controller transition already sent its event through the execution
+    // record patch, so only the status-only path (completeTask) still owes one.
+    const events = Array.isArray(task.historyEvents) ? task.historyEvents : [];
+    const last = events[events.length - 1];
+    const recorded = Boolean(
+      last && last.type === 'status_changed' && last.from === from && last.to === task.status
+    );
+    if (!recorded) {
+      task.historyEvents = [...events, {
+        type: 'status_changed', from, to: task.status, timestamp: task.updatedAt,
+        ...(body.actor ? { actor: body.actor } : {}),
+      }];
     }
-    if (task.status === 'in_progress') intervals.push({ startedAt: task.updatedAt });
+    const intervals = [...(task.workIntervals || [])];
+    const open = intervals.length > 0 ? intervals[intervals.length - 1] : undefined;
+    if (from !== 'in_progress' && task.status === 'in_progress') {
+      if (!open || open.completedAt !== undefined) intervals.push({ startedAt: task.updatedAt });
+    } else if (from === 'in_progress' && task.status !== 'in_progress') {
+      if (open && open.completedAt === undefined) {
+        intervals[intervals.length - 1] = { ...open, completedAt: task.updatedAt };
+      }
+    }
     task.workIntervals = intervals;
   }
   return {
     status: 200,
     payload: {
-      task,
+      task: projectTask(task),
       transitions: [{
         requestId: String(requests.length),
         from,
@@ -181,7 +213,7 @@ function handlePatch(taskId, body, searchParams) {
     else task[field] = value;
   }
   task.updatedAt = nowIso();
-  return { status: 200, payload: { task } };
+  return { status: 200, payload: { task: projectTask(task) } };
 }
 
 
@@ -248,12 +280,7 @@ const server = http.createServer((request, response) => {
       sendJson(response, 200, {
         tasks: tasks
           .filter((task) => matchesScope(task, url.searchParams))
-          .map((task) => projectTask({
-            ...task,
-            blocks: tasks.filter((candidate) =>
-              Array.isArray(candidate.blockedBy) && candidate.blockedBy.includes(task.id)
-            ).map((candidate) => candidate.id),
-          })),
+          .map((task) => projectTask(task)),
       });
       return;
     }
@@ -265,7 +292,7 @@ const server = http.createServer((request, response) => {
           message: `Task not found: ${taskId}`,
         });
       } else {
-        sendJson(response, 200, { task });
+        sendJson(response, 200, { task: projectTask(task) });
       }
       return;
     }

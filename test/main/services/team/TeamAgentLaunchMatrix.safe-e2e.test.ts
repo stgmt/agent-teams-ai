@@ -4855,12 +4855,18 @@ describe(
       const abandonedPid = 424_242;
       await fs.mkdir(path.dirname(lockPath), { recursive: true });
       await fs.writeFile(lockPath, `${abandonedPid}\n${Date.now()}\n`, 'utf8');
-      const killSpy = vi.spyOn(process, 'kill').mockImplementation(((pid: number | string) => {
+      const originalKill = process.kill.bind(process);
+      const killSpy = vi.spyOn(process, 'kill').mockImplementation(((
+        pid: number | string,
+        signal?: number | string
+      ) => {
         if (pid === abandonedPid) {
           const error = new Error('process is gone') as NodeJS.ErrnoException;
           error.code = 'ESRCH';
           throw error;
         }
+        // Lock owners are probed with signal 0; answer those from the real process table.
+        if (signal === 0) return originalKill(Number(pid), 0);
         return true;
       }) as typeof process.kill);
       const adapter = new FakeOpenCodeRuntimeAdapter('clean_success', {
@@ -23603,11 +23609,17 @@ function trackProcessKillsForPids(pids: readonly number[]): {
 } {
   const targetPids = new Set(pids);
   const killedPids: number[] = [];
+  const originalKill = process.kill.bind(process);
   const spy = vi.spyOn(process, 'kill').mockImplementation(((
     pid: number | string,
     signal?: number | string
   ) => {
     const numericPid = Number(pid);
+    // Filesystem lock owners are probed with signal 0. Only the synthetic runtime PIDs
+    // under test may answer "alive"; answering every probe keeps stale lock owners alive,
+    // so lock crash recovery refuses to reclaim them and a retained handle cannot be
+    // marked released.
+    if (signal === 0 && !targetPids.has(numericPid)) return originalKill(numericPid, 0);
     if (targetPids.has(numericPid) && signal !== 0) {
       killedPids.push(numericPid);
     }

@@ -1,7 +1,11 @@
+import { rm } from 'node:fs/promises';
+import { dirname } from 'node:path';
+
 import {
   validateAgentAttachmentIpcPayload,
   validateAgentAttachmentSerializedIpcPayload,
 } from '@features/agent-attachments/main';
+import { buildOpenCodeSecondaryLaneId } from '@features/team-runtime-lanes';
 import { createOpenCodePromptDeliveryLedger } from '@main/services/team/provisioning/OpenCodePromptDeliveryQueries';
 import { buildLeadMessageStdinPayload } from '@main/services/team/provisioning/TeamProvisioningLeadAttachments';
 import { TaskChangeLedgerReader } from '@main/services/team/TaskChangeLedgerReader';
@@ -11,6 +15,7 @@ import { createLogger } from '@shared/utils/logger';
 
 import { SendLeadMessage } from '../../core/application/commands/SendLeadMessage';
 import { LeadMemberStartAuthority } from '../../core/application/LeadMemberStartAuthority';
+import { assertMemberProcessAuthority } from '../../core/domain/memberLifecycleIdentity';
 import { MemberLifecycleRegistry } from '../../core/domain/MemberLifecycleRegistry';
 import { LeadLaneInboxDelivery } from '../adapters/output/LeadLaneInboxDelivery';
 import { NativeClaudeLaunchPlanner } from '../adapters/output/NativeClaudeLaunchPlanner';
@@ -44,19 +49,27 @@ import { nativeTeamTaskLedgerProjectDirectory } from '../infrastructure/nativeTe
 import { createBoundLifecycleCommands } from './createBoundLifecycleCommands';
 import { createBoundLifecycleQueries } from './createBoundLifecycleQueries';
 import { createMemberLifecycle } from './createMemberLifecycle';
+import { createNativeLiveRunRecovery } from './createNativeLiveRunRecovery';
 import { createNativeMemberRuntimeRouting } from './createNativeMemberRuntimeRouting';
 import { type OpenCodeLaneAdapter, selectOpenCodeLaneAdapter } from './selectOpenCodeLaneAdapter';
 
-import type { MemberProcessToken, TeamRunIdentity, TeamRunRegistryRead } from '../../contracts';
+import type {
+  MemberProcessToken,
+  OwnedProcessIdentity,
+  TeamRunIdentity,
+  TeamRunRegistryRead,
+} from '../../contracts';
 import type { MemberLifecycleCommands } from '../../core/application/commands/MemberLifecycleCommands';
 import type { LifecycleCommands } from '../../core/application/ports/LifecycleCommands';
 import type { LifecycleQueries } from '../../core/application/ports/LifecycleQueries';
 import type {
   ConfiguredMemberLaunch,
   MemberAttachReason,
+  OwnedMemberLaneGroup,
 } from '../../core/application/ports/MemberRuntimePorts';
 import type { NativeOpenCodeMemberDeliveryPort } from '../adapters/input/NativeTeamMessagingApi';
 import type { LaneLeadDeliveryPort } from '../adapters/output/LeadLaneInboxDelivery';
+import type { NativeClaudeSdkHost } from '../adapters/output/NativeClaudeSdkHost';
 import type { NativeConfiguredProviderPorts } from '../adapters/output/NativeConfiguredProvider';
 import type { MemberLifecycle } from './createMemberLifecycle';
 import type { AppConnectionContext } from '@features/external-agent-connection/contracts';
@@ -70,6 +83,7 @@ import type {
 } from '@shared/types';
 
 export interface NativeTeamLifecycleDependencies {
+  sdkHost: NativeClaudeSdkHost;
   owner: AppConnectionContext;
   /** Root-owned lifecycle registry; omitted keeps the lifecycle as its creator. */
   registry?: MemberLifecycle['registry'];
@@ -125,6 +139,10 @@ export interface OrphanedRunRecovery {
 }
 
 export interface NativeTeamLifecycle {
+  assertSdkAuthority(
+    token: Readonly<MemberProcessToken>,
+    identity: Readonly<OwnedProcessIdentity>
+  ): Promise<void>;
   owner: Readonly<AppConnectionContext>;
   activity: MemberLifecycle['activity'];
   runs: TeamRunRegistryRead;
@@ -191,10 +209,12 @@ export interface NativeTeamLifecycle {
   launchConfigured(run: TeamRunIdentity): Promise<Readonly<{ run: Readonly<TeamRunIdentity> }>>;
   stopConfigured(run: TeamRunIdentity): Promise<void>;
   shutdown(): Promise<void>;
+  canReplayLeadInput(run: Readonly<TeamRunIdentity>): boolean;
   sendLeadMessage(
     run: TeamRunIdentity,
     text: string,
-    attachments?: readonly Readonly<AttachmentPayload>[]
+    attachments?: readonly Readonly<AttachmentPayload>[],
+    operationId?: string
   ): Promise<void>;
   /** Clears native run claims that are not alive in this process. */
   recoverOrphanedRuns(teamNames: readonly string[]): Promise<OrphanedRunRecovery>;
@@ -248,6 +268,12 @@ export function createNativeTeamLifecycle(
     Promise.resolve(nativeTeamTaskLedgerProjectDirectory(deps.teamsRoot, launch.team.teamName))
   );
   const planner = new NativeClaudeLaunchPlanner({
+    sdkHost: deps.sdkHost,
+    releaseRecovered: async (token, identity, evidence) => {
+      await registration.release(token, identity);
+      await deps.mcp.removeConfigFile(evidence.mcpConfigPath);
+      await rm(dirname(evidence.stdoutPath), { recursive: true, force: true });
+    },
     prepareWorkspace: (launch, signal) => workspace.prepare(launch, signal),
     prepareProvider: (launch, signal) => provider.prepare(launch, signal),
     prepareArtifacts: (launch, token, signal) => artifacts.prepare(launch, token, signal),
@@ -271,7 +297,7 @@ export function createNativeTeamLifecycle(
   let writeApprovalLine: (
     token: Readonly<MemberProcessToken>,
     line: string
-  ) => Promise<void> = async () => {
+  ) => Promise<void> = async (_token, _line) => {
     throw new Error('Native approval input is not wired');
   };
   const approvals = new NativeClaudeToolApprovals({
@@ -309,12 +335,85 @@ export function createNativeTeamLifecycle(
   let promptDelivery: NativeOpenCodePromptDeliverySupervisor | null = null;
   const configuredProvidersByRun = new Map<string, ReadonlyMap<string, string>>();
   const launchPublication = new NativeLaunchPublication(deps.teamsRoot);
+  const retainLane = (
+    group: OwnedMemberLaneGroup,
+    tokens: readonly Readonly<MemberProcessToken>[],
+    laneId: string
+  ): OwnedMemberLaneGroup => ({
+    get observations() {
+      return group.observations;
+    },
+    subscribe: (events) => group.subscribe(events),
+    writeInput: (memberName, line) => group.writeInput(memberName, line),
+    stop: async () => {
+      await group.stop();
+      await config.releaseLaneAttempts(tokens, laneId);
+    },
+    ...(group.listPermissions ? { listPermissions: () => group.listPermissions!() } : {}),
+    ...(group.answerPermission
+      ? {
+          answerPermission: (
+            input: Parameters<NonNullable<OwnedMemberLaneGroup['answerPermission']>>[0]
+          ) => group.answerPermission!(input),
+        }
+      : {}),
+  });
   const lifecycle = createMemberLifecycle({
     owner: deps.owner,
     registry,
     settings,
     authority,
-    runtime: routing.runtime,
+    runtime: {
+      ...routing.runtime,
+      ...(routing.runtime.startLane
+        ? {
+            startLane: async (launch, token, signal) => {
+              await config.recordLaneAttempts(
+                [token],
+                buildOpenCodeSecondaryLaneId({ name: token.memberName })
+              );
+              const handle = await routing.runtime.startLane!(launch, token, signal);
+              const laneId = handle.lane.laneId;
+              try {
+                await config.recordLaneAttempts([token], laneId, {
+                  [token.memberName]: handle.lane,
+                });
+                return {
+                  get lane() {
+                    return handle.lane;
+                  },
+                  subscribe: (events: Parameters<typeof handle.subscribe>[0]) =>
+                    handle.subscribe(events),
+                  writeInput: (line: string) => handle.writeInput(line),
+                  stop: async () => {
+                    await handle.stop();
+                    await config.releaseLaneAttempts([token], laneId);
+                  },
+                };
+              } catch (error) {
+                await handle.stop();
+                throw error;
+              }
+            },
+          }
+        : {}),
+      ...(routing.runtime.startLaneGroup
+        ? {
+            startLaneGroup: async (launches, tokens, laneId, signal) => {
+              // Persist exact attempt identity before the adapter can accept work.
+              await config.recordLaneAttempts(tokens, laneId);
+              const group = await routing.runtime.startLaneGroup!(launches, tokens, laneId, signal);
+              try {
+                await config.recordLaneAttempts(tokens, laneId, group.observations);
+                return retainLane(group, tokens, laneId);
+              } catch (error) {
+                await group.stop();
+                throw error;
+              }
+            },
+          }
+        : {}),
+    },
     laneGroups: routing.laneGroups,
     registerConfiguredMember: (run, launch) => config.addMember(run, launch),
     onMemberConnected: (launch, token) => startupWorkDelivery.confirmed(launch, token),
@@ -360,7 +459,7 @@ export function createNativeTeamLifecycle(
   writeApprovalLine = (token, line) => lifecycle.commands.writeInput(token, line);
   const send = new SendLeadMessage({
     snapshot: (teamName) => lifecycle.snapshot(teamName),
-    write: (token, line) => lifecycle.commands.writeInput(token, line),
+    write: (token, line, operationId) => lifecycle.commands.writeInput(token, line, operationId),
     encode: async (text, run, attachments) => {
       const validated = validateAgentAttachmentIpcPayload(attachments);
       if (!validated.valid) throw new Error(validated.error);
@@ -391,10 +490,11 @@ export function createNativeTeamLifecycle(
   const sendLead = async (
     run: TeamRunIdentity,
     text: string,
-    attachments?: readonly Readonly<AttachmentPayload>[]
+    attachments?: readonly Readonly<AttachmentPayload>[],
+    operationId?: string
   ): Promise<void> => {
     if (await laneLead.tryDeliver(run, text, attachments)) return;
-    await send.execute(run, text, attachments);
+    await send.execute(run, text, attachments, operationId);
   };
   const queries = createBoundLifecycleQueries({
     owner: deps.owner,
@@ -460,12 +560,21 @@ export function createNativeTeamLifecycle(
       getErrorMessage: (error) => (error instanceof Error ? error.message : String(error)),
     });
   }
+  const runtimeOwnsMailbox = (run: Readonly<TeamRunIdentity>, memberName: string): boolean => {
+    const member = registry.snapshot(run.teamName).members[memberName];
+    if (!member?.process || !member.operationId || member.lane) return false;
+    return deps.sdkHost.ownsMailbox(
+      { ...run, memberName, generation: member.generation, operationId: member.operationId },
+      member.process
+    );
+  };
   const leadRelay = new NativeLeadInboxRelay({
     runs,
     snapshot: (teamName) => lifecycle.snapshot(teamName),
     inbox: inboxReader,
     send: (run, text) => deps.withExpectedContext(run, () => send.execute(run, text)),
     teamsRoot: deps.teamsRoot,
+    ownsMailbox: runtimeOwnsMailbox,
     controlUrl: () => deps.controlUrl(),
     crossTeamState: crossTeamReplies.state,
   });
@@ -475,11 +584,16 @@ export function createNativeTeamLifecycle(
     inbox: inboxReader,
     send: (run, text) => deps.withExpectedContext(run, () => send.execute(run, text)),
     teamsRoot: deps.teamsRoot,
+    ownsMailbox: runtimeOwnsMailbox,
   });
   memberRelayRef = memberRelay;
   relay = leadRelay;
   const startRelays = (teamName: string, intervalMs: number): void => {
-    leadRelay.startPolling(teamName, intervalMs);
+    const snapshot = registry.snapshot(teamName);
+    const lead = Object.values(snapshot.members).find((member) => member.role === 'lead');
+    if (lead && runtimeOwnsMailbox(snapshot.identity, lead.memberName))
+      leadRelay.stopPolling(teamName);
+    else leadRelay.startPolling(teamName, intervalMs);
     memberRelay.startPolling(teamName, intervalMs);
     promptDelivery?.start();
   };
@@ -491,6 +605,19 @@ export function createNativeTeamLifecycle(
     // just declared stopped. `release` cancels the same wakes when the run goes.
     promptDelivery?.cancelTeam(teamName);
   };
+  const recoverLiveRun = createNativeLiveRunRecovery({
+    teamsRoot: deps.teamsRoot,
+    ...(deps.relayIntervalMs !== undefined ? { relayIntervalMs: deps.relayIntervalMs } : {}),
+    ...(openCodeAdapter ? { openCodeAdapter } : {}),
+    settings,
+    registry,
+    commands: lifecycle.commands,
+    runtime: nativeRuntime,
+    configuredProvidersByRun,
+    retainLane,
+    startRelays,
+    promptDelivery,
+  });
   const commands = createBoundLifecycleCommands({
     owner: deps.owner,
     source: {
@@ -532,6 +659,40 @@ export function createNativeTeamLifecycle(
       deps.withExpectedContext(input.run, () => lifecycle.commands.answerLanePermission(input)),
   };
   return {
+    assertSdkAuthority: (token, identity) =>
+      deps.withExpectedContext(token, async () => {
+        registry.assertRun(token);
+        assertMemberProcessAuthority(
+          registry.snapshot(token.teamName).members[token.memberName],
+          token,
+          identity
+        );
+      }),
+    canReplayLeadInput: (run) => {
+      if (deps.contextInvalidationSignal(run).aborted || !registry.isLive(run)) return false;
+      const lead = Object.values(registry.snapshot(run.teamName).members).find(
+        (member) => member.role === 'lead'
+      );
+      if (
+        !lead ||
+        lead.membership !== 'configured' ||
+        lead.desired !== 'running' ||
+        lead.phase !== 'ready' ||
+        !lead.process ||
+        lead.lane ||
+        !lead.operationId
+      )
+        return false;
+      return deps.sdkHost.hasAuthenticatedConnection(
+        {
+          ...run,
+          memberName: lead.memberName,
+          generation: lead.generation,
+          operationId: lead.operationId,
+        },
+        lead.process
+      );
+    },
     owner: Object.freeze({ ...deps.owner }),
     activity: lifecycle.activity,
     runs,
@@ -562,13 +723,18 @@ export function createNativeTeamLifecycle(
         return deps.withExpectedContext(run, () => lifecycle.leadStart.execute(credential, input));
       },
     },
-    sendLeadMessage: (run, text, attachments) =>
-      deps.withExpectedContext(run, () => sendLead(run, text, attachments)),
+    sendLeadMessage: (run, text, attachments, operationId) =>
+      deps.withExpectedContext(run, () => sendLead(run, text, attachments, operationId)),
     recoverOrphanedRuns: async (teamNames) => {
       const recovered: string[] = [];
       const failed: { teamName: string; error: string }[] = [];
       for (const teamName of teamNames) {
         try {
+          if (registry.find(teamName)) continue;
+          if (await config.recoverLiveRun(teamName, deps.owner, recoverLiveRun)) {
+            recovered.push(teamName);
+            continue;
+          }
           if (
             await config.recoverOrphanedClaim(
               teamName,

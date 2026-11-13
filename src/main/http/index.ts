@@ -56,11 +56,13 @@ import type {
 import type { DesktopExternalAgentConnection } from '@features/external-agent-connection/main';
 import type { MemberWorkSyncFeatureFacade } from '@features/member-work-sync/main';
 import type { TeamPromptManagement } from '@features/team-prompt-management/main';
+import type { NativeClaudeSdkHost } from '@features/team-provisioning/main';
 import type { FastifyInstance } from 'fastify';
 
 const logger = createLogger('HTTP:routes');
 
 export interface HttpServices {
+  nativeClaudeSdkHost?: NativeClaudeSdkHost;
   projectScanner: ProjectScanner;
   sessionParser: SessionParser;
   subagentResolver: SubagentResolver;

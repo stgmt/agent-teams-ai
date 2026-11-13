@@ -15,8 +15,12 @@ const REPORT_INQUIRIES = [
   /статус|отч[её]т|прогресс|результат|новост|движени|апдейт/u,
   /\b(?:progress|status|doing|update|news)\b/u,
 ];
-const SOCIAL_ONLY =
-  /^(?:спасибо|благодарю|привет|здравствуй(?:те)?|ок|окей|хорошо|понял[а]?|да|нет|ага|угу|thanks|thank you|hi|hello|ok|okay)[\s!.,…]*$/u;
+// Split by script only to keep each pattern below the complexity ceiling; the union is
+// unchanged. Trailing punctuation is allowed on every social turn.
+const SOCIAL_ONLY = [
+  /^(?:спасибо|благодарю|привет|здравствуй(?:те)?|ок|окей|хорошо|поняла?|да|нет|ага|угу)[\s!.,…]*$/u,
+  /^(?:thanks|thank you|hi|hello|ok|okay)[\s!.,…]*$/u,
+];
 const QUESTION_WORDS = new Set([
   'что',
   'как',
@@ -37,8 +41,9 @@ const QUESTION_WORDS = new Set([
   'who',
   'which',
 ]);
+// Unanchored: `team` already matches "teammate", so no separate alternative is needed.
 const TEAM_CONTEXT =
-  /команд|тимлид|подчин|исполнител|продукт|проект|работ|задач|доск|релиз|фич|баг|team|project|product|teammate|task|board|sprint|release|feature|bug/u;
+  /команд|тимлид|подчин|исполнител|продукт|проект|работ|задач|доск|релиз|фич|баг|team|project|product|task|board|sprint|release|feature|bug/u;
 
 /**
  * A substantive question is treated as a status request unless it is an explicit
@@ -55,7 +60,7 @@ export function reportScopeForHumanRequest(
   const asks = /[?？]/u.test(words) || [...tokens].some((token) => QUESTION_WORDS.has(token));
   const report =
     REPORT_INQUIRIES.some((pattern) => pattern.test(words)) ||
-    (asks && TEAM_CONTEXT.test(words) && !SOCIAL_ONLY.test(words));
+    (asks && TEAM_CONTEXT.test(words) && !SOCIAL_ONLY.some((pattern) => pattern.test(words)));
   if (!report) return null;
   const named = members.filter((name) => tokens.has(name.toLowerCase().normalize('NFKC')));
   const wholeTeam = /команд|подчин[её]н|исполнител|teammate|\bteam\b/u.test(words);

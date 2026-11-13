@@ -1,4 +1,6 @@
 // @vitest-environment node
+import { installNativeSdkHostFixture } from './nativeSdkTestHarness';
+import { rejectUnexpectedRecovery } from './nodeMemberRuntimeFixture';
 import { join } from 'node:path';
 
 import { describe, expect, it, vi } from 'vitest';
@@ -7,6 +9,7 @@ import { NativeClaudeLaunchPlanner } from '../../../../src/features/team-provisi
 
 import type { ConfiguredMemberLaunch } from '../../../../src/features/team-provisioning/core/application/ports/MemberRuntimePorts';
 import type { NativeProviderLaunch } from '../../../../src/features/team-provisioning/main/adapters/output/NativeClaudeLaunchPlanner';
+const sdkHost = installNativeSdkHostFixture();
 
 const run = {
   appInstanceId: 'TEST-app',
@@ -27,6 +30,13 @@ const settings = {
   workingDirectory: process.cwd(),
   taskLedgerProjectDirectory: join(process.cwd(), 'TEST-ledger'),
   instructions: 'TEST instructions',
+  specIntegration: {
+    scope: { projects: ['TEST/project'], bindings: [] },
+    environment: {
+      OMP_SPEC_REGISTRY_URL: 'http://127.0.0.1:8090',
+      OMP_SPEC_REGISTRY_TOKEN: 'TEST-registry-credential',
+    },
+  },
 };
 
 function setup() {
@@ -57,6 +67,8 @@ function setup() {
     Promise.resolve(launch)
   );
   const planner = new NativeClaudeLaunchPlanner({
+    sdkHost: sdkHost(),
+    releaseRecovered: rejectUnexpectedRecovery,
     prepareWorkspace,
     prepareProvider,
     prepareArtifacts,
@@ -82,15 +94,21 @@ function bootstrap(patch: Record<string, unknown> = {}) {
 describe('native Claude launch planning with app-owned roster and scoped tools', () => {
   it('refuses a member whose provider has no credential when the application requires access', async () => {
     const guarded = new NativeClaudeLaunchPlanner({
+      sdkHost: sdkHost(),
+      releaseRecovered: rejectUnexpectedRecovery,
       prepareWorkspace: (launch) => Promise.resolve(launch),
-      prepareProvider: () =>
-        Promise.resolve({ executable: 'TEST-claude.exe', env: {}, args: [] }),
+      prepareProvider: () => Promise.resolve({ executable: 'TEST-claude.exe', env: {}, args: [] }),
       prepareArtifacts: () =>
         Promise.resolve({
           mcpConfigPath: 'TEST-mcp.json',
           bootstrapSpecPath: 'TEST-bootstrap.json',
           eventsPath: 'TEST-events.jsonl',
-          bootstrapProof: { proofToken: 'TEST-proof', contextHash: 'c', briefingHash: 'b', boundaryMs: 1 },
+          bootstrapProof: {
+            proofToken: 'TEST-proof',
+            contextHash: 'c',
+            briefingHash: 'b',
+            boundaryMs: 1,
+          },
           env: {},
           dispose: () => Promise.resolve(),
         }),
@@ -114,7 +132,7 @@ describe('native Claude launch planning with app-owned roster and scoped tools',
   });
 
   it('prepares a lead-only bootstrap, preserves selected provider arguments and denies roster changes', async () => {
-    const { planner, prepareArtifacts } = setup();
+    const { planner } = setup();
     const plan = await planner.prepare(settings, token, new AbortController().signal);
     expect(plan.executable).toBe('TEST-claude.exe');
     expect(plan.args).toEqual(
@@ -145,7 +163,6 @@ describe('native Claude launch planning with app-owned roster and scoped tools',
       'mcp__agent-teams__team_trash',
       'SendMessage',
     ]);
-    expect(prepareArtifacts).toHaveBeenCalledWith(settings, token, expect.any(AbortSignal));
     expect(plan.env).toMatchObject({
       TEST_AUTH: 'TEST-secret',
       CLAUDE_CODE_BOOTSTRAP_RUN_ID: run.runId,

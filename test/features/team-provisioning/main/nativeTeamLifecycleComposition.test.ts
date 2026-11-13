@@ -1,4 +1,9 @@
 // @vitest-environment node
+import {
+  installNativeSdkHostFixture,
+  nativeSpecRegistryEnvironment,
+  nativeSpecScope,
+} from './nativeSdkTestHarness';
 import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -9,6 +14,7 @@ import { BoundControlContext } from '../../../../src/features/external-agent-con
 import { createNativeTeamLifecycle } from '../../../../src/features/team-provisioning/main/composition/createNativeTeamLifecycle';
 import { TeamConfigReader } from '../../../../src/main/services/team/TeamConfigReader';
 import { setClaudeBasePathOverride } from '../../../../src/main/utils/pathDecoder';
+const sdkHost = installNativeSdkHostFixture();
 
 const directories: string[] = [];
 afterEach(async () => {
@@ -43,6 +49,7 @@ describe('native lifecycle composition admission', () => {
     }));
     const lifecycle = createNativeTeamLifecycle({
       owner: context.snapshot(),
+      sdkHost: sdkHost(),
       readStartupTasks: async () => [],
       createController: () => ({
         taskBoard: { deliverStartupWorkAsync: async () => ({ delivered: [], skipped: [] }) },
@@ -78,9 +85,16 @@ describe('native lifecycle composition admission', () => {
         runtimeArgs: () => Promise.reject(new Error('Unexpected runtime arguments')),
       },
       settings: {
+        specRegistryEnvironment: nativeSpecRegistryEnvironment,
         metadata: {
           getMeta: () =>
-            Promise.resolve({ version: 1, providerId: 'anthropic', cwd: root, createdAt: 1 }),
+            Promise.resolve({
+              version: 1,
+              providerId: 'anthropic',
+              cwd: root,
+              createdAt: 1,
+              specScope: nativeSpecScope,
+            }),
         },
         members: {
           getMeta: () => Promise.resolve({ version: 1, members: [{ name: 'builder' }] }),
@@ -221,6 +235,7 @@ describe('native lifecycle composition admission', () => {
     }));
     const lifecycle = createNativeTeamLifecycle({
       owner: context.snapshot(),
+      sdkHost: sdkHost(),
       readStartupTasks: async () => [],
       createController: () => ({
         taskBoard: { deliverStartupWorkAsync: async () => ({ delivered: [], skipped: [] }) },
@@ -239,6 +254,7 @@ describe('native lifecycle composition admission', () => {
         runtimeArgs: () => Promise.reject(new Error('TEST no arguments')),
       },
       settings: {
+        specRegistryEnvironment: nativeSpecRegistryEnvironment,
         metadata: {
           getMeta() {
             if (++reads === 1)
@@ -250,6 +266,7 @@ describe('native lifecycle composition admission', () => {
               providerId: 'anthropic' as const,
               cwd: root,
               createdAt: 1,
+              specScope: nativeSpecScope,
             });
           },
         },
@@ -295,7 +312,13 @@ describe('native lifecycle composition admission', () => {
     });
     const metadata = vi.fn(async () => {
       await pending;
-      return { version: 1 as const, providerId: 'anthropic' as const, cwd: root, createdAt: 1 };
+      return {
+        version: 1 as const,
+        providerId: 'anthropic' as const,
+        cwd: root,
+        createdAt: 1,
+        specScope: nativeSpecScope,
+      };
     });
     const executable = vi.fn(() =>
       Promise.reject(new Error('Cancelled launch must not prepare a provider'))
@@ -311,6 +334,7 @@ describe('native lifecycle composition admission', () => {
     }));
     const lifecycle = createNativeTeamLifecycle({
       owner: context.snapshot(),
+      sdkHost: sdkHost(),
       readStartupTasks: async () => [],
       createController: () => ({
         taskBoard: { deliverStartupWorkAsync: async () => ({ delivered: [], skipped: [] }) },
@@ -329,6 +353,7 @@ describe('native lifecycle composition admission', () => {
         runtimeArgs: () => Promise.reject(new Error('Unexpected runtime argument preparation')),
       },
       settings: {
+        specRegistryEnvironment: nativeSpecRegistryEnvironment,
         metadata: { getMeta: metadata },
         members: {
           getMeta: () => Promise.resolve({ version: 1, members: [{ name: 'builder' }] }),

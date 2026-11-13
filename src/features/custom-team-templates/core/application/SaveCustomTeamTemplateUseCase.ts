@@ -446,15 +446,11 @@ export class SaveCustomTeamTemplateUseCase {
           result: { status: 'templateIdConflict', templateId: check.templateId },
         };
       case 'absent':
-        // A write was attempted and its outcome was initially unknown. Leave
-        // the decision to the user even if this read did not find the record.
-        return {
-          retry: false,
-          result: { status: 'unresolvedWriteOutcome', templateId: check.templateId },
-        };
       case 'unresolved':
-        // Reconciliation could not establish a definitive result, so the
-        // outcome stays honestly unresolved.
+        // A write was attempted and its outcome was initially unknown. An
+        // absent or still-unreadable record cannot rule out that the write
+        // reached the database, so this read never makes the save retryable
+        // and the decision stays with the user.
         return {
           retry: false,
           result: { status: 'unresolvedWriteOutcome', templateId: check.templateId },

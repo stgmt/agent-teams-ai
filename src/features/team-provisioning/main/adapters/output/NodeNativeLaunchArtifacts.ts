@@ -85,18 +85,14 @@ export class NodeNativeLaunchArtifacts {
       await chmod(directory, 0o700);
       signal.throwIfAborted();
       const lead = settings.role === 'lead';
-      const specServerEnv = settings.specMcpServerEnv
-        ? {
-            ...settings.specMcpServerEnv,
-            ...(settings.specScope
-              ? { AGENT_TEAMS_SPEC_SCOPE: JSON.stringify(settings.specScope) }
-              : {}),
-          }
-        : undefined;
+      const specServerEnv = {
+        ...settings.specIntegration.environment,
+        AGENT_TEAMS_SPEC_SCOPE: JSON.stringify(settings.specIntegration.scope),
+      };
       mcpConfigPath = await this.ports.mcp.writeConfigFile(settings.workingDirectory, {
         mcpPolicy: settings.mcpPolicy,
         controlApiBaseUrl,
-        ...(specServerEnv ? { serverEnv: specServerEnv } : {}),
+        serverEnv: specServerEnv,
         runtimeScope: lead
           ? { role: 'lead', credential: this.ports.leadCredential(token) }
           : { role: 'member' },

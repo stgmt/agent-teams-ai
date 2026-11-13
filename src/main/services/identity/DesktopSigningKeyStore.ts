@@ -1,13 +1,13 @@
 import { getAppDataPath } from '@main/utils/pathDecoder';
-import { safeStorage } from 'electron';
 import {
   createHash,
   createPrivateKey,
   createPublicKey,
   generateKeyPairSync,
-  sign,
   type KeyObject,
+  sign,
 } from 'crypto';
+import { safeStorage } from 'electron';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 

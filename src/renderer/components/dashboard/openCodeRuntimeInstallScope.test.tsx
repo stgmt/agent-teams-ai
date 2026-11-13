@@ -34,14 +34,14 @@ function deferred<T>() {
   });
   return { promise, resolve, reject };
 }
-const projectPath = '/TEST/installed-v2-project';
+const projectPath = '/TEST/installed-project';
 const scopeKey = getCliProviderStatusScopeKey('opencode', projectPath);
+// `runtime.lock.json` pins a V1-only release, so a completed install yields OpenCode V1.
 const ready: OpenCodeRuntimeStatus = {
   installed: true,
   source: 'app-managed',
   state: 'ready',
-  version: '2.2.0',
-  v2Support: 'ready',
+  version: '1.18.3',
 };
 function provider(model: string): CliProviderStatus {
   return {
@@ -74,7 +74,7 @@ describe('installation and the selected-project dashboard read', () => {
       const invalidation = deferred<void>();
       const oldRead = deferred<CliProviderStatus>();
       let projectReads = 0;
-      const fresh = provider('opencode/new-v2-model');
+      const fresh = provider('opencode/new-model');
       const getProviderStatus = vi.fn(async (_id: string, options?: { projectPath?: string }) => {
         if (!options?.projectPath) return fresh;
         projectReads += 1;
@@ -119,7 +119,7 @@ describe('installation and the selected-project dashboard read', () => {
       await act(async () => root!.render(<Probe />));
       let installation!: Promise<void>;
       await act(async () => {
-        installation = store.getState().installOpenCodeRuntime({ generation: 'v2' });
+        installation = store.getState().installOpenCodeRuntime({ generation: 'v1' });
       });
       expect(projectReads).toBe(1);
       await act(async () => {
@@ -133,7 +133,7 @@ describe('installation and the selected-project dashboard read', () => {
       });
       expect(projectReads).toBe(2);
       expect(store.getState().cliProviderStatusByScope[scopeKey]?.models).toEqual(fresh.models);
-      expect(host.textContent).toBe('opencode/new-v2-model');
+      expect(host.textContent).toBe('opencode/new-model');
       expect(store.getState().openCodeRuntimeStatus).toEqual(ready);
       expect(store.getState().cliProviderStatusLoading.opencode).toBe(false);
       expect(verifyProviderModels).not.toHaveBeenCalled();

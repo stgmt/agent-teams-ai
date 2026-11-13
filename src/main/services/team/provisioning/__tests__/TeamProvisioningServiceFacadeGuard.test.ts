@@ -88,6 +88,8 @@ const DOCUMENTED_EFFECTIVE_PUBLIC_SERVICE_INSTANCE_MEMBERS = [
   'getOpenCodeRuntimeDeliveryStatus',
   'getProvisioningStatus',
   'getRuntimeState',
+  // Roster mutation and stop admission compare the run they target with this one.
+  'getStopTargetRunId',
   'getTeamAgentRuntimeSnapshot',
   'getTeamAgentRuntimeSnapshotReadOnly',
   'hasActiveTeamRuntimes',
