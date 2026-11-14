@@ -87,6 +87,21 @@ export interface SpecRegistryProbeResult {
 }
 
 /**
+ * Tracker readiness reported by the registry's `mcp_preflight`. The registry
+ * guarantees the schema at boot; this is how the dialog shows whether it
+ * succeeded, without the app ever talking to YouTrack itself.
+ */
+export interface SpecRegistryTrackerStatus {
+  ok: boolean;
+  code: string;
+  project: string | null;
+  missing: string[];
+  missingLinkTypes: string[];
+  conflicts: { field?: string; linkType?: string; expected?: string; actual?: string | null; reason?: string }[];
+  message: string | null;
+}
+
+/**
  * Outcome of the loopback "Get token" bootstrap. A refusal carries a code the
  * dialog can explain (a remote endpoint, an operator who has not opted in, an
  * unreachable registry); the token never round-trips through a stored field.

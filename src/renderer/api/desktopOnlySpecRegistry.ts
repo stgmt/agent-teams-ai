@@ -3,6 +3,7 @@ import type {
   SpecRegistryDiscovery,
   SpecRegistryLocalTokenResult,
   SpecRegistryProbeResult,
+  SpecRegistryTrackerStatus,
   TeamSpecBinding,
 } from '@shared/types';
 
@@ -19,6 +20,7 @@ export interface DesktopOnlySpecRegistryApi {
   clearSpecRegistryCredential(): Promise<void>;
   testSpecRegistryCredential(url?: string, token?: string): Promise<SpecRegistryProbeResult>;
   requestSpecRegistryLocalToken(url: string): Promise<SpecRegistryLocalTokenResult>;
+  getSpecRegistryTrackerStatus(project: string | null): Promise<SpecRegistryTrackerStatus>;
   listTeamSpecBindings: (teamName: string) => Promise<TeamSpecBinding[]>;
   linkTeamSpec: (teamName: string, binding: TeamSpecBinding) => Promise<TeamSpecBinding[]>;
   unlinkTeamSpec: (teamName: string, binding: TeamSpecBinding) => Promise<TeamSpecBinding[]>;
@@ -33,6 +35,7 @@ export function createDesktopOnlySpecRegistryApi(): DesktopOnlySpecRegistryApi {
     clearSpecRegistryCredential: () => Promise.reject(new Error(REGISTRY_ONBOARDING_ONLY)),
     testSpecRegistryCredential: () => Promise.reject(new Error(REGISTRY_ONBOARDING_ONLY)),
     requestSpecRegistryLocalToken: () => Promise.reject(new Error(REGISTRY_ONBOARDING_ONLY)),
+    getSpecRegistryTrackerStatus: () => Promise.reject(new Error(REGISTRY_ONBOARDING_ONLY)),
     listTeamSpecBindings: () => Promise.reject(new Error(SPEC_BINDINGS_ONLY)),
     linkTeamSpec: () => Promise.reject(new Error(SPEC_BINDINGS_ONLY)),
     unlinkTeamSpec: () => Promise.reject(new Error(SPEC_BINDINGS_ONLY)),

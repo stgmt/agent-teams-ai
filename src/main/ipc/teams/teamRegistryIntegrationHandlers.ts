@@ -1,6 +1,7 @@
 import {
   clearSpecRegistryCredential,
   readSpecRegistryCredentialStatus,
+  readSpecRegistryTrackerStatus,
   saveSpecRegistryCredential,
   testSpecRegistryCredential,
 } from '@main/services/team/registry/SpecRegistryCredentialOnboarding';
@@ -15,6 +16,7 @@ import type {
   SpecRegistryCredentialStatus,
   SpecRegistryLocalTokenResult,
   SpecRegistryProbeResult,
+  SpecRegistryTrackerStatus,
 } from '@shared/types';
 import type {
   IpcResult,
@@ -80,6 +82,20 @@ export function createTeamRegistryIntegrationHandlers(deps: TeamRegistryIntegrat
       ...(typeof token === 'string' && token.trim() ? { token } : {}),
     };
     return wrapTeamHandler('specRegistryTest', () => testSpecRegistryCredential(candidate));
+  }
+
+  /**
+   * Tracker readiness for a project, read from the registry's preflight. The
+   * dialog shows it so an empty board is never mistaken for "no tasks yet".
+   */
+  async function handleSpecRegistryTrackerStatus(
+    _event: IpcMainInvokeEvent,
+    project: unknown
+  ): Promise<IpcResult<SpecRegistryTrackerStatus>> {
+    const selected = typeof project === 'string' && project.trim() ? project.trim() : null;
+    return wrapTeamHandler('specRegistryTrackerStatus', () =>
+      readSpecRegistryTrackerStatus(selected)
+    );
   }
 
   /**
@@ -170,6 +186,7 @@ export function createTeamRegistryIntegrationHandlers(deps: TeamRegistryIntegrat
     handleSpecRegistryClear,
     handleSpecRegistryTest,
     handleSpecRegistryLocalToken,
+    handleSpecRegistryTrackerStatus,
     handleListTeamSpecBindings,
     handleLinkTeamSpec,
     handleUnlinkTeamSpec,

@@ -42,6 +42,19 @@ until the application and registry release checks and sandbox acceptance pass.
 - Read task comments and attachments through the application.
 - Keep task result files on the local computer; verification for direct server completion remains in the backlog.
 
+## v2.20.0-tokenplan.0 (published 2026-11-15)
+
+The Connect-specifications dialog now shows tracker readiness, so an empty board can no longer be
+mistaken for "this specification has no tasks yet". The registry guarantees the YouTrack schema
+(fields, bundles, link types) at boot since 3.6.2; the app reads its `mcp_preflight` report through
+a new `specRegistry:trackerStatus` bridge and renders one of: ready, not ready (with the missing
+fields and link types), a field conflict (with the field name), no administrator rights, projection
+disabled, or status unavailable.
+
+Build facts: `Agent.Teams.AI.Setup.2.20.0-tokenplan.0.exe`,
+sha256 `bfe5c62e9364439f24ae72da847a770aeab47ccdb1835939128531fefd3a328f`, 353604605 bytes,
+unsigned, with its blockmap and `latest.yml` (sha512 and size match the installer).
+
 ## v2.19.1-tokenplan.0 (published 2026-11-14)
 
 Patch release for the in-app restart: after a downloaded update, "Restart to update" started

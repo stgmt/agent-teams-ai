@@ -467,6 +467,7 @@ export const SPEC_REGISTRY_CLEAR = 'specRegistry:clear';
 export const SPEC_REGISTRY_TEST = 'specRegistry:test';
 /** Loopback-only bootstrap: mint this machine's registry token. */
 export const SPEC_REGISTRY_LOCAL_TOKEN = 'specRegistry:localToken';
+export const SPEC_REGISTRY_TRACKER_STATUS = 'specRegistry:trackerStatus';
 
 export const TEAM_LIST_SPEC_BINDINGS = 'team:listSpecBindings';
 export const TEAM_LINK_SPEC = 'team:linkSpec';

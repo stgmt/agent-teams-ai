@@ -8,7 +8,11 @@ import {
 } from './SpecRegistryCredentialStore';
 
 import type { SpecRegistryCredential } from './SpecRegistryCredentialStore';
-import type { SpecRegistryCredentialStatus, SpecRegistryProbeResult } from '@shared/types';
+import type {
+  SpecRegistryCredentialStatus,
+  SpecRegistryProbeResult,
+  SpecRegistryTrackerStatus,
+} from '@shared/types';
 
 const PROBE_TIMEOUT_MS = 10_000;
 const { specGateway } = agentTeamsController;
@@ -39,6 +43,59 @@ async function probe(url: string, token: string): Promise<SpecRegistryProbeResul
       toolCount: null,
       errorCode: typeof code === 'string' ? code : 'UNREACHABLE',
     };
+  }
+}
+
+/**
+ * Tracker readiness for one project, read from the registry's `mcp_preflight`.
+ * The app never talks to YouTrack itself: the registry owns the schema and
+ * reports whether it could guarantee it.
+ */
+export async function readSpecRegistryTrackerStatus(
+  project: string | null
+): Promise<SpecRegistryTrackerStatus> {
+  const empty = (code: string, message: string | null): SpecRegistryTrackerStatus => ({
+    ok: false,
+    code,
+    project,
+    missing: [],
+    missingLinkTypes: [],
+    conflicts: [],
+    message,
+  });
+  try {
+    const resolved = await resolveRegistryTaskClientConfig();
+    const transport = new RegistryMcpTransport({
+      url: resolved.url,
+      token: resolved.token,
+      requestTimeoutMs: PROBE_TIMEOUT_MS,
+    });
+    const envelope = (await transport.callTool(
+      'mcp_preflight',
+      project ? { project } : {},
+      'trackerStatus'
+    )) as unknown as { ok?: boolean; data?: { tracker?: Record<string, unknown> } };
+    const tracker = envelope?.data?.tracker;
+    if (!tracker || typeof tracker !== 'object') {
+      return empty('TRACKER_STATUS_UNAVAILABLE', 'the registry did not report a tracker status');
+    }
+    return {
+      ok: true,
+      code: typeof tracker.code === 'string' ? tracker.code : 'TRACKER_UNAVAILABLE',
+      project: typeof tracker.project === 'string' ? tracker.project : project,
+      missing: Array.isArray(tracker.missing) ? (tracker.missing as string[]) : [],
+      missingLinkTypes: Array.isArray(tracker.missingLinkTypes) ? (tracker.missingLinkTypes as string[]) : [],
+      conflicts: Array.isArray(tracker.conflicts)
+        ? (tracker.conflicts as SpecRegistryTrackerStatus['conflicts'])
+        : [],
+      message: typeof tracker.message === 'string' ? tracker.message : null,
+    };
+  } catch (error) {
+    const code = (error as { code?: unknown }).code;
+    return empty(
+      typeof code === 'string' ? code : 'TRACKER_STATUS_UNAVAILABLE',
+      error instanceof Error ? error.message.slice(0, 200) : null
+    );
   }
 }
 

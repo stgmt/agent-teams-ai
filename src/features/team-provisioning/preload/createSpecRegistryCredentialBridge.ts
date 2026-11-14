@@ -2,6 +2,7 @@ import {
   SPEC_REGISTRY_CLEAR,
   SPEC_REGISTRY_GET_STATUS,
   SPEC_REGISTRY_LOCAL_TOKEN,
+  SPEC_REGISTRY_TRACKER_STATUS,
   SPEC_REGISTRY_SAVE,
   SPEC_REGISTRY_TEST,
 } from '@preload/constants/ipcChannels';
@@ -11,6 +12,7 @@ import type {
   SpecRegistryCredentialStatus,
   SpecRegistryLocalTokenResult,
   SpecRegistryProbeResult,
+  SpecRegistryTrackerStatus,
 } from '@shared/types';
 
 export interface SpecRegistryCredentialBridge {
@@ -19,6 +21,7 @@ export interface SpecRegistryCredentialBridge {
   clearSpecRegistryCredential(): Promise<void>;
   testSpecRegistryCredential(url?: string, token?: string): Promise<SpecRegistryProbeResult>;
   requestSpecRegistryLocalToken(url: string): Promise<SpecRegistryLocalTokenResult>;
+  getSpecRegistryTrackerStatus(project: string | null): Promise<SpecRegistryTrackerStatus>;
 }
 
 export function createSpecRegistryCredentialBridge(
@@ -34,5 +37,7 @@ export function createSpecRegistryCredentialBridge(
       invoke<SpecRegistryProbeResult>(SPEC_REGISTRY_TEST, url, token),
     requestSpecRegistryLocalToken: (url) =>
       invoke<SpecRegistryLocalTokenResult>(SPEC_REGISTRY_LOCAL_TOKEN, url),
+    getSpecRegistryTrackerStatus: (project) =>
+      invoke<SpecRegistryTrackerStatus>(SPEC_REGISTRY_TRACKER_STATUS, project),
   };
 }
