@@ -17,8 +17,12 @@ const fixture = vi.hoisted(() => ({
   status: vi.fn(),
   check: vi.fn(),
   localToken: vi.fn(),
-  translate: (key: string, options?: { code?: string }) =>
-    options?.code ? `${key}:${options.code}` : key,
+  trackerStatus: vi.fn(),
+  translate: (key: string, options?: Record<string, unknown>) => {
+    if (!options) return key;
+    const values = Object.values(options).filter((value) => value !== undefined);
+    return values.length > 0 ? `${key}:${values.join('|')}` : key;
+  },
 }));
 
 vi.mock('@renderer/api', () => ({
@@ -27,6 +31,7 @@ vi.mock('@renderer/api', () => ({
       getSpecRegistryCredentialStatus: fixture.status,
       testSpecRegistryCredential: fixture.check,
       requestSpecRegistryLocalToken: fixture.localToken,
+      getSpecRegistryTrackerStatus: fixture.trackerStatus,
     },
   },
 }));
@@ -98,6 +103,15 @@ beforeEach(() => {
     errorCode: null,
   });
   fixture.localToken.mockReset().mockResolvedValue({ ok: true, token: 'registry-local-token' });
+  fixture.trackerStatus.mockReset().mockResolvedValue({
+    ok: true,
+    code: 'TRACKER_READY',
+    project: 'SPEC',
+    missing: [],
+    missingLinkTypes: [],
+    conflicts: [],
+    message: null,
+  });
 });
 
 describe('registry dialog local token bootstrap', () => {
@@ -136,7 +150,7 @@ describe('registry dialog local token bootstrap', () => {
     expect(fixture.localToken).toHaveBeenCalledWith(LOOPBACK);
     expect(tokenInput().value).toBe('registry-local-token');
     expect(fixture.check).toHaveBeenCalledWith(LOOPBACK, 'registry-local-token');
-    expect(document.querySelector('[role="status"]')?.textContent).toBe(
+    expect(document.querySelector('[role="status"]')?.textContent).toContain(
       'create.registryPicker.credentialCheckOk'
     );
     expect(document.querySelector('[role="alert"]')).toBeNull();
@@ -178,6 +192,49 @@ describe('registry dialog local token bootstrap', () => {
       'create.registryPicker.localTokenFailed:LOCAL_BOOTSTRAP_FAILED'
     );
     expect(tokenInput().value).toBe('');
+  });
+});
+
+
+describe('tracker readiness', () => {
+  it('shows the tracker state the registry reports', async () => {
+    fixture.trackerStatus.mockResolvedValue({
+      ok: true,
+      code: 'TRACKER_FIELDS_MISSING',
+      project: 'SPEC',
+      missing: ['SpecKind', 'Type'],
+      missingLinkTypes: ['implements'],
+      conflicts: [],
+      message: null,
+    });
+    await render({ configured: true, url: LOOPBACK, source: 'store' });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const block = document.querySelector('[data-testid="tracker-readiness"]');
+    expect(block?.textContent).toContain('create.registryPicker.trackerTitle');
+    expect(block?.textContent).toContain('SpecKind, Type, implements');
+  });
+
+  it('names the conflicting field instead of pretending the tracker is fine', async () => {
+    fixture.trackerStatus.mockResolvedValue({
+      ok: true,
+      code: 'TRACKER_FIELD_CONFLICT',
+      project: 'SPEC',
+      missing: [],
+      missingLinkTypes: [],
+      conflicts: [{ field: 'SpecKind', expected: 'enum[1]', actual: 'text' }],
+      message: null,
+    });
+    await render({ configured: true, url: LOOPBACK, source: 'store' });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(document.querySelector('[data-testid="tracker-readiness"]')?.textContent).toContain(
+      'SpecKind'
+    );
   });
 });
 
