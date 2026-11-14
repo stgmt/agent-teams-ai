@@ -76,6 +76,66 @@ describe('requestCloseReadiness', () => {
     }
   });
 
+  it('installs an update whose interface never answered instead of waiting for a dialog', async () => {
+    vi.useFakeTimers();
+    try {
+      const { coordinator, window } = harness();
+      const showMessageBox = vi.fn();
+      const close = requestCloseReadiness(
+        coordinator,
+        [window],
+        'update-install',
+        'Install Anyway',
+        { showMessageBox } as unknown as Dialog
+      );
+      await vi.advanceTimersByTimeAsync(5_000);
+      await expect(close).resolves.toBe(true);
+      expect(showMessageBox).not.toHaveBeenCalled();
+      coordinator.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('still asks before an ordinary quit when the interface never answered', async () => {
+    vi.useFakeTimers();
+    try {
+      const { coordinator, window } = harness();
+      const showMessageBox = vi.fn().mockResolvedValue({ response: 0 });
+      const close = requestCloseReadiness(coordinator, [window], 'app-quit', 'Quit Anyway', {
+        showMessageBox,
+      } as unknown as Dialog);
+      await vi.advanceTimersByTimeAsync(5_000);
+      await expect(close).resolves.toBe(false);
+      expect(showMessageBox).toHaveBeenCalledOnce();
+      coordinator.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps asking before an update install when a save was already in flight', async () => {
+    vi.useFakeTimers();
+    try {
+      const { coordinator, window, started } = harness();
+      const showMessageBox = vi.fn().mockResolvedValue({ response: 0 });
+      const close = requestCloseReadiness(
+        coordinator,
+        [window],
+        'update-install',
+        'Install Anyway',
+        { showMessageBox } as unknown as Dialog
+      );
+      started();
+      await vi.advanceTimersByTimeAsync(35_000);
+      await expect(close).resolves.toBe(false);
+      expect(showMessageBox).toHaveBeenCalledOnce();
+      coordinator.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('keeps an actual save failure open when the user cancels', async () => {
     const { coordinator, window, reply } = harness();
     const showMessageBox = vi.fn().mockResolvedValue({ response: 0 });

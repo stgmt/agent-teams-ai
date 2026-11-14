@@ -1,7 +1,7 @@
 {
   "name": "agent-teams-ai",
   "type": "module",
-  "version": "2.19.0-tokenplan.0",
+  "version": "2.19.1-tokenplan.0",
   "dynamicFlags": {
     "showSponsorFluxion": true
   },

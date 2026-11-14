@@ -1,6 +1,10 @@
+import { createLogger } from '@shared/utils/logger';
+
 import type { AppCloseReadinessResult, AppCloseReason } from '../contracts';
 import type { RendererCloseReadinessCoordinator } from './RendererCloseReadinessCoordinator';
 import type { BrowserWindow, Dialog } from 'electron';
+
+const logger = createLogger('AppCloseReadiness');
 
 /** Keep timeout warnings live: a completed save must not leave a stale warning onscreen. */
 export async function requestCloseReadiness(
@@ -30,11 +34,25 @@ export async function requestCloseReadiness(
   initialResultsReceived = true;
   try {
     if (allReady()) return true;
+    const failures = [...latest.values()].filter((result) => !result.ok);
+    // An interface that never answered cannot hold unsaved work, and the update
+    // quit would discard any prompt it could still raise: install instead of
+    // blocking on a dialog nobody asked for.
+    if (
+      reason === 'update-install' &&
+      failures.length > 0 &&
+      failures.every((result) => result.failure === 'unresponsive')
+    ) {
+      logger.diagnostic('Closing for update install without renderer confirmation', {
+        reason,
+        windowCount: windows.length,
+      });
+      return true;
+    }
     const parent = windows.find((window) => !window.isDestroyed());
     if (!parent) return false;
     parent.show();
     parent.focus();
-    const failures = [...latest.values()].filter((result) => !result.ok);
     const unresponsive = failures.some((result) => result.failure === 'unresponsive');
     const choice = await dialog.showMessageBox(parent, {
       type: 'warning',
