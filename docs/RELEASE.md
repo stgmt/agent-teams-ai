@@ -42,7 +42,26 @@ until the application and registry release checks and sandbox acceptance pass.
 - Read task comments and attachments through the application.
 - Keep task result files on the local computer; verification for direct server completion remains in the backlog.
 
-## v2.19.0-tokenplan.0 (Draft; not published)
+## v2.19.1-tokenplan.0 (published 2026-11-14)
+
+Patch release for the in-app restart: after a downloaded update, "Restart to update" started
+nothing on 2.19.0. `setBeforeQuitAndInstall` waited for the renderer through
+`requestAllWindowsCloseReadiness('update-install', …)`, the interface did not answer inside its
+five-second deadline, and the native "Confirm app close" dialog that followed was never answered,
+so `quitAndInstall` never ran. `requestCloseReadiness` now returns early for `update-install` when
+every failure is `unresponsive` — an interface that never started a save cannot hold unsaved work —
+and still asks whenever a save had already started. Ordinary quit and window close keep the prompt.
+
+Build facts: `Agent.Teams.AI.Setup.2.19.1-tokenplan.0.exe`,
+sha256 `26a39d156ddf7614fe6eb8f0ec7db32e946c104fac9bee0eba830298c0212986`, 353604407 bytes,
+unsigned, with its blockmap and `latest.yml` (sha512 and size match the installer). Same staged
+runtime as 2.19.0 (`0.0.159`).
+
+Verified: 2.19.0 sees the 2.19.1 offer, downloads the published installer (staged file hash equals
+the published sha256), and the fixed build starts the NSIS installer on `updater.install()`, installs
+and relaunches; user data and the stored registry credential survive.
+
+## v2.19.0-tokenplan.0 (published 2026-11-13)
 
 Target repository: `stgmt/agent-teams-ai`. This release makes the Spec Kit registry the single
 source for a team's specifications and tasks, so it takes the next minor on the fork line and the
